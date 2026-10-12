@@ -1,0 +1,58 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "mathstudii",
+  "version": "0.1.0",
+  "identifier": "io.github.jaden263.mathstudii",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "mathstudii",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 380,
+        "minHeight": 400,
+        "resizable": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' blob:; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Education",
+    "shortDescription": "Engineering math worksheets",
+    "longDescription": "Live engineering calculation worksheets with units, solve blocks, programming, symbolic math and plots.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["mstd"],
+        "name": "mathstudii worksheet",
+        "description": "mathstudii worksheet",
+        "role": "Editor",
+        "mimeType": "application/x-mathstudii"
+      }
+    ],
+    "android": {
+      "minSdkVersion": 24
+    },
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    }
+  }
+}

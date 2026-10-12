@@ -1,0 +1,45 @@
+{
+  "name": "mathstudii",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Engineering calculation worksheets with live math, units, solving, plotting and symbolics.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "android:dev": "tauri android dev",
+    "android:build": "tauri android build --apk",
+    "ios:dev": "tauri ios dev",
+    "ios:build": "tauri ios build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.3",
+    "@tauri-apps/plugin-dialog": "^2.8.2",
+    "@tauri-apps/plugin-fs": "^2.7.0",
+    "dompurify": "^3.4.16",
+    "katex": "^0.19.0",
+    "lucide-react": "^1.55.0",
+    "marked": "^18.1.0",
+    "mathjs": "^15.2.0",
+    "nerdamer-prime": "^1.5.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.2",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.0.4"
+  }
+}
