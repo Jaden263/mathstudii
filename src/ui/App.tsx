@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
   FilePlus2, FolderOpen, Save, Printer, Undo2, Redo2, Sigma, Type, LineChart, Table2, Image as ImageIcon,
-  ListChecks, PencilRuler, Play, Square, ZoomIn, ZoomOut, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
+  ListChecks, PencilRuler, Play, Square, ZoomIn, ZoomOut, MoveHorizontal, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
@@ -14,6 +14,7 @@ import { SidePanel, type SideTab } from './SidePanel';
 import type { EditorHandle } from './editing';
 import { openWorksheetFile, isMathcadFile, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri, type FileHandle } from '../platform/files';
 import { ShortcutsDialog } from './ShortcutsDialog';
+import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
@@ -46,7 +47,8 @@ export function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<Cursor | null>({ x: PAGE_MARGIN + GRID * 2, y: GRID * 6 });
   const firstRun = useRef(loadPref<number | null>('zoom', null) === null);
-  const [zoom, setZoom] = useState<number>(() => loadPref('zoom', 1) ?? 1);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const { zoom, zoomTo, step: zoomStep } = usePageZoom(scrollerRef, '.sheet-scroller-inner');
   const [theme, setTheme] = useState<ThemePref>(() => loadPref('theme', 'system'));
   const [panelOpen, setPanelOpen] = useState<boolean>(() => loadPref('panel', typeof window !== 'undefined' ? window.innerWidth > 900 : true));
   const [tab, setTab] = useState<SideTab>('math');
@@ -57,10 +59,9 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
-  const separateRef = useRef<() => void>(() => {});
+  const separateRef = useRef<(quiet?: boolean, coalesce?: string) => void>(() => {});
   const [dropping, setDropping] = useState(false);
   const editorRef = useRef<EditorHandle | null>(null);
-  const scrollerRef = useRef<HTMLDivElement>(null);
   const clipboard = useRef<Region[]>([]);
 
   const registerEditor = useCallback((h: EditorHandle | null) => {
@@ -74,7 +75,6 @@ export function App() {
     else el.setAttribute('data-theme', theme);
     savePref('theme', theme);
   }, [theme]);
-  useEffect(() => savePref('zoom', zoom), [zoom]);
   useEffect(() => savePref('panel', panelOpen), [panelOpen]);
   useEffect(() => savePref('grid', showGrid), [showGrid]);
   useEffect(() => {
@@ -213,7 +213,7 @@ export function App() {
     loadDoc(res.ws, null);
     setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
     // Mathcad and mathstudii lay out math at different sizes: push overlaps apart once rendered
-    window.setTimeout(() => separateRef.current(), 400);
+    window.setTimeout(() => separateRef.current(true), 400);
   };
 
   const saveDoc = async (saveAs = false) => {
@@ -235,7 +235,8 @@ export function App() {
     addRegion('image', { src });
   };
 
-  const separateRegions = () => {
+  /** @param coalesce merge the moves into this undo step (e.g. the resize that caused them) */
+  const separateRegions = (quiet = false, coalesce = 'separate') => {
     // push overlapping regions down, in reading order
     const boxes = ws.regions
       .map((r) => {
@@ -258,19 +259,22 @@ export function App() {
         }
       }
       if (y !== b.y) {
-        dispatch({ type: 'move', ids: [b.r.id], dx: 0, dy: y - b.y, coalesce: 'separate' });
+        dispatch({ type: 'move', ids: [b.r.id], dx: 0, dy: y - b.y, coalesce });
         moved++;
       }
       placed.push({ ...b, y });
     }
-    setToast(moved ? `Moved ${moved} region${moved > 1 ? 's' : ''}` : 'No overlapping regions');
+    if (moved || !quiet) setToast(moved ? `Moved ${moved} region${moved > 1 ? 's' : ''}` : 'No overlapping regions');
   };
 
   separateRef.current = separateRegions;
 
   const fitWidth = () => {
-    const w = scrollerRef.current?.clientWidth ?? PAGE_WIDTH;
-    setZoom(Math.max(0.3, Math.min(2, Math.floor(((w - 24) / PAGE_WIDTH) * 20) / 20)));
+    const sc = scrollerRef.current;
+    const w = sc?.clientWidth ?? PAGE_WIDTH;
+    const pad = window.innerWidth <= 900 ? 24 : 48; // scroller padding on both sides
+    zoomTo(Math.min(2, (w - pad) / PAGE_WIDTH));
+    sc?.scrollTo({ left: 0 });
   };
 
   // ------------------------------------------------------------ clipboard
@@ -340,8 +344,9 @@ export function App() {
       if (e.key === 'F9') { e.preventDefault(); evaluation.calculate(); return; }
       if (e.key === 'Escape' && evaluation.slow) { evaluation.interrupt(); return; }
       if (e.key === 'F1' || (mod && e.key === '/')) { e.preventDefault(); setShowHelp(true); return; }
-      if (mod && (k === '=' || k === '+')) { e.preventDefault(); setZoom((z) => Math.min(3, +(z + 0.1).toFixed(2))); return; }
-      if (mod && k === '-') { e.preventDefault(); setZoom((z) => Math.max(0.3, +(z - 0.1).toFixed(2))); return; }
+      if (mod && (k === '=' || k === '+')) { e.preventDefault(); zoomStep(1); return; }
+      if (mod && k === '-') { e.preventDefault(); zoomStep(-1); return; }
+      if (mod && k === '0') { e.preventDefault(); zoomTo(1); return; }
       if (typing) {
         // undo/redo inside a region editor operates on the worksheet history
         if (mod && k === 'z' && editingId) { e.preventDefault(); dispatch({ type: e.shiftKey ? 'redo' : 'undo' }); }
@@ -419,18 +424,6 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ctrl + wheel zoom
-  useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      setZoom((z) => Math.max(0.3, Math.min(3, +(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1)).toFixed(2))));
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, []);
 
   const selection = useMemo(() => ws.regions.filter((r) => selected.has(r.id)), [ws.regions, selected]);
   const completions = useMemo(() => worksheetCompletions(ws.regions), [ws.regions]);
@@ -441,6 +434,7 @@ export function App() {
     setUi: (patch: Partial<SketchUI>) => setSketchUI((u) => ({ ...u, ...patch })),
     getWorksheet: () => wsRef.current,
     showProperties: () => { setTab('properties'); setPanelOpen(true); },
+    separate: (coalesce?: string) => window.setTimeout(() => separateRef.current(true, coalesce), 50),
   }), [sketchUI]);
   const s = ws.settings;
   const cursorMm = cursor ? `${(cursor.x / PX_PER_MM).toFixed(0)}, ${(cursor.y / PX_PER_MM).toFixed(0)} mm` : '';
@@ -540,13 +534,14 @@ export function App() {
               <option value="cgs">CGS</option>
             </select>
           </label>
-          <button className="icon-btn" onClick={separateRegions} title="Separate overlapping regions" aria-label="Separate overlapping regions"><AlignVerticalSpaceAround size={17} /></button>
+          <button className="icon-btn" onClick={() => separateRegions()} title="Separate overlapping regions" aria-label="Separate overlapping regions"><AlignVerticalSpaceAround size={17} /></button>
           <button className={`icon-btn${showGrid ? ' on' : ''}`} onClick={() => setShowGrid(!showGrid)} title="Show grid" aria-label="Show grid"><Grid3x3 size={17} /></button>
         </div>
         <div className="tb-group" aria-label="Zoom">
-          <button className="icon-btn" onClick={() => setZoom((z) => Math.max(0.3, +(z - 0.1).toFixed(2)))} aria-label="Zoom out" title="Zoom out (Ctrl+−)"><ZoomOut size={17} /></button>
-          <button className="zoom-label" onClick={fitWidth} title="Fit page width">{Math.round(zoom * 100)}%</button>
-          <button className="icon-btn" onClick={() => setZoom((z) => Math.min(3, +(z + 0.1).toFixed(2)))} aria-label="Zoom in" title="Zoom in (Ctrl+=)"><ZoomIn size={17} /></button>
+          <button className="icon-btn" onClick={() => zoomStep(-1)} aria-label="Zoom out" title="Zoom out (Ctrl+−)"><ZoomOut size={17} /></button>
+          <button className="zoom-label" onClick={() => zoomTo(1)} title="Reset to 100% (Ctrl+0)">{Math.round(zoom * 100)}%</button>
+          <button className="icon-btn" onClick={() => zoomStep(1)} aria-label="Zoom in" title="Zoom in (Ctrl+=)"><ZoomIn size={17} /></button>
+          <button className="icon-btn" onClick={fitWidth} aria-label="Fit page width" title="Fit page width"><MoveHorizontal size={17} /></button>
         </div>
       </nav>
 

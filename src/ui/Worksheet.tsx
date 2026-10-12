@@ -160,6 +160,7 @@ export function Worksheet(p: Props) {
       dispatch: p.dispatch,
       onDone: (below) => p.finishEditing(r.id, !!below),
       registerEditor: p.registerEditor,
+      zoom: p.zoom,
     };
     switch (r.kind) {
       case 'math': return <MathView {...(props as RegionViewProps<typeof r>)} />;

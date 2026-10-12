@@ -4,7 +4,7 @@ import type { Region, Worksheet, WorksheetSettings } from '../model/types';
 export type Action =
   | { type: 'load'; ws: Worksheet }
   | { type: 'add'; regions: Region[] }
-  | { type: 'update'; id: string; patch: Partial<Region>; coalesce?: string }
+  | { type: 'update'; id: string; patch: Partial<Region>; coalesce?: string; /** false: not an undo step (e.g. a sketch's zoom) */ history?: false }
   | { type: 'move'; ids: string[]; dx: number; dy: number; coalesce?: string }
   | { type: 'delete'; ids: string[] }
   | { type: 'settings'; patch: Partial<WorksheetSettings> }
@@ -71,6 +71,7 @@ function reducer(s: State, a: Action): State {
     default: {
       const ws = apply(s.ws, a);
       if (ws === s.ws) return s;
+      if ('history' in a && a.history === false) return { ...s, ws, version: s.version + 1 };
       const key = 'coalesce' in a && a.coalesce ? a.coalesce : null;
       const now = Date.now();
       // typing into the same field within 1.5 s merges into one undo step

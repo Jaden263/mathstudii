@@ -16,7 +16,8 @@ const SECTIONS: [string, [string, string][]][] = [
     ['Ctrl+Z / Ctrl+Y', 'Undo / redo'],
     ['F9', 'Calculate now (needed when Auto is off)'],
     ['Esc', 'Interrupt a long calculation'],
-    ['Ctrl+wheel, Ctrl+= / −', 'Zoom'],
+    ['Ctrl+wheel / pinch', 'Zoom around the pointer'],
+    ['Ctrl+= / Ctrl+− / Ctrl+0', 'Zoom in / out / reset to 100%'],
   ]],
   ['Math editing', [
     [':', 'Definition :='],
@@ -40,7 +41,7 @@ const SECTIONS: [string, [string, string][]][] = [
     ['Shift', 'Constrain to 15° steps while drawing'],
     ['Alt', 'Disable snapping'],
     ['Enter / dbl-click', 'Finish a polyline (click the first point to close it)'],
-    ['Wheel', 'Zoom the drawing'],
+    ['Corner handle', 'Resize the sketch; the drawing scales with it'],
     ['Del, Ctrl+D, arrows', 'Delete, duplicate, nudge selected shapes'],
     ['Esc', 'Cancel / deselect / leave the sketch'],
   ]],

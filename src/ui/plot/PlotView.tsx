@@ -10,7 +10,7 @@ function readTheme(el: HTMLElement): Theme {
   return { fg: v('--text', '#1d1d1f'), muted: v('--text-muted', '#6b6b74'), grid: v('--plot-grid', '#e6e6ea'), bg: v('--page', '#fff') };
 }
 
-export function PlotView({ region, data, selected, dispatch }: { region: PlotRegion; data?: PlotResult; selected: boolean; dispatch: Dispatch<Action> }) {
+export function PlotView({ region, data, selected, dispatch, zoom = 1 }: { region: PlotRegion; data?: PlotResult; selected: boolean; dispatch: Dispatch<Action>; zoom?: number }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const layout = useRef<Layout | null>(null);
   const [view, setView] = useState<View>({ yaw: -0.6, pitch: 0.9 });
@@ -30,14 +30,15 @@ export function PlotView({ region, data, selected, dispatch }: { region: PlotReg
   useEffect(() => {
     const c = canvas.current;
     if (!c) return;
-    const dpr = window.devicePixelRatio || 1;
+    // render at screen resolution: the page is CSS-scaled by the zoom
+    const dpr = (window.devicePixelRatio || 1) * Math.max(1, zoom);
     c.width = Math.round(region.width * dpr);
     c.height = Math.round(region.height * dpr);
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     layout.current = drawPlot(ctx, region.width, region.height, region, data, readTheme(c), view);
-  }, [region, data, view, themeTick]);
+  }, [region, data, view, themeTick, zoom]);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!is3D || !selected) return;

@@ -1676,3 +1676,7 @@ kbd {
   z-index: 60;
   pointer-events: none;
 }
+
+.sk-resize {
+  z-index: 7;
+}

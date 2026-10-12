@@ -77,7 +77,9 @@ Press **Sketch** (or type `#` at the cursor) for a vector drawing region with li
 polylines, rectangles, circles, arcs, arrows, dimensions, text and freehand. It also has
 kinematic links, supports, joints, sliders, springs, dampers, loads, and parametric
 cross-sections (rectangle, circle, tube, box, I, T, channel, angle). Snapping covers grid
-points and endpoints (hold Alt to turn it off), and Shift constrains angles.
+points and endpoints (hold Alt to turn it off), and Shift constrains angles. A drawing has no
+zoom of its own: drag the sketch's corner handle to resize it, and the drawing scales with it.
+Regions below are pushed down.
 
 - **Section properties:** give the sketch a name such as `sec`, and its closed shapes
   (solids minus holes) define `sec.A`, `sec.xc`, `sec.yc`, `sec.Ix`, `sec.Iy`, `sec.Ixy`,
@@ -134,7 +136,8 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Symbolics (→): simplify, expand, factor, solve, substitute, float, series, partfrac, coeffs, Laplace and inverse Laplace, limits, (in)definite integrals, derivatives | ✅ (via nerdamer-prime) |
 | Plots: X-Y (lines, points, steps, bars, log axes, units), QuickPlot, polar, 3-D surface, contour, trace readout | ✅ |
 | Text with Markdown, TeX and live values, images, data tables | ✅ |
-| Undo/redo, copy/paste regions, disable evaluation, separate regions, zoom, dark mode | ✅ |
+| Undo/redo, copy/paste regions, disable evaluation, separate regions, dark mode | ✅ |
+| Page zoom: Ctrl+wheel / trackpad / pinch around the pointer, browser-style steps, Ctrl+0 | ✅ |
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |

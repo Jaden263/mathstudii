@@ -25,6 +25,8 @@ export interface SketchContextValue {
   getWorksheet: () => Worksheet;
   /** Open the properties panel (e.g. after placing text). */
   showProperties: () => void;
+  /** Push overlapping regions apart (after a sketch grows). */
+  separate: (coalesce?: string) => void;
 }
 
 export const SketchContext = createContext<SketchContextValue>({
@@ -32,6 +34,7 @@ export const SketchContext = createContext<SketchContextValue>({
   setUi: () => {},
   getWorksheet: () => ({ format: 'mathstudii', version: 1, title: '', settings: {} as Worksheet['settings'], regions: [] }),
   showProperties: () => {},
+  separate: () => {},
 });
 
 export const useSketchUI = () => useContext(SketchContext);

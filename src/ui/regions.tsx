@@ -19,6 +19,8 @@ export interface RegionViewProps<R> {
   /** Leave edit mode; moveBelow places the insertion cursor under the region (Enter). */
   onDone: (moveBelow?: boolean) => void;
   registerEditor: (h: EditorHandle | null) => void;
+  /** Page zoom, so canvases can render at screen resolution. */
+  zoom: number;
 }
 
 function useEditorRegistration(editing: boolean, ref: React.RefObject<HTMLTextAreaElement | null>, register: (h: EditorHandle | null) => void) {
@@ -278,12 +280,12 @@ export function ImageView({ region }: RegionViewProps<ImageRegion>) {
 
 // ---------------------------------------------------------------- plot
 
-export function PlotRegionView({ region, result, selected, dispatch }: RegionViewProps<PlotRegion>) {
-  return <PlotView region={region} data={result as PlotResult | undefined} selected={selected} dispatch={dispatch} />;
+export function PlotRegionView({ region, result, selected, dispatch, zoom }: RegionViewProps<PlotRegion>) {
+  return <PlotView region={region} data={result as PlotResult | undefined} selected={selected} dispatch={dispatch} zoom={zoom} />;
 }
 
 // ---------------------------------------------------------------- sketch
 
-export function SketchRegionView({ region, result, editing, dispatch, onDone }: RegionViewProps<SketchRegion>) {
-  return <SketchView region={region} result={result} editing={editing} dispatch={dispatch} onDone={onDone} />;
+export function SketchRegionView({ region, result, editing, selected, dispatch, onDone }: RegionViewProps<SketchRegion>) {
+  return <SketchView region={region} result={result} editing={editing} selected={selected} dispatch={dispatch} onDone={onDone} />;
 }
