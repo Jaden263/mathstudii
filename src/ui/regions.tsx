@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch } from 'react';
 import { Plus, Minus, Loader2 } from 'lucide-react';
-import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion } from '../model/types';
+import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion } from '../model/types';
 import type { MathResult, SolveResult, TableResult, TextResult, PlotResult, RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import { Tex } from './Tex';
@@ -8,6 +8,7 @@ import { renderMarkdown } from './markdown';
 import { handleMathKeyDown, autosize, makeEditorHandle, type EditorHandle } from './editing';
 import { PlotView } from './plot/PlotView';
 import { useAutocomplete } from './autocomplete';
+import { SketchView } from './sketch/SketchView';
 
 export interface RegionViewProps<R> {
   region: R;
@@ -40,7 +41,7 @@ export function MathView({ region, result, editing, dispatch, onDone, registerEd
       autosize(ref.current);
     }
   }, [editing, region.source]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (editing && ref.current && document.activeElement !== ref.current) {
       ref.current.focus();
       const n = ref.current.value.length;
@@ -96,7 +97,7 @@ export function TextView({ region, result, editing, dispatch, onDone, registerEd
       ta.style.height = `${ta.scrollHeight}px`;
     }
   }, [editing, region.markdown, region.width]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (editing) ref.current?.focus();
   }, [editing]);
   const html = useMemo(() => renderMarkdown(region.markdown || '', result as TextResult | undefined), [region.markdown, result]);
@@ -279,4 +280,10 @@ export function ImageView({ region }: RegionViewProps<ImageRegion>) {
 
 export function PlotRegionView({ region, result, selected, dispatch }: RegionViewProps<PlotRegion>) {
   return <PlotView region={region} data={result as PlotResult | undefined} selected={selected} dispatch={dispatch} />;
+}
+
+// ---------------------------------------------------------------- sketch
+
+export function SketchRegionView({ region, result, editing, dispatch, onDone }: RegionViewProps<SketchRegion>) {
+  return <SketchView region={region} result={result} editing={editing} dispatch={dispatch} onDone={onDone} />;
 }

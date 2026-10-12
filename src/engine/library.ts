@@ -639,8 +639,19 @@ function callOrMultiply(name: unknown, f: unknown, ...args: unknown[]) {
   throw new Error(`"${String(name)}" is not a function`);
 }
 
+/** Mathcad's |x|: magnitude of a vector, determinant of a square matrix, else absolute value. */
+function magnitude(x: unknown) {
+  if (isMatrix(x) || Array.isArray(x)) {
+    const s = isMatrix(x) ? x.size() : (math.size(x as never) as unknown as number[]);
+    if (s.length === 2 && s[0] === s[1] && s[0] > 1) return math.det(x as never);
+    return math.sqrt(toVector(x).reduce((acc: unknown, v) => math.add(acc as never, math.multiply(v as never, math.conj(v as never)) as never), 0) as never);
+  }
+  return math.abs(x as never);
+}
+
 const LIBRARY: Record<string, unknown> = {
     __I: math.complex(0, 1),
+    mag: magnitude,
     __call: callOrMultiply,
     __idx: indexValue,
     integral,

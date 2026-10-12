@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import katex from 'katex';
-import { evaluateWorksheet, type MathResult, type SolveResult, type PlotResult, type TextResult } from './evaluator';
+import { evaluateWorksheet, type MathResult, type SolveResult, type PlotResult, type TextResult, type SketchResult } from './evaluator';
 import { emptyWorksheet, createRegion, type Region, type Worksheet } from '../model/types';
 import { loadCas } from './symbolic';
 
@@ -347,5 +347,85 @@ describe('plots, tables and text', () => {
     const t = createRegion('text', 40, 0, { markdown: 'Force is {{F | kN}}.' });
     const res = run(['F := 2500 N', t]);
     expect((res[1] as TextResult).values['F | kN'].tex).toBe('2.5\\ \\mathrm{kN}');
+  });
+});
+
+describe('sketches', () => {
+  const ibeam = () =>
+    createRegion('sketch', 40, 0, {
+      name: 'sec',
+      shapes: [{ id: 'i1', type: 'section', template: 'I', p: { x: 0, y: 0 }, rot: 0, params: { h: 'h_b', b: '150 mm', tw: '7.1', tf: 'tf' } }],
+    });
+
+  it('computes section properties from a parametric template', () => {
+    const res = run(['h_b := 30 cm', 'tf := 10.7 mm', ibeam(), 'sec.A = cm^2', 'sec.Ix = cm^4', 'sec.Wx = cm^3']);
+    const A = 2 * 150 * 10.7 + (300 - 21.4) * 7.1;
+    const Ix = (150 * 300 ** 3 - (150 - 7.1) * (300 - 21.4) ** 3) / 12;
+    expect((res[3] as MathResult).tex).toContain(`${(A / 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}\\ \\mathrm{cm}^{2}`);
+    expect((res[4] as MathResult).tex).toContain(`${(Ix / 1e4).toFixed(4).replace(/0+$/, '')}\\ \\mathrm{cm}^{4}`);
+    expect((res[5] as MathResult).error).toBeUndefined();
+    expect((res[3] as MathResult).tex).toMatch(/^\{\\mathit\{sec\}\}\.\{A\}/);
+  });
+
+  it('shows the whole property record', () => {
+    const res = run(['h_b := 300 mm', 'tf := 10.7 mm', ibeam(), 'sec =']);
+    expect((res[3] as MathResult).tex).toContain('\\mathrm{Ix}');
+  });
+
+  it('resolves bound points (kinematic sketch)', () => {
+    const sk = createRegion('sketch', 40, 0, {
+      shapes: [{ id: 'l1', type: 'link', a: { x: 0, y: 0 }, b: { x: 0, y: 0 }, bind: { 'b.x': 'r * cos(θ)', 'b.y': 'r * sin(θ)' } }],
+    });
+    const res = run(['r := 0.1 m', 'θ := 30 deg', sk]);
+    const sr = res[2] as SketchResult;
+    expect(sr.errors).toEqual({});
+    expect(sr.resolved.l1['b.x']).toBeCloseTo(100 * Math.cos(Math.PI / 6), 9);
+    expect(sr.resolved.l1['b.y']).toBeCloseTo(50, 9);
+  });
+
+  it('reports unit errors on bound fields and bad templates', () => {
+    const sk = createRegion('sketch', 40, 0, {
+      shapes: [
+        { id: 'l1', type: 'line', a: { x: 0, y: 0 }, b: { x: 1, y: 1 }, bind: { 'b.x': '5 kg' } },
+        { id: 's1', type: 'section', template: 'tube', p: { x: 0, y: 0 }, rot: 0, params: { d: '10', t: '6' } },
+      ],
+    });
+    const sr = run([sk])[0] as SketchResult;
+    expect(sr.errors.l1).toMatch(/length/);
+    expect(sr.errors.s1).toMatch(/wall/);
+  });
+
+  it('subtracts holes drawn with ordinary shapes', () => {
+    const sk = createRegion('sketch', 40, 0, {
+      name: 'P',
+      shapes: [
+        { id: 'r', type: 'rect', role: 'solid', a: { x: 0, y: 0 }, b: { x: 100, y: 50 } },
+        { id: 'c', type: 'circle', role: 'hole', c: { x: 50, y: 25 }, r: 10 },
+      ],
+    });
+    const res = run([sk, 'P.A = mm^2']);
+    expect((res[1] as MathResult).tex).toContain(`${(5000 - Math.PI * 100).toFixed(4)}`.slice(0, 7));
+  });
+});
+
+describe('bundled examples', () => {
+  beforeAll(async () => {
+    await loadCas();
+  });
+  it('evaluate without errors', async () => {
+    const { EXAMPLES } = await import('../model/examples');
+    for (const ex of EXAMPLES) {
+      const ws = ex.make();
+      const out = evaluateWorksheet(ws);
+      const errors = [...out.results.entries()].flatMap(([id, r]) => {
+        const msgs: string[] = [];
+        if ('error' in r && r.error) msgs.push(r.error);
+        if (r.kind === 'solve') [r.solver, ...r.guesses, ...r.constraints].forEach((x) => x.error && msgs.push(x.error));
+        if (r.kind === 'sketch') msgs.push(...Object.values(r.errors));
+        const reg = ws.regions.find((q) => q.id === id)!;
+        return msgs.map((m) => `${ex.name} / ${reg.kind === 'math' ? reg.source : reg.kind}: ${m}`);
+      });
+      expect(errors).toEqual([]);
+    }
   });
 });

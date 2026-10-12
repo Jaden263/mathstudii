@@ -12,13 +12,13 @@ const extraUnits: Record<string, string> = {
   kmh: '1 km/hour',
   knot: '1852 m/hour',
   kn: '1852 m/hour',
-  rpm: '1 rev/minute',
+  rev: '1 cycle',
+  rpm: '1 cycle/minute',
   ksi: '1000 psi',
   kipf: '1 kip',
   tonf: '2000 lbf',
   cal: '4.184 J',
   kcal: '4184 J',
-  Pa_g: '1 Pa',
   mmHg: '133.322387415 Pa',
   inHg: '3386.389 Pa',
   mbar: '100 Pa',
@@ -33,13 +33,14 @@ const extraUnits: Record<string, string> = {
   Mach: '340.29 m/s',
   pcf: '1 lb/ft^3',
   slug: '14.59390294 kg',
-  gal_UK: '4.54609 L',
+  galUK: '4.54609 L',
 };
 for (const [name, def] of Object.entries(extraUnits)) {
   try {
     if (!math.Unit.isValuelessUnit(name)) math.createUnit(name, def);
-  } catch {
-    /* unit already exists in this mathjs version */
+  } catch (e) {
+    // a definition mathjs cannot parse is a bug in this table, not something to hide
+    if (!math.Unit.isValuelessUnit(name)) console.warn(`Could not define unit ${name}: ${(e as Error).message}`);
   }
 }
 

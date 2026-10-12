@@ -119,10 +119,75 @@ export function plottingExample(): Worksheet {
   ]);
 }
 
+export function sectionExample(): Worksheet {
+  return build('Cross-sections', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Cross-sections\nA **Sketch** named `sec` turns its closed shapes into section properties. Dimensions are worksheet variables, so change `t_p` and everything updates.' }],
+    ['math', L, mm(38), { source: 'h_I := 300 mm' }],
+    ['math', mm(65), mm(38), { source: 'b_p := 200 mm' }],
+    ['math', mm(110), mm(38), { source: 't_p := 15 mm' }],
+    ['sketch', L, mm(52), {
+      name: 'sec', width: mm(82), height: mm(82), view: { cx: 0, cy: 7.5, zoom: 0.85 }, grid: 10,
+      shapes: [
+        { id: 'beam', type: 'section', template: 'I', p: { x: 0, y: 0 }, rot: 0, params: { h: 'h_I', b: '150', tw: '7.1', tf: '10.7' }, role: 'solid' },
+        { id: 'plate', type: 'section', template: 'rect', p: { x: 0, y: 157.5 }, rot: 0, params: { b: 'b_p', h: 't_p' }, role: 'solid', bind: { 'p.y': 'h_I/2 + t_p/2' } },
+        { id: 'dim1', type: 'dim', a: { x: -100, y: -150 }, b: { x: -100, y: 165 }, offset: 10, text: 'h', bind: { 'b.y': 'h_I/2 + t_p' } },
+      ],
+    }],
+    ['math', mm(110), mm(56), { source: 'sec.A = cm^2' }],
+    ['math', mm(110), mm(68), { source: 'sec.yc = mm' }],
+    ['math', mm(110), mm(80), { source: 'sec.Ix = cm^4' }],
+    ['math', mm(110), mm(92), { source: 'sec.Wx = cm^3' }],
+    ['math', mm(110), mm(108), { source: 'M_Ed := 140 kN m' }],
+    ['math', mm(110), mm(120), { source: 'σ := M_Ed / sec.Wx = MPa' }],
+    ['math', mm(110), mm(132), { source: 'σ ≤ 235 MPa =' }],
+    ['text', L, mm(150), { width: mm(170), markdown: '## Beam diagram\nSketches also draw supports, loads and dimensions.' }],
+    ['sketch', L, mm(166), {
+      width: mm(170), height: mm(45), view: { cx: 3000, cy: 300, zoom: 0.075 }, grid: 250, showProps: false,
+      shapes: [
+        { id: 'bm', type: 'line', a: { x: 0, y: 0 }, b: { x: 6000, y: 0 }, style: { width: 3 } },
+        { id: 'pin', type: 'symbol', symbol: 'pin', p: { x: 0, y: 0 }, rot: 0, size: 200 },
+        { id: 'roll', type: 'symbol', symbol: 'roller', p: { x: 6000, y: 0 }, rot: 0, size: 200 },
+        { id: 'q', type: 'symbol', symbol: 'load', p: { x: 0, y: 60 }, rot: 0, size: 1500 },
+        { id: 'qt', type: 'text', p: { x: 2550, y: 820 }, text: 'q = 25 kN/m', size: 190 },
+        { id: 'dl', type: 'dim', a: { x: 0, y: 0 }, b: { x: 6000, y: 0 }, offset: -380, text: 'L = 6 m' },
+      ],
+    }],
+  ]);
+}
+
+export function mechanismExample(): Worksheet {
+  return build('Mechanism', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Crank-slider mechanism\nThe sketch points are bound to the expressions below. Press ▶ on the sketch to sweep θ, or change θ by hand.' }],
+    ['math', L, mm(36), { source: 'r := 50 mm' }],
+    ['math', mm(60), mm(36), { source: 'l := 150 mm' }],
+    ['math', mm(110), mm(36), { source: 'θ := 40 deg' }],
+    ['math', L, mm(48), { source: 'x_C(φ) := r cos(φ) + sqrt(l^2 - (r sin(φ))^2)' }],
+    ['sketch', L, mm(62), {
+      width: mm(140), height: mm(60), view: { cx: 85, cy: 5, zoom: 1.65 }, grid: 10, showProps: false,
+      animation: { variable: 'θ', from: '0 deg', to: '360 deg', seconds: 3 },
+      shapes: [
+        { id: 'rail', type: 'line', a: { x: 60, y: -14 }, b: { x: 230, y: -14 }, style: { dash: 'center', width: 1 } },
+        { id: 'crank', type: 'link', a: { x: 0, y: 0 }, b: { x: 38, y: 32 }, bind: { 'b.x': 'r cos(θ)', 'b.y': 'r sin(θ)' }, style: { stroke: '#2f6fdf' } },
+        { id: 'rod', type: 'link', a: { x: 38, y: 32 }, b: { x: 180, y: 0 }, bind: { 'a.x': 'r cos(θ)', 'a.y': 'r sin(θ)', 'b.x': 'x_C(θ)' }, style: { stroke: '#e8590c' } },
+        { id: 'O', type: 'symbol', symbol: 'pin', p: { x: 0, y: 0 }, rot: 0, size: 14 },
+        { id: 'C', type: 'symbol', symbol: 'slider', p: { x: 180, y: 0 }, rot: 0, size: 14, bind: { 'p.x': 'x_C(θ)' } },
+        { id: 'tO', type: 'text', p: { x: -12, y: -32 }, text: 'O', size: 9 },
+        { id: 'tC', type: 'text', p: { x: 175, y: 14 }, text: 'C', size: 9, bind: { 'p.x': 'x_C(θ) - 4 mm' } },
+      ],
+    }],
+    ['math', L, mm(128), { source: 'x_C(θ) = mm' }],
+    ['math', mm(70), mm(128), { source: 'v_C := diff(x_C(θ), θ) · 120 rpm = m/s' }],
+    ['text', L, mm(142), { width: mm(170), markdown: 'Slider position over one revolution (QuickPlot of the same function the sketch uses):' }],
+    ['plot', L, mm(152), { xExpr: 'φ', traces: [{ y: 'x_C(φ)', style: 'line' }], xmin: '0', xmax: '2 π', yUnit: 'mm', width: mm(110), height: mm(60), title: 'x_C(φ)' }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
   { name: 'Programming & ranges', make: programmingExample },
   { name: 'Symbolic math', make: symbolicExample },
   { name: 'Plots', make: plottingExample },
+  { name: 'Cross-sections (sketch)', make: sectionExample },
+  { name: 'Mechanism animation (sketch)', make: mechanismExample },
 ];

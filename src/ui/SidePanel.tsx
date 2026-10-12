@@ -6,6 +6,8 @@ import type { Action } from './store';
 import { Tex } from './Tex';
 import { OPERATORS, CALCULUS, MATRIX, PROGRAMMING, SYMBOLIC, GREEK, UNIT_GROUPS, FUNCTIONS, CONSTANTS, type PaletteItem } from './catalog';
 import { SERIES_COLORS } from './plot/draw';
+import { SketchProps } from './sketch/SketchProps';
+import type { RegionResult, SketchResult } from '../engine/evaluator';
 
 type Tab = 'math' | 'units' | 'functions' | 'properties';
 
@@ -14,6 +16,7 @@ interface Props {
   setTab: (t: Tab) => void;
   insert: (text: string) => void;
   selection: Region[];
+  results: Map<string, RegionResult>;
   dispatch: Dispatch<Action>;
   onClose: () => void;
 }
@@ -36,7 +39,7 @@ function Group({ title, items, insert }: { title: string; items: PaletteItem[]; 
   );
 }
 
-export function SidePanel({ tab, setTab, insert, selection, dispatch, onClose }: Props) {
+export function SidePanel({ tab, setTab, insert, selection, results, dispatch, onClose }: Props) {
   return (
     <aside className="side-panel" aria-label="Tools">
       <div className="side-tabs" role="tablist">
@@ -61,7 +64,7 @@ export function SidePanel({ tab, setTab, insert, selection, dispatch, onClose }:
         )}
         {tab === 'units' && <UnitsTab insert={insert} />}
         {tab === 'functions' && <FunctionsTab insert={insert} />}
-        {tab === 'properties' && <Properties selection={selection} dispatch={dispatch} />}
+        {tab === 'properties' && <Properties selection={selection} results={results} dispatch={dispatch} />}
       </div>
     </aside>
   );
@@ -127,7 +130,7 @@ function Field({ label, value, onChange, placeholder, mono }: { label: string; v
   );
 }
 
-function Properties({ selection, dispatch }: { selection: Region[]; dispatch: Dispatch<Action> }) {
+function Properties({ selection, results, dispatch }: { selection: Region[]; results: Map<string, RegionResult>; dispatch: Dispatch<Action> }) {
   if (selection.length === 0) return <p className="hint">Select a region to see its properties. Click a plot to edit its traces and axes.</p>;
   if (selection.length > 1) {
     return (
@@ -149,6 +152,7 @@ function Properties({ selection, dispatch }: { selection: Region[]; dispatch: Di
         <input type="checkbox" checked={!!r.disabled} onChange={(e) => upd({ disabled: e.target.checked })} /> Disable evaluation
       </label>
       {r.kind === 'plot' && <PlotProps r={r} upd={upd} />}
+      {r.kind === 'sketch' && <SketchProps region={r} result={results.get(r.id) as SketchResult | undefined} dispatch={dispatch} />}
       {(r.kind === 'text' || r.kind === 'image') && (
         <label className="field">
           <span>Width (mm)</span>

@@ -1,7 +1,8 @@
 // Worksheet document model. Everything here is plain JSON so it can be saved,
 // undone, copied and pasted without custom serialisation.
+import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch';
 
 interface RegionBase {
   id: string;
@@ -77,7 +78,25 @@ export interface ImageRegion extends RegionBase {
   width: number;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion;
+export interface SketchRegion extends RegionBase {
+  kind: 'sketch';
+  /** Region size on the page, px. */
+  width: number;
+  height: number;
+  /** Variable that receives the section properties of the closed shapes (optional). */
+  name: string;
+  unit: SketchUnit;
+  view: SketchView;
+  /** Grid spacing in sketch units (0 = no grid). */
+  grid: number;
+  snap: boolean;
+  /** Show centroid and principal axes when the sketch has area. */
+  showProps: boolean;
+  shapes: Shape[];
+  animation?: SketchAnimation;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion;
 
 export interface WorksheetSettings {
   /** Displayed decimal places. */
@@ -145,6 +164,11 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       return { ...base, kind, name: 'T', units: ['', ''], cells: [['0', '0'], ['1', '1'], ['2', '4']], ...(init as Partial<TableRegion>) };
     case 'image':
       return { ...base, kind, src: '', width: 240, ...(init as Partial<ImageRegion>) };
+    case 'sketch':
+      return {
+        ...base, kind, width: 420, height: 300, name: '', unit: 'mm', view: { cx: 0, cy: 0, zoom: 1 },
+        grid: 10, snap: true, showProps: true, shapes: [], ...(init as Partial<SketchRegion>),
+      };
   }
 }
 

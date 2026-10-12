@@ -7,12 +7,17 @@ export type FileHandle = string | FileSystemFileHandle | null;
 
 export interface OpenedFile {
   name: string;
-  text: string;
+  bytes: Uint8Array;
   handle: FileHandle;
 }
 
 export const FILE_EXT = 'mstd';
 const FILTERS = [{ name: 'mathstudii worksheet', extensions: [FILE_EXT, 'json'] }];
+const OPEN_FILTERS = [
+  { name: 'Worksheets (mathstudii, Mathcad)', extensions: [FILE_EXT, 'json', 'mcdx', 'xmcd'] },
+  { name: 'Mathcad Prime', extensions: ['mcdx'] },
+  { name: 'Mathcad 11–15', extensions: ['xmcd'] },
+];
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -22,31 +27,40 @@ interface FsWindow {
 }
 const fsw = (typeof window !== 'undefined' ? window : {}) as unknown as FsWindow;
 const pickerTypes = [{ description: 'mathstudii worksheet', accept: { 'application/json': [`.${FILE_EXT}`, '.json'] } }];
+const openPickerTypes = [{
+  description: 'Worksheets (mathstudii, Mathcad Prime, Mathcad 15)',
+  accept: { 'application/octet-stream': [`.${FILE_EXT}`, '.json', '.mcdx', '.xmcd'] },
+}];
 
 export function baseName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
+/** Pick a worksheet (or Mathcad file) and read its bytes. */
 export async function openWorksheetFile(): Promise<OpenedFile | null> {
   if (isTauri) {
     const { open } = await import('@tauri-apps/plugin-dialog');
-    const { readTextFile } = await import('@tauri-apps/plugin-fs');
-    const path = await open({ multiple: false, filters: FILTERS });
+    const { readFile } = await import('@tauri-apps/plugin-fs');
+    const path = await open({ multiple: false, filters: OPEN_FILTERS });
     if (!path || Array.isArray(path)) return null;
-    return { name: baseName(path), text: await readTextFile(path), handle: path };
+    return { name: baseName(path), bytes: await readFile(path), handle: path };
   }
   if (fsw.showOpenFilePicker) {
     try {
-      const [h] = await fsw.showOpenFilePicker({ types: pickerTypes, multiple: false });
+      const [h] = await fsw.showOpenFilePicker({ types: openPickerTypes, multiple: false });
       const f = await h.getFile();
-      return { name: f.name, text: await f.text(), handle: h };
+      return { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()), handle: h };
     } catch (e) {
       if ((e as Error).name === 'AbortError') return null;
       throw e;
     }
   }
-  const file = await pickFile(`.${FILE_EXT},.json,application/json`);
-  return file ? { name: file.name, text: await file.text(), handle: null } : null;
+  const file = await pickFile(`.${FILE_EXT},.json,.mcdx,.xmcd`);
+  return file ? { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), handle: null } : null;
+}
+
+export function isMathcadFile(name: string): boolean {
+  return /\.(mcdx|xmcd)$/i.test(name);
 }
 
 /** Save to an existing handle, or ask for a location. Returns the handle used, or null if cancelled. */

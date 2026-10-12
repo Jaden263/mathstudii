@@ -4,7 +4,7 @@ import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import type { EditorHandle } from './editing';
-import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, type RegionViewProps } from './regions';
+import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, SketchRegionView, type RegionViewProps } from './regions';
 
 export interface Cursor {
   x: number;
@@ -30,7 +30,7 @@ interface Props {
 
 export const snap = (v: number) => Math.round(v / GRID) * GRID;
 
-const EDITABLE = new Set(['math', 'text', 'solve', 'table']);
+const EDITABLE = new Set(['math', 'text', 'solve', 'table', 'sketch']);
 
 function hasError(res: RegionResult | undefined): boolean {
   if (!res) return false;
@@ -168,6 +168,7 @@ export function Worksheet(p: Props) {
       case 'table': return <TableView {...(props as RegionViewProps<typeof r>)} />;
       case 'image': return <ImageView {...(props as RegionViewProps<typeof r>)} />;
       case 'plot': return <PlotRegionView {...(props as RegionViewProps<typeof r>)} />;
+      case 'sketch': return <SketchRegionView {...(props as RegionViewProps<typeof r>)} />;
     }
   };
 

@@ -71,6 +71,40 @@ fact(n) :=
 Supported: `if` / `else if` / `else`, `for … ∈ range|vector`, `while`, `break`,
 `continue`, `return`, `try` / `on error`, and local `←` (or `<-`) including `v[k] ← …`.
 
+### Sketches (drawing)
+
+Press **Sketch** (or type `#` at the cursor) for a vector drawing region with lines,
+polylines, rectangles, circles, arcs, arrows, dimensions, text and freehand. It also has
+kinematic links, supports, joints, sliders, springs, dampers, loads, and parametric
+cross-sections (rectangle, circle, tube, box, I, T, channel, angle). Snapping covers grid
+points and endpoints (hold Alt to turn it off), and Shift constrains angles.
+
+- **Section properties:** give the sketch a name such as `sec`, and its closed shapes
+  (solids minus holes) define `sec.A`, `sec.xc`, `sec.yc`, `sec.Ix`, `sec.Iy`, `sec.Ixy`,
+  `sec.I1`, `sec.I2`, `sec.θ`, `sec.J`, `sec.Wx`, `sec.Wy`, `sec.rx`, `sec.ry` with units.
+- **Parametric drawings:** any number in the Properties panel also accepts a worksheet
+  expression (`h_I/2 + t_p/2`, `r cos(θ)`), so the drawing follows the math.
+![Cross-section sketch](docs/sections.png)
+
+- **Animation:** set a variable and a from/to range in the sketch's Properties, then
+  press ▶ to sweep it. This is how the crank-slider example moves.
+
+### Importing Mathcad files
+
+**Open** (or drag onto the window) a Mathcad Prime `.mcdx` or Mathcad 11–15 `.xmcd` file.
+The importer converts:
+- definitions, functions, ranges, element definitions, units and matrices
+- programs (`if`/`for`/`while`/`return`/`try`)
+- solve blocks (including Mathcad 15 *Given … Find*), symbolic `→` with keywords
+- integrals, sums, derivatives
+- text, images, collapsible areas and X-Y plots
+
+It shows a report of anything it could not convert. Results are recalculated rather than
+copied, so compare them with the original. The format knowledge comes from
+[mcad2py](https://github.com/ChristianCruger/mcad2py) (MIT), which documents real Prime files.
+The tests use hand-built files in that structure. **It has not been run on files saved by
+Mathcad itself yet**, so real-world files may hit gaps.
+
 Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values:
 `{{expr | unit}}`.
 
@@ -104,7 +138,8 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
-| Opening Mathcad `.mcdx`/`.xmcd` files | ❌ (no import yet) |
+| Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
+| Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ❌ |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas, headers/footers, protected regions, track changes | ❌ |
@@ -134,6 +169,8 @@ Tag a commit `v0.1.0` and push the tag to build all installers in GitHub Actions
 src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS bridge, worker
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
+src/importers/ Mathcad .mcdx / .xmcd import
+src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system
 ```
@@ -142,6 +179,7 @@ The engine builds on [mathjs](https://mathjs.org) for expressions, units and
 linear algebra, [nerdamer-prime](https://github.com/together-science/nerdamer-prime)
 for symbolics and [KaTeX](https://katex.org) for typesetting. The integrator,
 solvers, ODE methods, FFT, distributions and special functions are implemented
-in `src/engine/numeric.ts`.
+in `src/engine/numeric.ts`. Section properties (Green's theorem for polygons, closed
+forms for circles) are in `src/engine/geometry.ts`.
 
 mathstudii is an independent project and is not affiliated with PTC or Mathcad.

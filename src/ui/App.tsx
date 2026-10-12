@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   FilePlus2, FolderOpen, Save, Printer, Undo2, Redo2, Sigma, Type, LineChart, Table2, Image as ImageIcon,
-  ListChecks, Play, Square, ZoomIn, ZoomOut, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
+  ListChecks, PencilRuler, Play, Square, ZoomIn, ZoomOut, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
@@ -11,9 +12,11 @@ import { useEvaluation } from './useEvaluation';
 import { Worksheet, snap, type Cursor } from './Worksheet';
 import { SidePanel, type SideTab } from './SidePanel';
 import type { EditorHandle } from './editing';
-import { openWorksheetFile, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri, type FileHandle } from '../platform/files';
+import { openWorksheetFile, isMathcadFile, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri, type FileHandle } from '../platform/files';
 import { ShortcutsDialog } from './ShortcutsDialog';
+import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
+import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
 
 type ThemePref = 'system' | 'light' | 'dark';
 const CLIP_MARKER = 'mathstudii/regions';
@@ -52,6 +55,10 @@ export function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
+  const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const separateRef = useRef<() => void>(() => {});
+  const [dropping, setDropping] = useState(false);
   const editorRef = useRef<EditorHandle | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const clipboard = useRef<Region[]>([]);
@@ -116,11 +123,15 @@ export function App() {
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
       setPanelOpen(true);
+    }
+    if (kind === 'sketch') {
+      setTab('properties');
+      setSketchUI({ ...INITIAL_SKETCH_UI, regionId: r.id, tool: 'line' });
     }
     setCursor(null);
     return r;
@@ -160,12 +171,49 @@ export function App() {
     try {
       const f = await openWorksheetFile();
       if (!f) return;
-      const doc = parseWorksheet(f.text);
+      if (isMathcadFile(f.name)) {
+        await importMathcadFile(f.bytes, f.name);
+        return;
+      }
+      const doc = parseWorksheet(new TextDecoder().decode(f.bytes));
       if (doc.title === 'Untitled') doc.title = f.name.replace(/\.(mstd|json)$/i, '');
       loadDoc(doc, f.handle);
     } catch (e) {
       window.alert(`Could not open the file: ${(e as Error).message}`);
     }
+  };
+
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDropping(false);
+    const f = e.dataTransfer.files[0];
+    if (!f) return;
+    try {
+      if (f.type.startsWith('image/')) {
+        addRegion('image', { src: await readAsDataURL(f) });
+        return;
+      }
+      if (!confirmDiscard()) return;
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      if (isMathcadFile(f.name)) await importMathcadFile(bytes, f.name);
+      else {
+        const doc = parseWorksheet(new TextDecoder().decode(bytes));
+        if (doc.title === 'Untitled') doc.title = f.name.replace(/\.(mstd|json)$/i, '');
+        loadDoc(doc, null);
+      }
+    } catch (err) {
+      window.alert(`Could not open ${f.name}: ${(err as Error).message}`);
+    }
+  };
+
+  /** Convert a Mathcad file; it opens as a new, unsaved mathstudii worksheet. */
+  const importMathcadFile = async (bytes: Uint8Array, name: string) => {
+    const { importMathcad } = await import('../importers/mathcad');
+    const res = importMathcad(bytes, name);
+    loadDoc(res.ws, null);
+    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
+    // Mathcad and mathstudii lay out math at different sizes: push overlaps apart once rendered
+    window.setTimeout(() => separateRef.current(), 400);
   };
 
   const saveDoc = async (saveAs = false) => {
@@ -217,6 +265,8 @@ export function App() {
     }
     setToast(moved ? `Moved ${moved} region${moved > 1 ? 's' : ''}` : 'No overlapping regions');
   };
+
+  separateRef.current = separateRegions;
 
   const fitWidth = () => {
     const w = scrollerRef.current?.clientWidth ?? PAGE_WIDTH;
@@ -327,9 +377,19 @@ export function App() {
       }
       if (!mod && !e.altKey && e.key.length === 1 && cursor) {
         e.preventDefault();
-        if (e.key === '"') addRegion('text', {}, cursor);
-        else if (e.key === '@') addRegion('plot', {}, cursor);
-        else addRegion('math', { source: e.key }, cursor);
+        // render synchronously and focus now, so fast typing never loses the next keys
+        let r: Region | undefined;
+        flushSync(() => {
+          if (e.key === '"') r = addRegion('text', {}, cursor);
+          else if (e.key === '@') r = addRegion('plot', {}, cursor);
+          else if (e.key === '#') r = addRegion('sketch', {}, cursor);
+          else r = addRegion('math', { source: e.key }, cursor);
+        });
+        const ta = r && document.querySelector<HTMLTextAreaElement>(`[data-region-id="${r.id}"] textarea`);
+        if (ta) {
+          ta.focus({ preventScroll: true });
+          ta.setSelectionRange(ta.value.length, ta.value.length);
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -374,11 +434,20 @@ export function App() {
 
   const selection = useMemo(() => ws.regions.filter((r) => selected.has(r.id)), [ws.regions, selected]);
   const completions = useMemo(() => worksheetCompletions(ws.regions), [ws.regions]);
+  const wsRef = useRef(ws);
+  wsRef.current = ws;
+  const sketchCtx = useMemo(() => ({
+    ui: sketchUI,
+    setUi: (patch: Partial<SketchUI>) => setSketchUI((u) => ({ ...u, ...patch })),
+    getWorksheet: () => wsRef.current,
+    showProperties: () => { setTab('properties'); setPanelOpen(true); },
+  }), [sketchUI]);
   const s = ws.settings;
   const cursorMm = cursor ? `${(cursor.x / PX_PER_MM).toFixed(0)}, ${(cursor.y / PX_PER_MM).toFixed(0)} mm` : '';
 
   return (
     <CompletionContext.Provider value={completions}>
+    <SketchContext.Provider value={sketchCtx}>
     <div className={`app${panelOpen ? ' panel-open' : ''}`}>
       <header className="topbar">
         <div className="brand" aria-label="mathstudii">
@@ -428,6 +497,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('math')} title="Math region (or just start typing)"><Sigma size={16} /> Math</button>
           <button className="text-btn" onClick={() => addRegion('text')} title='Text region (type " at the cursor)'><Type size={16} /> Text</button>
           <button className="text-btn" onClick={() => addRegion('plot')} title="Plot (type @ at the cursor)"><LineChart size={16} /> Plot</button>
+          <button className="text-btn" onClick={() => addRegion('sketch')} title="Drawing: sketches, cross-sections, mechanisms (type # at the cursor)"><PencilRuler size={16} /> Sketch</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
           <button className="text-btn" onClick={insertImage} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
@@ -480,7 +550,13 @@ export function App() {
         </div>
       </nav>
 
-      <main className="workspace">
+      <main
+        className="workspace"
+        onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDropping(true); } }}
+        onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false); }}
+        onDrop={onDrop}
+      >
+        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd) or an image</div>}
         <div className="sheet-scroller" ref={scrollerRef}>
           <Worksheet
             ws={ws}
@@ -488,7 +564,7 @@ export function App() {
             dispatch={dispatch}
             zoom={zoom}
             selected={selected}
-            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image')) setTab('properties'); } }}
+            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch')) setTab('properties'); } }}
             editingId={editingId}
             setEditingId={setEditingId}
             cursor={cursor}
@@ -499,7 +575,7 @@ export function App() {
           />
         </div>
         {panelOpen && (
-          <SidePanel tab={tab} setTab={setTab} insert={insertText} selection={selection} dispatch={dispatch} onClose={() => setPanelOpen(false)} />
+          <SidePanel tab={tab} setTab={setTab} insert={insertText} selection={selection} results={evaluation.results} dispatch={dispatch} onClose={() => setPanelOpen(false)} />
         )}
       </main>
 
@@ -521,8 +597,10 @@ export function App() {
       </footer>
 
       {showHelp && <ShortcutsDialog onClose={() => setShowHelp(false)} />}
+      {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
+    </SketchContext.Provider>
     </CompletionContext.Provider>
   );
 }

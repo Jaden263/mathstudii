@@ -147,7 +147,26 @@ export function valueTex(v: unknown, o: FormatOptions, target?: string): string 
     if (typeof v === 'number') return `${numberTex(v / factor, o)}\\ ${unitStringTex(u.formatUnits())}`;
   }
   if (isMatrix(v) || Array.isArray(v)) return matrixTex(v, o, target);
+  if (isPlainObject(v)) return objectTex(v, o);
   return scalarTex(v, o);
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype;
+}
+
+/** Records (e.g. section properties) as a two-column table. */
+function objectTex(v: Record<string, unknown>, o: FormatOptions): string {
+  const seen = new Set<unknown>();
+  const rows = Object.entries(v)
+    .filter(([, x]) => {
+      // skip ASCII aliases of the same value (θ / theta)
+      if (seen.has(x)) return false;
+      seen.add(x);
+      return true;
+    })
+    .map(([k, x]) => `\\mathrm{${escapeText(k)}} & ${valueTex(x, o)}`);
+  return `\\left\\{\\begin{array}{ll} ${rows.join(' \\\\ ')} \\end{array}\\right.`;
 }
 
 function matrixTex(v: unknown, o: FormatOptions, target?: string): string {

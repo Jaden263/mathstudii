@@ -107,6 +107,11 @@ export function handleMathKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>, o
     ta.setSelectionRange(s + 1, s + 1);
     return;
   }
+  // typing ":=" in full: the ":" already became ":= ", so swallow the "="
+  if (e.key === '=' && s === en && /:= $/.test(value.slice(0, s))) {
+    e.preventDefault();
+    return;
+  }
   if (e.key === ':' && s === en && value[s] !== '=') {
     const lineStart = value.lastIndexOf('\n', s - 1) + 1;
     const before = value.slice(lineStart, s);

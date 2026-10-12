@@ -117,7 +117,10 @@ function innerHandler(node: MathNode): string | undefined {
     }
     case 'AccessorNode': {
       const idx = n.index as AnyNode;
-      if (idx.dotNotation) return undefined;
+      if (idx.dotNotation) {
+        const prop = ((idx.dimensions as AnyNode[])[0]?.value as string) ?? '';
+        return `{${t(n.object as MathNode)}}.{${nameTex(prop)}}`;
+      }
       const dims = (idx.dimensions as MathNode[]).map((d) => ((d as AnyNode).type === 'RangeNode' && !(d as AnyNode).start ? ':' : t(d)));
       const obj = t(n.object as MathNode);
       return `{${obj}}_{${dims.join(',')}}`;
@@ -179,7 +182,7 @@ function functionTex(n: AnyNode): string | undefined {
     case 'cbrt': return `\\sqrt[3]{${a(0)}}`;
     case 'nthRoot': return `\\sqrt[${a(1)}]{${a(0)}}`;
     case 'abs': return `\\left|${a(0)}\\right|`;
-    case 'det': return `\\left|${a(0)}\\right|`;
+    case 'det': case 'mag': return `\\left|${a(0)}\\right|`;
     case 'norm': return `\\left\\|${a(0)}\\right\\|`;
     case 'floor': return `\\left\\lfloor ${a(0)}\\right\\rfloor`;
     case 'ceil': return `\\left\\lceil ${a(0)}\\right\\rceil`;
