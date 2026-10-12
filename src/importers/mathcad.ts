@@ -8,18 +8,13 @@ import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
   createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH,
-  type Region, type Worksheet, type PlotTrace,
+  type Region, type PlotTrace,
 } from '../model/types';
+import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult } from './common';
 
-export interface ImportResult {
-  ws: Worksheet;
-  warnings: string[];
-  format: 'Mathcad Prime (.mcdx)' | 'Mathcad 11–15 (.xmcd)';
-}
+export type { ImportResult } from './common';
 
 type El = XElement;
-
-class Unsupported extends Error {}
 
 const local = (el: XNode): string => (el as El).localName || el.nodeName.replace(/^.*:/, '');
 const kids = (el: XNode): El[] => {
@@ -31,14 +26,6 @@ const child = (el: XNode, name: string): El | undefined => kids(el).find((c) => 
 const isPlaceholder = (el: El | undefined) => !el || local(el) === 'placeholder';
 
 // ------------------------------------------------------------ names, units, constants
-
-const RESERVED = new Set(['in', 'to', 'and', 'or', 'not', 'xor', 'mod', 'end', 'if', 'for', 'while', 'return', 'else', 'break', 'continue']);
-
-const UNIT_MAP: Record<string, string> = {
-  '°': 'deg', '°C': 'degC', '°F': 'degF', 'Δ°C': 'K', 'Δ°F': '(5/9 K)', Ω: 'ohm', kΩ: 'kohm', MΩ: 'Mohm',
-  yr: 'year', Å: 'angstrom', lbm: 'lb', lb: 'lb', ozm: 'oz', ton: 'ton', tonne: 'tonne', mtonne: 'tonne',
-  psf: '(lbf/ft^2)', kgf: 'kgf', '%': '%', rev: 'rev', rpm: 'rpm', L: 'L', liter: 'L', galUK: 'galUK',
-};
 
 const CONSTANT_MAP: Record<string, string> = {
   π: 'π', e: 'e', '∞': '∞', g: 'g', c: 'speedOfLight', G: 'gravitationConstant', h: 'planckConstant',
@@ -65,28 +52,7 @@ function rawName(el: El): string {
   return s;
 }
 
-function sanitize(name: string): string {
-  let s = [...name].map((ch) => (/[\p{L}\p{N}_']/u.test(ch) ? ch : '_')).join('').replace(/_+/g, '_').replace(/^_+(?=.)/, '');
-  if (!s) s = '_';
-  if (/^\d/.test(s)) s = `_${s}`;
-  if (RESERVED.has(s)) s += '_';
-  return s;
-}
-
-function unitName(name: string): string {
-  if (UNIT_MAP[name]) return UNIT_MAP[name];
-  // μ / µ prefixes become "u" (μm → um)
-  return name.replace(/^[μµ]/, 'u');
-}
-
 // ------------------------------------------------------------ expressions
-
-const P = { ATOM: 100, POST: 90, POW: 80, NEG: 70, MUL: 60, ADD: 50, CMP: 40, NOT: 35, AND: 30, OR: 20, RANGE: 5 };
-
-interface Ex {
-  s: string;
-  p: number;
-}
 
 const BINOPS: Record<string, { op: string; p: number }> = {
   plus: { op: ' + ', p: P.ADD }, minus: { op: ' - ', p: P.ADD }, mult: { op: '*', p: P.MUL }, div: { op: '/', p: P.MUL },
@@ -217,7 +183,7 @@ class Converter {
       const [a, b] = [e(0), e(1)];
       if (h === 'pow') return { s: `${this.wrap(a, P.POW + 1)}${vop}${this.wrap(b, P.POW)}`, p };
       // number × unit reads naturally as "5 m"
-      if (h === 'mult' && /^-?[\d.]+(e[+-]?\d+)?$/i.test(a.s) && local(rest[1]) === 'id' && rest[1].getAttribute('labels') === 'UNIT') {
+      if (h === 'mult' && isNumberLiteral(a.s) && local(rest[1]) === 'id' && rest[1].getAttribute('labels') === 'UNIT') {
         return { s: `${a.s} ${b.s}`, p: P.MUL };
       }
       return { s: `${this.wrap(a, p)}${vop}${this.wrap(b, p + 1)}`, p };
@@ -229,7 +195,7 @@ class Converter {
         if (isPlaceholder(rest[1])) return e(0);
         const v = e(0), u = e(1);
         const unit = u.p >= P.ATOM ? u.s : `(${u.s})`;
-        return { s: /^-?[\d.]+(e[+-]?\d+)?$/i.test(v.s) ? `${v.s} ${unit}` : `${this.wrap(v, P.MUL)}*${unit}`, p: P.MUL };
+        return { s: isNumberLiteral(v.s) ? `${v.s} ${unit}` : `${this.wrap(v, P.MUL)}*${unit}`, p: P.MUL };
       }
       case 'indexer': {
         const base = this.wrap(e(0), P.ATOM);
@@ -296,6 +262,7 @@ class Converter {
     let fn = sanitize(raw);
     const args = this.args(rest);
     if (raw === 'Γ') fn = 'gamma';
+    if (raw === 'mod') fn = 'mod'; // a function here, not the reserved operator
     if (/^(Find|Minerr|Minimize|Maximize)$/.test(raw)) fn = raw.toLowerCase();
     if (raw === 'atan2' && args.length === 2) return { s: `atan2(${args[1]}, ${args[0]})`, p: P.ATOM }; // Mathcad: atan2(x, y)
     if (raw === 'angle' && args.length === 2) return { s: `mod(atan2(${args[1]}, ${args[0]}), 2 π)`, p: P.ATOM };
@@ -572,12 +539,6 @@ function textFromXaml(xml: string): string {
 
 // ------------------------------------------------------------ packages
 
-function toBase64(u8: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-  return btoa(s);
-}
-
 function mimeOf(name: string): string {
   const ext = name.toLowerCase().split('.').pop();
   return ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'bmp' ? 'image/bmp' : ext === 'svg' ? 'image/svg+xml' : 'image/png';
@@ -735,14 +696,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   }
   if (solve) warnings.push('A "Given" block has no Find/Minerr call; its constraints were dropped');
 
-  // keep everything on the page
-  const maxRight = Math.max(...regions.map((q) => q.x + ('width' in q ? (q as { width: number }).width : 200)), 0);
-  const limit = PAGE_WIDTH - PAGE_MARGIN / 2;
-  const sx = maxRight > limit ? limit / maxRight : 1;
-  for (const q of regions) {
-    q.x = Math.max(8, Math.round(q.x * sx));
-    q.y = Math.max(8, Math.round(q.y));
-  }
+  fitToPage(regions);
   ws.regions = regions;
   return { ws, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)' };
 }

@@ -12,7 +12,7 @@ import { useEvaluation } from './useEvaluation';
 import { Worksheet, snap, type Cursor } from './Worksheet';
 import { SidePanel, type SideTab } from './SidePanel';
 import type { EditorHandle } from './editing';
-import { openWorksheetFile, isMathcadFile, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri, type FileHandle } from '../platform/files';
+import { openWorksheetFile, foreignFormat, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri, type FileHandle } from '../platform/files';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
@@ -171,8 +171,8 @@ export function App() {
     try {
       const f = await openWorksheetFile();
       if (!f) return;
-      if (isMathcadFile(f.name)) {
-        await importMathcadFile(f.bytes, f.name);
+      if (foreignFormat(f.name)) {
+        await importForeignFile(f.bytes, f.name);
         return;
       }
       const doc = parseWorksheet(new TextDecoder().decode(f.bytes));
@@ -195,7 +195,7 @@ export function App() {
       }
       if (!confirmDiscard()) return;
       const bytes = new Uint8Array(await f.arrayBuffer());
-      if (isMathcadFile(f.name)) await importMathcadFile(bytes, f.name);
+      if (foreignFormat(f.name)) await importForeignFile(bytes, f.name);
       else {
         const doc = parseWorksheet(new TextDecoder().decode(bytes));
         if (doc.title === 'Untitled') doc.title = f.name.replace(/\.(mstd|json)$/i, '');
@@ -206,13 +206,14 @@ export function App() {
     }
   };
 
-  /** Convert a Mathcad file; it opens as a new, unsaved mathstudii worksheet. */
-  const importMathcadFile = async (bytes: Uint8Array, name: string) => {
-    const { importMathcad } = await import('../importers/mathcad');
-    const res = importMathcad(bytes, name);
+  /** Convert a Mathcad or SMath file; it opens as a new, unsaved mathstudii worksheet. */
+  const importForeignFile = async (bytes: Uint8Array, name: string) => {
+    const res = foreignFormat(name) === 'smath'
+      ? (await import('../importers/smath')).importSmath(bytes, name)
+      : (await import('../importers/mathcad')).importMathcad(bytes, name);
     loadDoc(res.ws, null);
     setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
-    // Mathcad and mathstudii lay out math at different sizes: push overlaps apart once rendered
+    // the source program lays out math at different sizes: push overlaps apart once rendered
     window.setTimeout(() => separateRef.current(true), 400);
   };
 
@@ -534,6 +535,11 @@ export function App() {
               <option value="cgs">CGS</option>
             </select>
           </label>
+          {s.lateBinding !== undefined && (
+            <label className="check compact" title="Functions read variables when they are called, including ones defined after the function (SMath behaviour). Off: values are captured where the function is defined (Mathcad behaviour).">
+              <input type="checkbox" checked={s.lateBinding} onChange={(e) => dispatch({ type: 'settings', patch: { lateBinding: e.target.checked } })} /> Late binding
+            </label>
+          )}
           <button className="icon-btn" onClick={() => separateRegions()} title="Separate overlapping regions" aria-label="Separate overlapping regions"><AlignVerticalSpaceAround size={17} /></button>
           <button className={`icon-btn${showGrid ? ' on' : ''}`} onClick={() => setShowGrid(!showGrid)} title="Show grid" aria-label="Show grid"><Grid3x3 size={17} /></button>
         </div>
@@ -551,7 +557,7 @@ export function App() {
         onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false); }}
         onDrop={onDrop}
       >
-        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd) or an image</div>}
+        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz) or an image</div>}
         <div className="sheet-scroller" ref={scrollerRef}>
           <Worksheet
             ws={ws}

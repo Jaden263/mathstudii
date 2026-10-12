@@ -110,6 +110,11 @@ export interface WorksheetSettings {
   tol: number;
   /** Unit system used when simplifying derived units in results. */
   unitSystem: 'si' | 'us' | 'cgs';
+  /**
+   * Functions read worksheet variables when they are called (SMath) instead of
+   * capturing them when they are defined (Mathcad, the default).
+   */
+  lateBinding?: boolean;
 }
 
 export interface Worksheet {

@@ -33,7 +33,7 @@ export function ImportReportDialog({ report, onClose }: { report: ImportReport; 
         )}
         <p className="hint">
           The import converts the math, programs, solve blocks, text, images and X-Y plots. Results are recalculated here rather than copied, so check them
-          against the original. Regions that could not be converted are marked ⚠️ on the page. Saving creates a new <code>.mstd</code> file; the Mathcad file is not changed.
+          against the original. Regions that could not be converted are marked ⚠️ on the page. Saving creates a new <code>.mstd</code> file; the original file is not changed.
         </p>
       </div>
     </dialog>

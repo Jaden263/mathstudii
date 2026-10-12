@@ -107,6 +107,39 @@ copied, so compare them with the original. The format knowledge comes from
 The tests use hand-built files in that structure. **It has not been run on files saved by
 Mathcad itself yet**, so real-world files may hit gaps.
 
+### Importing SMath Studio files
+
+**Open** (or drag onto the window) an SMath Studio `.sm` file, or a compressed `.smz`.
+Files from SMath 0.96 to 0.99+ are read, including both layouts of the XML. The importer converts:
+- definitions, functions, units (including unit overrides), matrices, `el()` indexing, ranges and strings
+- programs (`line`, `for`, `while`, `if`, `try`); `for(i:=1, i≤n, i:=i+1, …)` becomes `for i ∈ 1 .. n`
+- symbolic `→` and numeric `=` evaluations, `sum`, `product`, `int`, `diff`, `solve`, `cinterp`
+- text (English if the file has several languages), formula comments, pictures, collapsible areas
+- 2-D plots of functions of `x` and of point matrices, including `sys(…)` lists of plot items
+
+SMath and Mathcad differ in a few ways that the import handles:
+- **Top-level loops.** In SMath a `while` or `for` on the page changes worksheet variables. Here,
+  such a loop becomes a program that defines the variables used further down, so `GCD :=` followed
+  by the loop. When the loop sets several of them, it runs once into `loop1` and `xn := loop1.xn`
+  takes each value out.
+- **Function binding.** SMath functions read variables when they are called, even ones defined after
+  the function. Imported worksheets switch on **Late binding** in the toolbar for this; new
+  worksheets keep Mathcad's rule (values are captured where the function is defined).
+- SMath indexes from 1, so imported worksheets use ORIGIN = 1.
+
+What does not convert: SMath's symbolic work on undefined variables (a function body
+that is a vector of formulas in `x`, as in the Hessian, Jacobian and orthogonal-polynomial
+examples), matrices nested inside matrices, text labels and the view (zoom and pan) of
+plots, 3-D plots, `sys(…)` systems of equations, and plugin regions. Each case is listed
+in the import report and marked ⚠️ on the page.
+
+**How it was tested:** on the 18 example worksheets bundled with SMath Studio, which SMath
+itself saved. Beam, Simpson, Dichotomy, Chord method, Euclidean GCD, Roman numerals, Thomas
+algorithm and Gravitation acceleration reproduce the results SMath stored in the files. For
+example, Beam gives support reactions of −12.4533 kN and −28.6467 kN, and its diagram draws.
+The examples built on symbolic vectors do not. The automated tests (`src/importers/smath.test.ts`)
+use hand-written files in the same format.
+
 Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values:
 `{{expr | unit}}`.
 
@@ -143,6 +176,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
+| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ❌ |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas, headers/footers, protected regions, track changes | ❌ |
@@ -172,7 +206,7 @@ Tag a commit `v0.1.0` and push the tag to build all installers in GitHub Actions
 src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS bridge, worker
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
-src/importers/ Mathcad .mcdx / .xmcd import
+src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system
@@ -185,4 +219,4 @@ solvers, ODE methods, FFT, distributions and special functions are implemented
 in `src/engine/numeric.ts`. Section properties (Green's theorem for polygons, closed
 forms for circles) are in `src/engine/geometry.ts`.
 
-mathstudii is an independent project and is not affiliated with PTC or Mathcad.
+mathstudii is an independent project and is not affiliated with PTC (Mathcad) or SMath.

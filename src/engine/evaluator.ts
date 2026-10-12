@@ -96,6 +96,8 @@ class Evaluator {
   readonly symFunctions = new Map<string, SymFunction>();
   needsCas = false;
   readonly fmt: FormatOptions;
+  /** SMath semantics: function bodies read variables when called, not when defined. */
+  readonly bindAtCall: boolean;
 
   /**
    * @param overrides variable → expression that replaces its top-level definition
@@ -103,6 +105,7 @@ class Evaluator {
    */
   constructor(readonly ws: Worksheet, readonly overrides: Record<string, string> = {}) {
     this.fmt = { precision: ws.settings.precision, expThreshold: ws.settings.expThreshold };
+    this.bindAtCall = ws.settings.lateBinding === true;
     const base = new Map<string, unknown>();
     for (const [k, v] of BUILTIN_SCOPE) base.set(k, math.evaluate(v));
     this.global = new ChainScope(base);
@@ -317,7 +320,7 @@ class Evaluator {
         const { name, params } = lhs;
         this.symFunctions.set(name, { params, body: rhs });
         const compiled = compileExpr(rhs);
-        const snap = snapshot(scope);
+        const snap = this.bindAtCall ? scope : snapshot(scope);
         const fn = (...args: unknown[]) => {
           if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
           const local = new ChainScope(snap);
@@ -388,7 +391,7 @@ class Evaluator {
     }
     if (lhs.kind === 'func') {
       const { name, params } = lhs;
-      const snap = snapshot(scope);
+      const snap = this.bindAtCall ? scope : snapshot(scope);
       const fn = (...args: unknown[]) => {
         if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
         const locals: Record<string, unknown> = {};

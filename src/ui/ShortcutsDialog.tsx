@@ -47,7 +47,7 @@ const SECTIONS: [string, [string, string][]][] = [
   ]],
   ['Files', [
     ['Ctrl+S / Ctrl+Shift+S', 'Save / save as (.mstd)'],
-    ['Ctrl+O', 'Open (also Mathcad .mcdx / .xmcd; or drop a file on the window)'],
+    ['Ctrl+O', 'Open (also Mathcad .mcdx / .xmcd and SMath .sm / .smz; or drop a file on the window)'],
     ['Ctrl+Alt+N', 'New worksheet'],
     ['Ctrl+P', 'Print or save as PDF'],
   ]],

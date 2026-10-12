@@ -14,9 +14,10 @@ export interface OpenedFile {
 export const FILE_EXT = 'mstd';
 const FILTERS = [{ name: 'mathstudii worksheet', extensions: [FILE_EXT, 'json'] }];
 const OPEN_FILTERS = [
-  { name: 'Worksheets (mathstudii, Mathcad)', extensions: [FILE_EXT, 'json', 'mcdx', 'xmcd'] },
+  { name: 'Worksheets (mathstudii, Mathcad, SMath)', extensions: [FILE_EXT, 'json', 'mcdx', 'xmcd', 'sm', 'smz'] },
   { name: 'Mathcad Prime', extensions: ['mcdx'] },
   { name: 'Mathcad 11–15', extensions: ['xmcd'] },
+  { name: 'SMath Studio', extensions: ['sm', 'smz'] },
 ];
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -28,15 +29,15 @@ interface FsWindow {
 const fsw = (typeof window !== 'undefined' ? window : {}) as unknown as FsWindow;
 const pickerTypes = [{ description: 'mathstudii worksheet', accept: { 'application/json': [`.${FILE_EXT}`, '.json'] } }];
 const openPickerTypes = [{
-  description: 'Worksheets (mathstudii, Mathcad Prime, Mathcad 15)',
-  accept: { 'application/octet-stream': [`.${FILE_EXT}`, '.json', '.mcdx', '.xmcd'] },
+  description: 'Worksheets (mathstudii, Mathcad Prime, Mathcad 15, SMath Studio)',
+  accept: { 'application/octet-stream': [`.${FILE_EXT}`, '.json', '.mcdx', '.xmcd', '.sm', '.smz'] },
 }];
 
 export function baseName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-/** Pick a worksheet (or Mathcad file) and read its bytes. */
+/** Pick a worksheet (or a Mathcad / SMath file) and read its bytes. */
 export async function openWorksheetFile(): Promise<OpenedFile | null> {
   if (isTauri) {
     const { open } = await import('@tauri-apps/plugin-dialog');
@@ -55,12 +56,15 @@ export async function openWorksheetFile(): Promise<OpenedFile | null> {
       throw e;
     }
   }
-  const file = await pickFile(`.${FILE_EXT},.json,.mcdx,.xmcd`);
+  const file = await pickFile(`.${FILE_EXT},.json,.mcdx,.xmcd,.sm,.smz`);
   return file ? { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), handle: null } : null;
 }
 
-export function isMathcadFile(name: string): boolean {
-  return /\.(mcdx|xmcd)$/i.test(name);
+/** Files opened through an importer rather than as mathstudii JSON. */
+export function foreignFormat(name: string): 'mathcad' | 'smath' | null {
+  if (/\.(mcdx|xmcd)$/i.test(name)) return 'mathcad';
+  if (/\.smz?$/i.test(name)) return 'smath';
+  return null;
 }
 
 /** Save to an existing handle, or ask for a location. Returns the handle used, or null if cancelled. */
