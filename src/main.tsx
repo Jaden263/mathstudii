@@ -4,10 +4,14 @@ import 'katex/dist/katex.min.css';
 import './styles.css';
 import { App } from './ui/App';
 import { isTauri } from './platform/files';
+import { cadWindowParams } from './ui/cad/cadWindow';
+import { CadWindowApp } from './ui/cad/CadWindowApp';
 
+// the same bundle serves the worksheet and its separate CAD windows
+const cad = cadWindowParams();
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {cad ? <CadWindowApp id={cad.id} session={cad.session} /> : <App />}
   </StrictMode>,
 );
 

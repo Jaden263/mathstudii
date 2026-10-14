@@ -97,10 +97,43 @@ Press **CAD** (or type `&` at the cursor) for a parametric part: a constrained 2
 that can be extruded or revolved into a solid. It is linked to the worksheet in both
 directions.
 
-- **Sketching:** line chains, rectangles, circles, arcs (centre, start, end), points and
-  construction geometry. New points snap to existing points (shared, so outlines are
-  connected) and onto lines and curves. Nearly horizontal or vertical lines get the
-  constraint automatically.
+**The CAD window.** Parts are edited in a separate window: a real browser or desktop
+window next to the worksheet. On phones and small tablets the same workspace opens full
+screen in the page. The workspace is laid out like a desktop CAD program:
+
+- **Ribbon:** Sketch, Constrain, Features, Inspect, View and File tabs.
+- **Feature tree:** origin, sketch with a freedom badge, relations, dimensions, feature
+  and material.
+- **Viewport:** sketch, 3-D or both side by side, with a properties panel beside it.
+- **Status bar:** live coordinates, constraint status and tool hints.
+
+Working in the viewport:
+
+- **Navigation:** the wheel zooms at the cursor, middle or right drag pans, F fits.
+- **Grid and snapping:** the grid adapts to the zoom (1-2-5 steps) and grid snap is optional.
+  Snaps to endpoints, midpoints, centres and curves show markers, and alignment guides
+  appear when you line up with other points.
+- **Typing sizes:** type while drawing to give exact sizes. For example, line → `100`
+  Tab `30` Enter draws a 100 mm line at 30° with its dimensions.
+- **Selecting:** drag right for window select, drag left for crossing select.
+- **3-D view:** orbit, pan, zoom, standard views (front, top, right, iso) and a wireframe display.
+
+The page shows the part as a live preview that frames itself. Edits travel to the
+worksheet at once, which recalculates and sends the results back. Undo in the CAD window
+applies to the part only, not to the rest of the worksheet. The worksheet window must
+stay open, since it owns the document.
+
+- **Sketching:** line chains, corner and centre rectangles, circles, centre and
+  3-point arcs, regular polygons, slots, points and construction geometry.
+  - New points snap to existing points (shared, so outlines are connected), to
+    midpoints (with a midpoint relation) and onto curves.
+  - Nearly horizontal or vertical lines get that constraint automatically.
+  - Each tool adds the relations that keep its shape: a polygon stays regular, a slot
+    stays tangent, a centre rectangle stays centred.
+- **Modify:**
+  - **Fillet** keeps a virtual sharp, so dimensions to the corner survive.
+  - **Trim** splits at crossings and turns circles into arcs.
+  - **Mirror** creates the copies with symmetry relations.
 - **Constraints:** coincident, point on line/circle, horizontal, vertical, parallel,
   perpendicular, tangent, equal, midpoint, symmetric, concentric and fix.
 - **Dimensions:** length, distance (aligned, horizontal, vertical, point to line), angle,
@@ -129,9 +162,9 @@ The **CAD part design** example sizes a shaft from its torque, builds it from th
 diameter, and uses its mass and inertia for the kinetic energy. A mounting plate's hole
 follows the shaft.
 
-What it is not: there are no booleans between solids, fillets/chamfers, multi-feature
-history, assemblies or 2-D drawings from the 3-D model. Splines and trimming are missing
-too. One part is one profile turned into one solid. That covers parametric plates,
+What it is not: there are no booleans between solids, 3-D fillets/chamfers, multi-feature
+history, assemblies or 2-D drawings from the 3-D model. Splines, offsets and extend are
+missing too. One part is one profile turned into one solid. That covers parametric plates,
 brackets, shafts, rings and sections, not a replacement for SolidWorks or FreeCAD.
 
 ### Importing Mathcad files
@@ -252,7 +285,7 @@ src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
 src/cad/      CAD engine (no UI): model, constraint solver, profiles, mass properties, mesh, DXF, STL
-src/ui/cad/   CAD editor, 3-D viewer and properties panel
+src/ui/cad/   CAD window (workspace, canvas, 3-D viewer, window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system

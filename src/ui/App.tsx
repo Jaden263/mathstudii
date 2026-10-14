@@ -18,6 +18,9 @@ import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
+import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
+import { CadWorkspace } from './cad/CadWorkspace';
+import type { CadResult } from '../engine/evaluator';
 
 type ThemePref = 'system' | 'light' | 'dark';
 const CLIP_MARKER = 'mathstudii/regions';
@@ -42,7 +45,59 @@ function isTypingTarget(el: EventTarget | null): boolean {
 
 export function App() {
   const { ws, dispatch, canUndo, canRedo, dirty } = useWorksheetStore(initialWorksheet);
+  // CAD parts are edited in a separate window (or full-screen in the page on small screens)
+  const [cadOverlay, setCadOverlay] = useState<string | null>(null);
+  const cadOverlayRef = useRef(cadOverlay);
+  cadOverlayRef.current = cadOverlay;
+  const cadWins = useRef(new Map<string, { seen: number; ack: number }>());
+  const cadChannel = useRef<CadChannel | null>(null);
+  const pushCad = useRef<(id: string) => void>(() => {});
   const evaluation = useEvaluation(ws, ws.settings.autoCalc);
+  pushCad.current = (id: string) => {
+    const ch = cadChannel.current;
+    if (!ch) return;
+    const r = ws.regions.find((q) => q.id === id);
+    if (!r || r.kind !== 'cad') {
+      ch.post({ t: 'gone', s: SESSION, id });
+      cadWins.current.delete(id);
+      return;
+    }
+    ch.post({ t: 'state', s: SESSION, id, ack: cadWins.current.get(id)?.ack ?? 0, region: r, result: evaluation.results.get(id) as CadResult | undefined });
+  };
+  useEffect(() => {
+    const ch = openChannel((m) => {
+      if (m.s !== SESSION) return;
+      const wins = cadWins.current;
+      if (m.t === 'hello') {
+        wins.set(m.id, { seen: Date.now(), ack: wins.get(m.id)?.ack ?? m.seq });
+        pushCad.current(m.id);
+      } else if (m.t === 'patch') {
+        wins.set(m.id, { seen: Date.now(), ack: m.seq });
+        dispatch({ type: 'update', id: m.id, patch: m.patch, coalesce: m.coalesce, ...(m.history === false ? { history: false as const } : {}) });
+      } else if (m.t === 'bye') wins.delete(m.id);
+    });
+    cadChannel.current = ch;
+    return () => ch.close();
+  }, [dispatch]);
+  // every change reaches the open CAD windows
+  useEffect(() => {
+    const now = Date.now();
+    for (const [id, w] of cadWins.current) {
+      if (now - w.seen > 10000) cadWins.current.delete(id);
+      else pushCad.current(id);
+    }
+  }, [ws, evaluation.results]);
+  const openCad = useCallback((id: string) => {
+    const r = ws.regions.find((q) => q.id === id);
+    const title = `${(r && r.kind === 'cad' && r.name) || 'Part'} — mathstudii CAD`;
+    void openCadWindow(id, title).then((ok) => {
+      if (!ok) setCadOverlay(id);
+    });
+  }, [ws.regions]);
+  const overlayRegion = cadOverlay ? ws.regions.find((q) => q.id === cadOverlay) : undefined;
+  useEffect(() => {
+    if (cadOverlay && overlayRegion?.kind !== 'cad') setCadOverlay(null);
+  }, [cadOverlay, overlayRegion]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<Cursor | null>({ x: PAGE_MARGIN + GRID * 2, y: GRID * 6 });
@@ -339,6 +394,8 @@ export function App() {
   // ------------------------------------------------------------ keyboard
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // the full-screen CAD workspace handles its own keys
+      if (cadOverlayRef.current) return;
       const mod = e.ctrlKey || e.metaKey;
       const typing = isTypingTarget(e.target);
       const k = e.key.toLowerCase();
@@ -448,6 +505,7 @@ export function App() {
   return (
     <CompletionContext.Provider value={completions}>
     <SketchContext.Provider value={sketchCtx}>
+    <CadOpenContext.Provider value={openCad}>
     <div className={`app${panelOpen ? ' panel-open' : ''}`}>
       <header className="topbar">
         <div className="brand" aria-label="mathstudii">
@@ -604,9 +662,18 @@ export function App() {
       </footer>
 
       {showHelp && <ShortcutsDialog onClose={() => setShowHelp(false)} />}
+      {overlayRegion?.kind === 'cad' && (
+        <div className="cadw-overlay" role="dialog" aria-label="CAD workspace">
+          <CadWorkspace
+            region={overlayRegion} result={evaluation.results.get(overlayRegion.id) as CadResult | undefined} dispatch={dispatch}
+            onClose={() => setCadOverlay(null)}
+          />
+        </div>
+      )}
       {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
+    </CadOpenContext.Provider>
     </SketchContext.Provider>
     </CompletionContext.Provider>
   );

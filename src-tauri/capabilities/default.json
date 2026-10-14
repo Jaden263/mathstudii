@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Window permissions: native open/save dialogs and reading/writing the files the user picks.",
-  "windows": ["main"],
+  "description": "Window permissions: native open/save dialogs, reading/writing the files the user picks, and the separate CAD windows.",
+  "windows": [
+    "main",
+    "cad-*"
+  ],
   "permissions": [
     "core:default",
     "dialog:allow-open",
@@ -12,6 +15,10 @@
     "fs:allow-read-text-file",
     "fs:allow-read-file",
     "fs:allow-write-text-file",
-    "fs:allow-write-file"
+    "fs:allow-write-file",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-set-title"
   ]
 }

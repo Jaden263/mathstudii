@@ -90,7 +90,7 @@ export const CONSTRAINT_TOOLS: { type: ConstraintType | 'onObject'; label: strin
 
 export const GLYPH: Partial<Record<ConstraintType, string>> = {
   horizontal: 'H', vertical: 'V', parallel: '∥', perpendicular: '⊥', tangent: 'T', equal: '=', midpoint: 'M',
-  symmetric: '⇹', concentric: '◎', fix: '⚓', pointOnLine: '⌿', pointOnCircle: '○',
+  symmetric: '⇹', concentric: '◎', fix: '⚓', pointOnLine: '∈', pointOnCircle: '∈',
 };
 
 interface Sorted {

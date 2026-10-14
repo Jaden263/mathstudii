@@ -7,7 +7,9 @@ export type Tool =
   | 'select' | 'pan' | 'line' | 'poly' | 'rect' | 'circle' | 'arc' | 'arrow' | 'dim'
   | 'text' | 'path' | 'link' | 'symbol' | 'section';
 
-export type CadTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'point' | 'dim' | 'pan';
+export type CadTool =
+  | 'select' | 'line' | 'rect' | 'crect' | 'circle' | 'arc' | 'arc3' | 'polygon' | 'slot' | 'point'
+  | 'dim' | 'fillet' | 'trim' | 'mirror' | 'measure' | 'pan';
 
 export interface SketchUI {
   /** Sketch region the shape selection belongs to. */
@@ -20,9 +22,16 @@ export interface SketchUI {
   cadTool: CadTool;
   /** Draw new CAD geometry as construction lines. */
   cadConstruction: boolean;
+  /** Tool options of the CAD window. */
+  cadSides: number;
+  cadFillet: number;
+  cadGridSnap: boolean;
+  cadDimKind: 'smart' | 'horizontal' | 'vertical';
+  /** Show relation glyphs in the CAD window. */
+  cadRelations: boolean;
 }
 
-export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false };
+export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false, cadSides: 6, cadFillet: 5, cadGridSnap: false, cadDimKind: 'smart', cadRelations: true };
 
 export interface SketchContextValue {
   ui: SketchUI;

@@ -106,7 +106,11 @@ export interface CadRegion extends RegionBase {
   height: number;
   unit: CadUnit;
   view: CadView;
+  /** Viewport of the CAD window (separate from the page preview's framing). */
+  viewW?: CadView;
   view3d: CadView3D;
+  /** 3-D camera of the CAD window. */
+  view3dW?: CadView3D & { zoom?: number; pan?: { x: number; y: number } };
   /** Sketch, 3-D model, or both side by side. */
   mode: '2d' | '3d' | 'split';
   sketch: CadSketch;

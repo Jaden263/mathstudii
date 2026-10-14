@@ -258,9 +258,11 @@ export function glyphs(g: Geo, vp: Vp): Glyph[] {
     if (e?.type === 'line') {
       const a = toS(vp, g.P.get(e.p1)!), b = toS(vp, g.P.get(e.p2)!);
       const u = unitVec(a, b);
+      // the side opposite a dimension's default label, a third along the line, so glyphs never cover labels
       let n = { x: -u.y, y: u.x };
-      if (n.y > 0) n = { x: -n.x, y: -n.y };
-      return { x: (a.x + b.x) / 2 + n.x * 12 + u.x * 15 * k, y: (a.y + b.y) / 2 + n.y * 12 + u.y * 15 * k };
+      if (!(n.y > 0 || (n.y === 0 && n.x < 0))) n = { x: -n.x, y: -n.y };
+      const t = 0.3;
+      return { x: a.x + (b.x - a.x) * t + n.x * 11 + u.x * 15 * k, y: a.y + (b.y - a.y) * t + n.y * 11 + u.y * 15 * k };
     }
     if (e && (e.type === 'circle' || e.type === 'arc')) {
       const c = toS(vp, g.P.get(e.c)!), r = entityRadius(g, e) * vp.view.zoom;
@@ -273,11 +275,42 @@ export function glyphs(g: Geo, vp: Vp): Glyph[] {
     }
     return null;
   };
+  const equalShown = new Set<string>();
+  // points kept only as references (a fillet's virtual sharp) carry no visible relations
+  const helperPoints = new Set(g.sk.entities.filter((e) => e.type === 'point' && e.construction).map((e) => (e as { p: string }).p));
+  const endsOf = (id: string) => {
+    const e = ents.get(id);
+    return e?.type === 'line' || e?.type === 'arc' ? [e.p1, e.p2] : [];
+  };
   for (const c of g.sk.constraints) {
     if (isDimension(c.type) || c.type === 'coincident') continue;
     const text = GLYPH[c.type];
     if (!text) continue;
-    const targets = c.type === 'symmetric' ? [c.refs[2]] : c.type === 'midpoint' || c.type === 'pointOnLine' || c.type === 'pointOnCircle' ? [c.refs[0]] : c.refs;
+    if ((c.type === 'pointOnLine' || c.type === 'pointOnCircle') && (helperPoints.has(c.refs[0]) || ents.get(c.refs[1])?.construction)) continue;
+    // symmetry: one marker between the two points (on the axis), so pairs don't pile up
+    if (c.type === 'symmetric') {
+      const a = g.P.get(c.refs[0]), b = g.P.get(c.refs[1]);
+      if (a && b) {
+        const m = toS(vp, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+        out.push({ c, at: { x: m.x + 9, y: m.y - 9 }, text });
+        continue;
+      }
+    }
+    // tangency at a joint: one marker at the shared point
+    if (c.type === 'tangent') {
+      const joint = endsOf(c.refs[0]).find((p) => endsOf(c.refs[1]).includes(p));
+      if (joint) {
+        const at = place(joint);
+        if (at) out.push({ c, at, text });
+        continue;
+      }
+    }
+    let targets = c.type === 'symmetric' ? [c.refs[2]] : c.type === 'midpoint' || c.type === 'pointOnLine' || c.type === 'pointOnCircle' ? [c.refs[0]] : c.refs;
+    // a chain of equal sides (polygons): one "=" per side, not one per constraint
+    if (c.type === 'equal') {
+      targets = targets.filter((id) => !equalShown.has(id));
+      targets.forEach((id) => equalShown.add(id));
+    }
     for (const id of targets) {
       const at = place(id);
       if (at) out.push({ c, at, text });

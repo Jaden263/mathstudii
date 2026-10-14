@@ -188,6 +188,26 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       case 'tangent': {
         const e0 = ents.get(r0), e1 = ents.get(r1);
         const lineFirst = e0?.type === 'line' ? [r0, r1] : e1?.type === 'line' ? [r1, r0] : null;
+        // Joined at an end (fillets, slots): "distance to the line = radius" can never be exceeded
+        // there, so it is stationary at the solution and its Jacobian row vanishes. State the
+        // tangency at the joint instead: the radius to the shared point is perpendicular to the line
+        // (two arcs: both centres in line with the joint).
+        const ends = (e: CadEntity | undefined) => (e?.type === 'line' || e?.type === 'arc' ? [e.p1, e.p2] : []);
+        const shared = ends(e0).find((p) => ends(e1).includes(p));
+        if (shared !== undefined && lineFirst) {
+          const [a, b] = lineOf(lineFirst[0]), g = roundOf(lineFirst[1]), j = X(shared);
+          return add(c.id, 1, [...pv(a), ...pv(b), ...pv(j), ...g.vars], (q, o, k) => {
+            const dx = q[b] - q[a], dy = q[b + 1] - q[a + 1], rx = q[j] - q[g.c], ry = q[j + 1] - q[g.c + 1];
+            o[k] = (L * (dx * rx + dy * ry)) / (Math.hypot(dx, dy) * Math.hypot(rx, ry) + EPS);
+          });
+        }
+        if (shared !== undefined) {
+          const g0 = roundOf(r0), g1 = roundOf(r1), j = X(shared);
+          return add(c.id, 1, [...pv(j), ...g0.vars, ...g1.vars], (q, o, k) => {
+            const ax = q[j] - q[g0.c], ay = q[j + 1] - q[g0.c + 1], bx = q[j] - q[g1.c], by = q[j + 1] - q[g1.c + 1];
+            o[k] = (L * (ax * by - ay * bx)) / (Math.hypot(ax, ay) * Math.hypot(bx, by) + EPS);
+          });
+        }
         if (lineFirst) {
           const [a, b] = lineOf(lineFirst[0]), g = roundOf(lineFirst[1]);
           return add(c.id, 1, [...pv(a), ...pv(b), ...g.vars], (q, o, k) => {
