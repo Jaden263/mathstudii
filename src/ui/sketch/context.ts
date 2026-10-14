@@ -7,6 +7,8 @@ export type Tool =
   | 'select' | 'pan' | 'line' | 'poly' | 'rect' | 'circle' | 'arc' | 'arrow' | 'dim'
   | 'text' | 'path' | 'link' | 'symbol' | 'section';
 
+export type CadTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'point' | 'dim' | 'pan';
+
 export interface SketchUI {
   /** Sketch region the shape selection belongs to. */
   regionId: string | null;
@@ -14,9 +16,13 @@ export interface SketchUI {
   tool: Tool;
   symbol: SymbolKind;
   template: SectionTemplate;
+  /** Tool of the CAD editor (CAD regions share the selection fields above). */
+  cadTool: CadTool;
+  /** Draw new CAD geometry as construction lines. */
+  cadConstruction: boolean;
 }
 
-export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I' };
+export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false };
 
 export interface SketchContextValue {
   ui: SketchUI;

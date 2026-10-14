@@ -45,6 +45,16 @@ const SECTIONS: [string, [string, string][]][] = [
     ['Del, Ctrl+D, arrows', 'Delete, duplicate, nudge selected shapes'],
     ['Esc', 'Cancel / deselect / leave the sketch'],
   ]],
+  ['CAD parts', [
+    ['&', 'Create a CAD part at the cursor (or the CAD button)'],
+    ['S L R C A P', 'Select, line chain, rectangle, circle, arc, point'],
+    ['D', 'Dimension: pick geometry, then click where the dimension goes'],
+    ['Double-click a dimension', 'Edit its value: a number, 25 mm, 30 deg or a worksheet expression'],
+    ['H V T E F', 'Horizontal, vertical, tangent, equal, fix (with geometry selected)'],
+    ['X', 'Construction geometry (toggles the selection)'],
+    ['Drag', 'Move geometry: the solver keeps every constraint'],
+    ['Right-click / Esc', 'Finish a line chain'],
+  ]],
   ['Files', [
     ['Ctrl+S / Ctrl+Shift+S', 'Save / save as (.mstd)'],
     ['Ctrl+O', 'Open (also Mathcad .mcdx / .xmcd and SMath .sm / .smz; or drop a file on the window)'],

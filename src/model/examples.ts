@@ -1,4 +1,5 @@
 import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
+import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -182,6 +183,69 @@ export function mechanismExample(): Worksheet {
   ]);
 }
 
+/** A closed polyline of lines through the given points (ids p0, p1, …), plus its constraints. */
+function outline(prefix: string, pts: [number, number][]): CadSketch {
+  const points = pts.map(([x, y], i) => ({ id: `${prefix}p${i}`, x, y }));
+  const entities: CadEntity[] = points.map((p, i) => ({ id: `${prefix}l${i}`, type: 'line', p1: p.id, p2: points[(i + 1) % points.length].id }));
+  return { points, entities, constraints: [] };
+}
+
+export function cadExample(): Worksheet {
+  // stepped shaft: half profile above the x axis, revolved about it
+  const shaft = outline('s', [[0, 0], [0, 20], [60, 20], [60, 25], [180, 25], [180, 0]]);
+  const hv = (i: number, t: 'horizontal' | 'vertical') => ({ id: `sk${t}${i}`, type: t, refs: [`sl${i}`] }) as CadConstraint;
+  shaft.constraints.push(
+    { id: 'sfix', type: 'fix', refs: ['sp0'], at: { x: 0, y: 0 } },
+    hv(0, 'vertical'), hv(1, 'horizontal'), hv(2, 'vertical'), hv(3, 'horizontal'), hv(4, 'vertical'), hv(5, 'horizontal'),
+    { id: 'sd1', type: 'distanceY', refs: ['sp0', 'sp1'], value: 'd/2', name: 'r1', offset: { x: -24, y: 0 } },
+    { id: 'sd2', type: 'distanceY', refs: ['sp5', 'sp4'], value: 'd_2/2', name: 'r2', offset: { x: -16, y: 0 } },
+    { id: 'sd3', type: 'distanceX', refs: ['sp1', 'sp2'], value: '60 mm', name: 'a', offset: { x: 0, y: 4 } },
+    { id: 'sd4', type: 'distanceX', refs: ['sp0', 'sp5'], value: 'L', name: 'len', offset: { x: 0, y: -42 } },
+  );
+  // plate with a centred hole, extruded
+  const plate = outline('q', [[0, 0], [120, 0], [120, 60], [0, 60]]);
+  plate.points.push({ id: 'qc', x: 60, y: 30 });
+  plate.entities.push({ id: 'qh', type: 'circle', c: 'qc', r: 10 });
+  plate.constraints.push(
+    { id: 'qfix', type: 'fix', refs: ['qp0'], at: { x: 0, y: 0 } },
+    { id: 'qh0', type: 'horizontal', refs: ['ql0'] }, { id: 'qv1', type: 'vertical', refs: ['ql1'] },
+    { id: 'qh2', type: 'horizontal', refs: ['ql2'] }, { id: 'qv3', type: 'vertical', refs: ['ql3'] },
+    { id: 'qd1', type: 'length', refs: ['ql0'], value: 'b_p', name: 'b', offset: { x: 0, y: -20 } },
+    { id: 'qd2', type: 'length', refs: ['ql3'], value: '60 mm', name: 'h', offset: { x: -20, y: 0 } },
+    { id: 'qd3', type: 'diameter', refs: ['qh'], value: 'd_2 + 1 mm', name: 'hole', offset: { x: 18, y: 14 } },
+    { id: 'qd4', type: 'distanceX', refs: ['qp0', 'qc'], value: 'b_p/2', offset: { x: 0, y: -70 } },
+    { id: 'qd5', type: 'distanceY', refs: ['qp0', 'qc'], value: '30 mm', offset: { x: 112, y: 0 } },
+  );
+  return build('CAD part design', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Parametric parts from the calculation\nThe shaft diameter comes from the torque; the CAD part takes it as a dimension, and its mass and inertia come back into the math. Change `T` and watch the drawing, the 3-D model and the results update. Double-click a part to edit it: drag geometry, add constraints, type expressions into dimensions.' }],
+    ['math', L, mm(50), { source: 'T := 450 N*m' }],
+    ['math', mm(70), mm(50), { source: 'τ_allow := 40 MPa' }],
+    ['math', mm(130), mm(50), { source: 'L := 180 mm' }],
+    ['math', L, mm(61), { source: 'd_req := (16 * T / (π * τ_allow))^(1/3) = mm' }],
+    ['math', L, mm(75), { source: 'd := ceil(d_req / (5 mm)) * 5 mm = mm' }],
+    ['math', mm(110), mm(75), { source: 'd_2 := d + 10 mm = mm' }],
+    ['cad', L, mm(90), {
+      name: 'shaft', width: mm(170), height: mm(56), view: { cx: 88, cy: 8, zoom: 1.57 }, sketch: shaft, mode: 'split',
+      view3d: { yaw: -30, pitch: 20 }, feature: { type: 'revolve', axis: 'x', angle: '360' }, density: '7850 kg/m^3',
+    }],
+    ['text', L, mm(152), { width: mm(170), markdown: '## Results from the part\nThe revolved solid gives the mass and the mass moment of inertia about the shaft axis (x).' }],
+    ['math', L, mm(170), { source: 'shaft.m = kg' }],
+    ['math', mm(80), mm(170), { source: 'shaft.Imx = kg*cm^2' }],
+    ['math', L, mm(182), { source: 'τ := 16 * T / (π * d^3) = MPa' }],
+    ['math', mm(80), mm(182), { source: 'ω := 2 * π * 3000 / (60 s) = s^-1' }],
+    ['math', L, mm(196), { source: 'E_k := 1/2 * shaft.Imx * ω^2 = J' }],
+    ['text', L, mm(210), { width: mm(170), markdown: '## Mounting plate\nThe hole follows the shaft (`d_2 + 1 mm`) and the plate width is set here. The plate is extruded 8 mm in aluminium.' }],
+    ['math', L, mm(231), { source: 'b_p := 4 * d_2 = mm' }],
+    ['cad', L, mm(238), {
+      name: 'plate', width: mm(110), height: mm(62), view: { cx: 100, cy: 20, zoom: 1.55 }, sketch: plate,
+      feature: { type: 'extrude', depth: '8 mm' }, density: '2700 kg/m^3',
+    }],
+    ['math', mm(140), mm(246), { source: 'plate.m = g' }],
+    ['math', mm(140), mm(258), { source: 'plate.A = cm^2' }],
+    ['math', mm(140), mm(270), { source: 'plate.hole = mm' }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -190,4 +254,5 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Plots', make: plottingExample },
   { name: 'Cross-sections (sketch)', make: sectionExample },
   { name: 'Mechanism animation (sketch)', make: mechanismExample },
+  { name: 'CAD part design (parametric)', make: cadExample },
 ];

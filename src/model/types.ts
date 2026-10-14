@@ -1,8 +1,9 @@
 // Worksheet document model. Everything here is plain JSON so it can be saved,
 // undone, copied and pasted without custom serialisation.
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
+import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad';
 
 interface RegionBase {
   id: string;
@@ -96,7 +97,25 @@ export interface SketchRegion extends RegionBase {
   animation?: SketchAnimation;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion;
+/** Parametric CAD part: constrained sketch + extrude/revolve, linked to the worksheet. */
+export interface CadRegion extends RegionBase {
+  kind: 'cad';
+  /** Variable that receives the part's properties and named dimensions (optional). */
+  name: string;
+  width: number;
+  height: number;
+  unit: CadUnit;
+  view: CadView;
+  view3d: CadView3D;
+  /** Sketch, 3-D model, or both side by side. */
+  mode: '2d' | '3d' | 'split';
+  sketch: CadSketch;
+  feature: CadFeature;
+  /** Material density expression ("7850 kg/m^3"); empty = no mass. */
+  density: string;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion;
 
 export interface WorksheetSettings {
   /** Displayed decimal places. */
@@ -173,6 +192,12 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       return {
         ...base, kind, width: 420, height: 300, name: '', unit: 'mm', view: { cx: 0, cy: 0, zoom: 1 },
         grid: 10, snap: true, showProps: true, shapes: [], ...(init as Partial<SketchRegion>),
+      };
+    case 'cad':
+      return {
+        ...base, kind, name: '', width: 480, height: 320, unit: 'mm', view: { cx: 100, cy: 60, zoom: 2 },
+        view3d: { yaw: -35, pitch: 25 }, mode: '2d', sketch: { points: [], entities: [], constraints: [] },
+        feature: { type: 'none' }, density: '7850 kg/m^3', ...(init as Partial<CadRegion>),
       };
   }
 }

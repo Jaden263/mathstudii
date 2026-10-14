@@ -1,7 +1,7 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
 import type { Unit } from 'mathjs';
-import type { MathRegion, PlotRegion, SketchRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
+import type { MathRegion, PlotRegion, SketchRegion, CadRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { readingOrder } from '../model/types';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
@@ -14,8 +14,9 @@ import { exprTex, lhsTex, programTex, texCtx, keywordsTex } from './tex';
 import { symbolicEval, casReady, type SymFunction } from './symbolic';
 import * as N from './numeric';
 import { evaluateSketch, type SketchResult } from './sketchEval';
+import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
 
-export type { SketchResult };
+export type { SketchResult, CadResult };
 
 export interface MathResult {
   kind: 'math';
@@ -62,7 +63,7 @@ export interface TextResult {
   values: Record<string, { tex?: string; error?: string }>;
 }
 
-export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult;
+export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult;
 
 export interface EvaluationOutput {
   results: Map<string, RegionResult>;
@@ -139,6 +140,7 @@ class Evaluator {
         case 'solve': this.results.set(r.id, this.evaluateSolve(r)); break;
         case 'table': this.results.set(r.id, this.evaluateTable(r)); break;
         case 'sketch': this.results.set(r.id, this.evaluateSketchRegion(r)); break;
+        case 'cad': this.results.set(r.id, this.evaluateCadRegion(r)); break;
         case 'text': this.results.set(r.id, this.evaluateText(r)); break;
         default: break;
       }
@@ -624,6 +626,27 @@ class Evaluator {
     } catch (e) {
       return { kind: 'sketch', resolved: {}, errors: {}, error: friendlyError(e) };
     }
+  }
+
+  // ------------------------------------------------------------ CAD parts
+
+  evaluateCadRegion(r: CadRegion): CadResult {
+    let res: CadResult;
+    try {
+      res = solveCad(r, (src) => compileExpr(src).evaluate(this.global)).result;
+    } catch (e) {
+      return { kind: 'cad', points: {}, radii: {}, ok: false, dof: 0, determined: [], determinedRadii: [], conflicting: [], redundant: [], values: {}, dimErrors: {}, issues: [], error: friendlyError(e) };
+    }
+    const name = r.name.trim();
+    if (name) {
+      if (!isIdentifier(name)) res.error = `"${name}" is not a valid variable name`;
+      else {
+        this.global.set(name, cadValue(r, res));
+        this.ranges.delete(name);
+        this.updateDefined();
+      }
+    }
+    return res;
   }
 
   // ------------------------------------------------------------ text with live values

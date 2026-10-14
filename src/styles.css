@@ -1680,3 +1680,314 @@ kbd {
 .sk-resize {
   z-index: 7;
 }
+
+/* ---------------------------------------------------------------- CAD parts */
+
+.cad-region {
+  --cad-free: #2f6fdf;
+  --cad-dim: #0b7a75;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .cad-region {
+    --cad-free: #7aa7ff;
+    --cad-dim: #4fd1c5;
+  }
+}
+
+:root[data-theme='dark'] .cad-region {
+  --cad-free: #7aa7ff;
+  --cad-dim: #4fd1c5;
+}
+
+.cad-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.cad-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+}
+
+.cad-cbtn {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 30px;
+  font-family: var(--font);
+}
+
+.text-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.text-icon small {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.cad-svg .cad-ent {
+  fill: none;
+  stroke: var(--cad-free);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+
+.cad-region:not(.editing) .cad-svg .cad-ent,
+.cad-svg .cad-ent.det {
+  stroke: var(--text);
+}
+
+.cad-svg circle.cad-ent {
+  fill: var(--text);
+  stroke: none;
+}
+
+.cad-svg .cad-ent.cons {
+  stroke-width: 1;
+  stroke-dasharray: 7 4;
+  opacity: 0.75;
+}
+
+.cad-region:not(.editing) .cad-svg .cad-ent.cons {
+  stroke: var(--text-muted);
+}
+
+.cad-svg .cad-ent.hover {
+  stroke-width: 3;
+}
+
+.cad-svg .cad-ent.sel {
+  stroke: var(--accent);
+  stroke-width: 2.6;
+}
+
+.cad-svg .cad-ent.bad,
+.cad-svg .cad-pt.bad {
+  stroke: var(--error);
+}
+
+.cad-svg .cad-pt {
+  fill: var(--page);
+  stroke: var(--cad-free);
+  stroke-width: 1.3;
+}
+
+.cad-svg .cad-pt.det {
+  stroke: var(--text);
+}
+
+.cad-svg .cad-pt.ctr {
+  fill: none;
+}
+
+.cad-svg .cad-pt.sel,
+.cad-svg .cad-pt.hover {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.cad-svg .cad-fill {
+  fill: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.cad-svg .cad-axes line {
+  stroke: color-mix(in srgb, var(--text) 18%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+
+.cad-svg .cad-dim {
+  color: var(--cad-dim);
+}
+
+.cad-svg .cad-dim-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 0.9;
+}
+
+.cad-svg .cad-dim-arrow {
+  fill: currentColor;
+}
+
+.cad-svg .cad-dim-text {
+  fill: currentColor;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke;
+  stroke: var(--page);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  user-select: none;
+}
+
+.cad-region.editing .cad-dim-text {
+  cursor: move;
+}
+
+.cad-svg .cad-dim.ref {
+  color: var(--text-muted);
+}
+
+.cad-svg .cad-dim.warn {
+  color: var(--warn);
+}
+
+.cad-svg .cad-dim.bad {
+  color: var(--error);
+}
+
+.cad-svg .cad-dim.sel {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.cad-svg .cad-glyph {
+  cursor: pointer;
+}
+
+.cad-svg .cad-glyph rect {
+  fill: var(--surface);
+  stroke: color-mix(in srgb, var(--text) 30%, transparent);
+  stroke-width: 0.8;
+}
+
+.cad-svg .cad-glyph text {
+  font-size: 9.5px;
+  font-weight: 700;
+  fill: var(--text-muted);
+  user-select: none;
+}
+
+.cad-svg .cad-glyph.sel rect {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.cad-svg .cad-glyph.sel text {
+  fill: var(--accent-text);
+}
+
+.cad-svg .cad-glyph.warn rect {
+  stroke: var(--warn);
+}
+
+.cad-svg .cad-glyph.bad rect {
+  stroke: var(--error);
+  fill: var(--error-soft);
+}
+
+.cad-svg .cad-draft {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.3;
+  stroke-dasharray: 5 3;
+}
+
+.cad-svg .cad-draft-len {
+  font-size: 11px;
+  fill: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.cad-dim-input {
+  position: absolute;
+  width: 120px;
+  height: 24px;
+  font: 12px var(--mono);
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  z-index: 30;
+}
+
+.cad-status.ok {
+  color: var(--ok);
+}
+
+.cad-status.warn {
+  color: var(--warn);
+}
+
+.cad-status.bad {
+  color: var(--error);
+}
+
+.cad-body {
+  display: flex;
+}
+
+.cad-3d {
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.cad-3d.split {
+  border-left: 1px dashed var(--border);
+}
+
+.cad-region.editing .cad-3d {
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.cad-clist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.cad-clist li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  border-radius: 4px;
+}
+
+.cad-clist li.sel {
+  background: var(--accent-soft);
+}
+
+.cad-clist li.bad button.link {
+  color: var(--error);
+}
+
+.cad-clist li.warn button.link {
+  color: var(--warn);
+}
+
+.cad-clist button.link {
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cad-clist .icon-btn {
+  height: 22px;
+  min-width: 22px;
+}
+
+@media print {
+  .cad-dim-input {
+    display: none !important;
+  }
+}

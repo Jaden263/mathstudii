@@ -7,7 +7,8 @@ import { Tex } from './Tex';
 import { OPERATORS, CALCULUS, MATRIX, PROGRAMMING, SYMBOLIC, GREEK, UNIT_GROUPS, FUNCTIONS, CONSTANTS, type PaletteItem } from './catalog';
 import { SERIES_COLORS } from './plot/draw';
 import { SketchProps } from './sketch/SketchProps';
-import type { RegionResult, SketchResult } from '../engine/evaluator';
+import { CadProps } from './cad/CadProps';
+import type { RegionResult, SketchResult, CadResult } from '../engine/evaluator';
 
 type Tab = 'math' | 'units' | 'functions' | 'properties';
 
@@ -153,6 +154,7 @@ function Properties({ selection, results, dispatch }: { selection: Region[]; res
       </label>
       {r.kind === 'plot' && <PlotProps r={r} upd={upd} />}
       {r.kind === 'sketch' && <SketchProps region={r} result={results.get(r.id) as SketchResult | undefined} dispatch={dispatch} />}
+      {r.kind === 'cad' && <CadProps region={r} result={results.get(r.id) as CadResult | undefined} dispatch={dispatch} />}
       {(r.kind === 'text' || r.kind === 'image') && (
         <label className="field">
           <span>Width (mm)</span>

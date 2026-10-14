@@ -96,6 +96,22 @@ export async function saveWorksheetFile(text: string, suggestedName: string, han
   return { name: fileName, handle: null };
 }
 
+/** Save an exported file (DXF, STL …): a save dialog in the desktop app, a download in the browser. */
+export async function exportFile(name: string, data: Uint8Array | string, mime: string): Promise<void> {
+  const ext = name.split('.').pop() ?? '';
+  if (isTauri) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const { writeFile, writeTextFile } = await import('@tauri-apps/plugin-fs');
+    const path = await save({ defaultPath: name, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+    if (!path) return;
+    if (typeof data === 'string') await writeTextFile(path, data);
+    else await writeFile(path, data);
+    return;
+  }
+  const part: BlobPart = typeof data === 'string' ? data : new Uint8Array(data);
+  downloadBlob(new Blob([part], { type: mime }), name);
+}
+
 export function downloadBlob(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

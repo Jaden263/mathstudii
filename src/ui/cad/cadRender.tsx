@@ -1,0 +1,287 @@
+// SVG drawing of a CAD sketch: geometry coloured by how constrained it is, the
+// closed profile, dimensions with extension lines, and constraint glyphs.
+import type { CadConstraint, CadEntity, CadView } from '../../cad/model';
+import { isDimension } from '../../cad/model';
+import type { Geo } from '../../cad/edit';
+import { GLYPH, entityRadius, isPlainNumber } from '../../cad/edit';
+import { loopPolygon, type ProfileRegion, type Vec2 } from '../../cad/profile';
+
+export interface Vp {
+  view: CadView;
+  width: number;
+  height: number;
+}
+
+export const toS = (vp: Vp, p: Vec2): Vec2 => ({ x: (p.x - vp.view.cx) * vp.view.zoom + vp.width / 2, y: vp.height / 2 - (p.y - vp.view.cy) * vp.view.zoom });
+export const toW = (vp: Vp, sx: number, sy: number): Vec2 => ({ x: (sx - vp.width / 2) / vp.view.zoom + vp.view.cx, y: (vp.height / 2 - sy) / vp.view.zoom + vp.view.cy });
+
+export function fmtNum(v: number): string {
+  if (!Number.isFinite(v)) return '?';
+  const a = Math.abs(v);
+  const s = a >= 1000 ? v.toFixed(1) : a >= 100 ? v.toFixed(2) : a >= 1 ? v.toFixed(3) : v.toPrecision(3);
+  return String(+s);
+}
+
+const f = (n: number) => n.toFixed(2);
+
+export interface EntityState {
+  selected: boolean;
+  determined: boolean;
+  bad: boolean;
+  hover: boolean;
+}
+
+export function entityPath(g: Geo, e: CadEntity, vp: Vp): string {
+  const S = (id: string) => toS(vp, g.P.get(id)!);
+  switch (e.type) {
+    case 'line': {
+      const a = S(e.p1), b = S(e.p2);
+      return `M${f(a.x)} ${f(a.y)}L${f(b.x)} ${f(b.y)}`;
+    }
+    case 'circle': {
+      const c = S(e.c), r = entityRadius(g, e) * vp.view.zoom;
+      return `M${f(c.x - r)} ${f(c.y)}a${f(r)} ${f(r)} 0 1 0 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 0 ${f(-2 * r)} 0`;
+    }
+    case 'arc': {
+      const c = g.P.get(e.c)!, a = g.P.get(e.p1)!, b = g.P.get(e.p2)!;
+      const r = entityRadius(g, e);
+      const a0 = Math.atan2(a.y - c.y, a.x - c.x);
+      let a1 = Math.atan2(b.y - c.y, b.x - c.x);
+      while (a1 <= a0) a1 += 2 * Math.PI;
+      const sa = toS(vp, a);
+      const end = toS(vp, { x: c.x + r * Math.cos(a1), y: c.y + r * Math.sin(a1) });
+      const R = r * vp.view.zoom;
+      // world CCW is screen clockwise (y flips): sweep flag 0
+      return `M${f(sa.x)} ${f(sa.y)}A${f(R)} ${f(R)} 0 ${a1 - a0 > Math.PI ? 1 : 0} 0 ${f(end.x)} ${f(end.y)}`;
+    }
+    case 'point':
+      return '';
+  }
+}
+
+export function ProfileFill({ regions, vp }: { regions: ProfileRegion[]; vp: Vp }) {
+  if (!regions.length) return null;
+  const d = regions.flatMap((r) => [r.outer, ...r.holes]).map((loop) => {
+    const pts = loopPolygon(loop, Math.PI / 60).map((p) => toS(vp, p));
+    return `M${pts.map((p) => `${f(p.x)} ${f(p.y)}`).join('L')}Z`;
+  }).join('');
+  return <path d={d} className="cad-fill" fillRule="evenodd" pointerEvents="none" />;
+}
+
+// ------------------------------------------------------------ dimensions
+
+export interface DimDrawing {
+  /** Extension and dimension lines (screen). */
+  path: string;
+  arrows: string;
+  text: string;
+  /** Label position (screen). */
+  at: Vec2;
+}
+
+const ARROW = 7;
+
+function arrowAt(tip: Vec2, dir: Vec2): string {
+  // dir points from the tip into the dimension line
+  const n = { x: -dir.y, y: dir.x };
+  const b = { x: tip.x + dir.x * ARROW, y: tip.y + dir.y * ARROW };
+  return `M${f(tip.x)} ${f(tip.y)}L${f(b.x + n.x * 2.6)} ${f(b.y + n.y * 2.6)}L${f(b.x - n.x * 2.6)} ${f(b.y - n.y * 2.6)}Z`;
+}
+
+const unitVec = (a: Vec2, b: Vec2) => {
+  const l = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  return { x: (b.x - a.x) / l, y: (b.y - a.y) / l };
+};
+
+/** Text shown on a dimension: the value, plus the expression when it is not a plain number. */
+export function dimText(c: CadConstraint, value: number, error?: string): string {
+  if (error) return `${c.value ?? '?'} ⚠`;
+  const ang = c.type === 'angle';
+  const v = ang ? (value * 180) / Math.PI : value;
+  let s = `${c.type === 'radius' ? 'R' : c.type === 'diameter' ? 'Ø' : ''}${fmtNum(Math.abs(v))}${ang ? '°' : ''}`;
+  if (c.driving === false) return `(${s})`;
+  // a constant (with or without a unit) is just the value; show the expression only when it has variables
+  if (!isPlainNumber(c.value) && !/^\s*-?\d*\.?\d+(e[+-]?\d+)?\s*(mm|cm|m|in|ft|deg|°|rad)?\s*$/i.test(c.value ?? '')) {
+    const e = (c.value ?? '').trim();
+    s = `${e.length > 14 ? e.slice(0, 13) + '…' : e} = ${s}`;
+  }
+  return s;
+}
+
+/** Geometry of a dimension in screen space; null when its references are degenerate. */
+export function dimDrawing(c: CadConstraint, g: Geo, vp: Vp, value: number, error?: string): DimDrawing | null {
+  const z = vp.view.zoom;
+  const off = c.offset ?? { x: 0, y: 0 };
+  const ents = (id: string) => g.sk.entities.find((e) => e.id === id);
+  const P = (id: string) => g.P.get(id)!;
+  const text = dimText(c, value, error);
+
+  const linear = (a: Vec2, b: Vec2, axis: 'aligned' | 'x' | 'y'): DimDrawing => {
+    const A = toS(vp, a), B = toS(vp, b);
+    let label: Vec2;
+    let a2: Vec2, b2: Vec2;
+    if (axis === 'aligned') {
+      const u = unitVec(A, B);
+      let n = { x: -u.y, y: u.x };
+      if (n.y > 0 || (n.y === 0 && n.x < 0)) n = { x: -n.x, y: -n.y }; // default side: above
+      const mid = { x: (A.x + B.x) / 2 + n.x * 18, y: (A.y + B.y) / 2 + n.y * 18 };
+      label = { x: mid.x + off.x * z, y: mid.y - off.y * z };
+      const s = (label.x - A.x) * n.x + (label.y - A.y) * n.y;
+      a2 = { x: A.x + n.x * s, y: A.y + n.y * s };
+      b2 = { x: B.x + n.x * s, y: B.y + n.y * s };
+    } else if (axis === 'x') {
+      const top = Math.min(A.y, B.y) - 18;
+      label = { x: (A.x + B.x) / 2 + off.x * z, y: top - off.y * z };
+      a2 = { x: A.x, y: label.y };
+      b2 = { x: B.x, y: label.y };
+    } else {
+      const right = Math.max(A.x, B.x) + 18;
+      label = { x: right + off.x * z, y: (A.y + B.y) / 2 - off.y * z };
+      a2 = { x: label.x, y: A.y };
+      b2 = { x: label.x, y: B.y };
+    }
+    const ext = (p: Vec2, q: Vec2) => {
+      const u = unitVec(p, q), L = Math.hypot(q.x - p.x, q.y - p.y);
+      if (L < 1) return '';
+      return `M${f(p.x + u.x * 3)} ${f(p.y + u.y * 3)}L${f(q.x + u.x * 4)} ${f(q.y + u.y * 4)}`;
+    };
+    const u = unitVec(a2, b2);
+    return {
+      path: `${ext(A, a2)}${ext(B, b2)}M${f(a2.x)} ${f(a2.y)}L${f(b2.x)} ${f(b2.y)}`,
+      arrows: arrowAt(a2, u) + arrowAt(b2, { x: -u.x, y: -u.y }),
+      text, at: label,
+    };
+  };
+
+  switch (c.type) {
+    case 'length': {
+      const e = ents(c.refs[0]);
+      if (e?.type !== 'line') return null;
+      return linear(P(e.p1), P(e.p2), 'aligned');
+    }
+    case 'distance': {
+      const e = ents(c.refs[1]);
+      if (e?.type === 'line') {
+        const p = P(c.refs[0]), a = P(e.p1), b = P(e.p2);
+        const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1;
+        const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2;
+        return linear(p, { x: a.x + t * dx, y: a.y + t * dy }, 'aligned');
+      }
+      return linear(P(c.refs[0]), P(c.refs[1]), 'aligned');
+    }
+    case 'distanceX': return linear(P(c.refs[0]), P(c.refs[1]), 'x');
+    case 'distanceY': return linear(P(c.refs[0]), P(c.refs[1]), 'y');
+    case 'radius':
+    case 'diameter': {
+      const e = ents(c.refs[0]);
+      if (!e || (e.type !== 'circle' && e.type !== 'arc')) return null;
+      const cw = P(e.c), r = entityRadius(g, e);
+      let dir = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+      if (e.type === 'arc') {
+        // point at the middle of the arc
+        const a = P(e.p1), b = P(e.p2);
+        const a0 = Math.atan2(a.y - cw.y, a.x - cw.x);
+        let a1 = Math.atan2(b.y - cw.y, b.x - cw.x);
+        while (a1 <= a0) a1 += 2 * Math.PI;
+        dir = { x: Math.cos((a0 + a1) / 2), y: Math.sin((a0 + a1) / 2) };
+      }
+      const base = { x: cw.x + dir.x * (r + 14 / z), y: cw.y + dir.y * (r + 14 / z) };
+      const label = toS(vp, { x: base.x + off.x, y: base.y + off.y });
+      const C = toS(vp, cw);
+      const u = unitVec(C, label);
+      const edge = { x: C.x + u.x * r * z, y: C.y + u.y * r * z };
+      const start = c.type === 'diameter' ? { x: C.x - u.x * r * z, y: C.y - u.y * r * z } : C;
+      return {
+        path: `M${f(start.x)} ${f(start.y)}L${f(label.x)} ${f(label.y)}`,
+        arrows: arrowAt(edge, { x: -u.x, y: -u.y }) + (c.type === 'diameter' ? arrowAt(start, u) : ''),
+        text, at: label,
+      };
+    }
+    case 'angle': {
+      const l2 = ents(c.refs.length === 1 ? c.refs[0] : c.refs[1]);
+      const l1 = c.refs.length === 1 ? null : ents(c.refs[0]);
+      if (l2?.type !== 'line' || (l1 && l1.type !== 'line')) return null;
+      const a2 = P(l2.p1), b2 = P(l2.p2);
+      const a1 = l1 && l1.type === 'line' ? P(l1.p1) : a2;
+      const b1 = l1 && l1.type === 'line' ? P(l1.p2) : { x: a2.x + 1, y: a2.y };
+      const d1 = { x: b1.x - a1.x, y: b1.y - a1.y }, d2 = { x: b2.x - a2.x, y: b2.y - a2.y };
+      const den = d1.x * d2.y - d1.y * d2.x;
+      if (Math.abs(den) < 1e-12) return null;
+      const t = ((a2.x - a1.x) * d2.y - (a2.y - a1.y) * d2.x) / den;
+      const O = { x: a1.x + t * d1.x, y: a1.y + t * d1.y };
+      // arms point from the vertex towards each line's far half
+      const arm = (a: Vec2, b: Vec2) => {
+        const m = { x: (a.x + b.x) / 2 - O.x, y: (a.y + b.y) / 2 - O.y };
+        const L = Math.hypot(m.x, m.y);
+        if (L > 1e-12) return { x: m.x / L, y: m.y / L };
+        const l = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        return { x: (b.x - a.x) / l, y: (b.y - a.y) / l };
+      };
+      const u1 = l1 ? arm(a1, b1) : { x: 1, y: 0 }, u2 = arm(a2, b2);
+      const R = Math.max(10 / z, 34 / z + off.x); // offset.x: extra radius, dragged by the label
+      let t1 = Math.atan2(u1.y, u1.x), t2 = Math.atan2(u2.y, u2.x);
+      if (((t2 - t1) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) > Math.PI) [t1, t2] = [t2, t1];
+      while (t2 < t1) t2 += 2 * Math.PI;
+      const p1 = toS(vp, { x: O.x + R * Math.cos(t1), y: O.y + R * Math.sin(t1) });
+      const p2 = toS(vp, { x: O.x + R * Math.cos(t2), y: O.y + R * Math.sin(t2) });
+      const mid = (t1 + t2) / 2;
+      const label = toS(vp, { x: O.x + (R + 12 / z) * Math.cos(mid), y: O.y + (R + 12 / z) * Math.sin(mid) });
+      const Rs = R * z;
+      return {
+        path: `M${f(p1.x)} ${f(p1.y)}A${f(Rs)} ${f(Rs)} 0 0 0 ${f(p2.x)} ${f(p2.y)}`,
+        arrows: '',
+        text, at: label,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+// ------------------------------------------------------------ constraint glyphs
+
+export interface Glyph {
+  c: CadConstraint;
+  at: Vec2;
+  text: string;
+}
+
+/** Glyph positions: stacked beside each referenced line, or beside the point. */
+export function glyphs(g: Geo, vp: Vp): Glyph[] {
+  const out: Glyph[] = [];
+  const stack = new Map<string, number>();
+  const ents = new Map(g.sk.entities.map((e) => [e.id, e]));
+  const place = (id: string): Vec2 | null => {
+    const k = stack.get(id) ?? 0;
+    stack.set(id, k + 1);
+    const e = ents.get(id);
+    if (e?.type === 'line') {
+      const a = toS(vp, g.P.get(e.p1)!), b = toS(vp, g.P.get(e.p2)!);
+      const u = unitVec(a, b);
+      let n = { x: -u.y, y: u.x };
+      if (n.y > 0) n = { x: -n.x, y: -n.y };
+      return { x: (a.x + b.x) / 2 + n.x * 12 + u.x * 15 * k, y: (a.y + b.y) / 2 + n.y * 12 + u.y * 15 * k };
+    }
+    if (e && (e.type === 'circle' || e.type === 'arc')) {
+      const c = toS(vp, g.P.get(e.c)!), r = entityRadius(g, e) * vp.view.zoom;
+      return { x: c.x + r * 0.71 + 10 + 15 * k, y: c.y + r * 0.71 + 8 };
+    }
+    const p = g.P.get(id);
+    if (p) {
+      const s = toS(vp, p);
+      return { x: s.x + 10 + 15 * k, y: s.y + 12 };
+    }
+    return null;
+  };
+  for (const c of g.sk.constraints) {
+    if (isDimension(c.type) || c.type === 'coincident') continue;
+    const text = GLYPH[c.type];
+    if (!text) continue;
+    const targets = c.type === 'symmetric' ? [c.refs[2]] : c.type === 'midpoint' || c.type === 'pointOnLine' || c.type === 'pointOnCircle' ? [c.refs[0]] : c.refs;
+    for (const id of targets) {
+      const at = place(id);
+      if (at) out.push({ c, at, text });
+    }
+  }
+  return out;
+}

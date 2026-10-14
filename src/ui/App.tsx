@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
   FilePlus2, FolderOpen, Save, Printer, Undo2, Redo2, Sigma, Type, LineChart, Table2, Image as ImageIcon,
-  ListChecks, PencilRuler, Play, Square, ZoomIn, ZoomOut, MoveHorizontal, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
+  ListChecks, PencilRuler, Box, Play, Square, ZoomIn, ZoomOut, MoveHorizontal, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
@@ -123,7 +123,7 @@ export function App() {
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
@@ -132,6 +132,10 @@ export function App() {
     if (kind === 'sketch') {
       setTab('properties');
       setSketchUI({ ...INITIAL_SKETCH_UI, regionId: r.id, tool: 'line' });
+    }
+    if (kind === 'cad') {
+      setTab('properties');
+      setSketchUI({ ...INITIAL_SKETCH_UI, regionId: r.id, cadTool: 'line' });
     }
     setCursor(null);
     return r;
@@ -389,6 +393,7 @@ export function App() {
           if (e.key === '"') r = addRegion('text', {}, cursor);
           else if (e.key === '@') r = addRegion('plot', {}, cursor);
           else if (e.key === '#') r = addRegion('sketch', {}, cursor);
+          else if (e.key === '&') r = addRegion('cad', {}, cursor);
           else r = addRegion('math', { source: e.key }, cursor);
         });
         const ta = r && document.querySelector<HTMLTextAreaElement>(`[data-region-id="${r.id}"] textarea`);
@@ -493,6 +498,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('text')} title='Text region (type " at the cursor)'><Type size={16} /> Text</button>
           <button className="text-btn" onClick={() => addRegion('plot')} title="Plot (type @ at the cursor)"><LineChart size={16} /> Plot</button>
           <button className="text-btn" onClick={() => addRegion('sketch')} title="Drawing: sketches, cross-sections, mechanisms (type # at the cursor)"><PencilRuler size={16} /> Sketch</button>
+          <button className="text-btn" onClick={() => addRegion('cad')} title="Parametric CAD part: constrained sketch, dimensions from the worksheet, extrude/revolve, mass properties (type & at the cursor)"><Box size={16} /> CAD</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
           <button className="text-btn" onClick={insertImage} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
@@ -565,7 +571,7 @@ export function App() {
             dispatch={dispatch}
             zoom={zoom}
             selected={selected}
-            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch')) setTab('properties'); } }}
+            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad')) setTab('properties'); } }}
             editingId={editingId}
             setEditingId={setEditingId}
             cursor={cursor}

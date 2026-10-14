@@ -91,6 +91,49 @@ Regions below are pushed down.
 - **Animation:** set a variable and a from/to range in the sketch's Properties, then
   press ▶ to sweep it. This is how the crank-slider example moves.
 
+### CAD parts (parametric design)
+
+Press **CAD** (or type `&` at the cursor) for a parametric part: a constrained 2-D sketch
+that can be extruded or revolved into a solid. It is linked to the worksheet in both
+directions.
+
+- **Sketching:** line chains, rectangles, circles, arcs (centre, start, end), points and
+  construction geometry. New points snap to existing points (shared, so outlines are
+  connected) and onto lines and curves. Nearly horizontal or vertical lines get the
+  constraint automatically.
+- **Constraints:** coincident, point on line/circle, horizontal, vertical, parallel,
+  perpendicular, tangent, equal, midpoint, symmetric, concentric and fix.
+- **Dimensions:** length, distance (aligned, horizontal, vertical, point to line), angle,
+  radius and diameter. They can be driving or reference.
+- **Solver:** a Levenberg–Marquardt solver keeps every constraint while you drag
+  geometry, and moves the geometry as little as possible.
+- **Constraint status:** the rank of the constraint Jacobian gives the degrees of freedom.
+  Under-defined geometry is drawn blue and fully defined geometry black. Conflicting
+  constraints are red, and redundant ones are reported.
+- **Worksheet → part:** a dimension's value is any worksheet expression (`d/2`,
+  `b_p + 5 mm`, `30 deg`), so the part follows the calculation above it.
+- **Part → worksheet:** name the part (`shaft`) and the math below can use
+  - the section: `shaft.A`, `shaft.Ix`, `shaft.Iy`, `shaft.Wx`, `shaft.xc` …
+  - the solid: `shaft.V`, `shaft.m`, the centre of gravity `shaft.xg` …, and the mass
+    moments of inertia `shaft.Imx`, `shaft.Imy`, `shaft.Imz`
+  - every named dimension, e.g. `shaft.d1`
+- **3-D:** extrude (optionally symmetric) or revolve (any angle, about the sketch axes or a
+  line) with a material from the list or any density. Mass properties are exact. Area
+  moments use Green's theorem with Gauss–Legendre quadrature on arcs; revolved solids use
+  closed-form integrals over the profile (Pappus and beyond, including partial turns and
+  products of inertia). The 3-D view (WebGL) can sit beside the sketch.
+- **Exchange:** DXF import and export (lines, arcs, circles, points, LWPOLYLINE and
+  POLYLINE with bulges), and binary STL export of the solid for 3-D printing.
+
+The **CAD part design** example sizes a shaft from its torque, builds it from that
+diameter, and uses its mass and inertia for the kinetic energy. A mounting plate's hole
+follows the shaft.
+
+What it is not: there are no booleans between solids, fillets/chamfers, multi-feature
+history, assemblies or 2-D drawings from the 3-D model. Splines and trimming are missing
+too. One part is one profile turned into one solid. That covers parametric plates,
+brackets, shafts, rings and sections, not a replacement for SolidWorks or FreeCAD.
+
 ### Importing Mathcad files
 
 **Open** (or drag onto the window) a Mathcad Prime `.mcdx` or Mathcad 11–15 `.xmcd` file.
@@ -175,6 +218,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
+| CAD: constrained parametric sketches, dimensions driven by worksheet expressions, extrude/revolve with exact mass properties, DXF in/out, STL out | ✅ (single-profile parts; no booleans, fillets, assemblies or drawings) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ❌ |
@@ -207,6 +251,8 @@ src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS brid
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
+src/cad/      CAD engine (no UI): model, constraint solver, profiles, mass properties, mesh, DXF, STL
+src/ui/cad/   CAD editor, 3-D viewer and properties panel
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system

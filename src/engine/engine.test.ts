@@ -422,6 +422,10 @@ describe('bundled examples', () => {
         if ('error' in r && r.error) msgs.push(r.error);
         if (r.kind === 'solve') [r.solver, ...r.guesses, ...r.constraints].forEach((x) => x.error && msgs.push(x.error));
         if (r.kind === 'sketch') msgs.push(...Object.values(r.errors));
+        if (r.kind === 'cad') {
+          msgs.push(...Object.values(r.dimErrors), ...r.issues, ...(r.featureError ? [r.featureError] : []));
+          if (!r.ok) msgs.push(`conflicting constraints ${r.conflicting.join(', ')}`);
+        }
         const reg = ws.regions.find((q) => q.id === id)!;
         return msgs.map((m) => `${ex.name} / ${reg.kind === 'math' ? reg.source : reg.kind}: ${m}`);
       });

@@ -14,7 +14,7 @@ import { fmtLen } from './render';
 const NUMERIC = /^\s*-?(\d+\.?\d*|\.\d+)(e-?\d+)?\s*$/i;
 
 /** A text field committed on Enter/blur. */
-function LazyInput({ value, onCommit, mono = true, placeholder, label }: { value: string; onCommit: (v: string) => void; mono?: boolean; placeholder?: string; label: string }) {
+export function LazyInput({ value, onCommit, mono = true, placeholder, label }: { value: string; onCommit: (v: string) => void; mono?: boolean; placeholder?: string; label: string }) {
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   const commit = () => v !== value && onCommit(v);
