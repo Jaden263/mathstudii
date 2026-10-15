@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState, type Dispatch } from 'react';
-import type { Region, Worksheet as WS, WorksheetFormat } from '../model/types';
+import { useCallback, useLayoutEffect, useRef, useState, type Dispatch } from 'react';
+import type { Region, ReportSettings, Worksheet as WS, WorksheetFormat } from '../model/types';
 import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
@@ -60,14 +60,52 @@ function checkClass(res: RegionResult | undefined): string {
   return res.check.ok ? ' check-ok' : ' check-fail';
 }
 
+/** Header and footer of one printed page. */
+function PageFrame({ index, count, report, title }: { index: number; count: number; report: ReportSettings; title: string }) {
+  const top = index * PAGE_HEIGHT;
+  const date = report.date?.trim() || new Date().toISOString().slice(0, 10);
+  const people = [report.author && `Made: ${report.author}`, report.checker && `Checked: ${report.checker}`, `Date: ${date}`].filter(Boolean).join('   ·   ');
+  const doc = [report.docNo && `Doc. ${report.docNo}`, report.revision && `Rev. ${report.revision}`].filter(Boolean).join('   ');
+  return (
+    <>
+      <div className="page-header" style={{ top: top + Math.round(5 * 3.7795), left: PAGE_MARGIN, right: PAGE_MARGIN }} aria-hidden>
+        <div className="ph-left">
+          {report.logo && <img src={report.logo} alt="" />}
+          <span>{report.company}</span>
+        </div>
+        <div className="ph-mid">
+          <b>{report.project}</b>
+          <span>{report.subject?.trim() || title}</span>
+        </div>
+        <div className="ph-right">{doc}</div>
+      </div>
+      <div className="page-footer" style={{ top: top + PAGE_HEIGHT - Math.round(11 * 3.7795), left: PAGE_MARGIN, right: PAGE_MARGIN }} aria-hidden>
+        <span>{people}</span>
+        <span>Page {index + 1} of {count}</span>
+      </div>
+    </>
+  );
+}
+
 export function Worksheet(p: Props) {
   const sheetRef = useRef<HTMLDivElement>(null);
+  // pages that hold something (printing leaves out the empty paper after the last region)
+  const [contentBottom, setContentBottom] = useState(0);
+  useLayoutEffect(() => {
+    let bottom = 0;
+    sheetRef.current?.querySelectorAll<HTMLElement>('[data-region-id]').forEach((el) => {
+      bottom = Math.max(bottom, el.offsetTop + el.offsetHeight);
+    });
+    if (Math.abs(bottom - contentBottom) > 1) setContentBottom(bottom);
+  });
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
   const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
   const maxY = p.ws.regions.reduce((m, r) => Math.max(m, r.y + 400), 0);
   const pages = Math.max(1, Math.ceil((maxY + PAGE_HEIGHT / 2) / PAGE_HEIGHT));
   const height = pages * PAGE_HEIGHT;
+  const contentPages = Math.max(1, Math.ceil((contentBottom + 1) / PAGE_HEIGHT));
+  const report = p.ws.settings.report;
 
   const toSheet = useCallback((clientX: number, clientY: number) => {
     const rect = sheetRef.current!.getBoundingClientRect();
@@ -202,7 +240,7 @@ export function Worksheet(p: Props) {
       <div
         ref={sheetRef}
         className={`sheet${p.showGrid ? ' show-grid' : ''}${p.ws.settings.format?.textFont === 'serif' ? ' serif-text' : ''}`}
-        style={{ width: PAGE_WIDTH, height, transform: `scale(${p.zoom})` }}
+        style={{ width: PAGE_WIDTH, height, transform: `scale(${p.zoom})`, ['--print-h' as string]: `${contentPages * PAGE_HEIGHT}px` }}
         onPointerDown={onSheetPointerDown}
         onContextMenu={(e) => {
           if (e.target !== e.currentTarget) return;
@@ -214,6 +252,9 @@ export function Worksheet(p: Props) {
         data-sheet
       >
         <div className="margin-guide" style={{ left: PAGE_MARGIN, right: PAGE_MARGIN }} />
+        {report?.enabled && Array.from({ length: contentPages }, (_, i) => (
+          <PageFrame key={i} index={i} count={contentPages} report={report} title={p.ws.title} />
+        ))}
         {Array.from({ length: pages - 1 }, (_, i) => (
           <div key={i} className="page-break" style={{ top: (i + 1) * PAGE_HEIGHT }}>
             <span>Page {i + 2}</span>

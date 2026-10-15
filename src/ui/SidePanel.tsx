@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type Dispatch } from 'react';
 import { Trash2, Plus, X } from 'lucide-react';
-import type { PlotRegion, PlotTrace, Region, RegionStyle, TraceStyle, TextRegion, ImageRegion, WorksheetFormat } from '../model/types';
+import type { PlotRegion, PlotTrace, Region, RegionStyle, TraceStyle, TextRegion, ImageRegion, WorksheetFormat, ReportSettings } from '../model/types';
 import { PX_PER_MM } from '../model/types';
 import type { Action } from './store';
 import { Tex } from './Tex';
@@ -25,6 +25,8 @@ interface Props {
   format?: WorksheetFormat;
   /** Push overlapping regions apart (after text grew). */
   onReflow?: () => void;
+  /** Page header and footer. */
+  report?: ReportSettings;
 }
 
 /** Keep focus in the active editor when clicking palette buttons. */
@@ -131,7 +133,61 @@ function FormatTab({ selection, format, dispatch, onReflow }: { selection: Regio
   );
 }
 
-export function SidePanel({ tab, setTab, insert, selection, results, dispatch, onClose, format, onReflow }: Props) {
+function ReportTab({ report, dispatch }: { report?: ReportSettings; dispatch: Dispatch<Action> }) {
+  const r: ReportSettings = report ?? { enabled: false };
+  const set = (patch: Partial<ReportSettings>) => dispatch({ type: 'settings', patch: { report: { ...r, ...patch } } });
+  const field = (key: keyof ReportSettings, label: string, placeholder = '') => (
+    <>
+      <span>{label}</span>
+      <input value={(r[key] as string | undefined) ?? ''} placeholder={placeholder} onChange={(e) => set({ [key]: e.target.value })} aria-label={label} />
+    </>
+  );
+  const pickLogo = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => set({ logo: String(rd.result) });
+      rd.readAsDataURL(f);
+    };
+    input.click();
+  };
+  return (
+    <div className="props">
+      <h3 className="sub">Page header &amp; footer</h3>
+      <label className="check">
+        <input type="checkbox" checked={r.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> Show on every page (and when printing)
+      </label>
+      {r.enabled && (
+        <>
+          <div className="report-fields">
+            {field('company', 'Company')}
+            {field('project', 'Project')}
+            {field('subject', 'Subject', 'worksheet title')}
+            {field('docNo', 'Document no.')}
+            {field('revision', 'Revision')}
+            {field('author', 'Made by')}
+            {field('checker', 'Checked by')}
+            {field('date', 'Date', 'date of printing')}
+          </div>
+          <div className="fmt-row">
+            <span>Logo</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn" onClick={pickLogo}>{r.logo ? 'Change…' : 'Choose…'}</button>
+              {r.logo && <button className="btn" onClick={() => set({ logo: undefined })}>Remove</button>}
+            </div>
+          </div>
+          <p className="hint">Page numbers count the pages that hold regions. Print (Ctrl+P) or “Save as PDF” in the print dialog for the report.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function SidePanel({ tab, setTab, insert, selection, results, dispatch, onClose, format, onReflow, report }: Props) {
   return (
     <aside className="side-panel" aria-label="Tools">
       <div className="side-tabs" role="tablist">
@@ -156,7 +212,12 @@ export function SidePanel({ tab, setTab, insert, selection, results, dispatch, o
         )}
         {tab === 'units' && <UnitsTab insert={insert} />}
         {tab === 'functions' && <FunctionsTab insert={insert} />}
-        {tab === 'format' && <FormatTab selection={selection} format={format} dispatch={dispatch} onReflow={onReflow} />}
+        {tab === 'format' && (
+          <>
+            <FormatTab selection={selection} format={format} dispatch={dispatch} onReflow={onReflow} />
+            <ReportTab report={report} dispatch={dispatch} />
+          </>
+        )}
         {tab === 'properties' && <Properties selection={selection} results={results} dispatch={dispatch} />}
       </div>
     </aside>

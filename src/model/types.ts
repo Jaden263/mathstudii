@@ -186,6 +186,23 @@ export interface PythonRegion extends RegionBase {
 
 export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion;
 
+/** Page header and footer for printed calculation sheets. */
+export interface ReportSettings {
+  enabled: boolean;
+  company?: string;
+  project?: string;
+  /** Subject of the calculation; the worksheet title when empty. */
+  subject?: string;
+  docNo?: string;
+  revision?: string;
+  author?: string;
+  checker?: string;
+  /** Empty = the date it is printed. */
+  date?: string;
+  /** Image as a data URL. */
+  logo?: string;
+}
+
 export interface WorksheetSettings {
   /** Displayed decimal places. */
   precision: number;
@@ -205,6 +222,8 @@ export interface WorksheetSettings {
   lateBinding?: boolean;
   /** Font size, line thickness and text font of the whole worksheet. */
   format?: WorksheetFormat;
+  /** Header and footer on every page. */
+  report?: ReportSettings;
 }
 
 export interface Worksheet {

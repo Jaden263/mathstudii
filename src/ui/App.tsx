@@ -951,7 +951,7 @@ export function App() {
           />
         </div>
         {panelOpen && (
-          <SidePanel tab={tab} setTab={setTab} insert={insertText} selection={selection} results={evaluation.results} dispatch={dispatch} onClose={() => setPanelOpen(false)} format={ws.settings.format} onReflow={() => separateRef.current(true)} />
+          <SidePanel tab={tab} setTab={setTab} insert={insertText} selection={selection} results={evaluation.results} dispatch={dispatch} onClose={() => setPanelOpen(false)} format={ws.settings.format} report={ws.settings.report} onReflow={() => separateRef.current(true)} />
         )}
       </main>
 
