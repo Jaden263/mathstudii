@@ -15,7 +15,7 @@ export interface SearchOptions {
 const SKIP = new Set([
   'id', 'kind', 'type', 'src', 'color', 'background', 'lengthUnit', 'forceUnit', 'unit', 'mode', 'layout', 'show', 'panels',
   'plotType', 'textFont', 'style', 'op', 'dir', 'family', 'logo', 'component', 'occ', 'sketch', 'member', 'node', 'refs', 'targets',
-  'profiles', 'points', 'a', 'b', 'p1', 'p2', 'center', 'axis', 'axis2', 'plane', 'feature', 'tools', 'target', 'entities', 'ref',
+  'profiles', 'points', 'a', 'b', 'p1', 'p2', 'cad', 'center', 'axis', 'axis2', 'plane', 'feature', 'tools', 'target', 'entities', 'ref',
 ]);
 
 const NAME_CHAR = /[\p{L}\p{N}_']/u;

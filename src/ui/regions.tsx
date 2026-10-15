@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch } from 'react';
 import { Plus, Minus, Loader2 } from 'lucide-react';
-import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, PythonRegion } from '../model/types';
+import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, PythonRegion, DrawingRegion } from '../model/types';
 import type { MathResult, SolveResult, TableResult, TextResult, PlotResult, RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import { Tex } from './Tex';
@@ -13,6 +13,8 @@ import { CadView } from './cad/CadView';
 import { BeamView } from './beam/BeamView';
 import { parseDelimited, toCsv, toTableData, type TableData } from '../model/tableData';
 import { PythonView } from './python/PythonView';
+import { DrawingView } from './cad/DrawingView';
+import type { CadResult } from '../cad/evaluate';
 
 export interface RegionViewProps<R> {
   region: R;
@@ -391,4 +393,10 @@ export function CadRegionView({ region, result, editing, selected, dispatch, onD
 
 export function PythonRegionView({ region, result, editing, dispatch, onDone, registerEditor, zoom }: RegionViewProps<PythonRegion>) {
   return <PythonView region={region} result={result} editing={editing} dispatch={dispatch} onDone={onDone} registerEditor={registerEditor} zoom={zoom} />;
+}
+
+// ---------------------------------------------------------------- drawing
+
+export function DrawingRegionView({ region, selected, dispatch, cad, cadResult }: RegionViewProps<DrawingRegion> & { cad?: CadRegion; cadResult?: RegionResult }) {
+  return <DrawingView region={region} cad={cad} cadResult={cadResult?.kind === 'cad' ? (cadResult as CadResult) : undefined} selected={selected} dispatch={dispatch} />;
 }

@@ -283,7 +283,7 @@ export function cadExample(): Worksheet {
     { id: 'qd4', type: 'distanceX', refs: ['qp0', 'qc'], value: 'b_p/2', offset: { x: 0, y: -70 } },
     { id: 'qd5', type: 'distanceY', refs: ['qp0', 'qc'], value: '30 mm', offset: { x: 112, y: 0 } },
   );
-  return build('CAD part design', [
+  const ws = build('CAD part design', [
     ['text', L, mm(12), { width: mm(170), markdown: '# Parametric parts from the calculation\nThe shaft diameter comes from the torque; the CAD part takes it as a dimension, and its mass and inertia come back into the math. Change `T` and watch the drawing, the 3-D model and the results update. Double-click a part to edit it: drag geometry, add constraints, type expressions into dimensions.' }],
     ['math', L, mm(50), { source: 'T := 450 N*m' }],
     ['math', mm(70), mm(50), { source: 'τ_allow := 40 MPa' }],
@@ -326,7 +326,11 @@ export function cadExample(): Worksheet {
     ['math', L, mm(455), { source: 'asm.Imz = kg*cm^2' }],
     ['math', mm(85), mm(455), { source: 'asm.Spin = deg' }],
     ['math', mm(130), mm(455), { source: 'asm.Lz = mm' }],
+    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: standard views with hidden lines, overall dimensions and a title block, kept up to date with the part. Select it to print it on A4 at true scale or export SVG / DXF.' }],
   ]);
+  const asm = ws.regions.find((r) => r.kind === 'cad' && r.name === 'asm');
+  if (asm) ws.regions.push(createRegion('drawing', L, mm(492), { cad: asm.id, title: 'Flange with shaft', partNo: 'FA-001', material: 'EN-GJL-250 / C45' }));
+  return ws;
 }
 
 export function steelCheckExample(): Worksheet {

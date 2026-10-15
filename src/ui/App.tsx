@@ -674,7 +674,17 @@ export function App() {
       { separator: true },
       { label: 'Format…', icon: <Paintbrush size={14} />, onClick: () => { setTab('format'); setPanelOpen(true); } },
     );
-    if (single && ['plot', 'image', 'sketch', 'cad', 'beam'].includes(r.kind)) {
+    if (single && r.kind === 'cad') {
+      items.push({
+        label: 'Make a drawing', icon: <PencilRuler size={14} />,
+        onClick: () => {
+          const el = document.querySelector<HTMLElement>(`[data-region-id="${r.id}"]`);
+          addRegion('drawing', { cad: r.id }, { x: snap(PAGE_MARGIN), y: snap(r.y + (el?.offsetHeight ?? 300) + GRID * 3) });
+          setTimeout(() => separateRef.current(true), 300);
+        },
+      });
+    }
+    if (single && ['plot', 'image', 'sketch', 'cad', 'beam', 'drawing'].includes(r.kind)) {
       items.push({ label: 'Properties…', icon: <SlidersHorizontal size={14} />, onClick: () => { setTab('properties'); setPanelOpen(true); } });
     }
     setMenu({ x, y, items });
@@ -1007,7 +1017,7 @@ export function App() {
             dispatch={dispatch}
             zoom={zoom}
             selected={selected}
-            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad' || r.kind === 'beam')) setTab('properties'); } }}
+            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad' || r.kind === 'beam' || r.kind === 'drawing')) setTab('properties'); } }}
             editingId={editingId}
             setEditingId={setEditingId}
             cursor={cursor}

@@ -5,7 +5,7 @@ import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/
 import type { CadDesign } from '../cad/design';
 import { DEFAULT_SECTION, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing';
 
 interface RegionBase {
   id: string;
@@ -190,7 +190,29 @@ export interface PythonRegion extends RegionBase {
   collapsed?: boolean;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion;
+/** A 2-D drawing of a CAD part: standard views, hidden lines, dimensions, title block. */
+export interface DrawingRegion extends RegionBase {
+  kind: 'drawing';
+  /** Id of the CAD region drawn. */
+  cad: string;
+  width: number;
+  height: number;
+  sheet: 'A4' | 'A3';
+  /** First angle (ISO, Europe) or third angle (ANSI). */
+  projection: 'first' | 'third';
+  views: { front: boolean; top: boolean; side: boolean; iso: boolean };
+  hidden: boolean;
+  /** Paper / model, e.g. 0.5 for 1:2; missing = the largest standard scale that fits. */
+  scale?: number;
+  dims: boolean;
+  title?: string;
+  partNo?: string;
+  material?: string;
+  drawnBy?: string;
+  date?: string;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion;
 
 /** Page header and footer for printed calculation sheets. */
 export interface ReportSettings {
@@ -303,6 +325,11 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       };
     case 'python':
       return { ...base, kind, code: '', width: 480, ...(init as Partial<PythonRegion>) };
+    case 'drawing':
+      return {
+        ...base, kind, cad: '', width: 680, height: 481, sheet: 'A4', projection: 'first',
+        views: { front: true, top: true, side: true, iso: true }, hidden: true, dims: true, ...(init as Partial<DrawingRegion>),
+      };
   }
 }
 

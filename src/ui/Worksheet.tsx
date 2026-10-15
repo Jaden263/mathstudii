@@ -4,7 +4,7 @@ import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import type { EditorHandle } from './editing';
-import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, SketchRegionView, CadRegionView, BeamRegionView, PythonRegionView, type RegionViewProps } from './regions';
+import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, SketchRegionView, CadRegionView, BeamRegionView, PythonRegionView, DrawingRegionView, type RegionViewProps } from './regions';
 
 export interface Cursor {
   x: number;
@@ -235,6 +235,10 @@ export function Worksheet(p: Props) {
       case 'cad': return <CadRegionView {...(props as RegionViewProps<typeof r>)} />;
       case 'beam': return <BeamRegionView {...(props as RegionViewProps<typeof r>)} />;
       case 'python': return <PythonRegionView {...(props as RegionViewProps<typeof r>)} />;
+      case 'drawing': {
+        const cad = p.ws.regions.find((q) => q.id === r.cad);
+        return <DrawingRegionView {...(props as RegionViewProps<typeof r>)} cad={cad?.kind === 'cad' ? cad : undefined} cadResult={cad ? p.results.get(cad.id) : undefined} />;
+      }
     }
   };
 
