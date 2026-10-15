@@ -67,6 +67,24 @@ export function foreignFormat(name: string): 'mathcad' | 'smath' | null {
   return null;
 }
 
+/** Whether this platform can remember a save location (desktop app, Chromium browsers). */
+export const canLinkFiles = isTauri || !!fsw.showSaveFilePicker;
+
+/** Write a linked file without any dialog. */
+export async function writeLinkedFile(handle: FileHandle, text: string): Promise<void> {
+  if (!handle) throw new Error('no file');
+  if (typeof handle === 'string') {
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+    await writeTextFile(handle, text);
+    return;
+  }
+  const w = await handle.createWritable();
+  await w.write(text);
+  await w.close();
+}
+
+export const handleName = (h: FileHandle) => (!h ? '' : typeof h === 'string' ? baseName(h) : h.name);
+
 /** Save to an existing handle, or ask for a location. Returns the handle used, or null if cancelled. */
 export async function saveWorksheetFile(text: string, suggestedName: string, handle: FileHandle, saveAs = false): Promise<{ name: string; handle: FileHandle } | null> {
   const fileName = suggestedName.endsWith(`.${FILE_EXT}`) ? suggestedName : `${suggestedName}.${FILE_EXT}`;

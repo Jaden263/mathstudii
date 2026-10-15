@@ -379,10 +379,10 @@ export function beamExample(): Worksheet {
     ['text', L, mm(268), { width: mm(170), markdown: '## Portal frame\nFixed feet, a roof load and wind on the left corner. The frame is statically indeterminate (degree 3); the stiffness method solves it directly.' }],
     ['math', L, mm(288), { source: 'q_r := 12 kN/m' }],
     ['math', mm(65), mm(288), { source: 'H_w := 15 kN' }],
-    ['beam', L, mm(298), { name: 'fr', width: mm(125), height: mm(95), show: 'M', ...frame }],
-    ['math', mm(150), mm(320), { source: 'fr.A.M = kN*m' }],
-    ['math', mm(150), mm(334), { source: 'fr.D.Rx = kN' }],
-    ['math', mm(150), mm(348), { source: 'fr.w_max = mm' }],
+    ['beam', L, mm(298), { name: 'fr', width: mm(170), height: mm(95), show: 'M', ...frame }],
+    ['math', L, mm(400), { source: 'fr.A.M = kN*m' }],
+    ['math', mm(70), mm(400), { source: 'fr.D.Rx = kN' }],
+    ['math', mm(125), mm(400), { source: 'fr.w_max = mm' }],
   ]);
 }
 

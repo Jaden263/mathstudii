@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type Dispatch } from 'react';
-import type { Region, Worksheet as WS } from '../model/types';
+import type { Region, Worksheet as WS, WorksheetFormat } from '../model/types';
 import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
@@ -29,6 +29,20 @@ interface Props {
 }
 
 export const snap = (v: number) => Math.round(v / GRID) * GRID;
+
+/** CSS for a region's format: size and thickness as variables the views multiply with. */
+function regionLook(r: Region, f: WorksheetFormat | undefined): React.CSSProperties {
+  const st = r.style;
+  const fs = (f?.fontScale ?? 1) * (st?.fontScale ?? 1), lw = (f?.lineScale ?? 1) * (st?.lineScale ?? 1);
+  const out: Record<string, string | number> = {};
+  if (fs !== 1) out['--fs'] = fs;
+  if (lw !== 1) out['--lw'] = lw;
+  if (st?.bold) out.fontWeight = 700;
+  if (st?.italic) out.fontStyle = 'italic';
+  if (st?.color) out.color = st.color;
+  if (st?.background) out.backgroundColor = st.background;
+  return out as React.CSSProperties;
+}
 
 const EDITABLE = new Set(['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam']);
 
@@ -179,7 +193,7 @@ export function Worksheet(p: Props) {
     <div className="sheet-scroller-inner" style={{ width: PAGE_WIDTH * p.zoom, height: height * p.zoom }}>
       <div
         ref={sheetRef}
-        className={`sheet${p.showGrid ? ' show-grid' : ''}`}
+        className={`sheet${p.showGrid ? ' show-grid' : ''}${p.ws.settings.format?.textFont === 'serif' ? ' serif-text' : ''}`}
         style={{ width: PAGE_WIDTH, height, transform: `scale(${p.zoom})` }}
         onPointerDown={onSheetPointerDown}
         tabIndex={-1}
@@ -197,10 +211,10 @@ export function Worksheet(p: Props) {
           const res = p.results.get(r.id);
           return (
             <div
-              key={r.id}
+              key={r.kind === 'plot' ? `${r.id}|${p.ws.settings.format?.fontScale ?? 1}|${p.ws.settings.format?.lineScale ?? 1}` : r.id}
               data-region-id={r.id}
               className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}`}
-              style={{ left: r.x, top: r.y, transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined }}
+              style={{ left: r.x, top: r.y, transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined, ...regionLook(r, p.ws.settings.format) }}
               onPointerDown={(e) => onRegionPointerDown(e, r)}
             >
               {renderRegion(r)}

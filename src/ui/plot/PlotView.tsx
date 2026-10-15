@@ -7,7 +7,11 @@ import { drawPlot, fromPx, fmtTick, type Layout, type Theme, type View } from '.
 function readTheme(el: HTMLElement): Theme {
   const cs = getComputedStyle(el);
   const v = (n: string, d: string) => cs.getPropertyValue(n).trim() || d;
-  return { fg: v('--text', '#1d1d1f'), muted: v('--text-muted', '#6b6b74'), grid: v('--plot-grid', '#e6e6ea'), bg: v('--page', '#fff') };
+  const num = (n: string) => {
+    const x = parseFloat(cs.getPropertyValue(n));
+    return Number.isFinite(x) && x > 0 ? x : 1;
+  };
+  return { fg: v('--text', '#1d1d1f'), muted: v('--text-muted', '#6b6b74'), grid: v('--plot-grid', '#e6e6ea'), bg: v('--page', '#fff'), fs: num('--fs'), lw: num('--lw') };
 }
 
 export function PlotView({ region, data, selected, dispatch, zoom = 1 }: { region: PlotRegion; data?: PlotResult; selected: boolean; dispatch: Dispatch<Action>; zoom?: number }) {

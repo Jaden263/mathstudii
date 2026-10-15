@@ -3,7 +3,7 @@
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
-import { DEFAULT_SECTION, type BeamData, type BeamDiagram, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
+import { DEFAULT_SECTION, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 
 export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam';
 
@@ -15,6 +15,30 @@ interface RegionBase {
   y: number;
   /** Disabled regions are shown but never evaluated (Mathcad "Disable evaluation"). */
   disabled?: boolean;
+  /** Look of this region (on top of the worksheet's format). */
+  style?: RegionStyle;
+}
+
+/** Text and line formatting; scales multiply the worksheet's. */
+export interface RegionStyle {
+  /** Font size factor (1 = normal). */
+  fontScale?: number;
+  bold?: boolean;
+  italic?: boolean;
+  /** Text colour (CSS colour). */
+  color?: string;
+  /** Highlight behind the region. */
+  background?: string;
+  /** Line thickness factor for drawings, plots and beams (1 = normal). */
+  lineScale?: number;
+}
+
+/** Look of the whole worksheet. */
+export interface WorksheetFormat {
+  fontScale?: number;
+  lineScale?: number;
+  /** Font of text regions. */
+  textFont?: 'sans' | 'serif';
 }
 
 export interface MathRegion extends RegionBase {
@@ -141,8 +165,14 @@ export interface BeamRegion extends RegionBase, BeamData {
   snap: boolean;
   /** Section and material of members without their own. */
   section: BeamSection;
-  /** Diagram shown on the structure. */
+  /** Diagram drawn on the structure in the overlay layout. */
   show: BeamDiagram;
+  /** Diagrams under the structure (default) or on it. */
+  layout?: BeamLayout;
+  /** Diagrams stacked under the structure; missing = V, M, δ (and N when there is axial force). */
+  panels?: BeamPanel[];
+  /** Show the support reactions on the structure in the stacked layout. */
+  reactions?: boolean;
 }
 
 export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion;
@@ -164,6 +194,8 @@ export interface WorksheetSettings {
    * capturing them when they are defined (Mathcad, the default).
    */
   lateBinding?: boolean;
+  /** Font size, line thickness and text font of the whole worksheet. */
+  format?: WorksheetFormat;
 }
 
 export interface Worksheet {

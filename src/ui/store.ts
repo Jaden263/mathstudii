@@ -11,7 +11,8 @@ export type Action =
   | { type: 'title'; title: string; coalesce?: string }
   | { type: 'undo' }
   | { type: 'redo' }
-  | { type: 'markSaved' };
+  /** The document as of `version` (default: now) is stored. */
+  | { type: 'markSaved'; version?: number };
 
 interface State {
   ws: Worksheet;
@@ -57,7 +58,7 @@ function reducer(s: State, a: Action): State {
     case 'load':
       return { ws: a.ws, past: [], future: [], lastCoalesce: null, lastTime: 0, version: s.version + 1, savedVersion: s.version + 1 };
     case 'markSaved':
-      return { ...s, savedVersion: s.version };
+      return { ...s, savedVersion: Math.max(s.savedVersion, Math.min(a.version ?? s.version, s.version)) };
     case 'undo': {
       if (!s.past.length) return s;
       const prev = s.past[s.past.length - 1];
@@ -92,5 +93,6 @@ export function useWorksheetStore(initial: () => Worksheet) {
     canUndo: state.past.length > 0,
     canRedo: state.future.length > 0,
     dirty: state.version !== state.savedVersion,
+    version: state.version,
   };
 }

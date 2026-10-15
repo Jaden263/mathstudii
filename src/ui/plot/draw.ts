@@ -9,6 +9,9 @@ export interface Theme {
   muted: string;
   grid: string;
   bg: string;
+  /** Font size and line thickness factors (worksheet / region format). */
+  fs: number;
+  lw: number;
 }
 
 export interface View {
@@ -115,7 +118,7 @@ export function fromPx(l: Layout, px: number, py: number): [number, number] {
 
 export function drawPlot(ctx: CanvasRenderingContext2D, w: number, h: number, region: PlotRegion, data: PlotResult | undefined, theme: Theme, view: View): Layout | null {
   ctx.clearRect(0, 0, w, h);
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.font = `${11 * theme.fs}px system-ui, sans-serif`;
   if (!data) return null;
   if (data.surface) {
     if (region.plotType === 'contour') drawContour(ctx, w, h, data.surface, theme);
@@ -199,10 +202,10 @@ function drawXY(ctx: CanvasRenderingContext2D, w: number, h: number, region: Plo
   ctx.textBaseline = 'bottom';
   ctx.fillText(truncate(ctx, data.xLabel, L.width), L.left + L.width / 2, h - 3);
   if (region.title) {
-    ctx.font = '600 12px system-ui, sans-serif';
+    ctx.font = `600 ${12 * theme.fs}px system-ui, sans-serif`;
     ctx.textBaseline = 'top';
     ctx.fillText(truncate(ctx, region.title, w - 20), w / 2, 4);
-    ctx.font = '11px system-ui, sans-serif';
+    ctx.font = `${11 * theme.fs}px system-ui, sans-serif`;
   }
   // series
   ctx.save();
@@ -213,7 +216,7 @@ function drawXY(ctx: CanvasRenderingContext2D, w: number, h: number, region: Plo
     const color = s.color || SERIES_COLORS[k % SERIES_COLORS.length];
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    ctx.lineWidth = 1.75;
+    ctx.lineWidth = 1.75 * theme.lw;
     const pts: ([number, number] | null)[] = s.xs.map((x, i) => {
       const y = s.ys[i];
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
@@ -313,7 +316,7 @@ function drawPolar(ctx: CanvasRenderingContext2D, w: number, h: number, data: Pl
   }
   data.series.forEach((s, k) => {
     ctx.strokeStyle = s.color || SERIES_COLORS[k % SERIES_COLORS.length];
-    ctx.lineWidth = 1.75;
+    ctx.lineWidth = 1.75 * theme.lw;
     ctx.beginPath();
     let pen = false;
     s.xs.forEach((th, i) => {

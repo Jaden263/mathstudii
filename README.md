@@ -36,7 +36,36 @@ interrupt it (Esc / Stop), like Mathcad's interrupt.
 - Click empty space to place the cursor (**+**), then just type. `"` makes a text region, `@` a plot.
 - `:` types `:=`, `~` types `≡`, `Ctrl+.` types `→`, `Ctrl+G` makes the previous letter Greek.
 - Enter finishes a region and moves the cursor below it. Drag a region to move it.
-- Press **F1** for all keyboard shortcuts. **Examples** in the top bar has five worked worksheets.
+- Press **F1** for all keyboard shortcuts. **Examples** in the top bar has worked worksheets.
+
+### Saving
+
+- **Autosave is on by default.** Every worksheet is kept in the browser's document store
+  (IndexedDB) and saved there a moment after each change. Closing the tab loses nothing.
+  The chip next to the title says where things stand: *Saved in browser*,
+  *Saved · file.mstd* or *Saving…*.
+- **Save (Ctrl+S) asks for a location once.** After that, Save writes to the same file
+  without asking, and autosave keeps that file up to date too. This works in the desktop
+  app and in Chromium browsers (Chrome, Edge), and the link survives reloads.
+  - After a reload, Chromium wants one click on Save before the page may write the file
+    again. The chip tells you when.
+  - Firefox and Safari cannot write files from a web page, so there Save keeps the
+    document in the browser, and **Download a copy** in the file menu gives you a file.
+- **Save as… (Ctrl+Shift+S)** picks a new file.
+- The **▾ menu next to Save** lists recent documents with their linked files, and has
+  *Open file…*, *Save as…* and the **Autosave** switch. Opening a file that is already
+  linked continues the same document instead of making a copy.
+
+### Format
+
+The **Format** tab in the side panel formats the selected regions:
+
+- font size, bold, italic, text colour and a highlight
+- line thickness of sketches, plots and beam drawings
+
+Under *Whole worksheet* the same font size and line thickness apply to everything, along
+with a sans-serif or serif text font. When bigger text makes regions overlap, they are
+pushed apart automatically.
 
 ### Syntax
 
@@ -115,10 +144,19 @@ N, V, M and deflection diagrams right on the drawing.
 - **Select (V):** drag nodes, and double-click a load to change its value. Delete removes
   the selection.
 
-**Results:** the strip under the drawing switches between **Model**, **Reactions**, **N**,
-**V**, **M** and **δ**. The extremes are labelled on every member: moments on the tension
-side, positive shear and tension on the member's upper or left side. The deflected shape
-is exaggerated and labelled in mm. The panel lists the reactions, the extremes, the bending
+**Results:** the diagrams are drawn neatly **under the beam**, textbook style, one panel
+each for N (only when there is axial force), V, M and δ. They share the beam's horizontal
+scale, and dashed guide lines drop from the supports and point loads through every panel.
+Values are labelled at supports, jumps and extremes. Moments are drawn on the tension side
+(sagging below the line), shear and tension positive above, and deflection as it goes.
+
+- The strip under the panels switches diagrams on and off, and **Reactions** adds the
+  support reactions to the drawing.
+- A frame gets one small copy of the structure per diagram, in a grid.
+- **On structure** switches to the other layout: one diagram at a time, drawn on the
+  members.
+- The region grows to fit the panels when they first appear (regions below move down),
+  and it can be resized freely afterwards. The panel lists the reactions, the extremes, the bending
 stress (with a section modulus W) and the degree of static indeterminacy.
 
 **Sections:** IPE/HEA/HEB profiles from a list, or any E, A, I and W. All four are

@@ -1,6 +1,6 @@
-import { useMemo, useState, type Dispatch } from 'react';
+import { useMemo, useRef, useState, type Dispatch } from 'react';
 import { Trash2, Plus, X } from 'lucide-react';
-import type { PlotRegion, PlotTrace, Region, TraceStyle, TextRegion, ImageRegion } from '../model/types';
+import type { PlotRegion, PlotTrace, Region, RegionStyle, TraceStyle, TextRegion, ImageRegion, WorksheetFormat } from '../model/types';
 import { PX_PER_MM } from '../model/types';
 import type { Action } from './store';
 import { Tex } from './Tex';
@@ -11,7 +11,7 @@ import { CadProps } from './cad/CadProps';
 import { BeamProps } from './beam/BeamProps';
 import type { RegionResult, SketchResult, CadResult, BeamResult } from '../engine/evaluator';
 
-type Tab = 'math' | 'units' | 'functions' | 'properties';
+export type Tab = 'math' | 'units' | 'functions' | 'format' | 'properties';
 
 interface Props {
   tab: Tab;
@@ -21,6 +21,10 @@ interface Props {
   results: Map<string, RegionResult>;
   dispatch: Dispatch<Action>;
   onClose: () => void;
+  /** Format of the whole worksheet. */
+  format?: WorksheetFormat;
+  /** Push overlapping regions apart (after text grew). */
+  onReflow?: () => void;
 }
 
 /** Keep focus in the active editor when clicking palette buttons. */
@@ -41,13 +45,99 @@ function Group({ title, items, insert }: { title: string; items: PaletteItem[]; 
   );
 }
 
-export function SidePanel({ tab, setTab, insert, selection, results, dispatch, onClose }: Props) {
+const TEXT_COLOURS = ['#c92a2a', '#2f6fdf', '#2b8a3e', '#e67700', '#7048e8', '#495057'];
+// see-through highlights read well on light and dark pages
+const HIGHLIGHTS = ['rgba(255, 212, 59, 0.35)', 'rgba(105, 219, 124, 0.3)', 'rgba(77, 171, 247, 0.28)', 'rgba(255, 135, 135, 0.3)', 'rgba(177, 151, 252, 0.3)'];
+
+function Scale({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void }) {
+  return (
+    <label className="fmt-row">
+      <span>{label}</span>
+      <button className="icon-btn" aria-label={`Smaller ${label.toLowerCase()}`} onClick={() => onChange(Math.max(min, +(value - step * 2).toFixed(2)))}>−</button>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} aria-label={label} />
+      <button className="icon-btn" aria-label={`Larger ${label.toLowerCase()}`} onClick={() => onChange(Math.min(max, +(value + step * 2).toFixed(2)))}>+</button>
+      <output>{Math.round(value * 100)}%</output>
+    </label>
+  );
+}
+
+function Swatches({ label, value, colours, onChange }: { label: string; value?: string; colours: string[]; onChange: (c: string | undefined) => void }) {
+  return (
+    <div className="fmt-row">
+      <span>{label}</span>
+      <div className="fmt-swatches">
+        <button className={`none${!value ? ' on' : ''}`} title="None" aria-label={`${label}: none`} onClick={() => onChange(undefined)} />
+        {colours.map((c) => <button key={c} className={value === c ? 'on' : ''} style={{ background: c }} title={c} aria-label={`${label} ${c}`} onClick={() => onChange(c)} />)}
+        <input type="color" value={value && value.startsWith('#') ? value : '#000000'} onChange={(e) => onChange(e.target.value)} aria-label={`${label}: custom`} title="Custom colour" />
+      </div>
+    </div>
+  );
+}
+
+/** Font size, weight, colour, highlight and line thickness of the selection, and of the whole worksheet. */
+function FormatTab({ selection, format, dispatch, onReflow }: { selection: Region[]; format?: WorksheetFormat; dispatch: Dispatch<Action>; onReflow?: () => void }) {
+  // bigger text can make regions overlap: push them apart once the change settles
+  const reflow = useRef<number | undefined>(undefined);
+  const later = () => {
+    window.clearTimeout(reflow.current);
+    reflow.current = window.setTimeout(() => onReflow?.(), 500);
+  };
+  const first = selection[0]?.style ?? {};
+  const upd = (patch: Partial<RegionStyle>) => {
+    for (const r of selection) {
+      const style: RegionStyle = { ...r.style, ...patch };
+      for (const k of Object.keys(style) as (keyof RegionStyle)[]) if (style[k] === undefined || style[k] === false || (k.endsWith('Scale') && style[k] === 1)) delete style[k];
+      dispatch({ type: 'update', id: r.id, patch: { style: Object.keys(style).length ? style : undefined }, coalesce: `fmt:${Object.keys(patch).join()}` });
+    }
+    if ('fontScale' in patch || 'bold' in patch) later();
+  };
+  const f = format ?? {};
+  const setF = (patch: Partial<WorksheetFormat>) => {
+    dispatch({ type: 'settings', patch: { format: { ...f, ...patch } } });
+    if ('fontScale' in patch || 'textFont' in patch) later();
+  };
+  return (
+    <div className="props">
+      <h3 className="sub">{selection.length ? `Selected (${selection.length} region${selection.length > 1 ? 's' : ''})` : 'Selected regions'}</h3>
+      {!selection.length ? <p className="hint">Select one or more regions on the page to format them. The settings below change the whole worksheet.</p> : (
+        <>
+          <Scale label="Font size" value={first.fontScale ?? 1} min={0.6} max={2.5} step={0.05} onChange={(v) => upd({ fontScale: v })} />
+          <div className="fmt-row">
+            <span>Style</span>
+            <div className="fmt-toggles">
+              <button className={first.bold ? 'on' : ''} aria-pressed={!!first.bold} onClick={() => upd({ bold: !first.bold })} title="Bold"><b>B</b></button>
+              <button className={first.italic ? 'on' : ''} aria-pressed={!!first.italic} onClick={() => upd({ italic: !first.italic })} title="Italic"><i>I</i></button>
+            </div>
+          </div>
+          <Swatches label="Colour" value={first.color} colours={TEXT_COLOURS} onChange={(c) => upd({ color: c })} />
+          <Swatches label="Highlight" value={first.background} colours={HIGHLIGHTS} onChange={(c) => upd({ background: c })} />
+          <Scale label="Line thickness" value={first.lineScale ?? 1} min={0.5} max={3} step={0.1} onChange={(v) => upd({ lineScale: v })} />
+          <p className="hint">Line thickness applies to sketches, plots and beams.</p>
+          <button className="btn" onClick={() => upd({ fontScale: undefined, bold: undefined, italic: undefined, color: undefined, background: undefined, lineScale: undefined })}>Reset selection</button>
+        </>
+      )}
+      <h3 className="sub">Whole worksheet</h3>
+      <Scale label="Font size" value={f.fontScale ?? 1} min={0.7} max={2} step={0.05} onChange={(v) => setF({ fontScale: v })} />
+      <Scale label="Line thickness" value={f.lineScale ?? 1} min={0.5} max={3} step={0.1} onChange={(v) => setF({ lineScale: v })} />
+      <label className="fmt-row">
+        <span>Text font</span>
+        <select value={f.textFont ?? 'sans'} onChange={(e) => setF({ textFont: e.target.value as WorksheetFormat['textFont'] })}>
+          <option value="sans">Sans-serif</option>
+          <option value="serif">Serif</option>
+        </select>
+      </label>
+      <button className="btn" onClick={() => dispatch({ type: 'settings', patch: { format: undefined } })}>Reset worksheet format</button>
+    </div>
+  );
+}
+
+export function SidePanel({ tab, setTab, insert, selection, results, dispatch, onClose, format, onReflow }: Props) {
   return (
     <aside className="side-panel" aria-label="Tools">
       <div className="side-tabs" role="tablist">
-        {(['math', 'units', 'functions', 'properties'] as Tab[]).map((t) => (
+        {(['math', 'units', 'functions', 'format', 'properties'] as Tab[]).map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onMouseDown={keepFocus} onClick={() => setTab(t)}>
-            {t === 'math' ? 'Math' : t === 'units' ? 'Units' : t === 'functions' ? 'Functions' : 'Properties'}
+            {t === 'math' ? 'Math' : t === 'units' ? 'Units' : t === 'functions' ? 'Functions' : t === 'format' ? 'Format' : 'Properties'}
           </button>
         ))}
         <button className="icon-btn close-panel" onClick={onClose} aria-label="Close panel"><X size={16} /></button>
@@ -66,6 +156,7 @@ export function SidePanel({ tab, setTab, insert, selection, results, dispatch, o
         )}
         {tab === 'units' && <UnitsTab insert={insert} />}
         {tab === 'functions' && <FunctionsTab insert={insert} />}
+        {tab === 'format' && <FormatTab selection={selection} format={format} dispatch={dispatch} onReflow={onReflow} />}
         {tab === 'properties' && <Properties selection={selection} results={results} dispatch={dispatch} />}
       </div>
     </aside>

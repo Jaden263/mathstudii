@@ -3,7 +3,7 @@
 import type { JSX } from 'react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
-import { loadPoint, type BeamData, type BeamDiagram, type BeamLoad, type BeamView } from '../../beam/model';
+import { loadPoint, type BeamData, type BeamDiagram, type BeamLoad, type BeamPanel, type BeamView } from '../../beam/model';
 
 export const LENGTH_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
 export const FORCE_N: Record<string, number> = { kN: 1e3, N: 1, MN: 1e6, kip: 4448.2216152605, lbf: 4.4482216152605 };
@@ -59,11 +59,11 @@ export function bounds(d: BeamData): { x0: number; y0: number; x1: number; y1: n
  * A view that frames the structure: room above for loads and the summary, around it
  * for reaction arrows and diagram values, below for the supports and the diagram strip.
  */
-export function fitView(d: BeamData, width: number, height: number): BeamView | null {
+export function fitView(d: BeamData, width: number, height: number, m = { l: 100, r: 100, t: 70, b: 100 }): BeamView | null {
   const b = bounds(d);
   if (!b) return null;
   const w = b.x1 - b.x0, h = b.y1 - b.y0;
-  const left = 100, right = 100, top = 70, bottom = 100;
+  const left = m.l, right = m.r, top = m.t, bottom = m.b;
   const zx = w > 0 ? (width - left - right) / w : Infinity;
   const zy = h > 0 ? (height - top - bottom) / h : Infinity;
   let zoom = Math.min(zx, zy);
@@ -221,7 +221,7 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
 const DIAGRAM_PX = 52;
 
 /** N, V, M or deflection drawn on every member, with the extreme values labelled. */
-export function Diagram({ r, d, vp, res, kind }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'> }) {
+export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number }) {
   const sol = res.solution;
   if (!sol) return null;
   const u = units(r);
@@ -229,7 +229,7 @@ export function Diagram({ r, d, vp, res, kind }: { r: BeamRegion; d: BeamData; v
   const N = new Map(d.nodes.map((q) => [q.id, q]));
   if (kind === 'deflection') {
     const wmax = sol.max.w?.value ?? 0;
-    const k = wmax > 0 ? DIAGRAM_PX / vp.view.zoom / (wmax / Lm) : 0; // exaggeration: the largest deflection shows as DIAGRAM_PX
+    const k = wmax > 0 ? px / vp.view.zoom / (wmax / Lm) : 0; // exaggeration: the largest deflection shows as px
     const paths: JSX.Element[] = [];
     for (const mr of sol.members) {
       const m = d.members.find((q) => q.id === mr.id);
@@ -263,7 +263,7 @@ export function Diagram({ r, d, vp, res, kind }: { r: BeamRegion; d: BeamData; v
   const vals = (mr: typeof sol.members[number]) => (kind === 'M' ? mr.M : kind === 'V' ? mr.V : mr.N);
   let vmax = 0;
   for (const mr of sol.members) for (const v of vals(mr)) vmax = Math.max(vmax, Math.abs(v));
-  const scale = vmax > 0 ? DIAGRAM_PX / vmax : 0;
+  const scale = vmax > 0 ? px / vmax : 0;
   const text = (v: number) => (kind === 'M' ? u.moment(v) : u.force(v));
   const out: JSX.Element[] = [];
   const labels: { p: P2; text: string; key: string }[] = [];
@@ -369,4 +369,207 @@ export function Reactions({ r, d, vp, res }: { r: BeamRegion; d: BeamData; vp: V
     }
   }
   return <g>{out}</g>;
+}
+
+// ------------------------------------------------------------ diagrams under the structure
+
+/** Height of the diagram switcher under the drawing. */
+export const STRIP_H = 34;
+
+export interface StackLayout {
+  /** Height of the structure on top. */
+  modelH: number;
+  /** Height of one diagram panel (one cell for frames). */
+  panelH: number;
+  cols: number;
+  rows: number;
+  /** Region height that gives every panel its comfortable size. */
+  required: number;
+}
+
+/**
+ * Split the region: the structure on top, the diagrams below. Straight beams get one
+ * full-width panel per diagram, aligned with the beam; frames get one small copy of the
+ * frame per diagram, in a grid.
+ */
+export function stackLayout(height: number, width: number, n: number, straight: boolean): StackLayout {
+  const avail = height - STRIP_H;
+  if (!n) return { modelH: avail, panelH: 0, cols: 1, rows: 0, required: 0 };
+  const cols = straight ? 1 : width >= 520 ? 2 : 1;
+  const rows = Math.ceil(n / cols);
+  const modelWant = straight ? 180 : 280, panelWant = straight ? 108 : 210;
+  const want = modelWant + rows * panelWant;
+  const modelH = Math.round(Math.max(90, Math.min(straight ? 300 : 420, (avail * modelWant) / want)));
+  return { modelH, panelH: Math.max(40, (avail - modelH) / rows), cols, rows, required: want + STRIP_H };
+}
+
+const PANEL_TITLE: Record<BeamPanel, string> = { N: 'N', V: 'V', M: 'M', deflection: 'δ' };
+
+function panelUnit(r: BeamRegion, k: BeamPanel): string {
+  const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
+  return k === 'M' ? `${r.forceUnit}·${r.lengthUnit}` : k === 'deflection' ? (metric ? 'mm' : 'in') : r.forceUnit;
+}
+
+interface Station {
+  x: number;
+  v: number;
+  /** A member end, joint or jump (support, point load). */
+  edge: boolean;
+}
+
+/**
+ * A straight beam's diagrams in aligned panels under it: same horizontal scale as the
+ * drawing, a baseline each, values at supports, jumps and extremes. Moments are drawn on
+ * the tension side (sagging below the line), shear and normal force positive above,
+ * deflection as it goes.
+ */
+export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width }: {
+  r: BeamRegion; d: BeamData; res: BeamResult; vp: Vp; top: number; layout: StackLayout; kinds: BeamPanel[];
+  segs: { id: string; x0: number; x1: number; flip: boolean }[]; width: number;
+}) {
+  const sol = res.solution;
+  if (!sol) return null;
+  const u = units(r);
+  const Lm = LENGTH_M[r.lengthUnit] ?? 1;
+  const byId = new Map(sol.members.map((m) => [m.id, m]));
+  const beamY = d.nodes.length ? d.nodes[0].y : 0;
+  const sx = (x: number) => toS(vp, { x, y: beamY }).x;
+  const bottom = top + layout.rows * layout.panelH;
+
+  // guide lines from supports, joints and point loads down through the panels
+  const guideX = new Set<number>();
+  for (const q of d.nodes) guideX.add(Math.round(sx(q.x) * 2) / 2);
+  for (const l of d.loads) {
+    if (l.type === 'line') continue;
+    const p = loadPoint(d, l.at);
+    if (p) guideX.add(Math.round(sx(p.x) * 2) / 2);
+  }
+  const yBeam = toS(vp, { x: 0, y: beamY }).y;
+
+  const series = (k: BeamPanel): Station[] => {
+    const out: Station[] = [];
+    for (const seg of segs) {
+      const mr = byId.get(seg.id);
+      if (!mr) continue;
+      const n = mr.s.length;
+      for (let q = 0; q < n; q++) {
+        const i = seg.flip ? n - 1 - q : q;
+        const s = mr.s[i];
+        const xw = seg.flip ? seg.x1 - s / Lm : seg.x0 + s / Lm;
+        let v = k === 'V' ? mr.V[i] : k === 'N' ? mr.N[i] : k === 'M' ? mr.M[i] : mr.dy[i];
+        if (seg.flip && k === 'M') v = -v;
+        const edge = i === 0 || i === n - 1 || (i > 0 && mr.s[i - 1] === s) || (i < n - 1 && mr.s[i + 1] === s);
+        out.push({ x: sx(xw), v, edge });
+      }
+    }
+    return out;
+  };
+
+  const text = (k: BeamPanel, v: number) => (k === 'M' ? u.moment(v) : k === 'deflection' ? u.defl(v) : u.force(v)).replace(/ [^ ]+$/, '');
+
+  return (
+    <g className="bm-stack">
+      <g className="bm-guides">
+        {[...guideX].map((x) => <line key={x} x1={x} y1={yBeam + 6} x2={x} y2={bottom} />)}
+      </g>
+      {kinds.map((k, idx) => {
+        const y0 = top + idx * layout.panelH;
+        const pts = series(k);
+        if (!pts.length) return null;
+        // plotted value: moments on the tension side, the rest as they are
+        const pv = (v: number) => (k === 'M' ? -v : v);
+        let lo = 0, hi = 0, vmax = 0;
+        for (const p of pts) {
+          lo = Math.min(lo, pv(p.v));
+          hi = Math.max(hi, pv(p.v));
+          vmax = Math.max(vmax, Math.abs(p.v));
+        }
+        const flat = !(vmax > 0) || hi - lo < 1e-12 * vmax;
+        const yTop = y0 + 20, yBot = y0 + layout.panelH - 16;
+        const Y = (v: number) => (flat ? (yTop + yBot) / 2 : yTop + ((hi - pv(v)) / (hi - lo)) * (yBot - yTop));
+        const yb = Y(0);
+        const x0 = pts[0].x, x1 = pts[pts.length - 1].x;
+        const curve = pts.map((p) => `${p.x.toFixed(1)},${Y(p.v).toFixed(1)}`).join(' ');
+        // labels: the extremes first, then supports and jumps, then local peaks
+        const cands: { i: number; pri: number }[] = [];
+        let iMax = 0, iMin = 0;
+        pts.forEach((p, i) => {
+          if (p.v > pts[iMax].v) iMax = i;
+          if (p.v < pts[iMin].v) iMin = i;
+        });
+        if (!flat) {
+          if (Math.abs(pts[iMax].v) > 1e-9 * vmax) cands.push({ i: iMax, pri: 0 });
+          if (Math.abs(pts[iMin].v) > 1e-9 * vmax) cands.push({ i: iMin, pri: 0 });
+          pts.forEach((p, i) => {
+            if (p.edge && Math.abs(p.v) > 0.03 * vmax) cands.push({ i, pri: 1 });
+            const a = pts[i - 1], b = pts[i + 1];
+            if (a && b && !p.edge && Math.abs(p.v) > 0.03 * vmax && ((p.v >= a.v && p.v >= b.v) || (p.v <= a.v && p.v <= b.v))) cands.push({ i, pri: 2 });
+          });
+        }
+        cands.sort((a, b) => a.pri - b.pri);
+        const kept: { x: number; y: number; t: string; i: number }[] = [];
+        for (const c of cands) {
+          const p = pts[c.i];
+          const up = pv(p.v) >= 0;
+          const t = text(k, p.v);
+          const lx = Math.min(Math.max(p.x, 34), width - 34);
+          const ly = up ? Y(p.v) - 5 : Y(p.v) + 13;
+          if (kept.some((q) => q.i === c.i || (Math.abs(q.x - lx) < 46 && Math.abs(q.y - ly) < 13) || (q.t === t && Math.abs(q.x - lx) < 70))) continue;
+          kept.push({ x: lx, y: ly, t, i: c.i });
+        }
+        return (
+          <g key={k} className={`bm-panel ${k}`}>
+            <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />
+            <text x={10} y={y0 + 15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{panelUnit(r, k)}]</tspan></text>
+            {!flat && <polygon points={`${x0},${yb} ${curve} ${x1},${yb}`} className={`bm-fill ${k === 'deflection' ? 'D' : k}`} />}
+            <line x1={x0} y1={yb} x2={x1} y2={yb} className="bm-panel-base" />
+            {!flat && <polyline points={curve} className={`bm-curve ${k === 'deflection' ? 'D' : k}`} />}
+            {flat && <text x={(x0 + x1) / 2} y={yb - 5} className="bm-value" textAnchor="middle">0</text>}
+            {kept.map((q) => <text key={q.i} x={q.x} y={q.y} className="bm-value" textAnchor="middle">{q.t}</text>)}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+/** For frames: a small copy of the structure per diagram, in a grid under the model. */
+export function FrameMultiples({ r, d, res, top, layout, kinds, width }: {
+  r: BeamRegion; d: BeamData; res: BeamResult; top: number; layout: StackLayout; kinds: BeamPanel[]; width: number;
+}) {
+  const cellW = width / layout.cols;
+  const N = new Map(d.nodes.map((q) => [q.id, q]));
+  return (
+    <g className="bm-stack">
+      {kinds.map((k, idx) => {
+        const col = idx % layout.cols, row = Math.floor(idx / layout.cols);
+        const x0 = col * cellW, y0 = top + row * layout.panelH;
+        const view = fitView(d, cellW, layout.panelH, { l: 58, r: 58, t: 34, b: 30 });
+        if (!view) return null;
+        const vp: Vp = { view, width: cellW, height: layout.panelH };
+        const px = Math.max(14, Math.min(40, layout.panelH * 0.17));
+        return (
+          <g key={k} transform={`translate(${x0} ${y0})`} className={`bm-panel ${k}`}>
+            <line x1={0} y1={0} x2={cellW} y2={0} className="bm-panel-sep" />
+            {col > 0 && <line x1={0} y1={0} x2={0} y2={layout.panelH} className="bm-panel-sep" />}
+            <text x={10} y={15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{panelUnit(r, k)}]</tspan></text>
+            {d.members.map((m) => {
+              const a = N.get(m.a), b = N.get(m.b);
+              if (!a || !b) return null;
+              const A = toS(vp, a), B = toS(vp, b);
+              return <line key={m.id} x1={A.x} y1={A.y} x2={B.x} y2={B.y} className="bm-mini-member" />;
+            })}
+            <Diagram r={r} d={d} vp={vp} res={res} kind={k} px={px} />
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+/** Diagrams worth showing when the user has not chosen: N only when there is axial force. */
+export function autoPanels(res: BeamResult | undefined): BeamPanel[] {
+  const sol = res?.solution;
+  const nmax = Math.abs(sol?.max.N?.value ?? 0), vmax = Math.abs(sol?.max.V?.value ?? 0);
+  return nmax > 1e-3 * Math.max(vmax, 1e-9) ? ['N', 'V', 'M', 'deflection'] : ['V', 'M', 'deflection'];
 }

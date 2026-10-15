@@ -20,10 +20,14 @@ export function toWorld(vp: Viewport, sx: number, sy: number): Pt {
 
 const DASH: Record<string, string | undefined> = { solid: undefined, dash: '8 5', dot: '2 4', center: '14 4 3 4' };
 
+/** A stroke width that follows the worksheet / region line-thickness setting (--lw). */
+export const lwCss = (w: number) => `calc(${w}px * var(--lw, 1))`;
+
 function strokeProps(st: ShapeStyle | undefined, fallbackWidth = 1.6) {
   return {
     stroke: st?.stroke || 'currentColor',
     strokeWidth: st?.width ?? fallbackWidth,
+    style: { strokeWidth: lwCss(st?.width ?? fallbackWidth) },
     strokeDasharray: DASH[st?.dash ?? 'solid'],
     strokeLinecap: 'round' as const,
     strokeLinejoin: 'round' as const,
@@ -192,7 +196,7 @@ export function ShapeSvg({ s, vp, opt }: { s: Shape; vp: Viewport; opt: RenderOp
       const a = toScreen(vp, s.a), b = toScreen(vp, s.b);
       return (
         <g {...common}>
-          <path {...sp} strokeWidth={s.style?.width ?? 4} d={`M${a.x} ${a.y} L${b.x} ${b.y}`} />
+          <path {...sp} strokeWidth={s.style?.width ?? 4} style={{ strokeWidth: lwCss(s.style?.width ?? 4) }} d={`M${a.x} ${a.y} L${b.x} ${b.y}`} />
           <circle cx={a.x} cy={a.y} r={4.5} className="sk-joint-px" />
           <circle cx={b.x} cy={b.y} r={4.5} className="sk-joint-px" />
         </g>
@@ -216,7 +220,7 @@ export function ShapeSvg({ s, vp, opt }: { s: Shape; vp: Viewport; opt: RenderOp
       const label = s.text?.trim() || fmtLen(len);
       return (
         <g {...common}>
-          <path {...sp} strokeWidth={1} d={`${ext(a0, A)} ${ext(b0, B)} M${A.x} ${A.y} L${B.x} ${B.y}`} />
+          <path {...sp} strokeWidth={1} style={{ strokeWidth: lwCss(1) }} d={`${ext(a0, A)} ${ext(b0, B)} M${A.x} ${A.y} L${B.x} ${B.y}`} />
           <path d={`${arrowHead(B, A, 7)} ${arrowHead(A, B, 7)}`} fill={sp.stroke} stroke="none" />
           <text x={mid.x} y={mid.y - 4} transform={`rotate(${ang} ${mid.x} ${mid.y})`} className="sk-dim-text" fill={sp.stroke}>{label}</text>
         </g>
@@ -258,7 +262,7 @@ export function ShapeSvg({ s, vp, opt }: { s: Shape; vp: Viewport; opt: RenderOp
       const p = toScreen(vp, s.p);
       const k = s.size * vp.view.zoom;
       return (
-        <g {...common} className={`${common.className} sk-sym`} transform={`translate(${p.x} ${p.y}) rotate(${-s.rot}) scale(${k} ${-k})`} stroke={sp.stroke} strokeWidth={sp.strokeWidth} strokeLinecap="round" strokeLinejoin="round" fill="none" style={{ color: s.style?.stroke }}>
+        <g {...common} className={`${common.className} sk-sym`} transform={`translate(${p.x} ${p.y}) rotate(${-s.rot}) scale(${k} ${-k})`} stroke={sp.stroke} strokeWidth={sp.strokeWidth} strokeLinecap="round" strokeLinejoin="round" fill="none" style={{ color: s.style?.stroke, strokeWidth: sp.style.strokeWidth }}>
           {symbolLocal(s.symbol)}
           <rect x={-1.2} y={-1.3} width={2.4} height={2.6} fill="transparent" stroke="none" className="sk-hit" />
         </g>

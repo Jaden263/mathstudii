@@ -12,7 +12,11 @@ import { useEvaluation } from './useEvaluation';
 import { Worksheet, snap, type Cursor } from './Worksheet';
 import { SidePanel, type SideTab } from './SidePanel';
 import type { EditorHandle } from './editing';
-import { openWorksheetFile, foreignFormat, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri, type FileHandle } from '../platform/files';
+import {
+  openWorksheetFile, foreignFormat, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri,
+  canLinkFiles, writeLinkedFile, handleName, type FileHandle,
+} from '../platform/files';
+import { canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs, newDocId, putDoc, putLink, type LibraryEntry } from '../platform/library';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
@@ -55,7 +59,7 @@ function isTypingTarget(el: EventTarget | null): boolean {
 }
 
 export function App() {
-  const { ws, dispatch, canUndo, canRedo, dirty } = useWorksheetStore(initialWorksheet);
+  const { ws, dispatch, canUndo, canRedo, dirty, version } = useWorksheetStore(initialWorksheet);
   // CAD parts are edited in a separate window (or full-screen in the page on small screens)
   const [cadOverlay, setCadOverlay] = useState<string | null>(null);
   const cadOverlayRef = useRef(cadOverlay);
@@ -120,6 +124,15 @@ export function App() {
   const [tab, setTab] = useState<SideTab>('math');
   const [showGrid, setShowGrid] = useState<boolean>(() => loadPref('grid', false));
   const [fileHandle, setFileHandle] = useState<FileHandle>(null);
+  // every worksheet lives in the browser library under an id; a linked file is remembered there
+  const [docId, setDocId] = useState<string>(() => loadPref<string | null>('doc', null) ?? newDocId());
+  const [autosave, setAutosave] = useState<boolean>(() => loadPref('autosave', true));
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'error' | 'permission'>('idle');
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [fileMenu, setFileMenu] = useState(false);
+  const [recent, setRecent] = useState<LibraryEntry[]>([]);
+  const live = useRef({ ws, version, docId, fileHandle, autosave });
+  live.current = { ws, version, docId, fileHandle, autosave };
   const [showHelp, setShowHelp] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -143,10 +156,60 @@ export function App() {
   }, [theme]);
   useEffect(() => savePref('panel', panelOpen), [panelOpen]);
   useEffect(() => savePref('grid', showGrid), [showGrid]);
+  useEffect(() => savePref('doc', docId), [docId]);
+  useEffect(() => savePref('autosave', autosave), [autosave]);
+  // the file this document was linked to last time
+  useEffect(() => {
+    void getLink(live.current.docId).then((h) => h && setFileHandle((cur) => cur ?? h));
+  }, []);
+
+  /** Store the current document in the library, and in its file when one is linked and writable. */
+  const persist = useCallback(async (ask: boolean): Promise<boolean> => {
+    const { ws: doc, version: v, docId: id, fileHandle: h } = live.current;
+    const text = JSON.stringify(doc, null, 1);
+    const inLibrary = await putDoc(id, doc.title, text, handleName(h) || undefined);
+    if (h) {
+      if (!(await canWrite(h, ask))) {
+        setSaveState('permission');
+        return false;
+      }
+      setSaveState('saving');
+      try {
+        await writeLinkedFile(h, text);
+      } catch {
+        setSaveState('error');
+        return false;
+      }
+    } else if (!inLibrary) {
+      setSaveState('error');
+      return false;
+    }
+    dispatch({ type: 'markSaved', version: v });
+    setSaveState('idle');
+    setSavedAt(Date.now());
+    return true;
+  }, [dispatch]);
+
+  // autosave: a moment after the last change (a bit longer when it writes a file)
   useEffect(() => {
     const t = window.setTimeout(() => writeAutosave(JSON.stringify(ws)), 600);
-    return () => window.clearTimeout(t);
-  }, [ws]);
+    if (!autosave || !dirty) return () => window.clearTimeout(t);
+    const t2 = window.setTimeout(() => void persist(false), fileHandle ? 1500 : 800);
+    return () => {
+      window.clearTimeout(t);
+      window.clearTimeout(t2);
+    };
+  }, [ws, autosave, dirty, fileHandle, persist]);
+  // leaving with changes nobody stored
+  useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
   useEffect(() => {
     document.title = `${dirty ? '• ' : ''}${ws.title} — mathstudii`;
   }, [ws.title, dirty]);
@@ -228,14 +291,19 @@ export function App() {
     if (!confirmDiscard()) return;
     dispatch({ type: 'load', ws: emptyWorksheet() });
     setFileHandle(null);
+    setDocId(newDocId());
     setSelected(new Set());
     setEditingId(null);
     setCursor({ x: PAGE_MARGIN + GRID * 2, y: GRID * 6 });
   };
 
-  const loadDoc = (doc: WS, handle: FileHandle = null) => {
+  const loadDoc = (doc: WS, handle: FileHandle = null, id?: string) => {
     dispatch({ type: 'load', ws: doc });
     setFileHandle(handle);
+    const nextId = id ?? newDocId();
+    setDocId(nextId);
+    // an opened file shows up under recent documents right away
+    if (handle) void putLink(nextId, handle).then(() => putDoc(nextId, doc.title, JSON.stringify(doc, null, 1), handleName(handle)));
     setSelected(new Set());
     setEditingId(null);
     scrollerRef.current?.scrollTo({ top: 0 });
@@ -252,7 +320,8 @@ export function App() {
       }
       const doc = parseWorksheet(new TextDecoder().decode(f.bytes));
       if (doc.title === 'Untitled') doc.title = f.name.replace(/\.(mstd|json)$/i, '');
-      loadDoc(doc, f.handle);
+      // the same file opened again continues the same library document
+      loadDoc(doc, f.handle, (await findLinked(f.handle)) ?? undefined);
     } catch (e) {
       window.alert(`Could not open the file: ${(e as Error).message}`);
     }
@@ -292,16 +361,53 @@ export function App() {
     window.setTimeout(() => separateRef.current(true), 400);
   };
 
+  /**
+   * Save: to the linked file without asking; the first time, ask once where to put it
+   * (desktop app, Chromium browsers). Browsers that cannot write files keep the document
+   * in their library instead, and "Download a copy" gives a file. Save as always asks.
+   */
   const saveDoc = async (saveAs = false) => {
     try {
-      const res = await saveWorksheetFile(JSON.stringify(ws, null, 1), ws.title || 'worksheet', fileHandle, saveAs);
+      if (!saveAs && fileHandle && (await persist(true))) {
+        setToast(`Saved ${handleName(fileHandle)}`);
+        return;
+      }
+      if (!saveAs && !canLinkFiles) {
+        if (await persist(false)) setToast('Saved in this browser — File ▸ Download a copy gives you a file');
+        return;
+      }
+      const v = version;
+      const res = await saveWorksheetFile(JSON.stringify(ws, null, 1), ws.title || 'worksheet', null, true);
       if (!res) return;
-      setFileHandle(res.handle);
-      dispatch({ type: 'markSaved' });
-      setToast(`Saved ${res.name}`);
+      if (res.handle) {
+        setFileHandle(res.handle);
+        await putLink(docId, res.handle);
+        await putDoc(docId, ws.title, JSON.stringify(ws, null, 1), res.name);
+        dispatch({ type: 'markSaved', version: v });
+        setSavedAt(Date.now());
+        setSaveState('idle');
+      }
+      setToast(res.handle ? `Saved ${res.name} — later saves go there without asking` : `Downloaded ${res.name}`);
     } catch (e) {
       window.alert(`Could not save: ${(e as Error).message}`);
     }
+  };
+
+  const openRecent = async (id: string) => {
+    setFileMenu(false);
+    if (id === docId) return;
+    if (!confirmDiscard()) return;
+    const text = await getDoc(id);
+    if (!text) return setToast('That document is no longer in this browser');
+    try {
+      loadDoc(parseWorksheet(text), await getLink(id), id);
+    } catch (e) {
+      window.alert(`Could not open it: ${(e as Error).message}`);
+    }
+  };
+  const toggleFileMenu = async () => {
+    if (!fileMenu) setRecent(await listDocs());
+    setFileMenu((o) => !o);
   };
 
   const insertImage = async () => {
@@ -535,12 +641,46 @@ export function App() {
           aria-label="Worksheet title"
           spellCheck={false}
         />
-        {dirty && <span className="dirty-dot" title="Unsaved changes" />}
+        {(() => {
+          const name = handleName(fileHandle);
+          const when = savedAt ? ` at ${new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+          const [cls, text, tip] =
+            saveState === 'permission' ? ['warn', 'Click Save to keep saving', `The browser needs your OK (one click on Save) to write ${name} again`]
+            : saveState === 'error' ? ['bad', 'Not saved', 'Saving failed — try Save, or Download a copy from the file menu']
+            : saveState === 'saving' || (dirty && autosave) ? ['busy', 'Saving…', name ? `Autosaving to ${name}` : 'Autosaving in this browser']
+            : dirty ? ['warn', 'Unsaved', 'Autosave is off: press Ctrl+S']
+            : ['ok', name ? 'Saved' : 'Saved in browser', name ? `Saved to ${name}${when}` : `Kept in this browser's documents${when}. Save once to a file to keep it on disk too.`];
+          return <button className={`save-chip ${cls}`} title={tip} onClick={() => void saveDoc(false)}>{text}{name && cls === 'ok' ? <em> · {name}</em> : null}</button>;
+        })()}
         <div className="spacer" />
         <div className="tb-group">
           <button className="icon-btn" onClick={newDoc} title="New (Ctrl+Alt+N)" aria-label="New worksheet"><FilePlus2 size={18} /></button>
           <button className="icon-btn" onClick={openDoc} title="Open (Ctrl+O)" aria-label="Open"><FolderOpen size={18} /></button>
-          <button className="icon-btn" onClick={() => saveDoc(false)} title="Save (Ctrl+S, Ctrl+Shift+S = Save as)" aria-label="Save"><Save size={18} /></button>
+          <button className="icon-btn" onClick={() => saveDoc(false)} title={fileHandle ? `Save to ${handleName(fileHandle)} (Ctrl+S)` : 'Save (Ctrl+S) — the first time asks where, then it remembers'} aria-label="Save"><Save size={18} /></button>
+          <div className="menu-wrap">
+            <button className="icon-btn narrow" onClick={() => void toggleFileMenu()} aria-expanded={fileMenu} aria-haspopup="menu" title="Recent documents, Save as, autosave" aria-label="File menu"><ChevronDown size={14} /></button>
+            {fileMenu && (
+              <div className="menu file-menu" role="menu" onMouseLeave={() => setFileMenu(false)}>
+                <button role="menuitem" onClick={() => { setFileMenu(false); void openDoc(); }}>Open file… <kbd>Ctrl+O</kbd></button>
+                <button role="menuitem" onClick={() => { setFileMenu(false); void saveDoc(true); }}>{canLinkFiles ? 'Save as…' : 'Download a copy'} <kbd>Ctrl+Shift+S</kbd></button>
+                <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
+                <div className="menu-head">Recent documents</div>
+                {!recent.length && <div className="menu-empty">Nothing yet</div>}
+                {recent.slice(0, 12).map((d) => (
+                  <div key={d.id} className={`menu-doc${d.id === docId ? ' current' : ''}`}>
+                    <button role="menuitem" onClick={() => void openRecent(d.id)} title={d.file ? `Linked to ${d.file}` : 'Kept in this browser'}>
+                      <span>{d.title}</span>
+                      <small>{d.file ? `${d.file} · ` : ''}{new Date(d.updated).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small>
+                    </button>
+                    {d.id !== docId && (
+                      <button className="menu-del" aria-label={`Remove ${d.title} from this browser`} title="Remove from this browser (a linked file stays on disk)"
+                        onClick={async () => { await deleteDoc(d.id); setRecent(await listDocs()); }}>×</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <button className="icon-btn" onClick={() => window.print()} title="Print / export PDF (Ctrl+P)" aria-label="Print or export PDF"><Printer size={18} /></button>
           <div className="menu-wrap">
             <button className="text-btn" onClick={() => setExamplesOpen((o) => !o)} aria-expanded={examplesOpen} aria-haspopup="menu"><BookOpen size={16} /> <span className="label">Examples</span> <ChevronDown size={14} /></button>
@@ -657,7 +797,7 @@ export function App() {
           />
         </div>
         {panelOpen && (
-          <SidePanel tab={tab} setTab={setTab} insert={insertText} selection={selection} results={evaluation.results} dispatch={dispatch} onClose={() => setPanelOpen(false)} />
+          <SidePanel tab={tab} setTab={setTab} insert={insertText} selection={selection} results={evaluation.results} dispatch={dispatch} onClose={() => setPanelOpen(false)} format={ws.settings.format} onReflow={() => separateRef.current(true)} />
         )}
       </main>
 

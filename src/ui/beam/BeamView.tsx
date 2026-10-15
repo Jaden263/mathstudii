@@ -8,11 +8,15 @@ import type { RegionResult } from '../../engine/evaluator';
 import type { BeamResult } from '../../beam/evaluate';
 import {
   beamId, loadPoint, nextLabel, removeItems, splitMember,
-  type BeamData, type BeamDiagram, type BeamLoad, type BeamMember, type BeamView as View,
+  type BeamData, type BeamDiagram, type BeamLoad, type BeamMember, type BeamPanel, type BeamView as View,
 } from '../../beam/model';
 import type { Action } from '../store';
 import { useSketchUI, type BeamTool } from '../sketch/context';
-import { Diagram, LoadGlyph, Reactions, SupportGlyph, fitView, fmt, toS, toW, units, type P2, type Vp } from './beamDraw';
+import {
+  Diagram, FrameMultiples, LoadGlyph, Reactions, STRIP_H, StackedDiagrams, SupportGlyph, autoPanels, fitView, fmt, stackLayout, toS, toW, units,
+  type P2, type Vp,
+} from './beamDraw';
+import { straightBeam } from '../../beam/evaluate';
 
 interface Props {
   region: BeamRegion;
@@ -87,10 +91,31 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const editRef = useRef(edit);
   editRef.current = edit;
 
+  // diagrams under the structure: the structure gets the top of the region
+  const stacked = (region.layout ?? 'stack') === 'stack';
+  const segs = useMemo(() => straightBeam(region), [region.nodes, region.members]); // eslint-disable-line react-hooks/exhaustive-deps
+  const kinds = region.panels ?? autoPanels(res);
+  const hasPanels = stacked && region.members.length > 0 && kinds.length > 0;
+  const lay = stackLayout(region.height, region.width, hasPanels ? kinds.length : 0, !!segs);
+  const modelH = stacked && region.members.length > 0 ? lay.modelH : region.height;
+
   // the page shows the structure framed; while editing the view stays put
-  const autoView = useMemo(() => fitView(data, region.width, region.height), [region.nodes, region.width, region.height]); // eslint-disable-line react-hooks/exhaustive-deps
+  const autoView = useMemo(() => fitView(data, region.width, modelH), [region.nodes, region.width, modelH]); // eslint-disable-line react-hooks/exhaustive-deps
   const view = liveView ?? (editing ? region.view : autoView ?? region.view);
-  const vp: Vp = { view, width: region.width, height: region.height };
+  const vp: Vp = { view, width: region.width, height: modelH };
+
+  // a new set of diagrams makes the region tall enough for them (pushing what is below down)
+  const growKey = hasPanels ? `${kinds.join(',')}|${segs ? 'beam' : 'frame'}` : '';
+  const grown = useRef('');
+  useEffect(() => {
+    if (!growKey || grown.current === growKey) return;
+    grown.current = growKey;
+    if (region.height < lay.required - 4) {
+      dispatch({ type: 'update', id: region.id, patch: { height: Math.round(lay.required) }, history: false });
+      window.setTimeout(() => separate(), 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [growKey]);
   const u = units(region);
 
   const commit = (d: BeamData, coalesce?: string) => dispatch({ type: 'update', id: region.id, patch: d, coalesce });
@@ -300,7 +325,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     setChainFrom(r.node);
     // the first member frames the view
     if (!region.members.length) {
-      const v = fitView(d, region.width, region.height);
+      const v = fitView(d, region.width, modelH);
       if (v) set({ view: v }, false);
     }
   };
@@ -312,7 +337,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   };
 
   const fit = () => {
-    const v = fitView(data, region.width, region.height);
+    const v = fitView(data, region.width, modelH);
     if (v) set({ view: v }, false);
   };
 
@@ -325,6 +350,11 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     e.preventDefault();
     if (!editRef.current) wrapRef.current?.focus({ preventScroll: true });
     const s = screenOf(e);
+    // the diagrams under the structure are not part of the drawing
+    if (s.y > modelH && !drag.current) {
+      if (tool === 'select') select([]);
+      return;
+    }
     if (e.button === 1 || (e.button === 0 && e.altKey && tool === 'select')) {
       drag.current = { mode: 'pan', sx: s.x, sy: s.y, view };
       svgRef.current?.setPointerCapture(e.pointerId);
@@ -401,6 +431,10 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       }
       dr.t1 = t;
       setLineDrag({ member: dr.member, t0: dr.t0, t1: t });
+      return;
+    }
+    if (s.y > modelH) {
+      setCursor(null);
       return;
     }
     setCursor(snapPoint(s, e.altKey));
@@ -493,7 +527,14 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   // ------------------------------------------------------------ render
 
   const show = region.show;
-  const diagramOn = show !== 'model' && show !== 'reactions' && !!res?.solution;
+  const diagramOn = !stacked && show !== 'model' && show !== 'reactions' && !!res?.solution;
+  const reactionsOn = !!res?.solution && (stacked ? !!region.reactions : show === 'reactions');
+  const svgH = stacked && region.members.length > 0 ? region.height - STRIP_H : region.height;
+  const togglePanel = (k: BeamPanel) => {
+    const order: BeamPanel[] = ['N', 'V', 'M', 'deflection'];
+    const next = kinds.includes(k) ? kinds.filter((x) => x !== k) : order.filter((x) => x === k || kinds.includes(x));
+    set({ panels: next }, false);
+  };
   const N = new Map(region.nodes.map((q) => [q.id, q]));
   const hingeAt = new Set<string>();
   for (const m of region.members) {
@@ -536,12 +577,23 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         </div>
       )}
       <svg
-        ref={svgRef} width={region.width} height={region.height} className="sk-svg bm-svg" style={{ cursor: cursorStyle }}
+        ref={svgRef} width={region.width} height={svgH} className="sk-svg bm-svg" style={{ cursor: cursorStyle }}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         onPointerLeave={() => setCursor(null)} onDoubleClick={onDoubleClick} onContextMenu={(e) => editing && e.preventDefault()}
         role="img" aria-label={region.name ? `Beam ${region.name}` : 'Beam'}
       >
         {editing && region.grid > 0 && <BeamGrid vp={vp} step={region.grid} />}
+        {hasPanels && res?.solution && (segs
+          ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={region.width} />
+          : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={region.width} />)}
+        {hasPanels && !res?.solution && (
+          <g>
+            <line x1={0} y1={modelH} x2={region.width} y2={modelH} className="bm-panel-sep" />
+            <text x={region.width / 2} y={modelH + (svgH - modelH) / 2} textAnchor="middle" className="bm-empty">
+              {res?.error ? `No diagrams yet: ${res.error}` : 'Add supports and loads to see the diagrams'}
+            </text>
+          </g>
+        )}
         {diagramOn && <Diagram r={region} d={data} vp={vp} res={res!} kind={show as 'N' | 'V' | 'M' | 'deflection'} />}
         {/* members */}
         {region.members.map((m) => {
@@ -578,10 +630,10 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           return <circle key={q.id} cx={c.x} cy={c.y} r={editing ? 3.2 : 2.2} className={`bm-node${sel.has(q.id) ? ' sel' : ''}`} />;
         })}
         {/* loads or reactions */}
-        {show !== 'reactions' && region.loads.map((l) => (
+        {(stacked || show !== 'reactions') && region.loads.map((l) => (
           <LoadGlyph key={l.id} r={region} d={data} l={l} vp={vp} res={res} sel={sel.has(l.id)} label={!diagramOn} />
         ))}
-        {show === 'reactions' && res?.solution && <Reactions r={region} d={data} vp={vp} res={res} />}
+        {reactionsOn && <Reactions r={region} d={data} vp={vp} res={res!} />}
         {/* drafts */}
         {editing && draftFrom && cursor && tool === 'member' && (() => {
           const A = toS(vp, draftFrom), B = toS(vp, cursor.p);
@@ -605,7 +657,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           return <circle cx={c.x} cy={c.y} r={cursor.snap ? 6 : 2.5} className={`sk-cursor${cursor.snap ? ' snapped' : ''}`} pointerEvents="none" />;
         })()}
         {!region.members.length && (
-          <text x={region.width / 2} y={region.height / 2} textAnchor="middle" className="bm-empty">
+          <text x={region.width / 2} y={svgH / 2} textAnchor="middle" className="bm-empty">
             {editing ? 'Click two points to draw a member — then add supports and loads' : 'Empty beam — double-click to draw a structure'}
           </text>
         )}
@@ -626,20 +678,34 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           <span>{unitHint}</span>
         </div>
       )}
-      {(res?.solution || region.members.length > 0) && (
-        <div className="bm-tabs" role="tablist" aria-label="Diagram" onPointerDown={(e) => e.stopPropagation()}>
-          {DIAGRAMS.map((dg) => (
+      {region.members.length > 0 && (
+        <div className={`bm-tabs${stacked ? ' stacked' : ''}`} role="toolbar" aria-label="Diagrams" onPointerDown={(e) => e.stopPropagation()}>
+          <span className="bm-seg">
+            <button className={stacked ? 'on' : ''} title="Diagrams neatly under the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'stack' }, false); }}>Under</button>
+            <button className={!stacked ? 'on' : ''} title="One diagram at a time, drawn on the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'overlay' }, false); }}>On structure</button>
+          </span>
+          <span className="bm-tab-sep" />
+          {stacked ? (
+            <>
+              {(['N', 'V', 'M', 'deflection'] as BeamPanel[]).map((k) => (
+                <button key={k} className={kinds.includes(k) ? 'on' : ''} aria-pressed={kinds.includes(k)} title={DIAGRAMS.find((d) => d.id === k)?.title}
+                  onClick={(e) => { e.stopPropagation(); togglePanel(k); }}>{k === 'deflection' ? 'δ' : k}</button>
+              ))}
+              <button className={region.reactions ? 'on' : ''} aria-pressed={!!region.reactions} title="Show the support reactions on the structure"
+                onClick={(e) => { e.stopPropagation(); set({ reactions: !region.reactions }, false); }}>Reactions</button>
+            </>
+          ) : DIAGRAMS.map((dg) => (
             <button key={dg.id} role="tab" aria-selected={show === dg.id} className={show === dg.id ? 'on' : ''} title={dg.title}
               disabled={dg.id !== 'model' && !res?.solution} onClick={(e) => { e.stopPropagation(); set({ show: dg.id }, false); }}>{dg.label}</button>
           ))}
         </div>
       )}
       {sol && (
-        <div className="bm-summary">
+        <div className={`bm-summary${stacked && region.members.length > 0 ? ' in-strip' : ''}`}>
           {sol.max.M && <span>M<sub>max</sub> {u.moment(sol.max.M.value)}</span>}
-          {sol.max.V && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}
+          {sol.max.V && !(stacked && region.members.length > 0) && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}
           {sol.max.w && <span>δ<sub>max</sub> {u.defl(sol.max.w.value)}</span>}
-          {sol.max.sigma && <span>σ<sub>max</sub> {u.stress(sol.max.sigma.value)}</span>}
+          {sol.max.sigma && !(stacked && region.members.length > 0) && <span>σ<sub>max</sub> {u.stress(sol.max.sigma.value)}</span>}
         </div>
       )}
       {editing && <div className="sk-status bm-status">{cursor ? `${fmt(cursor.p.x)}, ${fmt(cursor.p.y)} ${region.lengthUnit}` : `grid ${region.grid} ${region.lengthUnit}`}</div>}

@@ -67,6 +67,10 @@ export type BeamLoad =
   | { id: string; type: 'line'; member: string; q1: string; q2?: string; t1?: number; t2?: number; dir: 'global' | 'local' };
 
 export type BeamDiagram = 'model' | 'reactions' | 'N' | 'V' | 'M' | 'deflection';
+/** A result diagram drawn under the structure. */
+export type BeamPanel = 'N' | 'V' | 'M' | 'deflection';
+/** Diagrams stacked under the structure (the default), or one at a time drawn on it. */
+export type BeamLayout = 'stack' | 'overlay';
 
 export interface BeamView {
   cx: number;

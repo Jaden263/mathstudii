@@ -492,6 +492,7 @@ select {
 
 .region {
   position: absolute;
+  font-size: calc(1em * var(--fs, 1));
   padding: 3px 5px;
   border-radius: 5px;
   border: 1px solid transparent;
@@ -2967,7 +2968,7 @@ kbd {
   border-radius: 6px;
   background: none;
   color: var(--text);
-  font: 500 12px var(--font);
+  font: 500 calc(12px * var(--fs, 1)) var(--font);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -2984,33 +2985,33 @@ kbd {
 .bm-tool-glyph {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.5;
+  stroke-width: calc(1.5px * var(--lw, 1));
   stroke-linejoin: round;
 }
 
 .bm-svg text {
-  font: 11px var(--font);
+  font: calc(11px * var(--fs, 1)) var(--font);
   fill: var(--text);
 }
 
 .bm-grid {
   stroke: color-mix(in srgb, var(--text) 7%, transparent);
-  stroke-width: 1;
+  stroke-width: calc(1px * var(--lw, 1));
 }
 
 .bm-axis {
   stroke: color-mix(in srgb, var(--text) 16%, transparent);
-  stroke-width: 1;
+  stroke-width: calc(1px * var(--lw, 1));
 }
 
 .bm-member line {
   stroke: var(--text);
-  stroke-width: 3.2;
+  stroke-width: calc(3.2px * var(--lw, 1));
   stroke-linecap: round;
 }
 
 .bm-member.faint line {
-  stroke-width: 2.4;
+  stroke-width: calc(2.4px * var(--lw, 1));
   opacity: 0.75;
 }
 
@@ -3025,7 +3026,7 @@ kbd {
 .bm-hinge {
   fill: var(--page);
   stroke: var(--text);
-  stroke-width: 1.6;
+  stroke-width: calc(1.6px * var(--lw, 1));
 }
 
 .bm-node {
@@ -3040,18 +3041,18 @@ kbd {
 .bm-support .bm-tri {
   fill: var(--page);
   stroke: var(--text);
-  stroke-width: 1.5;
+  stroke-width: calc(1.5px * var(--lw, 1));
   stroke-linejoin: round;
 }
 
 .bm-support .bm-ground {
   stroke: var(--text);
-  stroke-width: 1.5;
+  stroke-width: calc(1.5px * var(--lw, 1));
 }
 
 .bm-support .bm-hatch line {
   stroke: var(--text-muted);
-  stroke-width: 1;
+  stroke-width: calc(1px * var(--lw, 1));
 }
 
 .bm-support.sel .bm-tri,
@@ -3067,7 +3068,7 @@ kbd {
 .bm-arrow line,
 .bm-arrow path[fill='none'] {
   stroke: currentColor;
-  stroke-width: 1.6;
+  stroke-width: calc(1.6px * var(--lw, 1));
 }
 
 .bm-arrow path:not([fill='none']) {
@@ -3080,7 +3081,7 @@ kbd {
 
 .bm-load > line {
   stroke: var(--bm-load);
-  stroke-width: 1.6;
+  stroke-width: calc(1.6px * var(--lw, 1));
 }
 
 .bm-load .bm-load-area {
@@ -3115,11 +3116,11 @@ kbd {
 }
 
 .bm-svg .bm-value {
-  font: 600 11px var(--font);
+  font: 600 calc(11px * var(--fs, 1)) var(--font);
   font-variant-numeric: tabular-nums;
   paint-order: stroke;
   stroke: var(--page);
-  stroke-width: 3px;
+  stroke-width: calc(3px * var(--lw, 1));
   stroke-linejoin: round;
 }
 
@@ -3134,7 +3135,7 @@ kbd {
 
 .bm-curve {
   fill: none;
-  stroke-width: 1.8;
+  stroke-width: calc(1.8px * var(--lw, 1));
 }
 
 .bm-curve.M { stroke: var(--bm-M); }
@@ -3144,7 +3145,7 @@ kbd {
 .bm-deformed {
   fill: none;
   stroke: var(--bm-defl);
-  stroke-width: 2.2;
+  stroke-width: calc(2.2px * var(--lw, 1));
   stroke-dasharray: 6 3;
 }
 
@@ -3156,7 +3157,7 @@ kbd {
 .bm-draft line {
   fill: none;
   stroke: var(--accent);
-  stroke-width: 2;
+  stroke-width: calc(2px * var(--lw, 1));
   stroke-dasharray: 5 4;
 }
 
@@ -3209,7 +3210,7 @@ kbd {
   border-radius: 5px;
   background: none;
   color: var(--text-muted);
-  font: 600 11.5px var(--font);
+  font: 600 calc(11.5px * var(--fs, 1)) var(--font);
   cursor: pointer;
 }
 
@@ -3263,4 +3264,292 @@ kbd {
   .bm-tabs {
     display: none;
   }
+}
+
+/* beams: diagrams under the structure */
+.bm-tabs.stacked {
+  position: static;
+  display: inline-flex;
+  margin: 4px 0 0 6px;
+  height: 26px;
+}
+
+.bm-tabs .bm-seg {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.bm-tabs .bm-tab-sep {
+  width: 1px;
+  margin: 3px 3px;
+  background: var(--border);
+}
+
+.bm-panel-sep {
+  stroke: var(--border);
+  stroke-width: calc(1px * var(--lw, 1));
+}
+
+.bm-svg .bm-panel-title {
+  font: 700 calc(12px * var(--fs, 1)) var(--font);
+  fill: var(--text);
+}
+
+.bm-svg .bm-panel-unit {
+  font-weight: 400;
+  fill: var(--text-muted);
+}
+
+.bm-panel-base {
+  stroke: var(--text);
+  stroke-width: calc(1.4px * var(--lw, 1));
+}
+
+.bm-guides line {
+  stroke: color-mix(in srgb, var(--text) 22%, transparent);
+  stroke-width: calc(1px * var(--lw, 1));
+  stroke-dasharray: 3 4;
+}
+
+.bm-stack .bm-fill {
+  opacity: 0.22;
+}
+
+.bm-fill.D { fill: var(--bm-defl); }
+
+.bm-curve.D {
+  stroke: var(--bm-defl);
+}
+
+.bm-mini-member {
+  stroke: var(--text);
+  stroke-width: calc(2px * var(--lw, 1));
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+.bm-summary.in-strip {
+  top: auto;
+  bottom: 10px;
+  max-width: 40%;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- saving */
+
+.save-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 260px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-muted);
+  font: 500 calc(11.5px * var(--fs, 1)) var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.save-chip em {
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.save-chip.ok::before,
+.save-chip.busy::before,
+.save-chip.warn::before,
+.save-chip.bad::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex: none;
+}
+
+.save-chip.busy::before { background: var(--accent); }
+.save-chip.warn::before { background: var(--warn); }
+.save-chip.bad::before { background: var(--error); }
+.save-chip.warn { color: var(--warn); }
+.save-chip.bad { color: var(--error); }
+
+.icon-btn.narrow {
+  min-width: 18px;
+  width: 18px;
+  padding: 0;
+  margin-left: -4px;
+}
+
+.file-menu {
+  min-width: 270px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.file-menu kbd {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--text-muted);
+  font: calc(11px * var(--fs, 1)) var(--font);
+}
+
+.file-menu > button {
+  display: flex;
+}
+
+.menu-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.menu-head {
+  padding: 8px 12px 3px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.menu-empty {
+  padding: 4px 12px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.menu-doc {
+  display: flex;
+  align-items: stretch;
+}
+
+.menu-doc > button:first-child {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+
+.menu-doc > button:first-child span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-doc small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.menu-doc.current > button:first-child span {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.menu-doc .menu-del {
+  flex: none;
+  width: 30px;
+  color: var(--text-muted);
+  font-size: 16px;
+}
+
+/* worksheet format */
+.sheet.serif-text .text-region {
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.region.kind-math .math-input {
+  font-size: calc(13.5px * var(--fs, 1));
+}
+
+.region.kind-text .text-input {
+  font-size: calc(14px * var(--fs, 1));
+}
+
+.fmt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.fmt-row > span:first-child {
+  width: 92px;
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.fmt-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.fmt-row output {
+  width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.fmt-toggles {
+  display: flex;
+  gap: 4px;
+}
+
+.fmt-toggles button {
+  min-width: 30px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.fmt-toggles button.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.fmt-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.fmt-swatches button {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+}
+
+.fmt-swatches button.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.fmt-swatches button.none {
+  background: linear-gradient(135deg, transparent 45%, var(--error) 46%, var(--error) 54%, transparent 55%), var(--surface);
 }
