@@ -137,7 +137,7 @@ export function m4Pose(pos: Vec3 = [0, 0, 0], rotDeg: Vec3 = [0, 0, 0]): M4 {
   return m4Mul(m4Translate(pos), R);
 }
 
-const toMat4 = (m: M4) => m as unknown as Mat4;
+export const toMat4 = (m: M4) => m as unknown as Mat4;
 
 // ------------------------------------------------------------ sketch frames
 

@@ -16,6 +16,7 @@ import {
   scale3, solidMass, sub3, transformMass, transformSolid,
   type Frame, type M4, type Manifold, type ManifoldToplevel, type Mass3, type Vec3,
 } from './solid';
+import { loftSolid, shapedExtrude, thinExtrude } from './shaping';
 
 // ------------------------------------------------------------ document
 
@@ -73,6 +74,23 @@ export interface ExtrudeFeature extends FeatureBase {
   extent: Extent;
   op: FeatureOp;
   /** Bodies to join to / cut / intersect; missing = last body (join) or all bodies. */
+  targets?: string[];
+  /** Thin extrude: only a wall of thickness t along the outline (a shell), with optional caps. */
+  thin?: { t: string; side: 'inside' | 'outside' | 'center'; cap: 'none' | 'start' | 'end' | 'both' };
+  /** Rounded or chamfered edges where the extrusion starts and ends. */
+  edgeStart?: { type: 'fillet' | 'chamfer'; r: string };
+  edgeEnd?: { type: 'fillet' | 'chamfer'; r: string };
+}
+
+/** A solid joining a profile of one sketch to a profile of another (on another plane). */
+export interface LoftFeature extends FeatureBase {
+  kind: 'loft';
+  sketch: string;
+  sketch2: string;
+  /** Profile keys; missing = the first profile of each sketch. */
+  profile?: string;
+  profile2?: string;
+  op: FeatureOp;
   targets?: string[];
 }
 
@@ -141,7 +159,7 @@ export interface CombineFeature extends FeatureBase {
   keepTools?: boolean;
 }
 
-export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature;
+export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -204,7 +222,7 @@ export interface CadDesign {
 
 export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch';
 export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
-  sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine',
+  sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine', loft: 'Loft',
 };
 
 /** Profiles are identified by the entities of their outer loop. */
@@ -521,10 +539,26 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
               [z0, z1] = s > 0 ? [0, d] : [-d, 0];
             }
           }
-          const tool = extrudeSolid(K, arena, regions, f, z0, z1);
-          const props = extrudeProps(regions, z1 - z0);
+          const shaped = !!(item.thin || p.edgeStart || p.edgeEnd);
+          if (item.thin && (p.edgeStart || p.edgeEnd)) throw new Error('a thin extrude cannot also round its edges — use two features');
+          const edge = (e: ExtrudeFeature['edgeStart'], r: number | undefined) => (e && r ? { type: e.type, r } : undefined);
+          const tool = item.thin
+            ? thinExtrude(K, arena, regions, f, z0, z1, { t: p.thin, side: item.thin.side, cap: item.thin.cap })
+            : shaped
+              ? shapedExtrude(K, arena, regions, f, z0, z1, edge(item.edgeStart, p.edgeStart), edge(item.edgeEnd, p.edgeEnd))
+              : extrudeSolid(K, arena, regions, f, z0, z1);
+          const props = shaped ? null : extrudeProps(regions, z1 - z0);
           const exact = props ? transformMass(massFromProps({ ...props, zg: props.zg + z0 }), frameMatrix(f)) : undefined;
           const rec = { tool, exact, op: item.op, targets: item.targets };
+          tools.set(item.id, rec);
+          apply(item.id, rec);
+          break;
+        }
+        case 'loft': {
+          if (item.sketch === item.sketch2) throw new Error('pick two different sketches');
+          const pick = (sid: string, key?: string) => selectedProfiles(inp, sid, key ? [key] : undefined)[0];
+          const tool = loftSolid(K, arena, { region: pick(item.sketch, item.profile), frame: frameOf(inp, item.sketch) }, { region: pick(item.sketch2, item.profile2), frame: frameOf(inp, item.sketch2) });
+          const rec = { tool, op: item.op, targets: item.targets };
           tools.set(item.id, rec);
           apply(item.id, rec);
           break;

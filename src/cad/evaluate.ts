@@ -176,6 +176,9 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
               p.d2 = value(ex.d2, '0', 'L', 'second distance');
               if (p.d + p.d2 <= 0) throw new Error('the two distances must add up to more than zero');
             }
+            if (item.thin) p.thin = positive(value(item.thin.t, '2', 'L', 'wall thickness'), 'wall thickness');
+            if (item.edgeStart?.r.trim()) p.edgeStart = positive(value(item.edgeStart.r, '1', 'L', 'start edge size'), 'start edge size');
+            if (item.edgeEnd?.r.trim()) p.edgeEnd = positive(value(item.edgeEnd.r, '1', 'L', 'end edge size'), 'end edge size');
             break;
           }
           case 'revolve': {

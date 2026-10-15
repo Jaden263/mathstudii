@@ -86,6 +86,19 @@ function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string
   return (result?.design?.bodies[comp.id] ?? []).map((b) => [b.id, b.name]);
 }
 
+/** Rounded or chamfered edges at one end of an extrusion. */
+function EdgeField({ label, value, onChange }: { label: string; value?: { type: 'fillet' | 'chamfer'; r: string }; onChange: (v: { type: 'fillet' | 'chamfer'; r: string } | undefined) => void }) {
+  return (
+    <>
+      <Pick
+        label={label} value={value?.type ?? 'none'} options={[['none', 'Sharp'], ['fillet', 'Rounded (fillet)'], ['chamfer', 'Chamfered']]}
+        onChange={(t) => onChange(t === 'none' ? undefined : { type: t as 'fillet' | 'chamfer', r: value?.r ?? '2' })}
+      />
+      {value && <Expr label={value.type === 'fillet' ? 'Radius' : 'Chamfer size'} value={value.r} onChange={(r) => onChange({ ...value, r })} />}
+    </>
+  );
+}
+
 export function FeatureFields({ design, comp, feature: f, result, unit, onChange }: FeatureProps) {
   const sketches = comp.items.filter(isSketch);
   const upto = comp.items.indexOf(f);
@@ -123,6 +136,35 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
           {ex.type === 'two' && <Expr label="Distance, other side" value={ex.d2} onChange={(d2) => setEx({ ...ex, d2 }, 'd2')} />}
           {(ex.type === 'one' || ex.type === 'all') && <Pick label="Direction" value={ex.dir ?? 'auto'} options={DIRS} onChange={(dir) => setEx({ ...ex, dir: dir === 'auto' ? undefined : dir })} />}
           {ex.type === 'all' && <label className="check"><input type="checkbox" checked={!!ex.both} onChange={(e) => setEx({ ...ex, both: e.target.checked || undefined })} /> Both sides</label>}
+          <Pick label="Operation" value={f.op} options={OPS} onChange={(op) => onChange({ op })} />
+          {f.op !== 'new' && targets(f.targets)}
+          <label className="check" title="Only a wall along the outline: enclosures, tubes, channels">
+            <input type="checkbox" checked={!!f.thin} onChange={(e) => onChange({ thin: e.target.checked ? { t: '2', side: 'inside', cap: 'start' } : undefined, ...(e.target.checked ? { edgeStart: undefined, edgeEnd: undefined } : {}) })} /> Thin (shell)
+          </label>
+          {f.thin && (
+            <>
+              <Expr label="Wall thickness" value={f.thin.t} onChange={(t) => onChange({ thin: { ...f.thin!, t } }, 'thin')} />
+              <Pick label="Wall" value={f.thin.side} options={[['inside', 'Inside the outline'], ['outside', 'Outside'], ['center', 'Centred']]} onChange={(side) => onChange({ thin: { ...f.thin!, side } })} />
+              <Pick label="Closed ends" value={f.thin.cap} options={[['start', 'Start (open box)'], ['none', 'None (tube)'], ['end', 'End'], ['both', 'Both (hollow)']]} onChange={(cap) => onChange({ thin: { ...f.thin!, cap } })} />
+            </>
+          )}
+          {!f.thin && (
+            <>
+              <EdgeField label="Start edges" value={f.edgeStart} onChange={(e) => onChange({ edgeStart: e }, 'es')} />
+              <EdgeField label="End edges" value={f.edgeEnd} onChange={(e) => onChange({ edgeEnd: e }, 'ee')} />
+            </>
+          )}
+        </>
+      );
+    }
+    case 'loft': {
+      const withProfiles = sketches.filter((s) => sketchRegions(s, result).length > 0);
+      const opts = withProfiles.map((s) => [s.id, s.name] as [string, string]);
+      return (
+        <>
+          <Pick label="From sketch" value={f.sketch} options={opts} onChange={(v) => onChange({ sketch: v, profile: undefined })} />
+          <Pick label="To sketch" value={f.sketch2} options={opts} onChange={(v) => onChange({ sketch2: v, profile2: undefined })} />
+          <p className="hint">The first closed profile of each sketch is joined by a ruled surface. Put the sketches on parallel or tilted planes (Sketch → offset plane).</p>
           <Pick label="Operation" value={f.op} options={OPS} onChange={(op) => onChange({ op })} />
           {f.op !== 'new' && targets(f.targets)}
         </>

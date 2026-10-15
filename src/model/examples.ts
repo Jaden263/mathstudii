@@ -208,6 +208,79 @@ function rings(prefix: string, dias: [number, string, string?][], extra: (sk: Ca
   return sk;
 }
 
+/** A rectangle centred on the origin with width and height dimensions (worksheet names). */
+function centredRect(prefix: string, w: number, h: number, wExpr: string, hExpr: string): CadSketch {
+  const sk = outline(prefix, [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]]);
+  sk.points.push({ id: `${prefix}o`, x: 0, y: 0 });
+  sk.constraints.push(
+    { id: `${prefix}fo`, type: 'fix', refs: [`${prefix}o`], at: { x: 0, y: 0 } },
+    { id: `${prefix}h0`, type: 'horizontal', refs: [`${prefix}l0`] },
+    { id: `${prefix}h2`, type: 'horizontal', refs: [`${prefix}l2`] },
+    { id: `${prefix}v1`, type: 'vertical', refs: [`${prefix}l1`] },
+    { id: `${prefix}v3`, type: 'vertical', refs: [`${prefix}l3`] },
+    { id: `${prefix}dw`, type: 'distanceX', refs: [`${prefix}p0`, `${prefix}p1`], value: wExpr, offset: { x: 0, y: -12 } },
+    { id: `${prefix}dh`, type: 'distanceY', refs: [`${prefix}p1`, `${prefix}p2`], value: hExpr, offset: { x: 12, y: 0 } },
+    // centred: the corners are symmetric about the origin
+    { id: `${prefix}cx`, type: 'distanceX', refs: [`${prefix}p0`, `${prefix}o`], value: `(${wExpr})/2` },
+    { id: `${prefix}cy`, type: 'distanceY', refs: [`${prefix}p0`, `${prefix}o`], value: `(${hExpr})/2` },
+  );
+  return sk;
+}
+
+/** Thin extrude (an enclosure), rounded edges (a knob) and a loft (a duct). */
+function shapingDesign(): CadDesign {
+  return {
+    version: 2,
+    components: [
+      {
+        id: 'ce', name: 'Enclosure', color: '#9fb4cf',
+        items: [
+          { kind: 'sketch', id: 'se1', name: 'Outline', plane: { ref: 'XY' }, sketch: centredRect('e', 120, 80, 'B_e', 'H_e') },
+          { kind: 'extrude', id: 'fe1', name: 'Shell', sketch: 'se1', extent: { type: 'one', d: 'h_e', dir: '+' }, op: 'new', thin: { t: 't_w', side: 'inside', cap: 'start' } },
+        ],
+      },
+      {
+        id: 'ck', name: 'Knob', color: '#d4a373',
+        items: [
+          { kind: 'sketch', id: 'sk1', name: 'Disc', plane: { ref: 'XY' }, sketch: rings('k', [[40, 'D_k']]) },
+          { kind: 'extrude', id: 'fk1', name: 'Knob', sketch: 'sk1', extent: { type: 'one', d: '18 mm', dir: '+' }, op: 'new', edgeStart: { type: 'chamfer', r: '1 mm' }, edgeEnd: { type: 'fillet', r: 'r_k' } },
+        ],
+      },
+      {
+        id: 'cd', name: 'Duct', color: '#90be6d',
+        items: [
+          { kind: 'sketch', id: 'sd1', name: 'Inlet', plane: { ref: 'XY' }, sketch: centredRect('d', 80, 50, '80 mm', '50 mm') },
+          { kind: 'sketch', id: 'sd2', name: 'Outlet', plane: { ref: 'XY', offset: '70 mm' }, sketch: rings('o', [[40, 'D_o']]) },
+          { kind: 'loft', id: 'fd1', name: 'Transition', sketch: 'sd1', sketch2: 'sd2', op: 'new' },
+        ],
+      },
+    ],
+    occurrences: [
+      { id: 'oe', component: 'ce', grounded: true },
+      { id: 'ok', component: 'ck', grounded: true, pos: [110, 0, 0] },
+      { id: 'od', component: 'cd', grounded: true, pos: [200, 0, 0] },
+    ],
+    joints: [],
+  };
+}
+
+export function shapingExample(): Worksheet {
+  return build('CAD: shells, roundings, lofts', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Shells, rounded edges and lofts\nThree parts made with the Extrude options and the Loft feature. The enclosure is a **thin** extrude (wall t_w, closed at the bottom); the knob has a chamfered bottom and a **rounded** top; the duct is a **loft** from a rectangle to a circle 70 mm higher. Change a value below and the parts follow.' }],
+    ['math', L, mm(40), { source: 'B_e := 120 mm' }],
+    ['math', mm(55), mm(40), { source: 'H_e := 80 mm' }],
+    ['math', mm(90), mm(40), { source: 'h_e := 40 mm' }],
+    ['math', mm(125), mm(40), { source: 't_w := 2.5 mm' }],
+    ['math', L, mm(52), { source: 'D_k := 40 mm' }],
+    ['math', mm(55), mm(52), { source: 'r_k := 5 mm' }],
+    ['math', mm(90), mm(52), { source: 'D_o := 40 mm' }],
+    ['cad', L, mm(64), { name: 'sh', width: mm(170), height: mm(80), mode: '3d', view3d: { yaw: -35, pitch: 30 }, density: '1200 kg/m^3', design: shapingDesign() }],
+    ['math', L, mm(150), { source: 'sh.Enclosure.m = g' }],
+    ['math', mm(72), mm(150), { source: 'sh.Knob.m = g' }],
+    ['math', mm(122), mm(150), { source: 'sh.Duct.V = cm^3' }],
+  ]);
+}
+
 /** A flange with a hub and a bolt circle, and a shaft turning in it. */
 function flangeAssembly(): CadDesign {
   const plate = rings('f', [[200, 'D_f', 'D_f'], [51, 'd_2 + 1 mm']]);
@@ -493,4 +566,5 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Steel beam check (sections, checks)', make: steelCheckExample },
   { name: 'Python code', make: pythonExample },
   { name: 'CAD part design (parametric)', make: cadExample },
+  { name: 'CAD: shells, roundings, lofts', make: shapingExample },
 ];

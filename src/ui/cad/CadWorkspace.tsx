@@ -9,7 +9,7 @@ import {
   SquareRoundCorner, Scissors, SquareSplitHorizontal, Construction, Trash2, Box, PenTool, FileUp, FileDown, Undo2, Redo2, X,
   ArrowUpFromLine, RotateCw, ChevronRight, ChevronDown, ListTree, PanelRight, CircleDot, Grid3x3, FlipHorizontal2, Combine,
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
-  Layers, Crosshair, Download, Magnet, Waypoints,
+  Layers, Crosshair, Download, Magnet, Waypoints, Cone,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -149,7 +149,7 @@ const mapComp = (d: CadDesign, cid: string, fn: (c: CadComponent) => CadComponen
 
 const ICON: Record<DesignItem['kind'], ReactNode> = {
   sketch: <PenTool size={14} />, extrude: <ArrowUpFromLine size={14} />, revolve: <RotateCw size={14} />, hole: <CircleDot size={14} />,
-  pattern: <Grid3x3 size={14} />, mirror: <FlipHorizontal2 size={14} />, combine: <Combine size={14} />,
+  pattern: <Grid3x3 size={14} />, mirror: <FlipHorizontal2 size={14} />, combine: <Combine size={14} />, loft: <Cone size={14} />,
 };
 
 const splitKey = (key: string) => {
@@ -326,6 +326,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         const axis = sk.sketch.entities.find((e) => e.type === 'line' && e.construction)?.id ?? 'x';
         f = { kind, id, name, sketch: sk.id, profiles, axis, angle: '360', op };
       }
+    } else if (kind === 'loft') {
+      const withProfiles = items.filter((i): i is DesignSketch => isSketch(i) && sketchRegions(i, result).length > 0);
+      if (withProfiles.length < 2) return setMsg('A loft joins profiles of two sketches on different planes: make a second sketch on an offset plane first');
+      const [a, b] = withProfiles.slice(-2);
+      f = { kind, id, name, sketch: a.id, sketch2: b.id, op };
     } else if (kind === 'hole') {
       const sk = selSketch ?? lastSketch((s) => s.sketch.entities.some((e) => e.type === 'point'));
       if (!sk) return setMsg('Sketch points mark the hole centres: sketch on a face and place points (P)');
@@ -1040,6 +1045,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<PenTool size={20} />} label="Sketch" title="Create a sketch on a plane or a flat face" on={dialog?.kind === 'sketch'} onClick={() => setDialog({ kind: 'sketch', ref: 'XY', offset: '' })} />
               <RibbonButton icon={<ArrowUpFromLine size={20} />} label="Extrude" title="Extrude profiles: new body, join, cut or intersect (E)" onClick={() => startFeature('extrude')} />
               <RibbonButton icon={<RotateCw size={20} />} label="Revolve" title="Revolve profiles about an axis" onClick={() => startFeature('revolve')} />
+              <RibbonButton icon={<Cone size={20} />} label="Loft" title="Loft: join a profile of one sketch to a profile of another (on an offset plane)" onClick={() => startFeature('loft')} />
               <RibbonButton icon={<CircleDot size={20} />} label="Hole" title="Holes at sketch points: simple, counterbore, countersink (H)" onClick={() => startFeature('hole')} />
             </Group>
             <Group label="Pattern">
