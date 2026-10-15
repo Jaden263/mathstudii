@@ -78,13 +78,45 @@ export function fitView(d: BeamData, width: number, height: number, m = { l: 100
 // ------------------------------------------------------------ symbols
 
 /** Support symbol at a screen point; rotated by `angle` degrees (counter-clockwise). */
-export function SupportGlyph({ at, type, angle, cls = '' }: { at: P2; type: 'pin' | 'roller' | 'fixed'; angle: number; cls?: string }) {
+export function SupportGlyph({ at, type, angle, cls = '', spring = false, rotSpring = false }: {
+  at: P2; type: 'pin' | 'roller' | 'fixed'; angle: number; cls?: string;
+  /** Elastic along its axis: drawn with a coil spring. */
+  spring?: boolean;
+  /** Semi-rigid (rotational spring) fixed support. */
+  rotSpring?: boolean;
+}) {
   const rot = `translate(${at.x} ${at.y}) rotate(${-angle})`;
   const hatch = (y: number, x0: number, x1: number) => {
     const out: JSX.Element[] = [];
     for (let x = x0; x < x1; x += 5) out.push(<line key={x} x1={x} y1={y} x2={x - 5} y2={y + 6} />);
     return out;
   };
+  if (spring) {
+    // node, a short stem, the coil, and the ground below it
+    const top = type === 'fixed' ? 0 : 6;
+    const zig = [`M0 ${top}`, `L0 ${top + 4}`];
+    for (let i = 0; i < 6; i++) zig.push(`L${i % 2 ? -6 : 6} ${top + 6 + i * 3.4}`);
+    zig.push(`L0 ${top + 28}`, `L0 ${top + 31}`);
+    const g = top + 31;
+    return (
+      <g className={`bm-support ${cls}`} transform={rot}>
+        {type !== 'fixed' && <circle cx={0} cy={3} r={3} className="bm-tri" />}
+        {type === 'fixed' && <line x1={-8} y1={0} x2={8} y2={0} className="bm-ground" />}
+        <path d={zig.join(' ')} className="bm-spring" />
+        <line x1={-14} y1={g} x2={14} y2={g} className="bm-ground" />
+        <g className="bm-hatch">{hatch(g, -12, 16)}</g>
+      </g>
+    );
+  }
+  if (type === 'fixed' && rotSpring) {
+    return (
+      <g className={`bm-support ${cls}`} transform={rot}>
+        <line x1={-14} y1={0} x2={14} y2={0} className="bm-ground" />
+        <g className="bm-hatch">{hatch(0, -12, 16)}</g>
+        <path d="M0 -3 m-9 0 a9 9 0 1 1 18 0 a6 6 0 1 1 -12 0" className="bm-spring" />
+      </g>
+    );
+  }
   if (type === 'fixed') {
     return (
       <g className={`bm-support ${cls}`} transform={rot}>

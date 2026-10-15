@@ -51,6 +51,12 @@ export interface BeamSupport {
   angle: number;
   /** Name in results and the worksheet (A, B, …). */
   label: string;
+  /** Spring along the support axis (worksheet expression; bare number in force/length unit). Empty = rigid. */
+  k?: string;
+  /** Rotational spring of a fixed support (bare number in force·length per rad). Empty = rigid. */
+  kr?: string;
+  /** Settlement along the support axis, into the support (bare number in mm). */
+  settle?: string;
 }
 
 /** Where a load sits: on a node, or a fraction along a member. */

@@ -190,6 +190,23 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
             </label>
             <label className="field"><span>Name</span><LazyInput label="Support name" mono={false} value={support.label} onCommit={(v) => v.trim() && updSupport({ label: v.trim() })} /></label>
           </div>
+          {err(support.id)}
+          <div className="row2">
+            <label className="field" title={`Spring along the support axis; empty = rigid. A bare number is ${region.forceUnit}/${region.lengthUnit}`}>
+              <span>Spring k</span>
+              <LazyInput label="Spring stiffness" value={support.k ?? ''} placeholder="rigid" onCommit={(v) => updSupport({ k: v.trim() || undefined })} />
+            </label>
+            <label className="field" title="Settlement along the support axis (down for a support on the ground); a bare number is mm">
+              <span>Settlement</span>
+              <LazyInput label="Settlement" value={support.settle ?? ''} placeholder="0 mm" onCommit={(v) => updSupport({ settle: v.trim() || undefined })} />
+            </label>
+          </div>
+          {support.type === 'fixed' && (
+            <label className="field" title={`Rotational spring (semi-rigid foot); empty = fully fixed. A bare number is ${region.forceUnit}·${region.lengthUnit}/rad`}>
+              <span>Rotational spring k<sub>θ</sub></span>
+              <LazyInput label="Rotational spring" value={support.kr ?? ''} placeholder="rigid" onCommit={(v) => updSupport({ kr: v.trim() || undefined })} />
+            </label>
+          )}
           <label className="field"><span>Rotation (°)</span>
             <div className="bm-rot">
               <button className="icon-btn" title="Turn 90° counter-clockwise" aria-label="Turn left" onClick={() => updSupport({ angle: (support.angle + 90) % 360 })}><RotateCcw size={14} /></button>

@@ -27,6 +27,12 @@ export interface NumSupport {
   /** Rotation of the support symbol, radians (0 = on the ground). */
   angle: number;
   label: string;
+  /** Spring stiffness along the support normal, N/m (replaces the rigid constraint there). */
+  k?: number;
+  /** Rotational spring of a fixed support, N·m/rad (a semi-rigid foot). */
+  kr?: number;
+  /** Settlement along the support normal, m (positive into the support: down for one on the ground). */
+  settle?: number;
 }
 
 export type NumAt = { node: string } | { member: string; t: number };
@@ -305,15 +311,35 @@ export function solveStructure(st: NumStructure): BeamSolution {
   }
 
   // constraints: supports, plus rotations nothing holds (every member end hinged there)
-  const rows: { dof: number[]; w: number[]; support?: number; dir: [number, number, number] }[] = [];
+  // rows hold displacements: normal (along the support's axis) and, for pins and fixed
+  // supports, tangential; `rhs` is a prescribed displacement (settlement)
+  const rows: { dof: number[]; w: number[]; support?: number; dir: [number, number, number]; rhs?: number }[] = [];
+  // springs act as stiffness instead of a constraint; their reactions are added afterwards
+  const springs: { support: number; node: number; n: [number, number]; k: number; settle: number }[] = [];
+  const rotSprings: { support: number; node: number; kr: number }[] = [];
   st.supports.forEach((sp, si) => {
     const k = nodeIndex.get(sp.node);
     if (k === undefined) return;
     const nx = -Math.sin(sp.angle), ny = Math.cos(sp.angle);
-    if (sp.type === 'roller') rows.push({ dof: [3 * k, 3 * k + 1], w: [nx, ny], support: si, dir: [nx, ny, 0] });
-    else {
-      rows.push({ dof: [3 * k], w: [1], support: si, dir: [1, 0, 0] }, { dof: [3 * k + 1], w: [1], support: si, dir: [0, 1, 0] });
-      if (sp.type === 'fixed') rows.push({ dof: [3 * k + 2], w: [1], support: si, dir: [0, 0, 1] });
+    const settle = sp.settle ?? 0;
+    if (sp.k && sp.k > 0) {
+      springs.push({ support: si, node: k, n: [nx, ny], k: sp.k, settle });
+      K[3 * k][3 * k] += sp.k * nx * nx;
+      K[3 * k][3 * k + 1] += sp.k * nx * ny;
+      K[3 * k + 1][3 * k] += sp.k * nx * ny;
+      K[3 * k + 1][3 * k + 1] += sp.k * ny * ny;
+      // the spring's foot moves down by the settlement: it pulls the node along
+      F[3 * k] -= sp.k * settle * nx;
+      F[3 * k + 1] -= sp.k * settle * ny;
+    } else {
+      rows.push({ dof: [3 * k, 3 * k + 1], w: [nx, ny], support: si, dir: [nx, ny, 0], ...(settle ? { rhs: -settle } : {}) });
+    }
+    if (sp.type !== 'roller') rows.push({ dof: [3 * k, 3 * k + 1], w: [ny, -nx], support: si, dir: [ny, -nx, 0] });
+    if (sp.type === 'fixed') {
+      if (sp.kr && sp.kr > 0) {
+        rotSprings.push({ support: si, node: k, kr: sp.kr });
+        K[3 * k + 2][3 * k + 2] += sp.kr;
+      } else rows.push({ dof: [3 * k + 2], w: [1], support: si, dir: [0, 0, 1] });
     }
   });
   const kmax = Math.max(...K.map((row, i) => Math.abs(row[i])), 1e-300);
@@ -332,7 +358,7 @@ export function solveStructure(st: NumStructure): BeamSolution {
     Aug[ndof + c][d] = r.w[q] * kmax;
     Aug[d][ndof + c] = r.w[q] * kmax;
   }));
-  const sol = solveDense(Aug, [...F, ...new Array<number>(nc).fill(0)]);
+  const sol = solveDense(Aug, [...F, ...rows.map((r) => (r.rhs ?? 0) * kmax)]);
   const D = sol.slice(0, ndof);
 
   // reactions: K d = F + R, R = −Cᵀλ
@@ -345,6 +371,14 @@ export function solveStructure(st: NumStructure): BeamSolution {
     R.Ry += mag * r.dir[1];
     R.M += mag * r.dir[2];
   });
+  for (const sp of springs) {
+    // spring force on the node: k (u_foot − u)·n along n, u_foot = −settle n
+    const un = D[3 * sp.node] * sp.n[0] + D[3 * sp.node + 1] * sp.n[1];
+    const f = -sp.k * (un + sp.settle);
+    reactions[sp.support].Rx += f * sp.n[0];
+    reactions[sp.support].Ry += f * sp.n[1];
+  }
+  for (const sp of rotSprings) reactions[sp.support].M += -sp.kr * D[3 * sp.node + 2];
 
   // internal forces along each piece
   const byMember = new Map<string, MemberResult>();

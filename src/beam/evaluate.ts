@@ -116,8 +116,29 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
   const base: Omit<NumStructure, 'loads'> = {
     nodes: r.nodes.map((q) => ({ id: q.id, x: q.x * k, y: q.y * k })),
     members,
-    supports: r.supports.map((s) => ({ id: s.id, node: s.node, type: s.type, angle: (s.angle * Math.PI) / 180, label: s.label })),
+    supports: r.supports.map((s) => {
+      const extra: { k?: number; kr?: number; settle?: number } = {};
+      try {
+        if (s.k?.trim()) extra.k = quantity(evalExpr, s.k, 'N/m', `${F}/${r.lengthUnit}`, `Spring at ${s.label}`);
+        // kN·m/rad: the radian carries no dimension here
+        const perRad: Eval = (src) => {
+          const v = evalExpr(src);
+          return isUnit(v) && (v as unknown as { dimensions: number[] }).dimensions[7] === -1 ? math.multiply(v as Unit, math.unit(1, 'rad')) : v;
+        };
+        if (s.kr?.trim() && s.type === 'fixed') extra.kr = quantity(perRad, s.kr, 'N m', `${F} ${r.lengthUnit}`, `Rotational spring at ${s.label}`);
+        if (s.settle?.trim()) extra.settle = quantity(evalExpr, s.settle, 'm', 'mm', `Settlement at ${s.label}`);
+        if ((extra.k !== undefined && !(extra.k > 0)) || (extra.kr !== undefined && !(extra.kr > 0))) throw new Error(`Spring at ${s.label}: the stiffness must be positive`);
+      } catch (e) {
+        res.errors[s.id] = (e as Error).message;
+      }
+      return { id: s.id, node: s.node, type: s.type, angle: (s.angle * Math.PI) / 180, label: s.label, ...extra };
+    }),
   };
+  const supportError = r.supports.map((s) => res.errors[s.id]).find(Boolean);
+  if (supportError) {
+    res.error = supportError;
+    return res;
+  }
   const solve = (ls: NumLoad[]): BeamSolution => solveStructure({ ...base, loads: ls });
   if (!cases) {
     try {

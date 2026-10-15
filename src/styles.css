@@ -4233,3 +4233,10 @@ kbd {
   text-align: center;
   color: var(--text-muted);
 }
+
+.bm-support .bm-spring {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: calc(1.3px * var(--lw, 1));
+  stroke-linejoin: round;
+}

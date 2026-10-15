@@ -129,3 +129,51 @@ describe('beam and frame solver', () => {
     expect(() => solveStructure(beam([0, 2, 4], [sup('A', 'n0', 'pin'), sup('B', 'n2', 'roller')], [], (_, i) => (i === 0 ? { hingeB: true } : {})))).toThrow(/mechanism/);
   });
 });
+
+describe('springs and settlements', () => {
+  const EI = 210e9 * 8356e-8;
+  const base = (supports: NumStructure['supports'], loads: NumStructure['loads'], L = 6): NumStructure => ({
+    nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }, { id: 'c', x: 2 * L, y: 0 }],
+    members: [{ id: 'm1', a: 'a', b: 'b', E: 210e9, A: 53.8e-4, I: 8356e-8 }, { id: 'm2', a: 'b', b: 'c', E: 210e9, A: 53.8e-4, I: 8356e-8 }],
+    supports, loads,
+  });
+
+  it('adds the spring compression to the deflection', () => {
+    const P = 20e3, k = 5e6, L = 12;
+    const sol = solveStructure(base(
+      [{ id: 'A', node: 'a', type: 'pin', angle: 0, label: 'A', k }, { id: 'C', node: 'c', type: 'roller', angle: 0, label: 'C', k }],
+      [{ id: 'P', type: 'force', at: { node: 'b' }, Fx: 0, Fy: -P }],
+    ));
+    expect(-sol.nodes.b.dy).toBeCloseTo((P * L ** 3) / (48 * EI) + P / (2 * k), 8);
+    expect(sol.reactions[0].Ry).toBeCloseTo(P / 2, 6);
+    expect(sol.nodes.a.dy).toBeCloseTo(-P / 2 / k, 10);
+  });
+
+  it('settlement of the middle support of two spans', () => {
+    const d = 0.01, L = 6;
+    const sol = solveStructure(base(
+      [
+        { id: 'A', node: 'a', type: 'pin', angle: 0, label: 'A' },
+        { id: 'B', node: 'b', type: 'roller', angle: 0, label: 'B', settle: d },
+        { id: 'C', node: 'c', type: 'roller', angle: 0, label: 'C' },
+      ],
+      [],
+    ));
+    expect(sol.nodes.b.dy).toBeCloseTo(-d, 12);
+    expect(sol.reactions[1].Ry).toBeCloseTo((-6 * EI * d) / L ** 3, 3);
+    expect(sol.reactions[0].Ry).toBeCloseTo((3 * EI * d) / L ** 3, 3);
+  });
+
+  it('a rotational spring makes a semi-rigid foot', () => {
+    // cantilever with a rotational spring at the root: tip deflection P L³/3EI + P L² / kr
+    const P = 1e3, L = 3, kr = 1e7;
+    const sol = solveStructure({
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }],
+      members: [{ id: 'm', a: 'a', b: 'b', E: 210e9, A: 53.8e-4, I: 8356e-8 }],
+      supports: [{ id: 'A', node: 'a', type: 'fixed', angle: 0, label: 'A', kr }],
+      loads: [{ id: 'P', type: 'force', at: { node: 'b' }, Fx: 0, Fy: -P }],
+    });
+    expect(-sol.nodes.b.dy).toBeCloseTo((P * L ** 3) / (3 * EI) + (P * L * L) / kr, 9);
+    expect(sol.reactions[0].M).toBeCloseTo(P * L, 6);
+  });
+});

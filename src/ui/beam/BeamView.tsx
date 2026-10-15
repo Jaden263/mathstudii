@@ -649,7 +649,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           const a = (sp.angle * Math.PI) / 180;
           return (
             <g key={sp.id}>
-              <SupportGlyph at={c} type={sp.type} angle={sp.angle} cls={sel.has(sp.id) ? 'sel' : ''} />
+              <SupportGlyph at={c} type={sp.type} angle={sp.angle} cls={sel.has(sp.id) ? 'sel' : ''} spring={!!sp.k?.trim()} rotSpring={sp.type === 'fixed' && !!sp.kr?.trim()} />
               <text x={c.x - Math.cos(a) * 16 + Math.sin(a) * 30} y={c.y + Math.sin(a) * 16 + Math.cos(a) * 30 + 4} className="bm-support-label" textAnchor="middle">{sp.label}</text>
             </g>
           );
