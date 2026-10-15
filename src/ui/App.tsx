@@ -28,6 +28,8 @@ import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } 
 import { CadWorkspace } from './cad/CadWorkspace';
 import type { CadResult, MathResult } from '../engine/evaluator';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
+import { FindBar } from './FindBar';
+import { isName, replaceInRegion } from '../model/search';
 import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
 
@@ -559,6 +561,27 @@ export function App() {
 
   // ------------------------------------------------------------ right-click menus
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [find, setFind] = useState<{ replace: boolean; initial: string; key: number } | null>(null);
+  const [hits, setHits] = useState<{ ids: Set<string>; current: string | null }>({ ids: new Set(), current: null });
+  const onHits = useCallback((ids: Set<string>, current: string | null) => setHits({ ids, current }), []);
+  const openFind = (replace: boolean) => {
+    const sel = window.getSelection()?.toString().trim() ?? '';
+    setFind((f) => ({ replace: replace || !!f?.replace, initial: sel && !sel.includes('\n') ? sel : f?.initial ?? '', key: Date.now() }));
+  };
+  /** Rename a variable everywhere (whole names, case-sensitive). */
+  const renameVariable = (from: string) => {
+    const to = window.prompt(`Rename “${from}” everywhere to:`, from)?.trim();
+    if (!to || to === from) return;
+    if (!isName(to)) return setToast(`“${to}” is not a valid name`);
+    let n = 0;
+    for (const r of ws.regions) {
+      const res = replaceInRegion(r, from, to, { caseSensitive: true, wholeName: true });
+      if (!res) continue;
+      dispatch({ type: 'update', id: r.id, patch: res.region, coalesce: `rename:${from}` });
+      n += res.count;
+    }
+    setToast(`Renamed ${from} → ${to} in ${n} place${n === 1 ? '' : 's'}`);
+  };
   const closeMenu = useCallback(() => setMenu(null), []);
 
   const regionMenu = (r: Region, x: number, y: number) => {
@@ -598,6 +621,8 @@ export function App() {
           ],
         });
       }
+      const def = /^\s*([\p{L}_][\p{L}\p{N}_']*)\s*(?:\([^)]*\))?\s*(?::=|≡)/u.exec(r.source);
+      if (def) items.push({ label: `Rename “${def[1]}” everywhere…`, icon: <Type size={14} />, onClick: () => renameVariable(def[1]) });
       if (m.text) items.push({ label: 'Copy value', icon: <Copy size={14} />, onClick: () => { void navigator.clipboard?.writeText(m.text!); setToast('Value copied'); } });
       if (m.grid) {
         const g = m.grid;
@@ -700,6 +725,7 @@ export function App() {
       if (mod && k === 's') { e.preventDefault(); void saveDoc(e.shiftKey); return; }
       if (mod && k === 'o') { e.preventDefault(); void openDoc(); return; }
       if (mod && k === 'p') { e.preventDefault(); window.print(); return; }
+      if (mod && (k === 'f' || k === 'h')) { e.preventDefault(); openFind(k === 'h'); return; }
       if (mod && e.altKey && k === 'n') { e.preventDefault(); newDoc(); return; }
       if (e.key === 'F9') { e.preventDefault(); evaluation.calculate(); return; }
       if (e.key === 'Escape' && evaluation.slow) { evaluation.interrupt(); return; }
@@ -956,6 +982,12 @@ export function App() {
         onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false); }}
         onDrop={onDrop}
       >
+        {find && (
+          <FindBar
+            key={find.key} ws={ws} dispatch={dispatch} replace={find.replace} initial={find.initial}
+            onClose={() => setFind(null)} onHits={onHits} toast={setToast}
+          />
+        )}
         {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz), a CSV / TSV data file or an image</div>}
         <div className="sheet-scroller" ref={scrollerRef}>
           <Worksheet
@@ -973,6 +1005,8 @@ export function App() {
             finishEditing={finishEditing}
             showGrid={showGrid}
             onContextMenu={onSheetContextMenu}
+            hits={hits.ids}
+            currentHit={hits.current}
           />
         </div>
         {panelOpen && (

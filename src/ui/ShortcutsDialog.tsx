@@ -16,6 +16,7 @@ const SECTIONS: [string, [string, string][]][] = [
     ['Delete', 'Delete selected regions'],
     ['Ctrl+C / X / V / D', 'Copy, cut, paste, duplicate regions'],
     ['Ctrl+Z / Ctrl+Y', 'Undo / redo'],
+    ['Ctrl+F / Ctrl+H', 'Find / replace in every region (whole names: rename a variable)'],
     ['F9', 'Calculate now (needed when Auto is off)'],
     ['Esc', 'Interrupt a long calculation'],
     ['Ctrl+wheel / pinch', 'Zoom around the pointer'],

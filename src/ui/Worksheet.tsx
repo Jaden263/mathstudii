@@ -28,6 +28,9 @@ interface Props {
   showGrid: boolean;
   /** Right-click on a region (region) or on empty paper (null), with the sheet position. */
   onContextMenu: (e: React.MouseEvent, region: Region | null, at: Cursor) => void;
+  /** Regions matching the find bar, and the current match. */
+  hits?: Set<string>;
+  currentHit?: string | null;
 }
 
 export const snap = (v: number) => Math.round(v / GRID) * GRID;
@@ -268,7 +271,7 @@ export function Worksheet(p: Props) {
             <div
               key={r.kind === 'plot' ? `${r.id}|${p.ws.settings.format?.fontScale ?? 1}|${p.ws.settings.format?.lineScale ?? 1}` : r.id}
               data-region-id={r.id}
-              className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}${checkClass(res)}`}
+              className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}${checkClass(res)}${p.hits?.has(r.id) ? (p.currentHit === r.id ? ' find-current' : ' find-hit') : ''}`}
               style={{ left: r.x, top: r.y, transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined, ...regionLook(r, p.ws.settings.format) }}
               onPointerDown={(e) => onRegionPointerDown(e, r)}
               onContextMenu={(e) => {

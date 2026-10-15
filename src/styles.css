@@ -4065,3 +4065,81 @@ kbd {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------- find bar */
+
+.find-bar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  font: 13px var(--font);
+}
+
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.find-row input {
+  width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.find-gap {
+  width: 30px;
+}
+
+.find-count {
+  min-width: 112px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.find-opt {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  border-radius: 4px;
+  font: 600 11.5px var(--mono);
+  padding: 3px 5px;
+  cursor: pointer;
+}
+
+.find-opt.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.region.find-hit {
+  outline: 2px solid rgba(250, 176, 5, 0.55);
+  outline-offset: 1px;
+}
+
+.region.find-current {
+  outline: 2px solid #f08c00;
+  outline-offset: 1px;
+  background: rgba(250, 176, 5, 0.12);
+}
+
+@media print {
+  .find-bar {
+    display: none;
+  }
+}
