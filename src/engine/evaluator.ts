@@ -294,6 +294,12 @@ class Evaluator {
           this.results.set(r.id, this.evaluateCheck(chain));
         } catch (e) {
           const res: MathResult = { kind: 'math', tex: exprTex(st.expr), error: friendlyError(e) };
+          // an equation with undefined symbols (A·x == d), or a relation of symbols nobody defined,
+          // is a displayed formula rather than a failed check
+          if (st.type === 'expr' && /is not defined$/.test(res.error!) && (chain.ops.includes('==') || this.noneDefined(chain.terms))) {
+            this.results.set(r.id, { kind: 'math', tex: res.tex });
+            return;
+          }
           const fix = this.suggestFix(res.error!);
           if (fix) {
             res.fix = fix;
@@ -352,6 +358,18 @@ class Evaluator {
     } finally {
       this.updateDefined();
     }
+  }
+
+  /** None of the names in these expressions is defined (units aside): a symbolic relation. */
+  private noneDefined(terms: string[]): boolean {
+    for (const t of terms) {
+      try {
+        for (const n of freeSymbols(parseExpr(t))) if (this.global.has(n)) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Evaluate a (possibly chained) comparison: a ≤ b, 0 < x ≤ 10. */
