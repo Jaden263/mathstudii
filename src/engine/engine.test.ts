@@ -411,7 +411,11 @@ describe('sketches', () => {
 describe('bundled examples', () => {
   beforeAll(async () => {
     await loadCas();
-  });
+    // the Python example needs Python (~3 s to start)
+    const { loadPyodide } = await import('pyodide');
+    const { initPython } = await import('../python/runtime');
+    await initPython(() => loadPyodide());
+  }, 60000);
   it('evaluate without errors', async () => {
     const { EXAMPLES } = await import('../model/examples');
     for (const ex of EXAMPLES) {

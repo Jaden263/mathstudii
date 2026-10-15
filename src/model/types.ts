@@ -5,7 +5,7 @@ import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/
 import type { CadDesign } from '../cad/design';
 import { DEFAULT_SECTION, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python';
 
 interface RegionBase {
   id: string;
@@ -175,7 +175,16 @@ export interface BeamRegion extends RegionBase, BeamData {
   reactions?: boolean;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion;
+/** Python code that reads the worksheet variables above it and exports what it assigns. */
+export interface PythonRegion extends RegionBase {
+  kind: 'python';
+  code: string;
+  width: number;
+  /** Hide the code and show only the output (print and exported values). */
+  collapsed?: boolean;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion;
 
 export interface WorksheetSettings {
   /** Displayed decimal places. */
@@ -267,6 +276,8 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
         grid: 0.5, snap: true, section: { ...DEFAULT_SECTION }, show: 'model', nodes: [], members: [], supports: [], loads: [],
         ...(init as Partial<BeamRegion>),
       };
+    case 'python':
+      return { ...base, kind, code: '', width: 480, ...(init as Partial<PythonRegion>) };
   }
 }
 

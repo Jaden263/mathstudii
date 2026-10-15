@@ -329,6 +329,46 @@ export function cadExample(): Worksheet {
   ]);
 }
 
+export function pythonExample(): Worksheet {
+  return build('Python code', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Python in the worksheet\nA **Python** region reads the variables defined above it — with their units — and every variable or function it assigns comes back to the worksheet. `Q(5, "kN")` and `u.mm` make quantities, `M.to("kN*m")` gives a plain number, `f"{M:.1f kN*m}"` formats one. Python starts on first use (a few seconds); numpy and scipy download on first `import`.' }],
+    ['math', L, mm(46), { source: 'N_Ed := 850 kN' }],
+    ['math', mm(62), mm(46), { source: 'L_cr := 4.5 m' }],
+    ['math', mm(104), mm(46), { source: 'f_y := 355 MPa' }],
+    ['math', mm(146), mm(46), { source: 'E := 210 GPa' }],
+    ['math', mm(178), mm(46), { source: 'γ_M1 := 1.0' }],
+    ['python', L, mm(56), { width: mm(170), code: `# Lightest HEB column for N_Ed: flexural buckling about the weak axis
+# (EN 1993-1-1, 6.3.1, curve c)
+HEB = {  # A [cm²], I_z [cm⁴]
+    "HEB 160": (54.3, 889),
+    "HEB 180": (65.3, 1363),
+    "HEB 200": (78.1, 2003),
+    "HEB 220": (91.0, 2843),
+}
+
+def chi(A, I, alpha=0.49):
+    i = (I / A) ** 0.5
+    lam = L_cr / i / math.pi * (f_y / E) ** 0.5
+    phi = 0.5 * (1 + alpha * (lam - 0.2) + lam**2)
+    return min(1.0, 1 / (phi + (phi**2 - lam**2) ** 0.5))
+
+rows = []
+for name, (A_cm2, I_cm4) in HEB.items():
+    A, I = Q(A_cm2, "cm^2"), Q(I_cm4, "cm^4")
+    N = chi(A, I) * A * f_y / γ_M1
+    rows.append((name, N))
+    print(f"{name}:  N_b,Rd = {N:5.0f kN}   η = {N_Ed / N:.2f}")
+
+profile, N_bRd = next((r for r in rows if r[1] >= N_Ed), rows[-1])` }],
+    ['math', L, mm(226), { source: 'profile =' }],
+    ['math', mm(62), mm(226), { source: 'N_bRd = kN' }],
+    ['math', mm(104), mm(226), { source: 'η := N_Ed / N_bRd =' }],
+    ['text', L, mm(240), { width: mm(80), markdown: 'Python functions work in math and plots too — here χ for a HEB 220 as its I_z varies:' }],
+    ['math', L, mm(256), { source: 'chi(91 cm^2, 2843 cm^4) =' }],
+    ['plot', mm(104), mm(238), { xExpr: 'I', traces: [{ y: 'chi(91 cm^2, I)', style: 'line' }], xmin: '500 cm^4', xmax: '6000 cm^4', xUnit: 'cm^4', width: mm(86), height: mm(56), title: 'χ(I_z)' }],
+  ]);
+}
+
 export function beamExample(): Worksheet {
   // continuous beam: spans of 5 m and 4 m, uniform load, a point load in the second span
   const beam: BeamData = {
@@ -395,5 +435,6 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Cross-sections (sketch)', make: sectionExample },
   { name: 'Mechanism animation (sketch)', make: mechanismExample },
   { name: 'Beams and frames', make: beamExample },
+  { name: 'Python code', make: pythonExample },
   { name: 'CAD part design (parametric)', make: cadExample },
 ];

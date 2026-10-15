@@ -33,7 +33,8 @@ interrupt it (Esc / Stop), like Mathcad's interrupt.
 
 ## Using it
 
-- Click empty space to place the cursor (**+**), then just type. `"` makes a text region, `@` a plot.
+- Click empty space to place the cursor (**+**), then just type. `"` makes a text region, `@` a plot,
+  `` ` `` a Python region.
 - `:` types `:=`, `~` types `≡`, `Ctrl+.` types `→`, `Ctrl+G` makes the previous letter Greek.
 - Enter finishes a region and moves the cursor below it. Drag a region to move it.
 - Press **F1** for all keyboard shortcuts. **Examples** in the top bar has worked worksheets.
@@ -192,6 +193,37 @@ The **Beams and frames** example covers two structures:
 - A two-span beam with factored loads, its reactions, a stress and deflection check, and
   plots of `b.M(x)` and `b.w(x)`.
 - A portal frame with fixed feet under roof load and wind.
+
+### Python code
+
+Press **Python** (or type `` ` `` at the cursor) for a code region. It runs real CPython
+(Pyodide, compiled to WebAssembly) inside the app, with the worksheet:
+
+- **Variables in.** Everything defined *above* the region is a Python variable, units
+  included: `q := 10 kN/m` arrives as a `Quantity`. Vectors and matrices arrive as lists,
+  objects (beam and CAD results) with attribute access (`b.M_max`), and worksheet
+  functions are callable.
+- **Variables out.** What you assign with `=` or define with `def` (outside loops and
+  functions) becomes a worksheet variable for the regions below, so a Python function
+  works in math regions and plots: `sigma(500 cm^3) = MPa`. Loop temporaries and names
+  starting with `_` stay private.
+- **Units.** Arithmetic checks dimensions (`L + 2` with `L` in metres is a `TypeError`).
+  `Q(5, "kN")`, `u.mm`, `u("kN/m")` make quantities; `M.to("kN*m")` gives a plain number;
+  `f"{M:.1f kN*m}"` formats one. Angles are plain numbers in radians (`u.deg` = π/180).
+- **Output.** `print` shows under the code, then the exported values. Errors name the line.
+  The arrow next to *Python* hides the code and keeps the results.
+
+The honest part:
+
+- The first run starts Python, which takes a few seconds (about 13 MB, cached after that,
+  so it also works offline).
+- numpy, scipy, sympy, pandas and the other packages Pyodide ships are downloaded from
+  the Pyodide CDN the first time a region imports them, so that first import needs internet.
+  Packages with native code that Pyodide does not ship cannot be used.
+- A region that never ends (`while True:`) blocks the calculation like an endless
+  worksheet loop: press *Esc* (or *Stop*) to interrupt, then fix the code.
+- Quantities hold one value; for numpy work, convert with `.to(...)` first and wrap the
+  result again with `Q(...)`.
 
 ### CAD parts (parametric design)
 
@@ -423,6 +455,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude, revolve, hole, pattern, mirror, combine with booleans), assemblies with joints, mass properties back into the worksheet, DXF in/out, STL out | ✅ (mesh kernel: no 3-D fillets/chamfers/shell, sweeps or drawings) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
+| Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ❌ |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas, headers/footers, protected regions, track changes | ❌ |

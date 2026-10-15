@@ -3567,3 +3567,231 @@ kbd {
 .fmt-swatches button.none {
   background: linear-gradient(135deg, transparent 45%, var(--error) 46%, var(--error) 54%, transparent 55%), var(--surface);
 }
+
+/* ---------------------------------------------------------------- python regions */
+
+.py-region {
+  --py-kw: #8250df;
+  --py-str: #0a7f3f;
+  --py-num: #b35900;
+  --py-com: #8a8f99;
+  --py-def: #1f6feb;
+  --py-bi: #0b7285;
+  --py-fs: calc(12.5px * var(--fs, 1));
+  position: relative;
+  border-left: 3px solid #3572a5;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: var(--py-fs);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .py-region {
+    --py-kw: #c297ff;
+    --py-str: #7ee2a8;
+    --py-num: #ffb86b;
+    --py-com: #7d828d;
+    --py-def: #79b8ff;
+    --py-bi: #66d9e8;
+  }
+}
+
+:root[data-theme='dark'] .py-region {
+  --py-kw: #c297ff;
+  --py-str: #7ee2a8;
+  --py-num: #ffb86b;
+  --py-com: #7d828d;
+  --py-def: #79b8ff;
+  --py-bi: #66d9e8;
+}
+
+.py-region.error {
+  border-left-color: var(--error);
+}
+
+.py-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 1px 2px;
+  font: 500 calc(11px * var(--fs, 1)) var(--font);
+  color: var(--text-muted);
+  min-height: 20px;
+}
+
+.py-fold {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.py-fold:hover {
+  background: var(--accent-soft);
+}
+
+.py-tag {
+  font-weight: 600;
+  color: #3572a5;
+  letter-spacing: 0.02em;
+}
+
+:root[data-theme='dark'] .py-tag {
+  color: #79b8ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .py-tag {
+    color: #79b8ff;
+  }
+}
+
+.py-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.py-hint {
+  margin-left: auto;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.py-code {
+  display: flex;
+  font-family: var(--mono);
+  line-height: 1.5;
+  border-top: 1px solid var(--border);
+}
+
+.py-gutter {
+  flex: none;
+  padding: 4px 6px 4px 4px;
+  min-width: 26px;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.6;
+  user-select: none;
+  font-size: 0.92em;
+  line-height: calc(1.5em / 0.92);
+}
+
+.py-gutter .err {
+  color: var(--error);
+  opacity: 1;
+  font-weight: 700;
+}
+
+.py-editor {
+  /* highlighted code and the transparent textarea share one grid cell, so they keep the same size and scroll together */
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.py-hl,
+.py-input {
+  grid-area: 1 / 1;
+  margin: 0;
+  padding: 4px 8px 4px 2px;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+  tab-size: 4;
+  letter-spacing: 0;
+  word-spacing: 0;
+}
+
+.py-hl {
+  color: var(--text);
+  min-height: 1.5em;
+}
+
+.py-input {
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.py-input::selection {
+  background: var(--accent-soft);
+  color: transparent;
+}
+
+.py-kw { color: var(--py-kw); font-weight: 600; }
+.py-str { color: var(--py-str); }
+.py-num { color: var(--py-num); }
+.py-com { color: var(--py-com); font-style: italic; }
+.py-def { color: var(--py-def); font-weight: 600; }
+.py-bi { color: var(--py-bi); }
+.py-dec { color: var(--py-kw); }
+.py-ph { color: var(--text-muted); font-style: italic; }
+
+.py-out {
+  border-top: 1px dashed var(--border);
+  padding: 4px 8px 5px;
+  display: grid;
+  gap: 4px;
+}
+
+.py-stdout {
+  margin: 0;
+  font: calc(12px * var(--fs, 1)) / 1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+  color: var(--text);
+}
+
+.py-error {
+  font-family: var(--mono);
+  white-space: pre-wrap;
+}
+
+.py-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  font-size: calc(13px * var(--fs, 1));
+}
+
+.py-var.skipped code {
+  color: var(--text-muted);
+}
+
+.py-note {
+  margin-left: 6px;
+  font: calc(11px * var(--fs, 1)) var(--font);
+  color: var(--text-muted);
+}
+
+.py-resize {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  width: 8px;
+  height: 100%;
+  cursor: ew-resize;
+}
+
+.py-resize:hover {
+  background: var(--accent-soft);
+}

@@ -1,7 +1,7 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
 import type { Unit } from 'mathjs';
-import type { MathRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
+import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { readingOrder } from '../model/types';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
@@ -10,12 +10,13 @@ import { parseStatement, parseRange, splitComparison, findTop, findEvalEquals, p
 import { engineCtx, toVector, vec, assignIndex, normalize } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, unitParts, type FormatOptions } from './format';
-import { exprTex, lhsTex, programTex, texCtx, keywordsTex } from './tex';
+import { exprTex, lhsTex, programTex, texCtx, keywordsTex, nameTex } from './tex';
 import { symbolicEval, casReady, type SymFunction } from './symbolic';
 import * as N from './numeric';
 import { evaluateSketch, type SketchResult } from './sketchEval';
 import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
 import { solveBeam, beamValue, type BeamResult } from '../beam/evaluate';
+import { pythonReady, runPython, resetPython, pyParams } from '../python/runtime';
 
 export type { SketchResult, CadResult, BeamResult };
 
@@ -64,11 +65,26 @@ export interface TextResult {
   values: Record<string, { tex?: string; error?: string }>;
 }
 
-export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult;
+export interface PythonResult {
+  kind: 'python';
+  /** What the code printed. */
+  stdout: string;
+  /** Variables the code assigned, as the worksheet sees them. */
+  outputs: { name: string; tex?: string; note?: string }[];
+  error?: string;
+  /** 1-based line of the error. */
+  line?: number;
+  /** Waiting for Python to start. */
+  loading?: boolean;
+}
+
+export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult | PythonResult;
 
 export interface EvaluationOutput {
   results: Map<string, RegionResult>;
   needsCas: boolean;
+  /** Python regions are waiting for Python to start. */
+  needsPython: boolean;
   errorCount: number;
   millis: number;
 }
@@ -97,6 +113,7 @@ class Evaluator {
   readonly ranges = new Map<string, unknown>();
   readonly symFunctions = new Map<string, SymFunction>();
   needsCas = false;
+  needsPython = false;
   readonly fmt: FormatOptions;
   /** SMath semantics: function bodies read variables when called, not when defined. */
   readonly bindAtCall: boolean;
@@ -120,6 +137,7 @@ class Evaluator {
     engineCtx.deadline = performance.now() + 20000;
     math.Unit.setUnitSystem(this.ws.settings.unitSystem ?? 'si');
     texCtx.defined = new Set(this.global.keys());
+    if (pythonReady()) resetPython();
     const ordered = readingOrder(this.ws.regions).filter((r) => !r.disabled);
     // pass 1: global definitions
     for (const r of ordered) {
@@ -143,6 +161,7 @@ class Evaluator {
         case 'sketch': this.results.set(r.id, this.evaluateSketchRegion(r)); break;
         case 'cad': this.results.set(r.id, this.evaluateCadRegion(r)); break;
         case 'beam': this.results.set(r.id, this.evaluateBeamRegion(r)); break;
+        case 'python': this.results.set(r.id, this.evaluatePythonRegion(r)); break;
         case 'text': this.results.set(r.id, this.evaluateText(r)); break;
         default: break;
       }
@@ -672,6 +691,58 @@ class Evaluator {
     return res;
   }
 
+  // ------------------------------------------------------------ python
+
+  evaluatePythonRegion(r: PythonRegion): PythonResult {
+    const res: PythonResult = { kind: 'python', stdout: '', outputs: [] };
+    if (!r.code.trim()) return res;
+    if (!pythonReady()) {
+      this.needsPython = true;
+      return { ...res, loading: true };
+    }
+    let run;
+    try {
+      run = runPython(r.code, this.global.local.entries());
+    } catch (e) {
+      return { ...res, error: friendlyError(e) };
+    }
+    res.stdout = run.stdout;
+    if (run.error) {
+      res.error = run.error;
+      if (run.line) res.line = run.line;
+    }
+    for (const o of run.outputs) {
+      if (o.skip !== undefined) {
+        res.outputs.push({ name: o.name, note: `not exported (${o.skip})` });
+        continue;
+      }
+      if (!isIdentifier(o.name)) {
+        res.outputs.push({ name: o.name, note: 'not exported (not a worksheet name)' });
+        continue;
+      }
+      this.global.set(o.name, o.value);
+      this.ranges.delete(o.name);
+      const params = pyParams(o.value);
+      let tex: string;
+      try {
+        tex = params
+          ? `${nameTex(o.name)}\\left(${params.map(nameTex).join(',')}\\right)\\ \\text{— Python function}`
+          : typeof o.value === 'function'
+            ? `${nameTex(o.name)}\\ \\text{— worksheet function}`
+            : bigValue(o.value)
+              ? `${nameTex(o.name)}\\ \\text{— ${bigValue(o.value)}}`
+              : `${nameTex(o.name)}=${valueTex(o.value, this.fmt)}`;
+      } catch (e) {
+        tex = `${nameTex(o.name)}=\\text{?}`;
+        res.outputs.push({ name: o.name, tex, note: friendlyError(e) });
+        continue;
+      }
+      res.outputs.push({ name: o.name, tex });
+    }
+    this.updateDefined();
+    return res;
+  }
+
   // ------------------------------------------------------------ text with live values
 
   evaluateText(r: TextRegion): TextResult {
@@ -856,6 +927,21 @@ class Evaluator {
   }
 }
 
+/** Short description of a value too large to show inline in a Python region's output. */
+function bigValue(v: unknown): string | null {
+  if (isMatrix(v)) {
+    const size = v.size();
+    const n = size.reduce((a, b) => a * b, 1);
+    if (n <= 4) return null;
+    return size.length === 1 ? `vector of ${n}` : `${size.join('×')} matrix`;
+  }
+  if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+    const keys = Object.keys(v);
+    return `object: ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? ', …' : ''}`;
+  }
+  return null;
+}
+
 export function evaluateWorksheet(ws: Worksheet, overrides?: Record<string, string>): EvaluationOutput {
   const t0 = performance.now();
   const ev = new Evaluator(ws, overrides);
@@ -865,6 +951,6 @@ export function evaluateWorksheet(ws: Worksheet, overrides?: Record<string, stri
     if ('error' in r && r.error) errorCount++;
     if (r.kind === 'solve' && (r.solver.error || r.guesses.some((g) => g.error) || r.constraints.some((c) => c.error))) errorCount++;
   }
-  return { results: ev.results, needsCas: ev.needsCas, errorCount, millis: performance.now() - t0 };
+  return { results: ev.results, needsCas: ev.needsCas, needsPython: ev.needsPython, errorCount, millis: performance.now() - t0 };
 }
 

@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import {
   FilePlus2, FolderOpen, Save, Printer, Undo2, Redo2, Sigma, Type, LineChart, Table2, Image as ImageIcon,
   ListChecks, PencilRuler, Box, Play, Square, ZoomIn, ZoomOut, MoveHorizontal, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
-  AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown,
+  AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown, Code2,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
 import { EXAMPLES, welcomeWorksheet } from '../model/examples';
@@ -233,7 +233,7 @@ export function App() {
     const r = ws.regions.find((q) => q.id === id);
     setEditingId((cur) => (cur === id ? null : cur));
     if (!r) return;
-    const empty = (r.kind === 'math' && !r.source.trim()) || (r.kind === 'text' && !r.markdown.trim());
+    const empty = (r.kind === 'math' && !r.source.trim()) || (r.kind === 'text' && !r.markdown.trim()) || (r.kind === 'python' && !r.code.trim());
     if (empty) {
       dispatch({ type: 'delete', ids: [id] });
       setSelected(new Set());
@@ -252,7 +252,7 @@ export function App() {
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
@@ -552,7 +552,7 @@ export function App() {
       if (e.key === 'Enter' && selected.size === 1) {
         e.preventDefault();
         const r = ws.regions.find((q) => selected.has(q.id));
-        if (r && ['math', 'text', 'solve', 'table'].includes(r.kind)) setEditingId(r.id);
+        if (r && ['math', 'text', 'solve', 'table', 'python'].includes(r.kind)) setEditingId(r.id);
         return;
       }
       if (e.key.startsWith('Arrow')) {
@@ -573,6 +573,7 @@ export function App() {
           else if (e.key === '@') r = addRegion('plot', {}, cursor);
           else if (e.key === '#') r = addRegion('sketch', {}, cursor);
           else if (e.key === '&') r = addRegion('cad', {}, cursor);
+          else if (e.key === '`') r = addRegion('python', {}, cursor);
           else r = addRegion('math', { source: e.key }, cursor);
         });
         const ta = r && document.querySelector<HTMLTextAreaElement>(`[data-region-id="${r.id}"] textarea`);
@@ -714,6 +715,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('sketch')} title="Drawing: sketches, cross-sections, mechanisms (type # at the cursor)"><PencilRuler size={16} /> Sketch</button>
           <button className="text-btn" onClick={() => addRegion('beam')} title="Beam or frame: draw members, supports and loads, get reactions and N, V, M, deflection diagrams"><BeamIcon /> Beam</button>
           <button className="text-btn" onClick={() => addRegion('cad')} title="Parametric CAD part: constrained sketch, dimensions from the worksheet, extrude/revolve, mass properties (type & at the cursor)"><Box size={16} /> CAD</button>
+          <button className="text-btn" onClick={() => addRegion('python')} title="Python code: uses the worksheet variables above it and exports what it assigns, units included (type ` at the cursor)"><Code2 size={16} /> Python</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
           <button className="text-btn" onClick={insertImage} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
