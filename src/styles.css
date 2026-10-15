@@ -4292,3 +4292,30 @@ kbd {
     box-shadow: none;
   }
 }
+
+/* ---------------------------------------------------------------- CAD inspect tools */
+
+.cadw-inspect {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--shadow);
+  font: 12.5px var(--font);
+  z-index: 5;
+}
+
+.cadw-inspect input[type='range'] {
+  width: 140px;
+}
+
+.cadw-inspect-val {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

@@ -9,7 +9,7 @@ import {
 } from '../../cad/design';
 import { findProfiles, loopPolygon, type ProfileRegion, type Vec2 } from '../../cad/profile';
 import type { Mesh } from '../../cad/mesh';
-import { framePoint, kernel, solidMesh, type Frame, type M4, type ManifoldToplevel } from '../../cad/solid';
+import { framePoint, kernel, sectionInPlane, solidMesh, toMat4, type Frame, type M4, type Manifold, type ManifoldToplevel } from '../../cad/solid';
 import { loadKernel } from '../../cad/kernelBrowser';
 import type { SceneLines, SceneMesh, ScenePlane, Vec3 } from './Scene3D';
 
@@ -193,7 +193,60 @@ export interface SceneOptions {
   isolate?: boolean;
   /** Feature id the timeline marker sits after (later sketches are hidden). */
   size: number;
+  /** Section view: keep what lies on the normal's side of the plane n·x = offset (world). */
+  section?: { n: Vec3; offset: number };
 }
+
+/** Trimmed bodies and their cut faces, per solid and plane (scenes rebuild on every hover). */
+const sectionCache = new WeakMap<Manifold, Map<string, { mesh: Mesh | null; cap: Mesh | null }>>();
+
+function sectionOf(solid: Manifold, M: M4, sec: { n: Vec3; offset: number }, size: number): { mesh: Mesh | null; cap: Mesh | null } {
+  const key = `${M.join(',')}|${sec.n.join(',')}|${sec.offset}`;
+  let byKey = sectionCache.get(solid);
+  if (!byKey) sectionCache.set(solid, (byKey = new Map()));
+  const hit = byKey.get(key);
+  if (hit) return hit;
+  const world = solid.transform(toMat4(M));
+  const kept = world.trimByPlane(sec.n, sec.offset);
+  const out: { mesh: Mesh | null; cap: Mesh | null } = { mesh: kept.isEmpty() ? null : solidMesh(kept), cap: null };
+  // the cut face, a hair in front of the trimmed solid's own face so it shows in colour
+  const n = sec.n;
+  const u: Vec3 = Math.abs(n[2]) < 0.9 ? normalize(cross(n, [0, 0, 1])) : normalize(cross(n, [1, 0, 0]));
+  const v = cross(n, u);
+  const lift = -size * 2e-4;
+  const f: Frame = { o: [n[0] * (sec.offset + lift), n[1] * (sec.offset + lift), n[2] * (sec.offset + lift)], u, v, n };
+  const polys = sectionInPlane(world, { ...f, o: [n[0] * sec.offset, n[1] * sec.offset, n[2] * sec.offset] });
+  if (polys.length && K_TRI) {
+    const tris = K_TRI(polys.map((p) => p.map((q) => [q.x, q.y] as [number, number])));
+    const flat = polys.flat();
+    const pos: number[] = [], nrm: number[] = [], edges: number[] = [];
+    for (const t of tris) {
+      // facing the side that was cut away
+      for (const i of [t[0], t[2], t[1]]) {
+        const w = framePoint(f, flat[i]);
+        pos.push(...w);
+        nrm.push(-n[0], -n[1], -n[2]);
+      }
+    }
+    for (const p of polys) {
+      for (let i = 0; i < p.length; i++) edges.push(...framePoint(f, p[i]), ...framePoint(f, p[(i + 1) % p.length]));
+    }
+    const min: [number, number, number] = [Infinity, Infinity, Infinity], max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], pos[i + k]); max[k] = Math.max(max[k], pos[i + k]); }
+    out.cap = { positions: new Float32Array(pos), normals: new Float32Array(nrm), edges: new Float32Array(edges), bounds: { min, max } };
+  }
+  world.delete();
+  kept.delete();
+  byKey.set(key, out);
+  return out;
+}
+
+let K_TRI: ((polys: [number, number][][]) => number[][]) | null = null;
+const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const normalize = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
 
 export interface Scene {
   meshes: SceneMesh[];
@@ -220,10 +273,19 @@ export function buildScene(region: CadRegion, design: CadDesign, result: CadResu
     const color = componentColor(design, comp.id);
     for (const b of built.built.components.get(comp.id)?.bodies ?? []) {
       if (comp.hiddenBodies?.includes(b.id)) continue;
+      const key = `b:${occ.id}:${b.id}`;
+      const look = { color, highlight: o.highlight.has(key) || o.highlight.has(`o:${occ.id}`), ghost: o.isolate && comp.id !== o.active };
+      if (o.section && !b.solid.isEmpty()) {
+        const K = kernel();
+        if (K && !K_TRI) K_TRI = (polys) => K.triangulate(polys) as unknown as number[][];
+        const sec = sectionOf(b.solid, M, o.section, o.size);
+        if (sec.mesh) meshes.push({ key, mesh: sec.mesh, ...look });
+        if (sec.cap) meshes.push({ key: `${key}:cut`, mesh: sec.cap, color: [0.87, 0.42, 0.25], pickable: false });
+        continue;
+      }
       const mesh = built.mesh(comp.id, b.id);
       if (!mesh) continue;
-      const key = `b:${occ.id}:${b.id}`;
-      meshes.push({ key, mesh, color, matrix: M, highlight: o.highlight.has(key) || o.highlight.has(`o:${occ.id}`), ghost: o.isolate && comp.id !== o.active });
+      meshes.push({ key, mesh, matrix: M, ...look });
     }
   }
   // sketches and profiles of the active component, in its first occurrence

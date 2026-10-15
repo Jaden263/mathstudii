@@ -9,7 +9,7 @@ import {
   SquareRoundCorner, Scissors, SquareSplitHorizontal, Construction, Trash2, Box, PenTool, FileUp, FileDown, Undo2, Redo2, X,
   ArrowUpFromLine, RotateCw, ChevronRight, ChevronDown, ListTree, PanelRight, CircleDot, Grid3x3, FlipHorizontal2, Combine,
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
-  Layers, Crosshair, Download, Magnet, Waypoints, Cone,
+  Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -145,6 +145,8 @@ function usePartHistory(region: CadRegion, dispatch: (a: Action) => void) {
   return { tracked, undo, redo, mark, revertTo, seal, canUndo: undoStack.current.length > 0, canRedo: redoStack.current.length > 0 };
 }
 
+const fmtLen = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3));
+
 const mapComp = (d: CadDesign, cid: string, fn: (c: CadComponent) => CadComponent): CadDesign => ({ ...d, components: d.components.map((c) => (c.id === cid ? fn(c) : c)) });
 
 const ICON: Record<DesignItem['kind'], ReactNode> = {
@@ -188,6 +190,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const [display, setDisplay] = useState<Display>('shadedEdges');
   const [showPlanes, setShowPlanes] = useState(true);
   const [isolate, setIsolate] = useState(false);
+  // inspection: a section plane through the model
+  const [section, setSection] = useState<{ plane: 'XY' | 'XZ' | 'YZ'; at: number; flip: boolean } | null>(null);
   // phones start with the panels folded away; they open over the view
   const narrow = typeof window !== 'undefined' && window.innerWidth < 760;
   const [showTree, setShowTree] = useState(!narrow);
@@ -453,6 +457,24 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     return best ? { o: best.o, z: n, snap: best.label } : { o: p, z: n };
   };
 
+  /** A picked point, moved to the nearest corner of the picked triangle when one is close. */
+  const snapPoint = (hit: PickHit): Vec3 | null => {
+    if (hit.kind !== 'mesh' || !hit.point) return null;
+    const sm = scene.meshes.find((m) => m.key === hit.key);
+    const t = hit.triangle;
+    if (!sm || t === undefined) return hit.point;
+    const P = sm.mesh.positions, M = sm.matrix;
+    let best = hit.point, bestD = sceneSize * 0.03;
+    for (let k = 0; k < 3; k++) {
+      const i = (3 * t + k) * 3;
+      let q: Vec3 = [P[i], P[i + 1], P[i + 2]];
+      if (M) q = [M[0] * q[0] + M[4] * q[1] + M[8] * q[2] + M[12], M[1] * q[0] + M[5] * q[1] + M[9] * q[2] + M[13], M[2] * q[0] + M[6] * q[1] + M[10] * q[2] + M[14]];
+      const d = Math.hypot(q[0] - hit.point[0], q[1] - hit.point[1], q[2] - hit.point[2]);
+      if (d < bestD) { bestD = d; best = q; }
+    }
+    return best;
+  };
+
   const onPick = (hit: PickHit) => {
     const key = hit.key ?? '';
     if (dialog?.kind === 'feature') {
@@ -517,8 +539,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       return;
     }
     if (dialog?.kind === 'measure') {
-      if (!hit.point) return;
-      setDialog({ kind: 'measure', pts: dialog.pts.length >= 2 ? [hit.point] : [...dialog.pts, hit.point] });
+      const p = snapPoint(hit);
+      if (!p) return;
+      setDialog({ kind: 'measure', pts: dialog.pts.length >= 2 ? [p] : [...dialog.pts, p] });
       return;
     }
     if (key.startsWith('b:')) setSel(`body:${key.slice(2)}`);
@@ -661,9 +684,30 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   }, [hover, sel, dialog, activeFeature, activeJoint, design, result]);
 
   const pickProfiles = !dialog || activeFeature?.kind === 'extrude' || activeFeature?.kind === 'revolve';
-  const scene = useMemo(() => buildScene(region, design, result, built, {
-    active: comp?.id ?? '', highlight, showPlanes: showPlanes || dialog?.kind === 'sketch', pickProfiles, isolate, size: sceneSize,
-  }), [region, design, result, built, comp, highlight, showPlanes, dialog, pickProfiles, isolate, sceneSize]);
+  const box = dr?.box;
+  const secNormal: Record<'XY' | 'XZ' | 'YZ', Vec3> = { XY: [0, 0, 1], XZ: [0, 1, 0], YZ: [1, 0, 0] };
+  const secAxis = section ? { XY: 2, XZ: 1, YZ: 0 }[section.plane] : 0;
+  const secRange: [number, number] = box ? [box.min[secAxis], box.max[secAxis]] : [-50, 50];
+  const sectionOpt = useMemo(() => {
+    if (!section) return undefined;
+    const n0 = secNormal[section.plane];
+    const at = secRange[0] + (secRange[1] - secRange[0]) * section.at;
+    // keep the far side: the half towards +n, or towards −n when flipped
+    return section.flip ? { n: [-n0[0], -n0[1], -n0[2]] as Vec3, offset: -at } : { n: n0, offset: at };
+  }, [section, secRange[0], secRange[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const baseScene = useMemo(() => buildScene(region, design, result, built, {
+    active: comp?.id ?? '', highlight, showPlanes: (showPlanes || dialog?.kind === 'sketch') && !section, pickProfiles, isolate, size: sceneSize, section: sectionOpt,
+  }), [region, design, result, built, comp, highlight, showPlanes, dialog, pickProfiles, isolate, sceneSize, sectionOpt, section]);
+  // the measured points and the line between them, drawn on top
+  const measurePts = dialog?.kind === 'measure' ? dialog.pts : null;
+  const scene = useMemo(() => {
+    if (!measurePts?.length) return baseScene;
+    const [a, b] = measurePts;
+    const r = sceneSize * 0.012;
+    const cross3d = (p: Vec3) => [p[0] - r, p[1], p[2], p[0] + r, p[1], p[2], p[0], p[1] - r, p[2], p[0], p[1] + r, p[2], p[0], p[1], p[2] - r, p[0], p[1], p[2] + r];
+    const segs = new Float32Array([...(b ? [...a, ...b] : []), ...cross3d(a), ...(b ? cross3d(b) : [])]);
+    return { ...baseScene, lines: [...baseScene.lines, { key: 'measure', segments: segs, color: [0.95, 0.6, 0.05] as [number, number, number], overlay: true }] };
+  }, [baseScene, measurePts, sceneSize]);
 
   const view3d: SceneView = region.view3dW
     ? { yaw: region.view3dW.yaw, pitch: region.view3dW.pitch, zoom: region.view3dW.zoom ?? 1, pan: region.view3dW.pan ?? { x: 0, y: 0 } }
@@ -1055,6 +1099,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             <Group label="Modify">
               <RibbonButton icon={<Combine size={20} />} label="Combine" title="Join, cut or intersect bodies" onClick={() => startFeature('combine')} />
             </Group>
+            <Group label="Inspect">
+              <RibbonButton icon={<SquareSlash size={20} />} label="Section" title="Cut the model with a plane to look inside" on={!!section} onClick={() => setSection(section ? null : { plane: 'XZ', at: 0.5, flip: false })} />
+            </Group>
             <Group label="View">
               <RibbonButton icon={<Crosshair size={20} />} label="Planes" title="Show the origin planes" on={showPlanes} onClick={() => setShowPlanes(!showPlanes)} />
               <div className="cadw-options">
@@ -1086,7 +1133,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         {shownTab === 'inspect' && (
           <>
             <Group label="Inspect">
-              <RibbonButton icon={<Ruler size={20} />} label="Measure" title="Distance between two picked points (M)" on={dialog?.kind === 'measure'} onClick={() => setDialog({ kind: 'measure', pts: [] })} />
+              <RibbonButton icon={<Ruler size={20} />} label="Measure" title="Distance between two picked points, snapping to corners (M)" on={dialog?.kind === 'measure'} onClick={() => setDialog({ kind: 'measure', pts: [] })} />
+              <RibbonButton icon={<SquareSlash size={20} />} label="Section" title="Cut the model with a plane to look inside" on={!!section} onClick={() => setSection(section ? null : { plane: 'XZ', at: 0.5, flip: false })} />
               <RibbonButton icon={<ScanSearch size={20} />} label="Interference" title="Find overlapping occurrences" onClick={runInterference} />
             </Group>
             <Group label="Mass properties">
@@ -1168,6 +1216,18 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               onHover={(h) => setHover(h.kind !== 'none' && (h.key?.startsWith('b:') || h.key?.startsWith('p:') || h.key?.startsWith('pl:')) ? h.key! : null)}
               message={!K ? 'Loading the 3-D kernel…' : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
             />
+          )}
+          {!inSketch && section && (
+            <div className="cadw-inspect" onPointerDown={(e) => e.stopPropagation()}>
+              <b>Section</b>
+              <select value={section.plane} onChange={(e) => setSection({ ...section, plane: e.target.value as 'XY' | 'XZ' | 'YZ' })} aria-label="Section plane">
+                <option value="XY">XY plane (horizontal)</option><option value="XZ">XZ plane (front)</option><option value="YZ">YZ plane (side)</option>
+              </select>
+              <input type="range" min={0} max={1} step={0.005} value={section.at} onChange={(e) => setSection({ ...section, at: Number(e.target.value) })} aria-label="Section position" />
+              <span className="cadw-inspect-val">{fmtLen(secRange[0] + (secRange[1] - secRange[0]) * section.at)} {region.unit}</span>
+              <button className="btn" onClick={() => setSection({ ...section, flip: !section.flip })} title="Keep the other half">Flip</button>
+              <button className="icon-btn" onClick={() => setSection(null)} aria-label="Close section"><X size={14} /></button>
+            </div>
           )}
           {inSketch && !ds!.sketch.entities.length && (
             <div className="cadw-empty">
