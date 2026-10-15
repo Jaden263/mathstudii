@@ -53,7 +53,7 @@ export function MathView({ region, result, editing, dispatch, onDone, registerEd
       ref.current.setSelectionRange(n, n);
     }
   }, [editing]);
-  const ac = useAutocomplete();
+  const ac = useAutocomplete(r);
   const multiline = region.source.includes('\n');
   const display = r?.tex ? <Tex tex={r.tex} /> : <span className="placeholder-math">{region.source || ' '}</span>;
   return (
@@ -76,6 +76,10 @@ export function MathView({ region, result, editing, dispatch, onDone, registerEd
             if (ac.onKeyDown(e)) return;
             handleMathKeyDown(e, { multiline, onCommit: () => onDone(true), onEscape: () => onDone(false) });
           }}
+          onKeyUp={(e) => {
+            if (e.key.startsWith('Arrow') && !e.shiftKey && !['ArrowUp', 'ArrowDown'].includes(e.key)) ac.update(e.currentTarget);
+          }}
+          onClick={(e) => ac.update(e.currentTarget)}
           onBlur={ac.close}
           onPointerDown={(e) => e.stopPropagation()}
         />

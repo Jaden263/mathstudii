@@ -1,10 +1,13 @@
 // Result values → TeX, following Mathcad's display conventions.
 import type { Unit } from 'mathjs';
 import { math, isMatrix, isUnit, isComplex } from './math';
+import { autoUnit } from './unitCatalog';
 
 export interface FormatOptions {
   precision: number;
   expThreshold: number;
+  /** Show results without a requested unit in practical metric units (kN·m, kN/m, MPa …). */
+  metric?: boolean;
 }
 
 const MAX_ROWS = 40;
@@ -87,7 +90,17 @@ export function unitStringTex(units: string): string {
 }
 
 /** Split a unit into display number + display unit string, letting mathjs pick prefix/derived units. */
-export function unitParts(u: Unit, target?: string): { value: unknown; units: string } {
+export function unitParts(u: Unit, target?: string, metric = false): { value: unknown; units: string } {
+  if (!target && metric && !(u as unknown as { fixPrefix?: boolean }).fixPrefix) {
+    const auto = autoUnit(u);
+    if (auto) {
+      try {
+        return { value: u.toNumeric(auto), units: math.unit(1, auto).formatUnits() };
+      } catch {
+        /* fall through to mathjs' choice */
+      }
+    }
+  }
   const disp = target ? u.to(target) : u;
   const s = disp.formatUnits();
   if (!s) return { value: disp.value ?? 1, units: '' };
@@ -127,7 +140,7 @@ function wrapParens(tex: string): string {
 export function valueTex(v: unknown, o: FormatOptions, target?: string): string {
   if (isUnit(v)) {
     if (v.value === null) return unitStringTex(v.formatUnits());
-    const { value, units } = unitParts(v, target || undefined);
+    const { value, units } = unitParts(v, target || undefined, o.metric);
     const nt = scalarTex(value, o);
     return units ? `${isComplex(value) ? wrapParens(nt) : nt}\\ ${unitStringTex(units)}` : nt;
   }
@@ -182,7 +195,7 @@ function matrixTex(v: unknown, o: FormatOptions, target?: string): string {
     const first = flat[0] as Unit;
     if (flat.every((u) => (u as Unit).equalBase(first))) {
       const nonZero = (flat as Unit[]).find((u) => (u.value as number) !== 0) ?? first;
-      common = unitParts(nonZero).units || undefined;
+      common = unitParts(nonZero, undefined, o.metric).units || undefined;
     }
   }
   const cell = (x: unknown) => {

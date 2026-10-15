@@ -4,6 +4,8 @@ import {
   FilePlus2, FolderOpen, Save, Printer, Undo2, Redo2, Sigma, Type, LineChart, Table2, Image as ImageIcon,
   ListChecks, PencilRuler, Box, Play, Square, ZoomIn, ZoomOut, MoveHorizontal, Sun, Moon, Monitor, PanelRight, BookOpen, Keyboard, Grid3x3,
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown, Code2,
+  Pencil, Scissors, Copy, ClipboardPaste, CopyPlus, Trash2, Ban, BringToFront, SendToBack, AlignStartVertical, AlignStartHorizontal,
+  Ruler, WandSparkles, Paintbrush, SlidersHorizontal, SquareDashedMousePointer, Calculator, EyeOff, Eye, Plus,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
 import { EXAMPLES, welcomeWorksheet } from '../model/examples';
@@ -24,9 +26,17 @@ import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
 import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
 import { CadWorkspace } from './cad/CadWorkspace';
-import type { CadResult } from '../engine/evaluator';
+import type { CadResult, MathResult } from '../engine/evaluator';
+import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
+import { findEvalEquals } from '../engine/syntax';
 
 type ThemePref = 'system' | 'light' | 'dark';
+
+/** Replace a whole name in a math source ("kn" → "kN", not inside "knot"). */
+function replaceWord(src: string, from: string, to: string): string {
+  const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return src.replace(new RegExp(`(?<![\\wͰ-Ͽ])${esc}(?![\\wͰ-Ͽ])`, 'g'), to);
+}
 
 /** A beam on two supports. */
 function BeamIcon() {
@@ -410,11 +420,11 @@ export function App() {
     setFileMenu((o) => !o);
   };
 
-  const insertImage = async () => {
+  const insertImage = async (at?: Cursor) => {
     const f = await pickFile('image/*');
     if (!f) return;
     const src = await readAsDataURL(f);
-    addRegion('image', { src });
+    addRegion('image', { src }, at);
   };
 
   /** @param coalesce merge the moves into this undo step (e.g. the resize that caused them) */
@@ -460,8 +470,10 @@ export function App() {
   };
 
   // ------------------------------------------------------------ clipboard
-  const copySelection = useCallback(async (cut: boolean) => {
-    const regs = ws.regions.filter((r) => selected.has(r.id));
+  const copySelection = useCallback((cut: boolean) => copySelectionOf([...selected], cut), [selected]);
+
+  async function copySelectionOf(ids: string[], cut: boolean) {
+    const regs = ws.regions.filter((r) => ids.includes(r.id));
     if (!regs.length) return;
     clipboard.current = regs;
     try {
@@ -473,13 +485,13 @@ export function App() {
       dispatch({ type: 'delete', ids: regs.map((r) => r.id) });
       setSelected(new Set());
     }
-  }, [ws.regions, selected, dispatch]);
+  }
 
-  const pasteRegions = useCallback((regs: Region[]) => {
+  const pasteRegions = useCallback((regs: Region[], at?: Cursor) => {
     if (!regs.length) return;
     const minX = Math.min(...regs.map((r) => r.x));
     const minY = Math.min(...regs.map((r) => r.y));
-    const base = cursor ?? { x: minX + GRID * 2, y: minY + GRID * 2 };
+    const base = at ?? cursor ?? { x: minX + GRID * 2, y: minY + GRID * 2 };
     const copies = regs.map((r) => ({ ...r, id: createRegion('math', 0, 0).id, x: base.x + (r.x - minX), y: base.y + (r.y - minY) })) as Region[];
     dispatch({ type: 'add', regions: copies });
     setSelected(new Set(copies.map((r) => r.id)));
@@ -513,11 +525,132 @@ export function App() {
     return () => window.removeEventListener('paste', onPaste);
   }, [addRegion, pasteRegions]);
 
+  // ------------------------------------------------------------ right-click menus
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  const regionMenu = (r: Region, x: number, y: number) => {
+    const ids = selected.has(r.id) ? [...selected] : [r.id];
+    if (!selected.has(r.id)) setSelected(new Set(ids));
+    setCursor(null);
+    const regs = ws.regions.filter((q) => ids.includes(q.id));
+    const single = regs.length === 1;
+    const res = evaluation.results.get(r.id);
+    const items: MenuItem[] = [];
+    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python'].includes(r.kind);
+    if (single && editable && !r.disabled) {
+      items.push({ label: 'Edit', icon: <Pencil size={14} />, shortcut: 'Enter', onClick: () => { setSelected(new Set([r.id])); setEditingId(r.id); } });
+    }
+    if (single && r.kind === 'math' && res?.kind === 'math') {
+      const m = res as MathResult;
+      if (m.fix) {
+        const { from, to } = m.fix;
+        items.push({
+          label: `Change “${from}” to “${to}”`, icon: <WandSparkles size={14} />,
+          onClick: () => dispatch({ type: 'update', id: r.id, patch: { source: replaceWord(r.source, from, to) } }),
+        });
+      }
+      const eq = r.source.includes('\n') ? -1 : findEvalEquals(r.source);
+      if (m.units && eq >= 0) {
+        const current = r.source.slice(eq + 1).trim();
+        const set = (u: string | null) => dispatch({ type: 'update', id: r.id, patch: { source: `${r.source.slice(0, eq + 1)}${u ? ' ' + u : ''}` } });
+        items.push({
+          label: 'Show result in', icon: <Ruler size={14} />,
+          submenu: [
+            { label: 'Automatic', checked: !current, onClick: () => set(null) },
+            { separator: true },
+            ...m.units.map((u, i): MenuItem => ({
+              label: u.replace(/ /g, '·'), shortcut: m.unitValues?.[i] || undefined,
+              checked: current.replace(/\s+/g, ' ') === u, onClick: () => set(u),
+            })),
+          ],
+        });
+      }
+      if (m.text) items.push({ label: 'Copy value', icon: <Copy size={14} />, onClick: () => { void navigator.clipboard?.writeText(m.text!); setToast('Value copied'); } });
+    }
+    if (items.length) items.push({ separator: true });
+    items.push(
+      { label: 'Cut', icon: <Scissors size={14} />, shortcut: 'Ctrl+X', onClick: () => void copySelectionOf(ids, true) },
+      { label: 'Copy', icon: <Copy size={14} />, shortcut: 'Ctrl+C', onClick: () => void copySelectionOf(ids, false) },
+      { label: 'Paste', icon: <ClipboardPaste size={14} />, shortcut: 'Ctrl+V', disabled: !clipboard.current.length, onClick: () => pasteRegions(clipboard.current, { x: r.x + GRID * 2, y: r.y + GRID * 2 }) },
+      { label: 'Duplicate', icon: <CopyPlus size={14} />, shortcut: 'Ctrl+D', onClick: () => pasteRegions(regs) },
+      { label: single ? 'Delete' : `Delete ${regs.length} regions`, icon: <Trash2 size={14} />, shortcut: 'Del', danger: true, onClick: () => { dispatch({ type: 'delete', ids }); setSelected(new Set()); } },
+      { separator: true },
+    );
+    const allDisabled = regs.every((q) => q.disabled);
+    items.push({
+      label: allDisabled ? 'Enable evaluation' : 'Disable evaluation', icon: <Ban size={14} />,
+      onClick: () => regs.forEach((q) => dispatch({ type: 'update', id: q.id, patch: { disabled: !allDisabled }, coalesce: 'disable' })),
+    });
+    if (single && r.kind === 'python') {
+      items.push({ label: r.collapsed ? 'Show code' : 'Hide code', icon: r.collapsed ? <Eye size={14} /> : <EyeOff size={14} />, onClick: () => dispatch({ type: 'update', id: r.id, patch: { collapsed: !r.collapsed } }) });
+    }
+    items.push(
+      { label: 'Bring to front', icon: <BringToFront size={14} />, onClick: () => dispatch({ type: 'reorder', ids, to: 'front' }) },
+      { label: 'Send to back', icon: <SendToBack size={14} />, onClick: () => dispatch({ type: 'reorder', ids, to: 'back' }) },
+    );
+    if (!single) {
+      const left = Math.min(...regs.map((q) => q.x)), top = Math.min(...regs.map((q) => q.y));
+      items.push(
+        { label: 'Align left edges', icon: <AlignStartVertical size={14} />, onClick: () => regs.forEach((q) => q.x !== left && dispatch({ type: 'move', ids: [q.id], dx: left - q.x, dy: 0, coalesce: 'align' })) },
+        { label: 'Align tops', icon: <AlignStartHorizontal size={14} />, onClick: () => regs.forEach((q) => q.y !== top && dispatch({ type: 'move', ids: [q.id], dx: 0, dy: top - q.y, coalesce: 'align' })) },
+      );
+    }
+    items.push(
+      { separator: true },
+      { label: 'Format…', icon: <Paintbrush size={14} />, onClick: () => { setTab('format'); setPanelOpen(true); } },
+    );
+    if (single && ['plot', 'image', 'sketch', 'cad', 'beam'].includes(r.kind)) {
+      items.push({ label: 'Properties…', icon: <SlidersHorizontal size={14} />, onClick: () => { setTab('properties'); setPanelOpen(true); } });
+    }
+    setMenu({ x, y, items });
+  };
+
+  const sheetMenu = (at: Cursor, x: number, y: number) => {
+    setSelected(new Set());
+    setCursor(at);
+    const ins = (kind: RegionKind) => () => addRegion(kind, {}, at);
+    setMenu({
+      x, y,
+      items: [
+        {
+          label: 'Insert', icon: <Plus size={14} />,
+          submenu: [
+            { label: 'Math', icon: <Sigma size={14} />, onClick: ins('math') },
+            { label: 'Text', icon: <Type size={14} />, shortcut: '"', onClick: ins('text') },
+            { label: 'Plot', icon: <LineChart size={14} />, shortcut: '@', onClick: ins('plot') },
+            { label: 'Sketch', icon: <PencilRuler size={14} />, shortcut: '#', onClick: ins('sketch') },
+            { label: 'Beam', icon: <BeamIcon />, onClick: ins('beam') },
+            { label: 'CAD part', icon: <Box size={14} />, shortcut: '&', onClick: ins('cad') },
+            { label: 'Python', icon: <Code2 size={14} />, shortcut: '`', onClick: ins('python') },
+            { label: 'Solve block', icon: <ListChecks size={14} />, onClick: ins('solve') },
+            { label: 'Table', icon: <Table2 size={14} />, onClick: ins('table') },
+            { label: 'Image…', icon: <ImageIcon size={14} />, onClick: () => void insertImage(at) },
+          ],
+        },
+        { label: 'Paste here', icon: <ClipboardPaste size={14} />, shortcut: 'Ctrl+V', disabled: !clipboard.current.length, onClick: () => pasteRegions(clipboard.current, at) },
+        { separator: true },
+        { label: 'Select all', icon: <SquareDashedMousePointer size={14} />, shortcut: 'Ctrl+A', disabled: !ws.regions.length, onClick: () => { setSelected(new Set(ws.regions.map((q) => q.id))); setCursor(null); } },
+        { label: 'Separate overlapping regions', icon: <AlignVerticalSpaceAround size={14} />, onClick: () => separateRegions() },
+        { label: 'Calculate now', icon: <Calculator size={14} />, shortcut: 'F9', onClick: () => evaluation.calculate() },
+        { label: 'Show grid', icon: <Grid3x3 size={14} />, checked: showGrid, onClick: () => setShowGrid(!showGrid) },
+        { separator: true },
+        { label: 'Format worksheet…', icon: <Paintbrush size={14} />, onClick: () => { setTab('format'); setPanelOpen(true); } },
+      ],
+    });
+  };
+
+  const onSheetContextMenu = (e: React.MouseEvent, r: Region | null, at: Cursor) => {
+    if (editingId && editingId !== r?.id) finishEditing(editingId, false);
+    if (r) regionMenu(r, e.clientX, e.clientY);
+    else sheetMenu(at, e.clientX, e.clientY);
+  };
+
   // ------------------------------------------------------------ keyboard
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // the full-screen CAD workspace handles its own keys
-      if (cadOverlayRef.current) return;
+      // the full-screen CAD workspace and an open right-click menu handle their own keys
+      if (cadOverlayRef.current || document.querySelector('.ctx-menu')) return;
       const mod = e.ctrlKey || e.metaKey;
       const typing = isTypingTarget(e.target);
       const k = e.key.toLowerCase();
@@ -718,7 +851,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('python')} title="Python code: uses the worksheet variables above it and exports what it assigns, units included (type ` at the cursor)"><Code2 size={16} /> Python</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
-          <button className="text-btn" onClick={insertImage} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
+          <button className="text-btn" onClick={() => void insertImage()} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
         </div>
         <div className="tb-group" aria-label="Calculation">
           <label className="check compact" title="Recalculate automatically">
@@ -796,6 +929,7 @@ export function App() {
             registerEditor={registerEditor}
             finishEditing={finishEditing}
             showGrid={showGrid}
+            onContextMenu={onSheetContextMenu}
           />
         </div>
         {panelOpen && (
@@ -831,6 +965,7 @@ export function App() {
       )}
       {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
       {toast && <div className="toast" role="status">{toast}</div>}
+      {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
     </div>
     </CadOpenContext.Provider>
     </SketchContext.Provider>

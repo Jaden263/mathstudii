@@ -11,7 +11,6 @@ const extraUnits: Record<string, string> = {
   kph: '1 km/hour',
   kmh: '1 km/hour',
   knot: '1852 m/hour',
-  kn: '1852 m/hour',
   rev: '1 cycle',
   rpm: '1 cycle/minute',
   ksi: '1000 psi',
@@ -34,7 +33,20 @@ const extraUnits: Record<string, string> = {
   pcf: '1 lb/ft^3',
   slug: '14.59390294 kg',
   galUK: '4.54609 L',
+  // how engineers write moments
+  Nm: '1 N m',
+  kNm: '1 kN m',
+  MNm: '1 MN m',
+  Nmm: '1 N mm',
+  kNmm: '1 kN mm',
 };
+
+// The 2022 SI prefixes ronto/quecto/ronna/quetta make typos valid: "rm" would be a
+// ronto-metre (1e-27 m) and "kN/rm" a silently absurd number. Nobody calculates in them.
+{
+  const prefixes = (math.Unit as unknown as { PREFIXES: Record<string, Record<string, unknown>> }).PREFIXES;
+  for (const table of Object.values(prefixes)) for (const p of ['r', 'q', 'R', 'Q', 'ronto', 'quecto', 'ronna', 'quetta']) delete table[p];
+}
 for (const [name, def] of Object.entries(extraUnits)) {
   try {
     if (!math.Unit.isValuelessUnit(name)) math.createUnit(name, def);

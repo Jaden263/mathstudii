@@ -38,6 +38,38 @@ interrupt it (Esc / Stop), like Mathcad's interrupt.
 - `:` types `:=`, `~` types `≡`, `Ctrl+.` types `→`, `Ctrl+G` makes the previous letter Greek.
 - Enter finishes a region and moves the cursor below it. Drag a region to move it.
 - Press **F1** for all keyboard shortcuts. **Examples** in the top bar has worked worksheets.
+- **Right-click** a region for Edit, Cut/Copy/Paste, Duplicate, Delete, *Show result in…*,
+  *Copy value*, a typo fix, Disable evaluation, front/back, align (several selected),
+  Format and Properties. Right-click empty paper to insert any region there, paste,
+  select all or recalculate.
+- **Suggestions while typing:** functions and your own variables from the first letter
+  (with the signature shown inside the brackets), units after a number (`10 k` → kN,
+  kN/m, kNm, kPa …) or after a unit and `/`, and after `=` the units that fit the result,
+  each with the converted value.
+
+### Units in results
+
+Results without a unit after `=` are shown in practical metric units chosen from what
+the quantity is, not from mathjs' guess:
+
+| Quantity | Shown in | Example |
+|---|---|---|
+| force | N, kN, MN | `q*L` → 60 kN |
+| moment / torque | N·m, kN·m, MN·m | `q*L^2/8` → 45 kN·m (energy made from J, W or Wh stays J) |
+| line load, stiffness | N/m, kN/m, MN/m | `3 kN/dm` → 30 kN/m, `1 kN/m^2 * 3 m` → 3 kN/m |
+| area load | N/m², kN/m² | `5 kN / (2 m)^2` → 1.25 kN/m² |
+| stress, pressure | Pa … GPa | `M/W` → 3.6 MPa |
+| unit weight | kN/m³ | `7850 kg/m^3 * 9.81 m/s^2` → 77 kN/m³ |
+| length, area, I, W | mm/m/km, mm²/m², mm⁴/cm⁴/m⁴ … | deflection → 0.2571 mm, `b*h^3/12` → 312 500 cm⁴ |
+
+The prefix keeps the number at 1 or above. Type a unit after `=` (or pick one from the
+list, or right-click → *Show result in*) to choose yourself; *Automatic* goes back.
+Worksheets set to US or CGS units keep mathjs' own choice.
+
+Typos get a fix: `3 kn` says *"kn" is not defined — did you mean "kN"?* and the
+right-click menu changes it. `kNm`, `Nm` and `Nmm` are accepted as moment units. The
+exotic SI prefixes ronto, quecto, ronna and quetta are switched off, so a typo like
+`kN/rm` is an error instead of a silent 10⁻²⁷ m. (`kn` no longer means knot: use `knot`.)
 
 ### Saving
 

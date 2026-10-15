@@ -9,7 +9,8 @@ import { compileExpr, parseExpr, freeSymbols } from './compile';
 import { parseStatement, parseRange, splitComparison, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
 import { engineCtx, toVector, vec, assignIndex, normalize } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
-import { valueTex, unitParts, type FormatOptions } from './format';
+import { valueTex, valueText, unitParts, type FormatOptions } from './format';
+import { dimsOf, closestName, unitNames, compatibleUnits, quantityName } from './unitCatalog';
 import { exprTex, lhsTex, programTex, texCtx, keywordsTex, nameTex } from './tex';
 import { symbolicEval, casReady, type SymFunction } from './symbolic';
 import * as N from './numeric';
@@ -23,6 +24,17 @@ export type { SketchResult, CadResult, BeamResult };
 export interface MathResult {
   kind: 'math';
   tex: string;
+  /** Plain-text value of a shown result (for copying). */
+  text?: string;
+  /** Dimensions of a shown result with a unit (mathjs order), for choosing a display unit. */
+  dims?: number[];
+  /** Units the result can be shown in, and what it is ("bending moment, torque"). */
+  units?: string[];
+  /** The result in each of `units` (plain text), for previews. */
+  unitValues?: string[];
+  quantity?: string;
+  /** A likely fix for an unknown name: replace `from` with `to`. */
+  fix?: { from: string; to: string };
   error?: string;
   /** True while waiting for the symbolic engine to load. */
   pending?: boolean;
@@ -123,7 +135,7 @@ class Evaluator {
    *        (used to animate sketches by sweeping a variable)
    */
   constructor(readonly ws: Worksheet, readonly overrides: Record<string, string> = {}) {
-    this.fmt = { precision: ws.settings.precision, expThreshold: ws.settings.expThreshold };
+    this.fmt = { precision: ws.settings.precision, expThreshold: ws.settings.expThreshold, metric: (ws.settings.unitSystem ?? 'si') === 'si' };
     this.bindAtCall = ws.settings.lateBinding === true;
     const base = new Map<string, unknown>();
     for (const [k, v] of BUILTIN_SCOPE) base.set(k, math.evaluate(v));
@@ -299,7 +311,9 @@ class Evaluator {
           parseExpr(st.expr);
           break;
       }
-      this.results.set(r.id, { kind: 'math', tex: this.statementTex(st, value) });
+      const res: MathResult = { kind: 'math', tex: this.statementTex(st, value) };
+      if (st.type === 'eval' || ((st.type === 'define' || st.type === 'program') && st.show)) Object.assign(res, this.resultInfo(value));
+      this.results.set(r.id, res);
     } catch (e) {
       let tex: string;
       try {
@@ -307,10 +321,56 @@ class Evaluator {
       } catch {
         tex = '';
       }
-      this.results.set(r.id, { kind: 'math', tex, error: friendlyError(e) });
+      const res: MathResult = { kind: 'math', tex, error: friendlyError(e) };
+      const fix = this.suggestFix(res.error!);
+      if (fix) {
+        res.fix = fix;
+        res.error += ` — did you mean "${fix.to}"?`;
+      }
+      this.results.set(r.id, res);
     } finally {
       this.updateDefined();
     }
+  }
+
+  /** Text and dimensions of a shown value. */
+  private resultInfo(value: unknown): Partial<MathResult> {
+    if (value === null || value === undefined || typeof value === 'function') return {};
+    const out: Partial<MathResult> = { text: valueText(value, this.fmt) };
+    const sample = isUnit(value) ? value : isMatrix(value) ? (value.toArray().flat(2) as unknown[]).find(isUnit) : undefined;
+    if (sample && (sample as Unit).value !== null) {
+      const d = dimsOf(sample as Unit);
+      if (d.some((x) => x !== 0)) {
+        out.dims = d;
+        const units = compatibleUnits(d).map((u) => u.u);
+        if (units.length) {
+          out.units = units;
+          if (isUnit(value) && typeof value.value === 'number') {
+            out.unitValues = units.map((u) => {
+              try {
+                return math.format(value.toNumeric(u) as number, { precision: Math.max(this.fmt.precision + 1, 4) });
+              } catch {
+                return '';
+              }
+            });
+          }
+        }
+        const q = quantityName(d);
+        if (q) out.quantity = q;
+      }
+    }
+    return out;
+  }
+
+  /** "kn is not defined" → kN. */
+  private suggestFix(error: string): MathResult['fix'] | undefined {
+    const m = /^(?:Function )?"([^"]+)" is not defined$/.exec(error);
+    if (!m) return undefined;
+    const names = new Set<string>([...this.global.local.keys(), ...unitNames()]);
+    for (const k of Object.keys(math)) if (typeof (math as unknown as Record<string, unknown>)[k] === 'function' && /^[a-z]\w+$/.test(k)) names.add(k);
+    for (const k of this.global.keys()) names.add(k);
+    const to = closestName(m[1], names);
+    return to ? { from: m[1], to } : undefined;
   }
 
   private updateDefined() {
@@ -881,7 +941,7 @@ class Evaluator {
   private toAxis(vals: unknown[], info: { unit?: string }): number[] {
     if (!info.unit) {
       const first = vals.find((v) => isUnit(v) && Number.isFinite(splitUnit(v).value) && splitUnit(v).value !== 0) as Unit | undefined;
-      if (first) info.unit = unitParts(first).units || undefined;
+      if (first) info.unit = unitParts(first, undefined, this.fmt.metric).units || undefined;
     }
     return vals.map((v) => {
       try {

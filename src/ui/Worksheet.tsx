@@ -26,6 +26,8 @@ interface Props {
   /** Leave edit mode for a region (removes it when empty). */
   finishEditing: (id: string, moveBelow: boolean) => void;
   showGrid: boolean;
+  /** Right-click on a region (region) or on empty paper (null), with the sheet position. */
+  onContextMenu: (e: React.MouseEvent, region: Region | null, at: Cursor) => void;
 }
 
 export const snap = (v: number) => Math.round(v / GRID) * GRID;
@@ -197,6 +199,12 @@ export function Worksheet(p: Props) {
         className={`sheet${p.showGrid ? ' show-grid' : ''}${p.ws.settings.format?.textFont === 'serif' ? ' serif-text' : ''}`}
         style={{ width: PAGE_WIDTH, height, transform: `scale(${p.zoom})` }}
         onPointerDown={onSheetPointerDown}
+        onContextMenu={(e) => {
+          if (e.target !== e.currentTarget) return;
+          e.preventDefault();
+          const at = toSheet(e.clientX, e.clientY);
+          p.onContextMenu(e, null, { x: snap(at.x), y: snap(at.y) });
+        }}
         tabIndex={-1}
         data-sheet
       >
@@ -217,6 +225,15 @@ export function Worksheet(p: Props) {
               className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}`}
               style={{ left: r.x, top: r.y, transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined, ...regionLook(r, p.ws.settings.format) }}
               onPointerDown={(e) => onRegionPointerDown(e, r)}
+              onContextMenu={(e) => {
+                // editors that use the right button themselves, and text being typed, keep their own menu
+                if (e.defaultPrevented) return;
+                const t = e.target as HTMLElement;
+                if (p.editingId === r.id && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                p.onContextMenu(e, r, toSheet(e.clientX, e.clientY));
+              }}
             >
               {renderRegion(r)}
               {(sel || p.editingId === r.id) && (

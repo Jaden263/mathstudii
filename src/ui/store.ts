@@ -7,6 +7,8 @@ export type Action =
   | { type: 'update'; id: string; patch: Partial<Region>; coalesce?: string; /** false: not an undo step (e.g. a sketch's zoom) */ history?: false }
   | { type: 'move'; ids: string[]; dx: number; dy: number; coalesce?: string }
   | { type: 'delete'; ids: string[] }
+  /** Draw these regions above (front) or below (back) the others. */
+  | { type: 'reorder'; ids: string[]; to: 'front' | 'back' }
   | { type: 'settings'; patch: Partial<WorksheetSettings> }
   | { type: 'title'; title: string; coalesce?: string }
   | { type: 'undo' }
@@ -43,6 +45,12 @@ function apply(ws: Worksheet, a: Action): Worksheet {
     case 'delete': {
       const ids = new Set(a.ids);
       return { ...ws, regions: ws.regions.filter((r) => !ids.has(r.id)) };
+    }
+    case 'reorder': {
+      const ids = new Set(a.ids);
+      const moved = ws.regions.filter((r) => ids.has(r.id));
+      const rest = ws.regions.filter((r) => !ids.has(r.id));
+      return { ...ws, regions: a.to === 'front' ? [...rest, ...moved] : [...moved, ...rest] };
     }
     case 'settings':
       return { ...ws, settings: { ...ws.settings, ...a.patch } };

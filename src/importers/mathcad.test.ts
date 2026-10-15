@@ -198,7 +198,7 @@ describe('Mathcad 15 import', () => {
   it('calculates after import', () => {
     const { ws } = importMathcad(strToU8(xmcd()), 'shaft.xmcd');
     const { by, out } = results(ws);
-    expect(by('T_t =').tex).toContain('500\\ \\mathrm{J}');
+    expect(by('T_t =').tex).toContain('500\\ \\mathrm{N}\\cdot \\mathrm{m}');
     expect(by('s(-2) =').tex).toMatch(/= -1$/);
     expect(by('integral(u, u, 0, 2) =').tex).toMatch(/= 2$/);
     const solve = ws.regions.find((r) => r.kind === 'solve')!;

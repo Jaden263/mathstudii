@@ -187,7 +187,7 @@ describe('calculus and solving', () => {
     expect(result(['integral(exp(-x^2), x, -Infinity, Infinity) ='])).toBe('1.7725');
   });
   it('integrates with units', () => {
-    expect(result(['integral(5 N, x, 0 m, 2 m) ='])).toBe('10\\ \\mathrm{J}');
+    expect(result(['integral(5 N, x, 0 m, 2 m) ='])).toBe('10\\ \\mathrm{N}\\cdot \\mathrm{m}');
   });
   it('differentiates numerically at the current value', () => {
     expect(result(['x := 2', 'diff(x^3, x) ='])).toBe('12');

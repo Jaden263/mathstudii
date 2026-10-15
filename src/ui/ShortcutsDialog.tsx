@@ -8,6 +8,8 @@ const SECTIONS: [string, [string, string][]][] = [
     ['"', 'Create a text region'],
     ['@', 'Create a plot'],
     ['#', 'Create a sketch (drawing)'],
+    ['`', 'Create a Python region'],
+    ['Right-click', 'Menu: edit, cut/copy/paste, delete, display unit, insert …'],
     ['Drag a region', 'Move it (Shift-click to multi-select, drag on empty space to box-select)'],
     ['Arrows', 'Move the cursor, or nudge selected regions'],
     ['Enter', 'Edit the selected region'],
@@ -22,7 +24,8 @@ const SECTIONS: [string, [string, string][]][] = [
   ['Math editing', [
     [':', 'Definition :='],
     ['~', 'Global definition ≡'],
-    ['=', 'Evaluate (type a unit after it to convert)'],
+    ['=', 'Evaluate; a list of fitting units appears (or type one)'],
+    ['Tab / ↑↓', 'Accept / choose a suggestion (functions, variables, units)'],
     ['Ctrl+.', 'Symbolic evaluation →'],
     ['Ctrl+G', 'Make the previous letter Greek (a → α, w → ω)'],
     ['..', 'Range: 0 .. 10 or 0, 0.5 .. 10'],
