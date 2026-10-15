@@ -18,7 +18,7 @@ import {
   openWorksheetFile, foreignFormat, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri,
   canLinkFiles, writeLinkedFile, handleName, type FileHandle,
 } from '../platform/files';
-import { canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs, newDocId, putDoc, putLink, type LibraryEntry } from '../platform/library';
+import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs, newDocId, putDoc, putLink, type LibraryEntry } from '../platform/library';
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
@@ -29,6 +29,7 @@ import { CadWorkspace } from './cad/CadWorkspace';
 import type { CadResult, MathResult } from '../engine/evaluator';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FindBar } from './FindBar';
+import { VersionsDialog } from './VersionsDialog';
 import { isName, replaceInRegion } from '../model/search';
 import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
@@ -177,10 +178,12 @@ export function App() {
   }, []);
 
   /** Store the current document in the library, and in its file when one is linked and writable. */
-  const persist = useCallback(async (ask: boolean): Promise<boolean> => {
+  const persist = useCallback(async (ask: boolean, label?: string): Promise<boolean> => {
     const { ws: doc, version: v, docId: id, fileHandle: h } = live.current;
     const text = JSON.stringify(doc, null, 1);
     const inLibrary = await putDoc(id, doc.title, text, handleName(h) || undefined);
+    // version history: a snapshot every 10 minutes of work, and at every explicit save
+    if (inLibrary) void addVersion(id, doc.title, text, label);
     if (h) {
       if (!(await canWrite(h, ask))) {
         setSaveState('permission');
@@ -388,12 +391,12 @@ export function App() {
    */
   const saveDoc = async (saveAs = false) => {
     try {
-      if (!saveAs && fileHandle && (await persist(true))) {
+      if (!saveAs && fileHandle && (await persist(true, 'Saved'))) {
         setToast(`Saved ${handleName(fileHandle)}`);
         return;
       }
       if (!saveAs && !canLinkFiles) {
-        if (await persist(false)) setToast('Saved in this browser — File ▸ Download a copy gives you a file');
+        if (await persist(false, 'Saved')) setToast('Saved in this browser — File ▸ Download a copy gives you a file');
         return;
       }
       const v = version;
@@ -403,6 +406,7 @@ export function App() {
         setFileHandle(res.handle);
         await putLink(docId, res.handle);
         await putDoc(docId, ws.title, JSON.stringify(ws, null, 1), res.name);
+        void addVersion(docId, ws.title, JSON.stringify(ws, null, 1), 'Saved');
         dispatch({ type: 'markSaved', version: v });
         setSavedAt(Date.now());
         setSaveState('idle');
@@ -561,6 +565,7 @@ export function App() {
 
   // ------------------------------------------------------------ right-click menus
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
   const [find, setFind] = useState<{ replace: boolean; initial: string; key: number } | null>(null);
   const [hits, setHits] = useState<{ ids: Set<string>; current: string | null }>({ ids: new Set(), current: null });
   const onHits = useCallback((ids: Set<string>, current: string | null) => setHits({ ids, current }), []);
@@ -866,6 +871,7 @@ export function App() {
               <div className="menu file-menu" role="menu" onMouseLeave={() => setFileMenu(false)}>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void openDoc(); }}>Open file… <kbd>Ctrl+O</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void saveDoc(true); }}>{canLinkFiles ? 'Save as…' : 'Download a copy'} <kbd>Ctrl+Shift+S</kbd></button>
+                <button role="menuitem" onClick={() => { setFileMenu(false); setShowVersions(true); }}>Version history…</button>
                 <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
                 <div className="menu-head">Recent documents</div>
                 {!recent.length && <div className="menu-empty">Nothing yet</div>}
@@ -1050,6 +1056,34 @@ export function App() {
       </footer>
 
       {showHelp && <ShortcutsDialog onClose={() => setShowHelp(false)} />}
+      {showVersions && (
+        <VersionsDialog
+          docId={docId}
+          onClose={() => setShowVersions(false)}
+          onRestore={async (text, asCopy) => {
+            let doc: WS;
+            try {
+              doc = parseWorksheet(text);
+            } catch (e) {
+              return setToast(`That version cannot be read: ${(e as Error).message}`);
+            }
+            setShowVersions(false);
+            if (asCopy) {
+              if (!confirmDiscard()) return;
+              doc.title = `${doc.title} (copy)`;
+              loadDoc(doc, null);
+              return;
+            }
+            // keep what is there now, so the restore itself can be undone
+            await addVersion(docId, ws.title, JSON.stringify(ws, null, 1), 'Before restore');
+            dispatch({ type: 'load', ws: doc });
+            // a restored document is a change to save (autosave picks it up)
+            dispatch({ type: 'title', title: doc.title });
+            setSelected(new Set());
+            setToast('Version restored — the state before it is kept in the history');
+          }}
+        />
+      )}
       {overlayRegion?.kind === 'cad' && (
         <div className="cadw-overlay" role="dialog" aria-label="CAD workspace">
           <CadWorkspace

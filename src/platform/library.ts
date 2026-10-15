@@ -21,6 +21,9 @@ interface StoredDoc extends LibraryEntry {
 const DB = 'mathstudii';
 const DOCS = 'docs';
 const LINKS = 'links';
+const VERSIONS = 'versions';
+/** Snapshots kept per document (oldest dropped first). */
+const MAX_VERSIONS = 60;
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -28,11 +31,12 @@ function db(): Promise<IDBDatabase | null> {
   dbPromise ??= new Promise((resolve) => {
     try {
       if (typeof indexedDB === 'undefined') return resolve(null);
-      const req = indexedDB.open(DB, 1);
+      const req = indexedDB.open(DB, 2);
       req.onupgradeneeded = () => {
         const d = req.result;
         if (!d.objectStoreNames.contains(DOCS)) d.createObjectStore(DOCS, { keyPath: 'id' });
         if (!d.objectStoreNames.contains(LINKS)) d.createObjectStore(LINKS);
+        if (!d.objectStoreNames.contains(VERSIONS)) d.createObjectStore(VERSIONS, { keyPath: 'n', autoIncrement: true }).createIndex('doc', 'doc');
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
@@ -82,6 +86,52 @@ export async function listDocs(): Promise<LibraryEntry[]> {
 export async function deleteDoc(id: string): Promise<void> {
   await run(DOCS, 'readwrite', (s) => s.delete(id));
   await run(LINKS, 'readwrite', (s) => s.delete(id));
+  for (const v of await listVersions(id)) await run(VERSIONS, 'readwrite', (s) => s.delete(v.n));
+}
+
+// ---------------------------------------------------------------- version history
+
+export interface VersionEntry {
+  n: number;
+  doc: string;
+  time: number;
+  title: string;
+  size: number;
+  /** "Saved", "Before restore" …; automatic snapshots have none. */
+  label?: string;
+}
+
+interface StoredVersion extends VersionEntry {
+  text: string;
+}
+
+/** Snapshots of a document, newest first (without their text). */
+export async function listVersions(docId: string): Promise<VersionEntry[]> {
+  const all = (await run<StoredVersion[]>(VERSIONS, 'readonly', (s) => s.index('doc').getAll(docId))) ?? [];
+  return all.map(({ text: _t, ...v }) => v).sort((a, b) => b.time - a.time);
+}
+
+export async function getVersion(n: number): Promise<string | null> {
+  return (await run<StoredVersion>(VERSIONS, 'readonly', (s) => s.get(n)))?.text ?? null;
+}
+
+/**
+ * Keep a snapshot. Without a label it is skipped when the last one is younger than
+ * `minGap` ms or identical; labelled snapshots (an explicit save) are always kept
+ * unless nothing changed.
+ */
+export async function addVersion(docId: string, title: string, text: string, label?: string, minGap = 10 * 60 * 1000): Promise<boolean> {
+  const list = await listVersions(docId);
+  const last = list[0];
+  if (last) {
+    const lastText = await getVersion(last.n);
+    if (lastText === text) return false;
+    if (!label && Date.now() - last.time < minGap) return false;
+  }
+  const v = { doc: docId, time: Date.now(), title: title || 'Untitled', size: text.length, text, ...(label ? { label } : {}) };
+  const ok = (await run(VERSIONS, 'readwrite', (s) => s.add(v))) !== undefined;
+  for (const old of list.slice(MAX_VERSIONS - 1)) await run(VERSIONS, 'readwrite', (s) => s.delete(old.n));
+  return ok;
 }
 
 /** Remember (or forget) the file a document is linked to. Handles are stored as they are. */
