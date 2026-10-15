@@ -104,6 +104,46 @@ right-click menu changes it. `kNm`, `Nm` and `Nmm` are accepted as moment units.
 exotic SI prefixes ronto, quecto, ronna and quetta are switched off, so a typo like
 `kN/rm` is an error instead of a silent 10⁻²⁷ m. (`kn` no longer means knot: use `knot`.)
 
+### Tables and data
+
+- **Paste from Excel** (or any tab-separated text) onto the page, or into a table cell.
+  A header row with units such as `x [m]` or `F (kN)` becomes column names and units.
+  Decimal commas (`1,5`) and thousands separators (`1.234,5`) are understood, and text
+  labels (`G`, `HEB 200`) stay text.
+- **Import CSV… / Export CSV** in a table (comma or semicolon separated). A dropped
+  `.csv` or `.tsv` file becomes a table.
+- **Columns as variables** defines every named column as a vector (`x`, `F` …) for
+  plots and sums.
+- Right-click a vector or matrix result → **Copy as table**, then paste it into Excel
+  with its unit.
+
+### Find, replace, rename
+
+**Ctrl+F** finds text in every region: math, text, Python, solve blocks, plots, tables,
+and the expressions inside sketches, beams and CAD parts. **Ctrl+H** adds replace.
+
+- With *ab|* (whole names), `L` matches `L` and `L^2` but not `L_cr` or `Load`, so
+  **Replace all** becomes a rename.
+- Right-click a definition → **Rename everywhere** does the same in one step, and one
+  undo reverts it.
+
+### Version history
+
+A snapshot of each document is kept every 10 minutes while you work and at every save
+(the newest 60, in this browser). File menu (▾) → **Version history** lists them with
+their size and region count.
+
+- **Restore** brings one back. The state just before is kept as a snapshot, so a restore
+  can itself be undone.
+- **Open as copy** starts a new document from that snapshot.
+
+### Printing a calculation sheet
+
+Format tab → **Page header & footer** puts company, logo, project, subject, document
+number, revision, made / checked by and date on every page, with *Page n of N*.
+Printing (Ctrl+P, or "Save as PDF" in the print dialog) leaves out the empty pages after
+the content.
+
 ### Saving
 
 - **Autosave is on by default.** Every worksheet is kept in the browser's document store
@@ -250,14 +290,34 @@ statically determinate and indeterminate structures are handled alike.
   the tests check simply supported, cantilever, propped, continuous and Gerber beams
   and a truss against closed-form results, and a portal frame for equilibrium.
 - **Not included:** shear deformation (Timoshenko), second-order effects (P-Δ, buckling),
-  plasticity, load combinations, moving loads and self-weight. Add self-weight as a line
-  load.
+  plasticity, moving loads and self-weight. Add self-weight as a line load.
+
+**Load cases and combinations.** Side panel → *Use load cases & combinations* splits the
+loads into cases (G permanent, Q imposed, wind, snow …; pick a load's case in its value
+box or the side panel) and combines them with factors — numbers or worksheet
+expressions such as `γ_G`. The default set is ULS 1.35 G + 1.5 Q and SLS G + Q.
+
+- Every case and every combination is solved on its own, with factored loads. That is
+  exact for a linear structure, unlike superposing sampled diagrams.
+- The strip under the beam picks a case, a combination or the **envelope**: N, V and M
+  over the ULS combinations, deflection over the SLS ones, sampled on the union of all
+  stations with both sides of every jump. Max is drawn solid, min dashed. Loads that do
+  not act in what is shown are faded; G and Q on one span are stacked.
+- The worksheet gets the governing values (`b.M_max` over ULS, `b.w_max` over SLS,
+  reactions from the ULS combination with the largest resultant) plus every case and
+  combination on its own: `b.combos.ULS.M_max`, `b.cases.Q.A.Ry`.
+
+**Springs and settlements.** A support can be elastic along its axis (spring k, drawn as
+a coil), settle by a given amount (into the support, e.g. 10 mm down), and a fixed support
+can have a rotational spring (a semi-rigid foot). Springs go into the stiffness matrix,
+settlements are prescribed displacements; both are checked against closed-form results.
 
 The **Beams and frames** example covers two structures:
 
 - A two-span beam with factored loads, its reactions, a stress and deflection check, and
   plots of `b.M(x)` and `b.w(x)`.
 - A portal frame with fixed feet under roof load and wind.
+- Pattern loading: G on both spans, Q on either, three ULS combinations and the envelope.
 
 ### Python code
 
@@ -347,8 +407,35 @@ workspace opens full screen in the page. Its layout follows Fusion:
   Unconstrained occurrences take typed positions and rotations.
 - **Interference** lists overlapping occurrences with the shared volume.
 
-**Inspect:** measure between picked points; mass properties of the assembly, each component
-and each body (volume, mass, centre of gravity, inertia tensor); overall size.
+**Inspect:** measure between picked points (snapping to corners, with the line drawn in
+the view); **Section** cuts every body with the XY, XZ or YZ plane at any position, with
+the cut faces in colour (Flip keeps the other half); mass properties of the assembly,
+each component and each body (volume, mass, centre of gravity, inertia tensor); overall
+size.
+
+**Extrude options and Loft:**
+
+- **Thin (shell):** only a wall of thickness t along the outline (inside, outside or
+  centred), with a closed start (an open box), closed end, both or none (a tube).
+- **Rounded or chamfered edges** at the start and/or end of an extrusion: the profile is
+  offset into the material in layers (a quarter circle for a fillet) and the layers are
+  joined vertex to vertex. A radius too large for the profile is refused.
+- **Loft** joins the first profile of one sketch to the first profile of another, on a
+  different plane, with a ruled surface (a square to a circle, for example).
+
+**Drawings:** right-click a part → **Make a drawing**. You get a sheet (A4 or A3
+landscape) with:
+
+- front, top and side views in first-angle (ISO) or third-angle projection, plus an
+  isometric view;
+- visible lines solid and hidden lines dashed, with overall dimensions;
+- a standard scale and an ISO 7200-style title block with the projection symbol.
+
+The drawing follows the part. Select it to print at true scale (or save it as PDF), or
+to export SVG or DXF (layers VISIBLE, HIDDEN, DIM, FRAME). The lines are the mesh's
+sharp edges and the silhouettes of curved walls. Each line is tested in short pieces
+against every triangle in front of it, then merged, so hidden pieces that lie under
+visible lines disappear.
 
 **The 2-D sketcher** (also used for every sketch):
 
@@ -415,19 +502,27 @@ The **CAD part design** example covers three things:
   kinetic energy.
 - A plate's hole follows the shaft.
 - A flange-and-shaft assembly: a counterbored bolt pattern, a revolute joint driven by
-  `φ`, and the masses of both components read back into the math.
+  `φ`, and the masses of both components read back into the math, and a drawing of it.
+
+The **CAD: shells, roundings, lofts** example has a thin-walled enclosure, a knob with a
+chamfered bottom and a rounded top, and a duct lofted from a rectangle to a circle.
 
 What it is not, honestly:
 
-- **Not in the kernel:** no 3-D fillets, chamfers, shells or drafts, because Manifold has
-  no exact edge rounding. Use sketch fillets instead.
-- **Faceted geometry:** no sweeps, lofts or splines, and solids are meshes, not exact
-  B-rep surfaces.
+- **Edge rounding only on extrusions:** fillets and chamfers work on the start and end
+  edges of an extrusion (plus sketch fillets for the side edges). You cannot pick any
+  3-D edge to round, and there are no drafts. That needs a B-rep kernel: Manifold's
+  Minkowski rounding is exact but took 15–50 s per rebuild in tests, too slow for a
+  parametric model.
+- **Faceted geometry:** no sweeps along paths and no splines. Lofts are ruled (straight
+  between the two profiles). Solids are meshes, not exact B-rep surfaces, and drawings
+  show circles as fine polylines.
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
 - **Face sketches:** a sketch on a face keeps that face's position from when it was made;
   it does not follow later edits.
 - **Joints:** no joint limits, motion studies or contact.
-- **No drawings:** no 2-D drawings are made from the 3-D model.
+- **Drawings:** only the overall sizes are dimensioned automatically. There are no section
+  views on the sheet and no GD&T.
 
 It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
 calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
@@ -516,12 +611,14 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
-| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined), hinges, point/line/moment loads; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
-| CAD: Fusion-style timeline (sketches on planes/faces, extrude, revolve, hole, pattern, mirror, combine with booleans), assemblies with joints, mass properties back into the worksheet, DXF in/out, STL out | ✅ (mesh kernel: no 3-D fillets/chamfers/shell, sweeps or drawings) |
+| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
+| Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
+| Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
+| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (mesh kernel: no free 3-D edge fillets, drafts or sweeps) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
-| Excel/MATLAB components, READPRN/WRITEPRN file I/O | ❌ |
+| Excel/MATLAB components, READPRN/WRITEPRN file I/O | ⚠️ Excel ranges paste into tables and CSV files import/export; no live Excel link or .xlsx files |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas, headers/footers, protected regions, track changes | ❌ |
 | Special functions beyond Bessel/Γ/erf (Airy, elliptic, Fresnel, …), wavelets | ❌ |
