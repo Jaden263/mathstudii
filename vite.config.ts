@@ -32,7 +32,7 @@ export default defineConfig({
           file_handlers: [{ action: '.', accept: { 'application/json': ['.mstd'] } }],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+          globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         },
       }),
@@ -46,5 +46,5 @@ export default defineConfig({
     chunkSizeWarningLimit: 1500,
   },
   worker: { format: 'es' },
-  test: { environment: 'node', testTimeout: 30000 },
+  test: { environment: 'node', testTimeout: 30000, setupFiles: ['src/test-setup.ts'] },
 });

@@ -93,21 +93,65 @@ Regions below are pushed down.
 
 ### CAD parts (parametric design)
 
-Press **CAD** (or type `&` at the cursor) for a parametric part: a constrained 2-D sketch
-that can be extruded or revolved into a solid. It is linked to the worksheet in both
-directions.
+Press **CAD** (or type `&` at the cursor) for a parametric part. A part is a small
+Fusion-style design: components with a feature timeline, sketches on planes or faces,
+solid features with booleans, and an assembly held together by joints. It is linked to
+the worksheet in both directions.
 
-**The CAD window.** Parts are edited in a separate window: a real browser or desktop
-window next to the worksheet. On phones and small tablets the same workspace opens full
-screen in the page. The workspace is laid out like a desktop CAD program:
+**The CAD window.** Parts are edited in a separate window next to the worksheet (a browser
+window, or a native window in the desktop app). On phones and small tablets the same
+workspace opens full screen in the page. Its layout follows Fusion:
 
-- **Ribbon:** Sketch, Constrain, Features, Inspect, View and File tabs.
-- **Feature tree:** origin, sketch with a freedom badge, relations, dimensions, feature
-  and material.
-- **Viewport:** sketch, 3-D or both side by side, with a properties panel beside it.
-- **Status bar:** live coordinates, constraint status and tool hints.
+- **Toolbar tabs:** Solid, Assemble, Inspect and File. While a sketch is open they become
+  Sketch and Constrain, with a green **Finish sketch** button.
+- **Browser** (left): components (the radio button marks the active one) with their bodies
+  and sketches, occurrences and joints. Each item has a visibility toggle.
+- **3-D viewport** (WebGL, Z up): drag to orbit, Shift or middle drag to pan, wheel to
+  zoom at the cursor. The ViewCube's faces, edges and corners jump to views. Shaded,
+  shaded-with-edges and wireframe display.
+- **Dialog / properties** (right): feature and joint dialogs, or the properties and mass
+  properties of the selected component, body, occurrence, joint or timeline item.
+- **Timeline** (bottom): the active component's sketches and features in order. Click to
+  select, double-click to edit. The marker rolls the model back (⏮ ◀ ▶ ⏭, or **Roll back
+  to here**). Features can be suppressed or deleted; new ones go in at the marker.
 
-Working in the viewport:
+**Modelling** (Solid tab):
+
+- **Sketch:** click an origin plane (XY, XZ, YZ, with an optional offset expression) or any
+  flat face of a body. The sketch opens looking straight at its plane. The bodies it cuts
+  show as grey reference outlines, and **Project** turns them into fixed sketch geometry
+  (circles come back as circles).
+- **Extrude:** one side, symmetric, two sides or through all. Operations are new body,
+  join, cut or intersect. Click profiles in the view to pick them and bodies to choose
+  targets. Cuts go into the material automatically: both directions are tried and the one
+  that removes more is kept.
+- **Revolve:** about the sketch axes or any sketch line, any angle, in either direction.
+- **Hole:** at sketch points — simple, counterbore or countersink, a depth or through all.
+- **Pattern:** rectangular (one or two directions) or circular, of features (the copies
+  repeat the boolean) or of bodies.
+- **Mirror:** features or bodies, about an origin plane or a sketch plane.
+- **Combine:** join, cut or intersect bodies, optionally keeping the tools.
+- A dialog edits the real feature, so the model previews every change; Cancel rolls it back.
+
+**Assemblies** (Assemble tab):
+
+- **New component** adds a component and makes it active. **Insert copy** adds another
+  occurrence of the active component.
+- **Joints:** rigid, revolute, slider and cylindrical. A joint origin is either picked on
+  a face (it snaps to hole and shaft centres) or chosen from a list: the component origin,
+  or any sketch point or circle centre with Z along the sketch normal or a sketch axis.
+  - The angle and offset are worksheet expressions, so a calculation can drive the
+    mechanism. A slider drives revolute joints by hand.
+  - **Flip** makes mating faces point at each other.
+- **Placement:** grounded occurrences stay fixed and joints carry the rest along the joint
+  tree. A joint that closes a loop which does not fit is reported, not forced.
+  Unconstrained occurrences take typed positions and rotations.
+- **Interference** lists overlapping occurrences with the shared volume.
+
+**Inspect:** measure between picked points; mass properties of the assembly, each component
+and each body (volume, mass, centre of gravity, inertia tensor); overall size.
+
+**The 2-D sketcher** (also used for every sketch):
 
 - **Navigation:** the wheel zooms at the cursor, middle or right drag pans, F fits.
 - **Grid and snapping:** the grid adapts to the zoom (1-2-5 steps) and grid snap is optional.
@@ -116,13 +160,6 @@ Working in the viewport:
 - **Typing sizes:** type while drawing to give exact sizes. For example, line → `100`
   Tab `30` Enter draws a 100 mm line at 30° with its dimensions.
 - **Selecting:** drag right for window select, drag left for crossing select.
-- **3-D view:** orbit, pan, zoom, standard views (front, top, right, iso) and a wireframe display.
-
-The page shows the part as a live preview that frames itself. Edits travel to the
-worksheet at once, which recalculates and sends the results back. Undo in the CAD window
-applies to the part only, not to the rest of the worksheet. The worksheet window must
-stay open, since it owns the document.
-
 - **Sketching:** line chains, corner and centre rectangles, circles, centre and
   3-point arcs, regular polygons, slots, points and construction geometry.
   - New points snap to existing points (shared, so outlines are connected), to
@@ -137,35 +174,64 @@ stay open, since it owns the document.
 - **Constraints:** coincident, point on line/circle, horizontal, vertical, parallel,
   perpendicular, tangent, equal, midpoint, symmetric, concentric and fix.
 - **Dimensions:** length, distance (aligned, horizontal, vertical, point to line), angle,
-  radius and diameter. They can be driving or reference.
+  radius and diameter. They can be driving or reference. Names are unique across the part.
 - **Solver:** a Levenberg–Marquardt solver keeps every constraint while you drag
   geometry, and moves the geometry as little as possible.
 - **Constraint status:** the rank of the constraint Jacobian gives the degrees of freedom.
   Under-defined geometry is drawn blue and fully defined geometry black. Conflicting
   constraints are red, and redundant ones are reported.
-- **Worksheet → part:** a dimension's value is any worksheet expression (`d/2`,
-  `b_p + 5 mm`, `30 deg`), so the part follows the calculation above it.
-- **Part → worksheet:** name the part (`shaft`) and the math below can use
-  - the section: `shaft.A`, `shaft.Ix`, `shaft.Iy`, `shaft.Wx`, `shaft.xc` …
-  - the solid: `shaft.V`, `shaft.m`, the centre of gravity `shaft.xg` …, and the mass
-    moments of inertia `shaft.Imx`, `shaft.Imy`, `shaft.Imz`
-  - every named dimension, e.g. `shaft.d1`
-- **3-D:** extrude (optionally symmetric) or revolve (any angle, about the sketch axes or a
-  line) with a material from the list or any density. Mass properties are exact. Area
-  moments use Green's theorem with Gauss–Legendre quadrature on arcs; revolved solids use
-  closed-form integrals over the profile (Pappus and beyond, including partial turns and
-  products of inertia). The 3-D view (WebGL) can sit beside the sketch.
-- **Exchange:** DXF import and export (lines, arcs, circles, points, LWPOLYLINE and
-  POLYLINE with bulges), and binary STL export of the solid for 3-D printing.
 
-The **CAD part design** example sizes a shaft from its torque, builds it from that
-diameter, and uses its mass and inertia for the kinetic energy. A mounting plate's hole
-follows the shaft.
+**Linked to the worksheet:**
 
-What it is not: there are no booleans between solids, 3-D fillets/chamfers, multi-feature
-history, assemblies or 2-D drawings from the 3-D model. Splines, offsets and extend are
-missing too. One part is one profile turned into one solid. That covers parametric plates,
-brackets, shafts, rings and sections, not a replacement for SolidWorks or FreeCAD.
+- **Worksheet → part:** dimensions, extrude distances, angles, hole sizes, pattern counts,
+  plane offsets, densities and joint values are all worksheet expressions (`d/2`,
+  `b_p + 5 mm`, `30 deg`, `n_b`), so the design follows the calculation above it.
+- **Part → worksheet:** name the part (`asm`) and the math below can use
+  - the whole assembly: `asm.V`, `asm.m`, the centre of gravity `asm.xg` …, the mass moments
+    of inertia `asm.Imx` … `asm.Imyz`, and the overall size `asm.Lx`, `asm.Ly`, `asm.Lz`
+  - each component, `asm.Flange.m`, and each body, `asm.Flange.Body1.V`. A single-component
+    part puts its bodies and sketches directly on the part.
+  - each sketch's section, `asm.Disc.A`; the first sketch's section is also on the part
+    itself (`shaft.A`, `shaft.Ix`, `shaft.Wx` …)
+  - every named dimension (`asm.D_f`) and every moving joint (`asm.Spin` in degrees, a
+    slider in length)
+- **Live:** edits travel to the worksheet at once, which recalculates and sends the results
+  back. Undo in the CAD window applies to the part only. The worksheet window must stay
+  open, since it owns the document. The page shows the 3-D model, the first sketch, or both.
+
+**The kernel and its accuracy.** Solids come from [Manifold](https://github.com/elalish/manifold)
+(WASM, Apache-2.0). It keeps every solid a closed 2-manifold, so booleans never leave
+cracks. Curves become polygons with a vertex every 2°, and mass properties of booleaned
+bodies come from exact integrals over that mesh. Volumes are therefore within about
+2·10⁻⁴ of the true curved solid: a cylinder comes out ~0.02 % small. A body made by one
+extrude or revolve keeps exact properties from the profile integrals (Green's theorem with
+Gauss–Legendre quadrature, closed-form revolve integrals).
+
+**Exchange:** DXF import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
+POLYLINE with bulges), and binary STL export of the assembly for 3-D printing.
+
+The **CAD part design** example covers three things:
+
+- It sizes a shaft from its torque and builds it, then uses its mass and inertia for the
+  kinetic energy.
+- A plate's hole follows the shaft.
+- A flange-and-shaft assembly: a counterbored bolt pattern, a revolute joint driven by
+  `φ`, and the masses of both components read back into the math.
+
+What it is not, honestly:
+
+- **Not in the kernel:** no 3-D fillets, chamfers, shells or drafts, because Manifold has
+  no exact edge rounding. Use sketch fillets instead.
+- **Faceted geometry:** no sweeps, lofts or splines, and solids are meshes, not exact
+  B-rep surfaces.
+- **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
+- **Face sketches:** a sketch on a face keeps that face's position from when it was made;
+  it does not follow later edits.
+- **Joints:** no joint limits, motion studies or contact.
+- **No drawings:** no 2-D drawings are made from the 3-D model.
+
+It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
+calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
 
 ### Importing Mathcad files
 
@@ -251,7 +317,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
-| CAD: constrained parametric sketches, dimensions driven by worksheet expressions, extrude/revolve with exact mass properties, DXF in/out, STL out | ✅ (single-profile parts; no booleans, fillets, assemblies or drawings) |
+| CAD: Fusion-style timeline (sketches on planes/faces, extrude, revolve, hole, pattern, mirror, combine with booleans), assemblies with joints, mass properties back into the worksheet, DXF in/out, STL out | ✅ (mesh kernel: no 3-D fillets/chamfers/shell, sweeps or drawings) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ❌ |
@@ -284,8 +350,10 @@ src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS brid
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
-src/cad/      CAD engine (no UI): model, constraint solver, profiles, mass properties, mesh, DXF, STL
-src/ui/cad/   CAD window (workspace, canvas, 3-D viewer, window link) and the page preview
+src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
+              joints), solid kernel (Manifold), mass properties, DXF, STL
+src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
+              window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system

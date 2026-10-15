@@ -2,6 +2,7 @@
 // undone, copied and pasted without custom serialisation.
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
+import type { CadDesign } from '../cad/design';
 
 export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad';
 
@@ -117,6 +118,11 @@ export interface CadRegion extends RegionBase {
   feature: CadFeature;
   /** Material density expression ("7850 kg/m^3"); empty = no mass. */
   density: string;
+  /**
+   * Components, timelines and joints. Parts saved before designs existed have only
+   * `sketch` and `feature`, which `designOf` turns into a one-sketch design.
+   */
+  design?: CadDesign;
 }
 
 export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion;
@@ -200,7 +206,7 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
     case 'cad':
       return {
         ...base, kind, name: '', width: 480, height: 320, unit: 'mm', view: { cx: 100, cy: 60, zoom: 2 },
-        view3d: { yaw: -35, pitch: 25 }, mode: '2d', sketch: { points: [], entities: [], constraints: [] },
+        view3d: { yaw: -35, pitch: 25 }, mode: '3d', sketch: { points: [], entities: [], constraints: [] },
         feature: { type: 'none' }, density: '7850 kg/m^3', ...(init as Partial<CadRegion>),
       };
   }

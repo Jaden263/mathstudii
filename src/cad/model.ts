@@ -153,9 +153,18 @@ export function entityPoints(e: CadEntity): string[] {
   }
 }
 
+/**
+ * Names taken by other sketches of the same design. The editor of one sketch sets
+ * this so new dimensions get names that are unique across the whole part.
+ */
+let reserved = new Set<string>();
+export function reserveDimNames(names: Iterable<string>) {
+  reserved = new Set(names);
+}
+
 /** Next free dimension name d1, d2, … */
 export function nextDimName(s: CadSketch): string {
-  const used = new Set(s.constraints.map((c) => c.name).filter(Boolean));
+  const used = new Set([...reserved, ...s.constraints.map((c) => c.name).filter(Boolean)]);
   let i = 1;
   while (used.has(`d${i}`)) i++;
   return `d${i}`;

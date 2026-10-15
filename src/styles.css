@@ -2014,7 +2014,8 @@ kbd {
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr);
   background: var(--bg);
   color: var(--text);
   font: 13px var(--font);
@@ -2642,5 +2643,280 @@ kbd {
 
   .cadw-brand b {
     display: none;
+  }
+}
+
+/* ---------------------------------------------------------------- CAD: Fusion-style workspace */
+
+.cadw-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cadw-finish {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px !important;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ok) !important;
+  color: #fff !important;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cadw-eye {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.cadw-node:hover .cadw-eye,
+.cadw-eye:focus-visible {
+  opacity: 1;
+}
+
+.cadw-radio {
+  margin: 0 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.cadw-badge.ok {
+  color: var(--ok);
+}
+
+.cadw-btn,
+.cadd .btn,
+.props > .btn,
+.cadw-props .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 500 12.5px var(--font);
+  cursor: pointer;
+}
+
+.cadd .btn.primary,
+.cadw-props .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.cadw-props .btn.danger {
+  color: var(--error);
+}
+
+.cadd {
+  display: flex;
+  flex-direction: column;
+  margin: -10px -12px;
+  min-height: calc(100% + 20px);
+}
+
+.cadd-head {
+  padding: 9px 12px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.cadd-body {
+  flex: 1;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cadd-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--cadw-line);
+  background: var(--cadw-panel);
+}
+
+.cadd-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.cadd-side {
+  border: 1px solid var(--cadw-line);
+  border-radius: 6px;
+  padding: 6px 8px 8px;
+  margin: 4px 0;
+}
+
+.cadd-side legend {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cadd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.row3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+
+.row3 .field input {
+  min-width: 0;
+}
+
+.cadw-timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  background: var(--cadw-panel);
+  border-top: 1px solid var(--cadw-line);
+  min-width: 0;
+}
+
+.cadw-tl-ctl {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.cadw-tl-items {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow-x: auto;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.cadw-tl-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cadw-tl-item {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  border: 1px solid var(--cadw-line);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.cadw-tl-item:hover {
+  border-color: var(--accent);
+}
+
+.cadw-tl-item.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.cadw-tl-item.rolled {
+  opacity: 0.35;
+}
+
+.cadw-tl-item.off {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.cadw-tl-item.bad {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.cadw-tl-marker {
+  width: 4px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--warn);
+}
+
+.cad-svg .cad-ref {
+  fill: color-mix(in srgb, var(--text) 5%, transparent);
+  fill-rule: evenodd;
+  stroke: color-mix(in srgb, var(--text) 45%, transparent);
+  stroke-width: 1.2;
+  stroke-dasharray: 5 3;
+  pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .cadw-tree {
+    width: 190px;
+  }
+  .cadw-props {
+    width: 250px;
+  }
+}
+
+@media (max-width: 760px) {
+  .cadw-main {
+    position: relative;
+  }
+  .cadw-tree,
+  .cadw-props {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 5;
+    box-shadow: var(--shadow);
+  }
+  .cadw-tree {
+    left: 0;
+    width: min(240px, 70vw);
+  }
+  .cadw-props {
+    right: 0;
+    width: min(320px, 88vw);
+  }
+  .cadw-brand b,
+  .cadw-active {
+    display: none;
+  }
+  .cadw-name {
+    width: 90px;
+  }
+  .cadw-head {
+    gap: 4px;
+    padding: 6px;
   }
 }

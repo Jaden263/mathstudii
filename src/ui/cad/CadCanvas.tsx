@@ -45,6 +45,8 @@ interface Props {
   onStatus?: (s: CanvasStatus) => void;
   onUndo?: () => void;
   onRedo?: () => void;
+  /** Outlines of existing bodies in the sketch plane, drawn as reference (sketch coordinates). */
+  reference?: Vec2[][];
 }
 
 const SNAP_PX = 9;
@@ -174,7 +176,7 @@ function SnapMarker({ snap, vp }: { snap: Snap; vp: Vp }) {
 
 const fmtV = (v: number) => String(+v.toPrecision(6));
 
-export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({ region, result, dispatch, width, height, interactive, onStatus, onUndo, onRedo }, handle) {
+export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({ region, result, dispatch, width, height, interactive, onStatus, onUndo, onRedo, reference }, handle) {
   const { ui, setUi } = useSketchUI();
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -281,7 +283,12 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
   };
 
   const fit = useCallback(() => {
-    const b = sketchBox(geo);
+    let b = sketchBox(geo);
+    for (const loop of reference ?? []) for (const p of loop) {
+      b ??= { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+      b.x0 = Math.min(b.x0, p.x); b.x1 = Math.max(b.x1, p.x);
+      b.y0 = Math.min(b.y0, p.y); b.y1 = Math.max(b.y1, p.y);
+    }
     if (!b) {
       setView({ cx: 50, cy: 30, zoom: Math.min(width / 140, height / 90) }, true);
       return;
@@ -298,7 +305,7 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     const zoom = Math.min((width - 90) / w, (height - 90) / h);
     setView({ cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2, zoom: Number.isFinite(zoom) && zoom > 0 ? zoom : view.zoom }, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geo, shown, width, height, view.zoom]);
+  }, [geo, shown, width, height, view.zoom, reference]);
 
   // the CAD window frames the part when it opens
   const framed = useRef(false);
@@ -999,6 +1006,12 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         onDoubleClick={(e) => { if (interactive && draft) { e.preventDefault(); setDraft(null); } }}
       >
         {interactive && <CadGrid vp={vp} />}
+        {reference?.length ? (
+          <path className="cad-ref" d={reference.map((loop) => loop.map((p, i) => {
+            const q = toS(vp, p);
+            return `${i ? 'L' : 'M'}${q.x.toFixed(1)} ${q.y.toFixed(1)}`;
+          }).join(' ') + ' Z').join(' ')} />
+        ) : null}
         <ProfileFill regions={profiles.regions} vp={vp} />
         {shown.entities.map((ent) => {
           if (ent.type === 'point') return null;

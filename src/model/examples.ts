@@ -1,5 +1,6 @@
 import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
+import type { CadDesign } from '../cad/design';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -190,6 +191,71 @@ function outline(prefix: string, pts: [number, number][]): CadSketch {
   return { points, entities, constraints: [] };
 }
 
+
+/** Concentric circles about a fixed centre, each with a diameter dimension. */
+function rings(prefix: string, dias: [number, string, string?][], extra: (sk: CadSketch) => void = () => {}): CadSketch {
+  const sk: CadSketch = {
+    points: [{ id: `${prefix}c`, x: 0, y: 0 }],
+    entities: [],
+    constraints: [{ id: `${prefix}fix`, type: 'fix', refs: [`${prefix}c`], at: { x: 0, y: 0 } }],
+  };
+  dias.forEach(([d, value, name], i) => {
+    sk.entities.push({ id: `${prefix}k${i}`, type: 'circle', c: `${prefix}c`, r: d / 2 });
+    sk.constraints.push({ id: `${prefix}d${i}`, type: 'diameter', refs: [`${prefix}k${i}`], value, ...(name ? { name } : {}), offset: { x: d * 0.25, y: d * 0.25 } });
+  });
+  extra(sk);
+  return sk;
+}
+
+/** A flange with a hub and a bolt circle, and a shaft turning in it. */
+function flangeAssembly(): CadDesign {
+  const plate = rings('f', [[200, 'D_f', 'D_f'], [51, 'd_2 + 1 mm']]);
+  const hub = rings('h', [[100, 'D_h', 'D_h'], [51, 'd_2 + 1 mm']]);
+  const bolts = rings('b', [], (sk) => {
+    sk.points.push({ id: 'bp', x: 75, y: 0 });
+    sk.entities.push({ id: 'be', type: 'point', p: 'bp' });
+    sk.constraints.push(
+      { id: 'bdx', type: 'distanceX', refs: ['bc', 'bp'], value: 'D_b/2', name: 'r_b', offset: { x: 0, y: -12 } },
+      { id: 'bdy', type: 'distanceY', refs: ['bc', 'bp'], value: '0' },
+    );
+  });
+  const shaft = rings('s', [[40, 'd']]);
+  return {
+    version: 2,
+    components: [
+      {
+        id: 'cf', name: 'Flange', density: '7200 kg/m^3', color: '#8fa3bf',
+        items: [
+          { kind: 'sketch', id: 'sf1', name: 'Disc', plane: { ref: 'XY' }, sketch: plate },
+          { kind: 'extrude', id: 'ff1', name: 'Plate', sketch: 'sf1', extent: { type: 'one', d: 't_f', dir: '+' }, op: 'new' },
+          { kind: 'sketch', id: 'sf2', name: 'HubSketch', plane: { ref: 'XY', offset: 't_f' }, sketch: hub },
+          { kind: 'extrude', id: 'ff2', name: 'Hub', sketch: 'sf2', extent: { type: 'one', d: '20 mm', dir: '+' }, op: 'join' },
+          { kind: 'sketch', id: 'sf3', name: 'BoltCircle', plane: { ref: 'XY', offset: 't_f' }, sketch: bolts },
+          { kind: 'hole', id: 'ff3', name: 'BoltHole', sketch: 'sf3', d: '9 mm', depth: '', through: true, style: 'counterbore', cbD: '15 mm', cbDepth: '4 mm' },
+          { kind: 'pattern', id: 'ff4', name: 'Bolts', of: 'features', refs: ['ff3'], type: 'circ', axis: 'Z', count: 'n_b', spacing: '360 deg' },
+        ],
+      },
+      {
+        id: 'cs', name: 'Shaft', color: '#c9a36b',
+        items: [
+          { kind: 'sketch', id: 'ss1', name: 'ShaftSketch', plane: { ref: 'XY' }, sketch: shaft },
+          { kind: 'extrude', id: 'fs1', name: 'Shaft', sketch: 'ss1', extent: { type: 'one', d: 'L', dir: '+' }, op: 'new' },
+        ],
+      },
+    ],
+    occurrences: [
+      { id: 'of', component: 'cf', grounded: true },
+      { id: 'os', component: 'cs', pos: [250, 0, 0] },
+    ],
+    joints: [{
+      id: 'jr', name: 'Spin', type: 'revolute',
+      a: { occ: 'of', origin: { kind: 'point', sketch: 'sf1', point: 'fc' } },
+      b: { occ: 'os', origin: { kind: 'point', sketch: 'ss1', point: 'sc' } },
+      angle: 'φ', offset: '-40 mm',
+    }],
+  };
+}
+
 export function cadExample(): Worksheet {
   // stepped shaft: half profile above the x axis, revolved about it
   const shaft = outline('s', [[0, 0], [0, 20], [60, 20], [60, 25], [180, 25], [180, 0]]);
@@ -243,6 +309,22 @@ export function cadExample(): Worksheet {
     ['math', mm(140), mm(246), { source: 'plate.m = g' }],
     ['math', mm(140), mm(258), { source: 'plate.A = cm^2' }],
     ['math', mm(140), mm(270), { source: 'plate.hole = mm' }],
+    ['text', L, mm(305), { width: mm(170), markdown: '## Assembly: flange and shaft\nTwo components, as in Fusion: a cast-iron flange (plate, hub, counterbored bolt holes patterned around the axis) and the shaft from above, placed by a revolute joint. Every size comes from this page — open the part to see the timeline, the browser and the joint.' }],
+    ['math', L, mm(333), { source: 'D_f := 4 * d_2 = mm' }],
+    ['math', mm(70), mm(333), { source: 'D_h := 2 * d_2 = mm' }],
+    ['math', mm(125), mm(333), { source: 'D_b := 3 * d_2 = mm' }],
+    ['math', L, mm(345), { source: 't_f := 12 mm' }],
+    ['math', mm(70), mm(345), { source: 'n_b := 6' }],
+    ['math', mm(125), mm(345), { source: 'φ := 15 deg' }],
+    ['cad', L, mm(356), {
+      name: 'asm', width: mm(170), height: mm(80), mode: '3d', view3d: { yaw: -30, pitch: 28 }, density: '7850 kg/m^3', design: flangeAssembly(),
+    }],
+    ['math', L, mm(442), { source: 'asm.Flange.m = kg' }],
+    ['math', mm(75), mm(442), { source: 'asm.Shaft.m = kg' }],
+    ['math', mm(130), mm(442), { source: 'asm.m = kg' }],
+    ['math', L, mm(455), { source: 'asm.Imz = kg*cm^2' }],
+    ['math', mm(85), mm(455), { source: 'asm.Spin = deg' }],
+    ['math', mm(130), mm(455), { source: 'asm.Lz = mm' }],
   ]);
 }
 

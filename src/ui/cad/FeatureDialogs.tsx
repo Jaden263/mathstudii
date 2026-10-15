@@ -1,0 +1,322 @@
+// Feature and joint dialogs of the CAD workspace. A dialog edits the real timeline
+// item, so the model previews every change; Cancel rolls the edits back.
+import type { ReactNode } from 'react';
+import { Check, X } from 'lucide-react';
+import type { CadResult } from '../../cad/evaluate';
+import {
+  FEATURE_LABEL, isSketch, profileKey,
+  type CadComponent, type CadDesign, type CadJoint, type DesignFeature, type DesignSketch, type Direction, type Extent, type FeatureOp, type JointOrigin,
+} from '../../cad/design';
+import { LazyInput } from '../sketch/SketchProps';
+import { sketchRegions } from './useDesign';
+
+export function Dialog({ title, error, children, onOk, onCancel, okLabel = 'OK' }: { title: string; error?: string; children: ReactNode; onOk: () => void; onCancel: () => void; okLabel?: string }) {
+  return (
+    <div className="cadd" role="dialog" aria-label={title}>
+      <div className="cadd-head">{title}</div>
+      <div className="cadd-body">
+        {children}
+        {error && <div className="region-error">{error}</div>}
+      </div>
+      <div className="cadd-foot">
+        <button className="btn primary" onClick={onOk}><Check size={14} /> {okLabel}</button>
+        <button className="btn" onClick={onCancel}><X size={14} /> Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+export function Expr({ label, value, onChange, hint, placeholder }: { label: string; value: string; onChange: (v: string) => void; hint?: string; placeholder?: string }) {
+  return (
+    <label className="field" title={hint ?? 'A number in the part unit (degrees for angles), a value with a unit, or a worksheet expression'}>
+      <span>{label}</span>
+      <LazyInput label={label} value={value} placeholder={placeholder} onCommit={(v) => onChange(v.trim())} />
+    </label>
+  );
+}
+
+export function Pick<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: [T, string][]; onChange: (v: T) => void }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value as T)}>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function Checks({ label, items, value, onChange, empty, allLabel }: { label: string; items: [string, string][]; value?: string[]; onChange: (v: string[] | undefined) => void; empty: string; allLabel?: string }) {
+  const sel = value ?? [];
+  return (
+    <div className="field">
+      <span>{label}</span>
+      {!items.length && <p className="hint">{empty}</p>}
+      <div className="cadd-checks">
+        {allLabel && items.length > 0 && (
+          <label className="check"><input type="checkbox" checked={!sel.length} onChange={() => onChange(undefined)} /> {allLabel}</label>
+        )}
+        {items.map(([id, l]) => (
+          <label key={id} className="check">
+            <input type="checkbox" checked={sel.includes(id)} onChange={(e) => {
+              const next = e.target.checked ? [...sel, id] : sel.filter((x) => x !== id);
+              onChange(next.length ? next : undefined);
+            }} /> {l}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const OPS: [FeatureOp, string][] = [['new', 'New body'], ['join', 'Join'], ['cut', 'Cut'], ['intersect', 'Intersect']];
+const DIRS: [Direction, string][] = [['auto', 'Automatic'], ['+', 'Along the normal'], ['-', 'Against the normal']];
+
+interface FeatureProps {
+  design: CadDesign;
+  comp: CadComponent;
+  feature: DesignFeature;
+  result?: CadResult;
+  unit: string;
+  onChange: (patch: Partial<DesignFeature>, coalesce?: string) => void;
+}
+
+/** Bodies of the component before this feature (by the latest result). */
+function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string, string][] {
+  return (result?.design?.bodies[comp.id] ?? []).map((b) => [b.id, b.name]);
+}
+
+export function FeatureFields({ design, comp, feature: f, result, unit, onChange }: FeatureProps) {
+  const sketches = comp.items.filter(isSketch);
+  const upto = comp.items.indexOf(f);
+  const before = comp.items.slice(0, upto < 0 ? undefined : upto);
+  const sketchSel = (value: string) => (
+    <Pick label="Sketch" value={value} options={sketches.map((s) => [s.id, s.name])} onChange={(v) => onChange({ sketch: v, profiles: undefined } as Partial<DesignFeature>)} />
+  );
+  const targets = (v?: string[]) => (
+    <Checks label="Bodies" items={bodyOptions(comp, result)} value={v} onChange={(t) => onChange({ targets: t } as Partial<DesignFeature>)} empty="No bodies yet" allLabel="Automatic" />
+  );
+  const profiles = (sid: string, v?: string[]) => {
+    const ds = sketches.find((s) => s.id === sid);
+    const regions = ds ? sketchRegions(ds, result) : [];
+    return (
+      <div className="field">
+        <span>Profiles</span>
+        <p className="hint">
+          {!regions.length ? 'The sketch has no closed profile.' : !v?.length ? `All ${regions.length} profile${regions.length > 1 ? 's' : ''} — click profiles in the view to pick some.` : `${v.length} of ${regions.length} picked (click in the view to change).`}
+          {v?.length ? <> <button className="link" onClick={() => onChange({ profiles: undefined } as Partial<DesignFeature>)}>Use all</button></> : null}
+        </p>
+      </div>
+    );
+  };
+  switch (f.kind) {
+    case 'extrude': {
+      const ex = f.extent;
+      const setEx = (e: Extent, key?: string) => onChange({ extent: e }, key);
+      return (
+        <>
+          {sketchSel(f.sketch)}
+          {profiles(f.sketch, f.profiles)}
+          <Pick label="Extent" value={ex.type} options={[['one', 'Distance'], ['symmetric', 'Symmetric'], ['two', 'Two sides'], ['all', 'Through all']]}
+            onChange={(t) => setEx(t === 'one' ? { type: 'one', d: 'd' in ex ? ex.d : '10' } : t === 'symmetric' ? { type: 'symmetric', d: 'd' in ex ? ex.d : '10' } : t === 'two' ? { type: 'two', d: 'd' in ex ? ex.d : '10', d2: '5' } : { type: 'all' })} />
+          {ex.type !== 'all' && <Expr label={ex.type === 'symmetric' ? 'Total distance' : 'Distance'} value={ex.d} onChange={(d) => setEx({ ...ex, d } as Extent, 'd')} />}
+          {ex.type === 'two' && <Expr label="Distance, other side" value={ex.d2} onChange={(d2) => setEx({ ...ex, d2 }, 'd2')} />}
+          {(ex.type === 'one' || ex.type === 'all') && <Pick label="Direction" value={ex.dir ?? 'auto'} options={DIRS} onChange={(dir) => setEx({ ...ex, dir: dir === 'auto' ? undefined : dir })} />}
+          {ex.type === 'all' && <label className="check"><input type="checkbox" checked={!!ex.both} onChange={(e) => setEx({ ...ex, both: e.target.checked || undefined })} /> Both sides</label>}
+          <Pick label="Operation" value={f.op} options={OPS} onChange={(op) => onChange({ op })} />
+          {f.op !== 'new' && targets(f.targets)}
+        </>
+      );
+    }
+    case 'revolve': {
+      const ds = sketches.find((s) => s.id === f.sketch);
+      const lines = ds?.sketch.entities.filter((e) => e.type === 'line') ?? [];
+      return (
+        <>
+          {sketchSel(f.sketch)}
+          {profiles(f.sketch, f.profiles)}
+          <Pick label="Axis" value={f.axis} options={[['x', 'Sketch x axis'], ['y', 'Sketch y axis'], ...lines.map((l, i) => [l.id, `Line ${i + 1}${l.construction ? ' (construction)' : ''}`] as [string, string])]} onChange={(axis) => onChange({ axis })} />
+          <Expr label="Angle" value={f.angle} onChange={(angle) => onChange({ angle }, 'angle')} />
+          <label className="check"><input type="checkbox" checked={!!f.flip} onChange={(e) => onChange({ flip: e.target.checked || undefined })} /> Other direction</label>
+          <Pick label="Operation" value={f.op} options={OPS} onChange={(op) => onChange({ op })} />
+          {f.op !== 'new' && targets(f.targets)}
+        </>
+      );
+    }
+    case 'hole': {
+      const ds = sketches.find((s) => s.id === f.sketch);
+      const pts = ds?.sketch.entities.filter((e) => e.type === 'point') ?? [];
+      return (
+        <>
+          {sketchSel(f.sketch)}
+          <Checks label="Centres (sketch points)" items={pts.map((p, i) => [p.id, `Point ${i + 1}`])} value={f.points} onChange={(points) => onChange({ points })} empty="Add points to the sketch for the hole centres" allLabel="All points" />
+          <Pick label="Type" value={f.style} options={[['simple', 'Simple'], ['counterbore', 'Counterbore'], ['countersink', 'Countersink']]} onChange={(style) => onChange({ style })} />
+          <Expr label="Diameter" value={f.d} onChange={(d) => onChange({ d }, 'd')} />
+          <label className="check"><input type="checkbox" checked={!!f.through} onChange={(e) => onChange({ through: e.target.checked || undefined })} /> Through all</label>
+          {!f.through && <Expr label="Depth" value={f.depth} onChange={(depth) => onChange({ depth }, 'depth')} />}
+          {f.style === 'counterbore' && (
+            <div className="row2">
+              <Expr label="Counterbore Ø" value={f.cbD ?? ''} placeholder="1.8 × Ø" onChange={(cbD) => onChange({ cbD }, 'cbD')} />
+              <Expr label="Counterbore depth" value={f.cbDepth ?? ''} placeholder="0.6 × Ø" onChange={(cbDepth) => onChange({ cbDepth }, 'cbDepth')} />
+            </div>
+          )}
+          {f.style === 'countersink' && (
+            <div className="row2">
+              <Expr label="Countersink Ø" value={f.csD ?? ''} placeholder="2 × Ø" onChange={(csD) => onChange({ csD }, 'csD')} />
+              <Expr label="Angle" value={f.csAngle ?? ''} placeholder="90" onChange={(csAngle) => onChange({ csAngle }, 'csAngle')} />
+            </div>
+          )}
+          <Pick label="Direction" value={f.dir ?? 'auto'} options={DIRS} onChange={(dir) => onChange({ dir: dir === 'auto' ? undefined : dir })} />
+          {targets(f.targets)}
+        </>
+      );
+    }
+    case 'pattern':
+    case 'mirror': {
+      const feats = before.filter((i): i is DesignFeature => !isSketch(i) && (i.kind === 'extrude' || i.kind === 'revolve' || i.kind === 'hole'));
+      const axes = axisOptions(sketches);
+      return (
+        <>
+          <Pick label="Copy" value={f.of} options={[['features', 'Features'], ['bodies', 'Bodies']]} onChange={(of) => onChange({ of, refs: [] })} />
+          {f.of === 'features'
+            ? <Checks label="Features" items={feats.map((x) => [x.id, x.name])} value={f.refs} onChange={(refs) => onChange({ refs: refs ?? [] })} empty="No extrude, revolve or hole before this feature" />
+            : <Checks label="Bodies (or click them)" items={bodyOptions(comp, result)} value={f.refs} onChange={(refs) => onChange({ refs: refs ?? [] })} empty="No bodies yet" />}
+          {f.kind === 'pattern' ? (
+            <>
+              <Pick label="Pattern" value={f.type} options={[['rect', 'Rectangular'], ['circ', 'Circular']]} onChange={(type) => onChange({ type, spacing: type === 'circ' ? '360' : '20' })} />
+              <Pick label={f.type === 'circ' ? 'Axis' : 'Direction'} value={f.axis} options={axes} onChange={(axis) => onChange({ axis })} />
+              <div className="row2">
+                <Expr label="Count" value={f.count} onChange={(count) => onChange({ count }, 'count')} />
+                <Expr label={f.type === 'circ' ? 'Total angle' : 'Spacing'} value={f.spacing} onChange={(spacing) => onChange({ spacing }, 'spacing')} />
+              </div>
+              {f.type === 'rect' && (
+                <>
+                  <Pick label="Second direction" value={f.axis2 ?? ''} options={[['', 'None'], ...axes]} onChange={(a) => onChange({ axis2: a || undefined, count2: f.count2 ?? '2', spacing2: f.spacing2 ?? '20' })} />
+                  {f.axis2 && (
+                    <div className="row2">
+                      <Expr label="Count" value={f.count2 ?? ''} onChange={(count2) => onChange({ count2 }, 'count2')} />
+                      <Expr label="Spacing" value={f.spacing2 ?? ''} onChange={(spacing2) => onChange({ spacing2 }, 'spacing2')} />
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          ) : (
+            <Pick label="Mirror plane" value={f.plane} options={[['XY', 'XY plane'], ['XZ', 'XZ plane'], ['YZ', 'YZ plane'], ...sketches.map((s) => [s.id, `Plane of ${s.name}`] as [string, string])]} onChange={(plane) => onChange({ plane })} />
+          )}
+          {f.of === 'bodies' && <label className="check"><input type="checkbox" checked={!!f.join} onChange={(e) => onChange({ join: e.target.checked || undefined })} /> Join the copies to the original</label>}
+        </>
+      );
+    }
+    case 'combine': {
+      const bodies = bodyOptions(comp, result);
+      return (
+        <>
+          <Pick label="Target body" value={f.target} options={[['', '— pick —'], ...bodies]} onChange={(target) => onChange({ target, tools: f.tools.filter((t) => t !== target) })} />
+          <Checks label="Tool bodies" items={bodies.filter(([id]) => id !== f.target)} value={f.tools} onChange={(tools) => onChange({ tools: tools ?? [] })} empty="Needs at least two bodies" />
+          <Pick label="Operation" value={f.op} options={[['join', 'Join'], ['cut', 'Cut'], ['intersect', 'Intersect']]} onChange={(op) => onChange({ op })} />
+          <label className="check"><input type="checkbox" checked={!!f.keepTools} onChange={(e) => onChange({ keepTools: e.target.checked || undefined })} /> Keep the tool bodies</label>
+        </>
+      );
+    }
+  }
+  void design; void unit; void profileKey;
+  return null;
+}
+
+export function axisOptions(sketches: DesignSketch[]): [string, string][] {
+  const out: [string, string][] = [['X', 'X axis'], ['Y', 'Y axis'], ['Z', 'Z axis']];
+  for (const s of sketches) {
+    s.sketch.entities.forEach((e, i) => {
+      if (e.type === 'line') out.push([`${s.id}/${e.id}`, `${s.name} · line ${i + 1}${e.construction ? ' (construction)' : ''}`]);
+    });
+  }
+  return out;
+}
+
+export const featureTitle = (f: DesignFeature) => `${FEATURE_LABEL[f.kind]}${f.name ? ` — ${f.name}` : ''}`;
+
+// ------------------------------------------------------------ joints
+
+/** Joint origins a component offers in the dropdown: its origin and its sketch points. */
+export function originOptions(design: CadDesign, cid: string): { key: string; label: string; origin: JointOrigin }[] {
+  const comp = design.components.find((c) => c.id === cid);
+  const out: { key: string; label: string; origin: JointOrigin }[] = [{ key: 'origin', label: 'Component origin (Z up)', origin: { kind: 'origin' } }];
+  for (const s of comp?.items.filter(isSketch) ?? []) {
+    const label = new Map<string, string>();
+    // circle centres first: that is what shafts and holes turn about
+    for (const pass of [0, 1, 2]) {
+      s.sketch.entities.forEach((e, i) => {
+        if (pass === 0 && (e.type === 'circle' || e.type === 'arc')) label.set(e.c, label.get(e.c) ?? `${e.type} ${i + 1} centre`);
+        if (pass === 1 && e.type === 'point') label.set(e.p, label.get(e.p) ?? `point ${i + 1}`);
+        if (pass === 2 && e.type === 'line') {
+          label.set(e.p1, label.get(e.p1) ?? `line ${i + 1} start`);
+          label.set(e.p2, label.get(e.p2) ?? `line ${i + 1} end`);
+        }
+      });
+    }
+    for (const [pid, l] of label) {
+      for (const [axis, al] of [['n', 'normal'], ['u', 'sketch x'], ['v', 'sketch y']] as const) {
+        out.push({ key: `${s.id}/${pid}/${axis}`, label: `${s.name} · ${l} · Z = ${al}`, origin: { kind: 'point', sketch: s.id, point: pid, axis } });
+      }
+    }
+  }
+  return out;
+}
+
+export const originKey = (o: JointOrigin) => (o.kind === 'origin' ? 'origin' : o.kind === 'point' ? `${o.sketch}/${o.point}/${o.axis ?? 'n'}` : 'frame');
+
+export function JointFields({ design, joint: j, picking, onPick, onChange, values }: {
+  design: CadDesign;
+  joint: CadJoint;
+  picking: 'a' | 'b' | null;
+  onPick: (side: 'a' | 'b' | null) => void;
+  onChange: (patch: Partial<CadJoint>, coalesce?: string) => void;
+  values?: { angle: number; offset: number };
+}) {
+  const occName = (id: string) => {
+    const o = design.occurrences.find((q) => q.id === id);
+    const c = design.components.find((q) => q.id === o?.component);
+    return o?.name ?? `${c?.name ?? '?'}:${design.occurrences.filter((q) => q.component === o?.component).indexOf(o!) + 1}`;
+  };
+  const side = (s: 'a' | 'b', title: string) => {
+    const end = j[s];
+    const occ = design.occurrences.find((o) => o.id === end.occ);
+    const opts = occ ? originOptions(design, occ.component) : [];
+    const key = originKey(end.origin);
+    return (
+      <fieldset className="cadd-side">
+        <legend>{title}</legend>
+        <Pick label="Occurrence" value={end.occ} options={design.occurrences.map((o) => [o.id, occName(o.id)])} onChange={(occ) => onChange({ [s]: { occ, origin: { kind: 'origin' } } } as Partial<CadJoint>)} />
+        <Pick label="Joint origin" value={key} options={[...(key === 'frame' ? [['frame', 'Picked on the model'] as [string, string]] : []), ...opts.map((o) => [o.key, o.label] as [string, string])]}
+          onChange={(k) => {
+            const o = opts.find((x) => x.key === k);
+            if (o) onChange({ [s]: { occ: end.occ, origin: o.origin } } as Partial<CadJoint>);
+          }} />
+        <button className={`btn${picking === s ? ' primary' : ''}`} onClick={() => onPick(picking === s ? null : s)}>
+          {picking === s ? 'Click a face… (Esc to stop)' : 'Pick on the model'}
+        </button>
+      </fieldset>
+    );
+  };
+  return (
+    <>
+      <Pick label="Type" value={j.type} options={[['rigid', 'Rigid'], ['revolute', 'Revolute (turns about Z)'], ['slider', 'Slider (slides along Z)'], ['cylindrical', 'Cylindrical (both)']]} onChange={(type) => onChange({ type })} />
+      {side('b', 'Moves (child)')}
+      {side('a', 'Onto (parent)')}
+      <div className="row2">
+        <Expr label={j.type === 'revolute' || j.type === 'cylindrical' ? 'Angle (motion)' : 'Angle'} value={j.angle} onChange={(angle) => onChange({ angle }, 'angle')} />
+        <Expr label={j.type === 'slider' || j.type === 'cylindrical' ? 'Offset (motion)' : 'Offset'} value={j.offset} onChange={(offset) => onChange({ offset }, 'offset')} />
+      </div>
+      {(j.type === 'revolute' || j.type === 'cylindrical') && (
+        <label className="field">
+          <span>Drive: {values ? `${+((values.angle * 180) / Math.PI).toFixed(2)}°` : ''}</span>
+          <input type="range" min={-180} max={180} step={1} value={values ? Math.round((values.angle * 180) / Math.PI) : 0}
+            onChange={(e) => onChange({ angle: `${e.target.value} deg` }, 'drive')} />
+        </label>
+      )}
+      <label className="check"><input type="checkbox" checked={!!j.flip} onChange={(e) => onChange({ flip: e.target.checked || undefined })} /> Flip (faces mate: the Z axes point at each other)</label>
+      <p className="hint">The child's joint origin is put on the parent's, Z on Z. Angle and offset accept worksheet expressions, so a calculation can drive the mechanism.</p>
+    </>
+  );
+}

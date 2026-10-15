@@ -4,6 +4,7 @@
 import { evaluateWorksheet, type RegionResult } from './evaluator';
 import { loadCas } from './symbolic';
 import type { Worksheet } from '../model/types';
+import { loadKernel } from '../cad/kernelBrowser';
 
 export interface EvalRequest {
   id: number;
@@ -25,6 +26,9 @@ export interface EvalResponse {
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
+// CAD parts need the solid kernel (WASM); it loads once, alongside the first evaluation
+const kernelReady = loadKernel().catch((e) => console.warn('3-D kernel failed to load', e));
+
 ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
   const { id, ws, overrides, only } = e.data;
   const post = (out: ReturnType<typeof evaluateWorksheet>, partial: boolean) => {
@@ -33,6 +37,7 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
     const msg: EvalResponse = { id, results, errorCount: out.errorCount, millis: out.millis, partial };
     ctx.postMessage(msg);
   };
+  await kernelReady;
   let out = evaluateWorksheet(ws, overrides);
   if (out.needsCas && !only) {
     post(out, true);
