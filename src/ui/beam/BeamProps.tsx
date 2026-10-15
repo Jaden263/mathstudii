@@ -1,0 +1,248 @@
+// Side panel of a beam region: units and the default section, the selected member,
+// support, load or node, and the results (reactions and extreme values).
+import type { Dispatch } from 'react';
+import { RotateCcw, RotateCw, Trash2 } from 'lucide-react';
+import type { BeamRegion } from '../../model/types';
+import type { BeamResult } from '../../beam/evaluate';
+import { straightBeam } from '../../beam/evaluate';
+import {
+  BEAM_FORCE_UNITS, BEAM_LENGTH_UNITS, PROFILES, profileSection, removeItems,
+  type BeamData, type BeamLoad, type BeamMember, type BeamSection, type BeamSupport,
+} from '../../beam/model';
+import type { Action } from '../store';
+import { useSketchUI } from '../sketch/context';
+import { LazyInput } from '../sketch/SketchProps';
+import { fmt, units } from './beamDraw';
+
+function SectionFields({ s, onChange }: { s: BeamSection; onChange: (s: BeamSection) => void }) {
+  const known = PROFILES.find((p) => p.name === s.label);
+  return (
+    <>
+      <label className="field">
+        <span>Profile</span>
+        <select value={known ? known.name : 'custom'} onChange={(e) => {
+          const p = profileSection(e.target.value, s.E);
+          if (p) onChange(p);
+          else onChange({ ...s, label: undefined });
+        }}>
+          {PROFILES.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          <option value="custom">Custom values</option>
+        </select>
+      </label>
+      <div className="row2">
+        <label className="field" title="Young's modulus; a bare number is GPa"><span>E</span><LazyInput label="E" value={s.E} onCommit={(v) => onChange({ ...s, E: v.trim() })} /></label>
+        <label className="field" title="Area; a bare number is cm²"><span>A</span><LazyInput label="A" value={s.A} onCommit={(v) => onChange({ ...s, A: v.trim(), label: undefined })} /></label>
+      </div>
+      <div className="row2">
+        <label className="field" title="Second moment of area; a bare number is cm⁴"><span>I</span><LazyInput label="I" value={s.I} onCommit={(v) => onChange({ ...s, I: v.trim(), label: undefined })} /></label>
+        <label className="field" title="Section modulus for the bending stress (optional); a bare number is cm³"><span>W</span><LazyInput label="W" value={s.W ?? ''} placeholder="optional" onCommit={(v) => onChange({ ...s, W: v.trim() || undefined, label: undefined })} /></label>
+      </div>
+    </>
+  );
+}
+
+const DIRECTIONS: [number, string][] = [[-90, 'Down ↓'], [90, 'Up ↑'], [0, 'Right →'], [180, 'Left ←']];
+
+export function BeamProps({ region, result, dispatch }: { region: BeamRegion; result?: BeamResult; dispatch: Dispatch<Action> }) {
+  const { ui, setUi } = useSketchUI();
+  const set = (patch: Partial<BeamRegion>, key = 'beam') => dispatch({ type: 'update', id: region.id, patch, coalesce: `${key}:${region.id}` });
+  const data: BeamData = { nodes: region.nodes, members: region.members, supports: region.supports, loads: region.loads };
+  const sel = ui.regionId === region.id ? ui.selected : [];
+  const one = sel.length === 1 ? sel[0] : null;
+  const member = region.members.find((m) => m.id === one);
+  const support = region.supports.find((s) => s.id === one);
+  const load = region.loads.find((l) => l.id === one);
+  const node = region.nodes.find((q) => q.id === one);
+  const u = units(region);
+  const sol = result?.solution;
+  const name = region.name.trim() || 'beam';
+  const N = new Map(region.nodes.map((q) => [q.id, q]));
+  const memberLength = (m: BeamMember) => {
+    const a = N.get(m.a), b = N.get(m.b);
+    return a && b ? Math.hypot(b.x - a.x, b.y - a.y) : 0;
+  };
+  const updMember = (patch: Partial<BeamMember>) => set({ members: region.members.map((m) => (m.id === one ? { ...m, ...patch } : m)) }, `m:${one}`);
+  const updSupport = (patch: Partial<BeamSupport>) => set({ supports: region.supports.map((s) => (s.id === one ? { ...s, ...patch } : s)) }, `s:${one}`);
+  const updLoad = (patch: Partial<BeamLoad>) => set({ loads: region.loads.map((l) => (l.id === one ? ({ ...l, ...patch } as BeamLoad) : l)) }, `l:${one}`);
+  const remove = () => {
+    dispatch({ type: 'update', id: region.id, patch: removeItems(data, new Set(sel)) });
+    setUi({ selected: [] });
+  };
+  const straight = straightBeam(region);
+  const err = (id: string) => result?.errors[id] && <div className="region-error">{result.errors[id]}</div>;
+  const onMember = (l: BeamLoad) => (l.type === 'line' ? region.members.find((m) => m.id === l.member) : 'member' in l.at ? region.members.find((m) => m.id === (l.at as { member: string }).member) : undefined);
+
+  return (
+    <div className="props">
+      <h3 className="sub">Beam / frame</h3>
+      <label className="field">
+        <span>Variable for the results</span>
+        <LazyInput label="Variable name" value={region.name} placeholder="e.g. b" onCommit={(v) => set({ name: v.trim() }, 'name')} />
+      </label>
+      <p className="hint">
+        With a name the math below can use <code>{name}.A.Ry</code> (reactions per support), <code>{name}.M_max</code>, <code>{name}.V_max</code>, <code>{name}.w_max</code>
+        {region.section.W || region.members.some((m) => m.section?.W) ? <>, <code>{name}.σ_max</code></> : null}
+        {straight ? <> and the functions <code>{name}.M(x)</code>, <code>{name}.V(x)</code>, <code>{name}.w(x)</code> for plots</> : null}.
+        Loads and sections accept worksheet expressions.
+      </p>
+      <div className="row2">
+        <label className="field"><span>Lengths</span>
+          <select value={region.lengthUnit} onChange={(e) => set({ lengthUnit: e.target.value as BeamRegion['lengthUnit'] })}>
+            {BEAM_LENGTH_UNITS.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>Forces</span>
+          <select value={region.forceUnit} onChange={(e) => set({ forceUnit: e.target.value as BeamRegion['forceUnit'] })}>
+            {BEAM_FORCE_UNITS.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </label>
+      </div>
+      <label className="field"><span>Grid ({region.lengthUnit})</span>
+        <input type="number" min={0} step="any" value={region.grid} onChange={(e) => set({ grid: Math.max(0, Number(e.target.value) || 0) }, 'grid')} />
+      </label>
+
+      {member && (
+        <>
+          <h3 className="sub">Member · {u.length(memberLength(member))}</h3>
+          {err(member.id)}
+          <label className="check"><input type="checkbox" checked={!!member.hingeA} onChange={(e) => updMember({ hingeA: e.target.checked || undefined })} /> Hinge at the start</label>
+          <label className="check"><input type="checkbox" checked={!!member.hingeB} onChange={(e) => updMember({ hingeB: e.target.checked || undefined })} /> Hinge at the end</label>
+          <p className="hint">Both ends hinged: a truss bar (axial force only).</p>
+          <label className="check"><input type="checkbox" checked={!!member.section} onChange={(e) => updMember({ section: e.target.checked ? { ...region.section } : undefined })} /> Own section</label>
+          {member.section && <SectionFields s={member.section} onChange={(s) => updMember({ section: s })} />}
+        </>
+      )}
+      {support && (
+        <>
+          <h3 className="sub">Support {support.label}</h3>
+          <div className="row2">
+            <label className="field"><span>Type</span>
+              <select value={support.type} onChange={(e) => updSupport({ type: e.target.value as BeamSupport['type'] })}>
+                <option value="pin">Pinned (x, y)</option><option value="roller">Roller (one direction)</option><option value="fixed">Fixed (x, y, rotation)</option>
+              </select>
+            </label>
+            <label className="field"><span>Name</span><LazyInput label="Support name" mono={false} value={support.label} onCommit={(v) => v.trim() && updSupport({ label: v.trim() })} /></label>
+          </div>
+          <label className="field"><span>Rotation (°)</span>
+            <div className="bm-rot">
+              <button className="icon-btn" title="Turn 90° counter-clockwise" aria-label="Turn left" onClick={() => updSupport({ angle: (support.angle + 90) % 360 })}><RotateCcw size={14} /></button>
+              <input type="number" step="any" value={support.angle} onChange={(e) => updSupport({ angle: Number(e.target.value) || 0 })} />
+              <button className="icon-btn" title="Turn 90° clockwise" aria-label="Turn right" onClick={() => updSupport({ angle: (support.angle + 270) % 360 })}><RotateCw size={14} /></button>
+            </div>
+          </label>
+        </>
+      )}
+      {load && (
+        <>
+          <h3 className="sub">{load.type === 'force' ? 'Point load' : load.type === 'moment' ? 'Moment' : 'Line load'}</h3>
+          {err(load.id)}
+          {load.type === 'force' && (
+            <>
+              <label className="field" title={`A bare number is ${region.forceUnit}`}><span>Force ({region.forceUnit})</span><LazyInput label="Force" value={load.value} onCommit={(v) => updLoad({ value: v.trim() || '0' })} /></label>
+              <label className="field"><span>Direction</span>
+                <select value={DIRECTIONS.some(([a]) => a === load.angle) ? load.angle : 'custom'} onChange={(e) => e.target.value !== 'custom' && updLoad({ angle: Number(e.target.value) })}>
+                  {DIRECTIONS.map(([a, l]) => <option key={a} value={a}>{l}</option>)}
+                  <option value="custom">Angle…</option>
+                </select>
+              </label>
+              <label className="field" title="Direction the force points, degrees from +x, counter-clockwise (−90 = down)"><span>Angle (°)</span>
+                <input type="number" step="any" value={load.angle} onChange={(e) => updLoad({ angle: Number(e.target.value) || 0 })} />
+              </label>
+            </>
+          )}
+          {load.type === 'moment' && (
+            <label className="field" title={`Counter-clockwise positive; a bare number is ${region.forceUnit}·${region.lengthUnit}`}><span>Moment ({region.forceUnit}·{region.lengthUnit}, ↺ +)</span><LazyInput label="Moment" value={load.value} onCommit={(v) => updLoad({ value: v.trim() || '0' })} /></label>
+          )}
+          {load.type === 'line' && (
+            <>
+              <div className="row2">
+                <label className="field" title={`A bare number is ${region.forceUnit}/${region.lengthUnit}`}><span>q start</span><LazyInput label="q at the start" value={load.q1} onCommit={(v) => updLoad({ q1: v.trim() || '0' })} /></label>
+                <label className="field" title="Empty: uniform"><span>q end</span><LazyInput label="q at the end" value={load.q2 ?? ''} placeholder="uniform" onCommit={(v) => updLoad({ q2: v.trim() || undefined })} /></label>
+              </div>
+              <label className="field"><span>Acts</span>
+                <select value={load.dir} onChange={(e) => updLoad({ dir: e.target.value as 'global' | 'local' })}>
+                  <option value="global">Downwards (gravity, per length of member)</option>
+                  <option value="local">Perpendicular to the member</option>
+                </select>
+              </label>
+            </>
+          )}
+          {(() => {
+            const m = onMember(load);
+            if (!m) return null;
+            const L = memberLength(m);
+            if (load.type === 'line') {
+              return (
+                <div className="row2">
+                  <label className="field"><span>From ({region.lengthUnit})</span>
+                    <input type="number" step="any" min={0} max={L} value={+((load.t1 ?? 0) * L).toFixed(6)} onChange={(e) => updLoad({ t1: Math.min(1, Math.max(0, Number(e.target.value) / L)) })} />
+                  </label>
+                  <label className="field"><span>To ({region.lengthUnit})</span>
+                    <input type="number" step="any" min={0} max={L} value={+((load.t2 ?? 1) * L).toFixed(6)} onChange={(e) => updLoad({ t2: Math.min(1, Math.max(0, Number(e.target.value) / L)) })} />
+                  </label>
+                </div>
+              );
+            }
+            const t = (load.at as { t: number }).t;
+            return (
+              <label className="field"><span>Distance from the member start ({region.lengthUnit})</span>
+                <input type="number" step="any" min={0} max={L} value={+(t * L).toFixed(6)} onChange={(e) => updLoad({ at: { member: m.id, t: Math.min(1, Math.max(0, Number(e.target.value) / L)) } } as Partial<BeamLoad>)} />
+              </label>
+            );
+          })()}
+        </>
+      )}
+      {node && (
+        <>
+          <h3 className="sub">Node</h3>
+          <div className="row2">
+            {(['x', 'y'] as const).map((k) => (
+              <label key={k} className="field"><span>{k} ({region.lengthUnit})</span>
+                <input type="number" step="any" value={node[k]} onChange={(e) => set({ nodes: region.nodes.map((q) => (q.id === node.id ? { ...q, [k]: Number(e.target.value) || 0 } : q)) }, `n:${node.id}`)} />
+              </label>
+            ))}
+          </div>
+          {sol?.nodes[node.id] && (
+            <p className="hint">Moves {u.defl(sol.nodes[node.id].dx)} → , {u.defl(sol.nodes[node.id].dy)} ↑, turns {fmt((sol.nodes[node.id].rz * 180) / Math.PI)}°</p>
+          )}
+        </>
+      )}
+      {sel.length > 0 && <button className="btn" onClick={remove}><Trash2 size={13} /> Delete selected</button>}
+
+      {!member && !support && !load && !node && (
+        <>
+          <h3 className="sub">Section (all members)</h3>
+          {err('section')}
+          <SectionFields s={region.section} onChange={(s) => set({ section: s }, 'section')} />
+        </>
+      )}
+
+      {result?.error && <div className="region-error">{result.error}</div>}
+      {sol && (
+        <>
+          <h3 className="sub">Results</h3>
+          <p className="hint">{sol.indeterminacy === 0 ? 'Statically determinate.' : sol.indeterminacy > 0 ? `Statically indeterminate, degree ${sol.indeterminacy} (solved by stiffness).` : 'Solved.'}</p>
+          <table className="props-table">
+            <tbody>
+              {sol.reactions.map((q) => (
+                <tr key={q.id}>
+                  <td>{q.label}</td>
+                  <td>
+                    R<sub>x</sub> {u.force(q.Rx)}, R<sub>y</sub> {u.force(q.Ry)}
+                    {region.supports.find((s) => s.id === q.id)?.type === 'fixed' ? <>, M {u.moment(q.M)}</> : null}
+                  </td>
+                </tr>
+              ))}
+              {sol.max.M && <tr><td>M<sub>max</sub></td><td>{u.moment(sol.max.M.value)}</td></tr>}
+              {sol.max.V && <tr><td>V<sub>max</sub></td><td>{u.force(sol.max.V.value)}</td></tr>}
+              {sol.max.N && Math.abs(sol.max.N.value) > 1e-6 && <tr><td>N<sub>max</sub></td><td>{u.force(sol.max.N.value)} {sol.max.N.value < 0 ? '(compression)' : '(tension)'}</td></tr>}
+              {sol.max.w && <tr><td>δ<sub>max</sub></td><td>{u.defl(sol.max.w.value)}</td></tr>}
+              {sol.max.sigma && <tr><td>σ<sub>max</sub></td><td>{u.stress(sol.max.sigma.value)}</td></tr>}
+            </tbody>
+          </table>
+          <p className="hint">Linear elastic, small deflections, Euler–Bernoulli members (no shear deformation). Self-weight is not included unless you add it as a line load.</p>
+        </>
+      )}
+    </div>
+  );
+}

@@ -11,6 +11,8 @@ export type CadTool =
   | 'select' | 'line' | 'rect' | 'crect' | 'circle' | 'arc' | 'arc3' | 'polygon' | 'slot' | 'point'
   | 'dim' | 'fillet' | 'trim' | 'mirror' | 'measure' | 'pan';
 
+export type BeamTool = 'select' | 'member' | 'pin' | 'roller' | 'fixed' | 'hinge' | 'force' | 'line' | 'moment';
+
 export interface SketchUI {
   /** Sketch region the shape selection belongs to. */
   regionId: string | null;
@@ -29,9 +31,11 @@ export interface SketchUI {
   cadDimKind: 'smart' | 'horizontal' | 'vertical';
   /** Show relation glyphs in the CAD window. */
   cadRelations: boolean;
+  /** Tool of the beam editor. */
+  beamTool: BeamTool;
 }
 
-export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false, cadSides: 6, cadFillet: 5, cadGridSnap: false, cadDimKind: 'smart', cadRelations: true };
+export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false, cadSides: 6, cadFillet: 5, cadGridSnap: false, cadDimKind: 'smart', cadRelations: true, beamTool: 'member' };
 
 export interface SketchContextValue {
   ui: SketchUI;

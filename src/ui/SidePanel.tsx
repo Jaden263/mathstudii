@@ -8,7 +8,8 @@ import { OPERATORS, CALCULUS, MATRIX, PROGRAMMING, SYMBOLIC, GREEK, UNIT_GROUPS,
 import { SERIES_COLORS } from './plot/draw';
 import { SketchProps } from './sketch/SketchProps';
 import { CadProps } from './cad/CadProps';
-import type { RegionResult, SketchResult, CadResult } from '../engine/evaluator';
+import { BeamProps } from './beam/BeamProps';
+import type { RegionResult, SketchResult, CadResult, BeamResult } from '../engine/evaluator';
 
 type Tab = 'math' | 'units' | 'functions' | 'properties';
 
@@ -155,6 +156,7 @@ function Properties({ selection, results, dispatch }: { selection: Region[]; res
       {r.kind === 'plot' && <PlotProps r={r} upd={upd} />}
       {r.kind === 'sketch' && <SketchProps region={r} result={results.get(r.id) as SketchResult | undefined} dispatch={dispatch} />}
       {r.kind === 'cad' && <CadProps region={r} result={results.get(r.id) as CadResult | undefined} dispatch={dispatch} />}
+      {r.kind === 'beam' && <BeamProps region={r} result={results.get(r.id) as BeamResult | undefined} dispatch={dispatch} />}
       {(r.kind === 'text' || r.kind === 'image') && (
         <label className="field">
           <span>Width (mm)</span>

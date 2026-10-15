@@ -23,6 +23,17 @@ import { CadWorkspace } from './cad/CadWorkspace';
 import type { CadResult } from '../engine/evaluator';
 
 type ThemePref = 'system' | 'light' | 'dark';
+
+/** A beam on two supports. */
+function BeamIcon() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" aria-hidden>
+      <line x1={1} y1={6} x2={15} y2={6} strokeWidth={2.2} />
+      <path d="M3 6 L1 10 H5 Z M13 6 L11 10 H15 Z" />
+      <line x1={8} y1={0.8} x2={8} y2={4} />
+    </svg>
+  );
+}
 const CLIP_MARKER = 'mathstudii/regions';
 
 function initialWorksheet(): WS {
@@ -178,7 +189,7 @@ export function App() {
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
@@ -187,6 +198,11 @@ export function App() {
     if (kind === 'sketch') {
       setTab('properties');
       setSketchUI({ ...INITIAL_SKETCH_UI, regionId: r.id, tool: 'line' });
+    }
+    if (kind === 'beam') {
+      setTab('properties');
+      setPanelOpen(true);
+      setSketchUI({ ...INITIAL_SKETCH_UI, regionId: r.id, beamTool: 'member' });
     }
     if (kind === 'cad') {
       setTab('properties');
@@ -556,6 +572,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('text')} title='Text region (type " at the cursor)'><Type size={16} /> Text</button>
           <button className="text-btn" onClick={() => addRegion('plot')} title="Plot (type @ at the cursor)"><LineChart size={16} /> Plot</button>
           <button className="text-btn" onClick={() => addRegion('sketch')} title="Drawing: sketches, cross-sections, mechanisms (type # at the cursor)"><PencilRuler size={16} /> Sketch</button>
+          <button className="text-btn" onClick={() => addRegion('beam')} title="Beam or frame: draw members, supports and loads, get reactions and N, V, M, deflection diagrams"><BeamIcon /> Beam</button>
           <button className="text-btn" onClick={() => addRegion('cad')} title="Parametric CAD part: constrained sketch, dimensions from the worksheet, extrude/revolve, mass properties (type & at the cursor)"><Box size={16} /> CAD</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
@@ -629,7 +646,7 @@ export function App() {
             dispatch={dispatch}
             zoom={zoom}
             selected={selected}
-            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad')) setTab('properties'); } }}
+            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad' || r.kind === 'beam')) setTab('properties'); } }}
             editingId={editingId}
             setEditingId={setEditingId}
             cursor={cursor}

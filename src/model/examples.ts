@@ -1,6 +1,7 @@
 import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
+import type { BeamData } from '../beam/model';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -328,6 +329,63 @@ export function cadExample(): Worksheet {
   ]);
 }
 
+export function beamExample(): Worksheet {
+  // continuous beam: spans of 5 m and 4 m, uniform load, a point load in the second span
+  const beam: BeamData = {
+    nodes: [{ id: 'bA', x: 0, y: 0 }, { id: 'bB', x: 5, y: 0 }, { id: 'bC', x: 9, y: 0 }],
+    members: [{ id: 'bm1', a: 'bA', b: 'bB' }, { id: 'bm2', a: 'bB', b: 'bC' }],
+    supports: [
+      { id: 'bsA', node: 'bA', type: 'pin', angle: 0, label: 'A' },
+      { id: 'bsB', node: 'bB', type: 'roller', angle: 0, label: 'B' },
+      { id: 'bsC', node: 'bC', type: 'roller', angle: 0, label: 'C' },
+    ],
+    loads: [
+      { id: 'bq1', type: 'line', member: 'bm1', q1: 'q_d', dir: 'global' },
+      { id: 'bq2', type: 'line', member: 'bm2', q1: 'q_d', dir: 'global' },
+      { id: 'bP', type: 'force', at: { member: 'bm2', t: 0.5 }, value: 'P_d', angle: -90 },
+    ],
+  };
+  // portal frame with fixed feet: roof load and wind
+  const frame: BeamData = {
+    nodes: [{ id: 'f1', x: 0, y: 0 }, { id: 'f2', x: 0, y: 4 }, { id: 'f3', x: 6, y: 4 }, { id: 'f4', x: 6, y: 0 }],
+    members: [{ id: 'fc1', a: 'f1', b: 'f2' }, { id: 'fr', a: 'f2', b: 'f3' }, { id: 'fc2', a: 'f4', b: 'f3' }],
+    supports: [
+      { id: 'fsA', node: 'f1', type: 'fixed', angle: 0, label: 'A' },
+      { id: 'fsD', node: 'f4', type: 'fixed', angle: 0, label: 'D' },
+    ],
+    loads: [
+      { id: 'fq', type: 'line', member: 'fr', q1: 'q_r', dir: 'global' },
+      { id: 'fH', type: 'force', at: { node: 'f2' }, value: 'H_w', angle: 0 },
+    ],
+  };
+  return build('Beams and frames', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Beams and frames\nPress **Beam** in the toolbar, draw members, click supports and loads onto them — the reactions and the N, V, M and deflection diagrams follow at once. Loads are worksheet expressions, and the results come back as variables. Double-click a structure to edit it; switch diagrams with the strip below it.' }],
+    ['math', L, mm(44), { source: 'q_k := 8 kN/m' }],
+    ['math', mm(65), mm(44), { source: 'P_k := 25 kN' }],
+    ['math', mm(115), mm(44), { source: 'γ_Q := 1.5' }],
+    ['math', L, mm(56), { source: 'q_d := γ_Q * q_k = kN/m' }],
+    ['math', mm(65), mm(56), { source: 'P_d := γ_Q * P_k = kN' }],
+    ['beam', L, mm(68), { name: 'b', width: mm(170), height: mm(70), show: 'M', ...beam }],
+    ['text', L, mm(142), { width: mm(170), markdown: '## Checks\nReactions, the largest moment and the bending stress of the IPE 300 (S235: f_y = 235 MPa), and the deflection against L/250 of the longer span.' }],
+    ['math', L, mm(162), { source: 'b.A.Ry = kN' }],
+    ['math', mm(65), mm(162), { source: 'b.B.Ry = kN' }],
+    ['math', mm(115), mm(162), { source: 'b.C.Ry = kN' }],
+    ['math', L, mm(174), { source: 'b.M_max = kN*m' }],
+    ['math', mm(65), mm(174), { source: 'u_σ := b.σ_max / (235 MPa) =' }],
+    ['math', L, mm(188), { source: 'b.w_max = mm' }],
+    ['math', mm(65), mm(188), { source: 'w_lim := 5 m / 250 = mm' }],
+    ['plot', L, mm(202), { xExpr: 'x', traces: [{ y: 'b.M(x)', style: 'line' }], xmin: '0 m', xmax: 'b.L', xUnit: 'm', yUnit: 'kN*m', title: 'M(x) from the beam', width: mm(82), height: mm(52) }],
+    ['plot', mm(108), mm(202), { xExpr: 'x', traces: [{ y: 'b.w(x)', style: 'line' }], xmin: '0 m', xmax: 'b.L', xUnit: 'm', yUnit: 'mm', title: 'w(x)', width: mm(82), height: mm(52) }],
+    ['text', L, mm(268), { width: mm(170), markdown: '## Portal frame\nFixed feet, a roof load and wind on the left corner. The frame is statically indeterminate (degree 3); the stiffness method solves it directly.' }],
+    ['math', L, mm(288), { source: 'q_r := 12 kN/m' }],
+    ['math', mm(65), mm(288), { source: 'H_w := 15 kN' }],
+    ['beam', L, mm(298), { name: 'fr', width: mm(125), height: mm(95), show: 'M', ...frame }],
+    ['math', mm(150), mm(320), { source: 'fr.A.M = kN*m' }],
+    ['math', mm(150), mm(334), { source: 'fr.D.Rx = kN' }],
+    ['math', mm(150), mm(348), { source: 'fr.w_max = mm' }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -336,5 +394,6 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Plots', make: plottingExample },
   { name: 'Cross-sections (sketch)', make: sectionExample },
   { name: 'Mechanism animation (sketch)', make: mechanismExample },
+  { name: 'Beams and frames', make: beamExample },
   { name: 'CAD part design (parametric)', make: cadExample },
 ];

@@ -171,6 +171,8 @@ function innerHandler(node: MathNode): string | undefined {
 
 function functionTex(n: AnyNode): string | undefined {
   const fn = n.fn as AnyNode;
+  // a function stored on a value, e.g. beam.M(x)
+  if (fn.type === 'AccessorNode') return `${t(fn as unknown as MathNode)}\\left(${(n.args as MathNode[]).map(t).join(', ')}\\right)`;
   if (fn.type !== 'SymbolNode') return undefined;
   const name = fn.name as string;
   const args = n.args as MathNode[];

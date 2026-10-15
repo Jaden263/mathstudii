@@ -3,8 +3,9 @@
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
+import { DEFAULT_SECTION, type BeamData, type BeamDiagram, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam';
 
 interface RegionBase {
   id: string;
@@ -125,7 +126,26 @@ export interface CadRegion extends RegionBase {
   design?: CadDesign;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion;
+/** Beam or plane frame: members, supports and loads, solved with diagrams. */
+export interface BeamRegion extends RegionBase, BeamData {
+  kind: 'beam';
+  /** Variable that receives reactions, extremes and (for straight beams) M(x), V(x) … */
+  name: string;
+  width: number;
+  height: number;
+  lengthUnit: BeamLengthUnit;
+  forceUnit: BeamForceUnit;
+  view: BeamView;
+  /** Grid spacing in the length unit. */
+  grid: number;
+  snap: boolean;
+  /** Section and material of members without their own. */
+  section: BeamSection;
+  /** Diagram shown on the structure. */
+  show: BeamDiagram;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion;
 
 export interface WorksheetSettings {
   /** Displayed decimal places. */
@@ -208,6 +228,12 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
         ...base, kind, name: '', width: 480, height: 320, unit: 'mm', view: { cx: 100, cy: 60, zoom: 2 },
         view3d: { yaw: -35, pitch: 25 }, mode: '3d', sketch: { points: [], entities: [], constraints: [] },
         feature: { type: 'none' }, density: '7850 kg/m^3', ...(init as Partial<CadRegion>),
+      };
+    case 'beam':
+      return {
+        ...base, kind, name: '', width: 560, height: 300, lengthUnit: 'm', forceUnit: 'kN', view: { cx: 3, cy: 0.5, zoom: 70 },
+        grid: 0.5, snap: true, section: { ...DEFAULT_SECTION }, show: 'model', nodes: [], members: [], supports: [], loads: [],
+        ...(init as Partial<BeamRegion>),
       };
   }
 }

@@ -1,7 +1,7 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
 import type { Unit } from 'mathjs';
-import type { MathRegion, PlotRegion, SketchRegion, CadRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
+import type { MathRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { readingOrder } from '../model/types';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
@@ -15,8 +15,9 @@ import { symbolicEval, casReady, type SymFunction } from './symbolic';
 import * as N from './numeric';
 import { evaluateSketch, type SketchResult } from './sketchEval';
 import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
+import { solveBeam, beamValue, type BeamResult } from '../beam/evaluate';
 
-export type { SketchResult, CadResult };
+export type { SketchResult, CadResult, BeamResult };
 
 export interface MathResult {
   kind: 'math';
@@ -63,7 +64,7 @@ export interface TextResult {
   values: Record<string, { tex?: string; error?: string }>;
 }
 
-export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult;
+export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult;
 
 export interface EvaluationOutput {
   results: Map<string, RegionResult>;
@@ -141,6 +142,7 @@ class Evaluator {
         case 'table': this.results.set(r.id, this.evaluateTable(r)); break;
         case 'sketch': this.results.set(r.id, this.evaluateSketchRegion(r)); break;
         case 'cad': this.results.set(r.id, this.evaluateCadRegion(r)); break;
+        case 'beam': this.results.set(r.id, this.evaluateBeamRegion(r)); break;
         case 'text': this.results.set(r.id, this.evaluateText(r)); break;
         default: break;
       }
@@ -642,6 +644,27 @@ class Evaluator {
       if (!isIdentifier(name)) res.error = `"${name}" is not a valid variable name`;
       else {
         this.global.set(name, cadValue(r, res));
+        this.ranges.delete(name);
+        this.updateDefined();
+      }
+    }
+    return res;
+  }
+
+  // ------------------------------------------------------------ beams and frames
+
+  evaluateBeamRegion(r: BeamRegion): BeamResult {
+    let res: BeamResult;
+    try {
+      res = solveBeam(r, (src) => compileExpr(src).evaluate(this.global));
+    } catch (e) {
+      return { kind: 'beam', values: {}, errors: {}, error: friendlyError(e) };
+    }
+    const name = r.name.trim();
+    if (name && res.solution) {
+      if (!isIdentifier(name)) res.error = `"${name}" is not a valid variable name`;
+      else {
+        this.global.set(name, beamValue(r, res));
         this.ranges.delete(name);
         this.updateDefined();
       }

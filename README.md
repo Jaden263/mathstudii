@@ -91,6 +91,68 @@ Regions below are pushed down.
 - **Animation:** set a variable and a from/to range in the sketch's Properties, then
   press ▶ to sweep it. This is how the crank-slider example moves.
 
+### Beams and frames
+
+Press **Beam** for a structural analysis region: draw a beam, a continuous beam, a
+truss or a plane frame, put supports and loads on it, and read the reactions and the
+N, V, M and deflection diagrams right on the drawing.
+
+**Drawing** (double-click the region to edit; the toolbar sits above it):
+
+- **Member (B):** click point after point; a chain continues until Esc or a right-click.
+  Points snap to the grid, to existing nodes, and onto members, which are split there.
+- **Supports:** **Pin (P)** holds x and y, **Roller (R)** holds one direction, and
+  **Fixed (X)** also holds rotation. Turn a support in the panel for walls or slopes;
+  inclined rollers work.
+- **Hinge (G):** click a node to let its members turn freely. A member hinged at both
+  ends is a truss bar.
+- **Force (F)** and **Moment (M):** click a node or any point on a member. A value field
+  opens at the load: type `20` (the force unit) or any worksheet expression (`P_d`,
+  `1.5 * q_k * 2 m`).
+- **Line load (Q):** click a member for a full-length load, or drag along it for part of
+  it. Loads can be uniform or linearly varying, and act downwards (gravity, per length of
+  member) or perpendicular to the member.
+- **Select (V):** drag nodes, and double-click a load to change its value. Delete removes
+  the selection.
+
+**Results:** the strip under the drawing switches between **Model**, **Reactions**, **N**,
+**V**, **M** and **δ**. The extremes are labelled on every member: moments on the tension
+side, positive shear and tension on the member's upper or left side. The deflected shape
+is exaggerated and labelled in mm. The panel lists the reactions, the extremes, the bending
+stress (with a section modulus W) and the degree of static indeterminacy.
+
+**Sections:** IPE/HEA/HEB profiles from a list, or any E, A, I and W. All four are
+expressions; bare numbers mean GPa, cm², cm⁴ and cm³. Each member can have its own section.
+
+**Back into the worksheet:** name the region (`b`) and the math below can use
+- the reactions per support: `b.A.Ry`, `b.A.Rx`, `b.A.M`, `b.A.R`
+- the extremes: `b.M_max`, `b.V_max`, `b.N_max`, `b.w_max`, `b.σ_max`
+- for a straight beam, the functions `b.M(x)`, `b.V(x)`, `b.N(x)` and `b.w(x)`, plus the
+  length `b.L`. That gives a plot of the moment line in one line, or checks at any section.
+
+**How it is solved, and how exact it is.** The structure is solved with the direct
+stiffness method: Euler–Bernoulli members, linear elastic, small displacements, so
+statically determinate and indeterminate structures are handled alike.
+
+- Supports are constraints with Lagrange multipliers, so the multipliers are the
+  reactions themselves.
+- Hinges are moment releases by static condensation.
+- Members are split where loads sit, so each piece carries at most a linear line load.
+  For such pieces the stiffness method is exact at the nodes. N, V and M along a member
+  come from statics as exact polynomials, and the deflection is the exact double integral
+  of M/EI. The answers therefore match the handbook formulas, not just approximate them:
+  the tests check simply supported, cantilever, propped, continuous and Gerber beams
+  and a truss against closed-form results, and a portal frame for equilibrium.
+- **Not included:** shear deformation (Timoshenko), second-order effects (P-Δ, buckling),
+  plasticity, load combinations, moving loads and self-weight. Add self-weight as a line
+  load.
+
+The **Beams and frames** example covers two structures:
+
+- A two-span beam with factored loads, its reactions, a stress and deflection check, and
+  plots of `b.M(x)` and `b.w(x)`.
+- A portal frame with fixed feet under roof load and wind.
+
 ### CAD parts (parametric design)
 
 Press **CAD** (or type `&` at the cursor) for a parametric part. A part is a small
@@ -317,6 +379,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
+| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined), hinges, point/line/moment loads; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude, revolve, hole, pattern, mirror, combine with booleans), assemblies with joints, mass properties back into the worksheet, DXF in/out, STL out | ✅ (mesh kernel: no 3-D fillets/chamfers/shell, sweeps or drawings) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
@@ -350,6 +413,8 @@ src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS brid
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
+src/beam/     Beam and frame analysis (no UI): model, stiffness solver, worksheet evaluation
+src/ui/beam/  Beam region: editor, diagrams, properties panel
 src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
               joints), solid kernel (Manifold), mass properties, DXF, STL
 src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
