@@ -209,6 +209,14 @@ export const FUNCTIONS: FunctionDoc[] = [
     ['Yn', 'Yn(n, x)', 'Bessel Yₙ'], ['I0', 'I0(x)', 'Modified Bessel I₀'], ['In', 'In(n, x)', 'Modified Bessel Iₙ'],
     ['K0', 'K0(x)', 'Modified Bessel K₀'], ['Kn', 'Kn(n, x)', 'Modified Bessel Kₙ'],
   ]),
+  ...F('Sections & materials', [
+    ['section', 'section("HEB 200")', 'Steel section properties: h, b, t_w, t_f, A, I_y, I_z, W_el, W_pl, i, I_t, I_w, mass (IPE, HEA, HEB, HEM, CHS D×t, SHS b×t, RHS h×b×t)'],
+    ['steel', 'steel("S355" [, t])', 'Structural steel EN 1993-1-1: f_y, f_u (reduced for t > 40 mm), E, G, ν, ρ, ε'],
+    ['concrete', 'concrete("C30/37")', 'Concrete EN 1992-1-1: f_ck, f_cm, f_ctm, f_ctk, E_cm, strains ε_c2, ε_cu2 …'],
+    ['timber', 'timber("C24")', 'Timber EN 338 / glulam EN 14080 (C14–C40, GL20h–GL32h): f_m_k, f_c_0_k, E_0_mean, ρ_k …'],
+    ['rebar', 'rebar("B500B")', 'Reinforcing steel: f_yk, E_s, k, ε_uk'],
+    ['bars', 'bars(n, d)', 'Area of n bars of diameter d: bars(4, 16 mm) = 804 mm²'],
+  ]),
   ...F('Logic & strings', [
     ['if', 'if(cond, a, b)', 'Conditional value'], ['concat', 'concat(s1, s2, …)', 'Join strings'], ['strlen', 'strlen(s)', 'String length'],
     ['substr', 'substr(s, start, n)', 'Substring'], ['num2str', 'num2str(x)', 'Number to string'], ['str2num', 'str2num(s)', 'String to number'],

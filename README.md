@@ -47,6 +47,39 @@ interrupt it (Esc / Stop), like Mathcad's interrupt.
   kN/m, kNm, kPa …) or after a unit and `/`, and after `=` the units that fit the result,
   each with the converted value.
 
+### Design checks
+
+A comparison on its own line is a check: `M_Ed ≤ M_Rd`, `w ≤ L/250`, `0 < x ≤ 10`
+(`<=`, `>=`, `<`, `>`, `==`, `!=` work too, with or without `=` at the end). It shows
+both values, **✓ OK** or **✗ NOT OK**, and the utilisation (demand / capacity) in
+percent; a failing check is tinted red. Vectors are checked element by element and
+report the worst. The status bar counts the checks ("12 checks OK · max 87 %" or
+"1 of 12 checks fail"); click it to jump to the failing (or most utilised) one.
+
+### Sections and materials
+
+| Function | Gives |
+|---|---|
+| `section("IPE 300")` | h, b, t_w, t_f, r, A, A_vz, I_y, I_z, W_el_y, W_el_z, W_pl_y, W_pl_z, i_y, i_z, I_t, I_w, mass, g (weight per m), surface |
+| `steel("S355")`, `steel("S355", 50 mm)` | f_y, f_u (EN 1993-1-1 Table 3.1, reduced above 40 mm), E, G, ν, ρ, α_T, ε |
+| `concrete("C30/37")` | f_ck, f_ck_cube, f_cm, f_ctm, f_ctk_005, f_ctk_095, E_cm, ε_c1 … ε_cu3, n (EN 1992-1-1 Table 3.1) |
+| `timber("C24")`, `timber("GL24h")` | f_m_k, f_t_0_k, f_t_90_k, f_c_0_k, f_c_90_k, f_v_k, E_0_mean, E_0_05, E_90_mean, G_mean, ρ_k, ρ_mean (EN 338:2016, EN 14080) |
+| `rebar("B500B")` | f_yk, E_s, k, ε_uk |
+| `bars(4, 16 mm)` | area of 4 Ø16 bars (804 mm²) |
+
+Use them as objects: `s := section("HEB 200")`, then `s.W_pl_y`, `s.I_z` (names with two
+subscripts display as W_pl,y). Rolled sections: IPE 80–600, HEA/HEB 100–1000,
+HEM 100–600. Hollow sections of any size: `CHS 168.3x5`, `SHS 100x5`,
+`RHS 200x100x6.3` (hot finished, corner radii 1.5t / t).
+
+How the numbers are made, honestly: section properties are integrated from the real
+outline (root radii and corner radii as arcs) and the torsion constants use the
+catalogue formulas. They agree with the ArcelorMittal tables to within 0.3 % (I_w uses
+I_z (h − t_f)²/4). Concrete values come from the EN 1992 formulas, so they are not
+rounded like the table (E_cm of C30/37 is 32.8 GPa, the table says 33). Check against
+the edition your project uses. The same functions work in Python regions, and the beam
+section list uses this library.
+
 ### Units in results
 
 Results without a unit after `=` are shown in practical metric units chosen from what

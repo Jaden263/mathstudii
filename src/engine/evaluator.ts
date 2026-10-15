@@ -6,7 +6,7 @@ import { readingOrder } from '../model/types';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { compileExpr, parseExpr, freeSymbols } from './compile';
-import { parseStatement, parseRange, splitComparison, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
+import { parseStatement, parseRange, splitComparison, splitChain, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
 import { engineCtx, toVector, vec, assignIndex, normalize } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, valueText, unitParts, type FormatOptions } from './format';
@@ -18,6 +18,7 @@ import { evaluateSketch, type SketchResult } from './sketchEval';
 import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
 import { solveBeam, beamValue, type BeamResult } from '../beam/evaluate';
 import { pythonReady, runPython, resetPython, pyParams } from '../python/runtime';
+import './materialsLib';
 
 export type { SketchResult, CadResult, BeamResult };
 
@@ -33,6 +34,8 @@ export interface MathResult {
   /** The result in each of `units` (plain text), for previews. */
   unitValues?: string[];
   quantity?: string;
+  /** A comparison such as σ ≤ f_y: whether it holds and the utilisation (≤ 1 is fine). */
+  check?: { ok: boolean; util?: number };
   /** A likely fix for an unknown name: replace `from` with `to`. */
   fix?: { from: string; to: string };
   error?: string;
@@ -283,6 +286,24 @@ class Evaluator {
     }
     const scope = this.global;
     let value: unknown = null;
+    // a comparison on its own (σ ≤ f_y, or σ ≤ f_y =) is a design check
+    if (st.type === 'expr' || st.type === 'eval') {
+      const chain = splitChain(st.expr);
+      if (chain) {
+        try {
+          this.results.set(r.id, this.evaluateCheck(chain));
+        } catch (e) {
+          const res: MathResult = { kind: 'math', tex: exprTex(st.expr), error: friendlyError(e) };
+          const fix = this.suggestFix(res.error!);
+          if (fix) {
+            res.fix = fix;
+            res.error += ` — did you mean "${fix.to}"?`;
+          }
+          this.results.set(r.id, res);
+        }
+        return;
+      }
+    }
     try {
       switch (st.type) {
         case 'empty':
@@ -331,6 +352,39 @@ class Evaluator {
     } finally {
       this.updateDefined();
     }
+  }
+
+  /** Evaluate a (possibly chained) comparison: a ≤ b, 0 < x ≤ 10. */
+  private evaluateCheck(chain: { terms: string[]; ops: string[] }): MathResult {
+    const { terms, ops } = chain;
+    const vals = terms.map((t) => this.evalWithRanges(t, this.global));
+    let ok = true;
+    let util: number | undefined;
+    for (let k = 0; k < ops.length; k++) {
+      const a = vals[k], b = vals[k + 1], op = ops[k];
+      const as = flatValues(a), bs = flatValues(b);
+      const n = Math.max(as.length, bs.length);
+      if (as.length !== n && as.length !== 1) throw new Error('Both sides of the check need the same number of values');
+      if (bs.length !== n && bs.length !== 1) throw new Error('Both sides of the check need the same number of values');
+      for (let i = 0; i < n; i++) {
+        const x = as[as.length === 1 ? 0 : i], y = bs[bs.length === 1 ? 0 : i];
+        if (!compare(x, y, op)) ok = false;
+        // utilisation: demand / capacity, for the sides that bound it (a ≤ capacity, capacity ≥ a)
+        const u = op === '<' || op === '<=' || op === '≤' ? ratio(x, y) : op === '>' || op === '>=' || op === '≥' ? ratio(y, x) : undefined;
+        if (u !== undefined && (util === undefined || u > util)) util = u;
+      }
+    }
+    // with several comparisons (0 ≤ x ≤ 10) a utilisation would be ambiguous
+    if (ops.length > 1) util = undefined;
+    const OP: Record<string, string> = { '<': '<', '<=': '\\leq', '≤': '\\leq', '>': '>', '>=': '\\geq', '≥': '\\geq', '==': '=', '!=': '\\neq', '≠': '\\neq' };
+    const left = terms.map((t, k) => exprTex(t) + (k < ops.length ? ` ${OP[ops[k]]} ` : '')).join('');
+    const literal = (t: string) => /^\s*-?[\d.]+(e[+-]?\d+)?\s*$/i.test(t);
+    const valuesTex = terms.every(literal)
+      ? ''
+      : `\\quad\\Rightarrow\\quad ${vals.map((v, k) => valueTex(v, this.fmt) + (k < ops.length ? ` ${OP[ops[k]]} ` : '')).join('')}`;
+    const pct = util !== undefined && Number.isFinite(util) ? `\\ \\left(${(util * 100).toFixed(util < 0.1 ? 1 : 0)}\\,\\%\\right)` : '';
+    const mark = ok ? `\\textcolor{#2f9e44}{\\checkmark\\ \\text{OK}}` : `\\textcolor{#e03131}{\\times\\ \\text{NOT OK}}`;
+    return { kind: 'math', tex: `${left}${valuesTex}\\qquad ${mark}${pct}`, check: { ok, ...(util !== undefined && Number.isFinite(util) ? { util } : {}) } };
   }
 
   /** Text and dimensions of a shown value. */
@@ -762,7 +816,9 @@ class Evaluator {
     }
     let run;
     try {
-      run = runPython(r.code, this.global.local.entries());
+      // the section and material library is available in Python too
+      const lib = PYTHON_LIBRARY.map((n): [string, unknown] => [n, (math as unknown as Record<string, unknown>)[n]]);
+      run = runPython(r.code, [...lib, ...this.global.local.entries()]);
     } catch (e) {
       return { ...res, error: friendlyError(e) };
     }
@@ -986,6 +1042,40 @@ class Evaluator {
     return { xs, ys, z };
   }
 }
+
+function flatValues(v: unknown): unknown[] {
+  if (isMatrix(v)) return (v.toArray() as unknown[]).flat(Infinity as 1);
+  if (Array.isArray(v)) return v.flat(Infinity as 1);
+  return [v];
+}
+
+function compare(a: unknown, b: unknown, op: string): boolean {
+  // 0 compares with anything: 0 < σ
+  if (a === 0 && isUnit(b)) a = math.multiply(0, b);
+  if (b === 0 && isUnit(a)) b = math.multiply(0, a);
+  const m = math as unknown as Record<string, (x: unknown, y: unknown) => unknown>;
+  const fn = { '<': 'smaller', '<=': 'smallerEq', '≤': 'smallerEq', '>': 'larger', '>=': 'largerEq', '≥': 'largerEq', '==': 'equal', '!=': 'unequal', '≠': 'unequal' }[op];
+  if (!fn) throw new Error(`Unknown comparison ${op}`);
+  try {
+    return !!m[fn](a, b);
+  } catch (e) {
+    if (/unit|dimension/i.test((e as Error).message)) throw new Error('The two sides of the check have different units');
+    throw e;
+  }
+}
+
+/** demand / capacity as a plain number, when it means something (same sign, capacity ≠ 0). */
+function ratio(demand: unknown, capacity: unknown): number | undefined {
+  try {
+    const r = math.divide(demand as number, capacity as number) as unknown;
+    const n = typeof r === 'number' ? r : isUnit(r) && r.dimensions.every((d) => d === 0) ? (r.toNumber('') as number) : NaN;
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const PYTHON_LIBRARY = ['section', 'steel', 'concrete', 'timber', 'rebar', 'bars'];
 
 /** Short description of a value too large to show inline in a Python region's output. */
 function bigValue(v: unknown): string | null {

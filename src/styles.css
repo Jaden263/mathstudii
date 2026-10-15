@@ -3913,3 +3913,36 @@ kbd {
   margin: 4px 6px;
   background: var(--border);
 }
+
+/* ---------------------------------------------------------------- design checks */
+
+.region.check-fail {
+  background: rgba(224, 49, 49, 0.07);
+  border-color: rgba(224, 49, 49, 0.35);
+}
+
+.region.check-ok {
+  background: rgba(47, 158, 68, 0.05);
+}
+
+.status-btn {
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.status-btn:hover {
+  background: var(--accent-soft);
+}
+
+@media print {
+  .region.check-fail,
+  .region.check-ok {
+    background: none;
+    border-color: transparent;
+  }
+}

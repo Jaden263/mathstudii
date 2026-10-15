@@ -46,6 +46,8 @@ const FAMILIES: Record<string, Family> = {
   [D(1, 2, -3, -1)]: { q: 'voltage', auto: ['V', 'kV'], more: ['mV'] },
   [D(0, 0, 0, 1)]: { q: 'current', auto: ['A'], more: ['mA', 'kA'] },
   [D(1, 2, -3, -2)]: { q: 'resistance', auto: ['ohm', 'kohm'] },
+  [D(0, 0, 0, 0, -1)]: { q: 'thermal expansion', auto: ['K^-1'] },
+  [D(0, 0, 0, 0, 1)]: { q: 'temperature', auto: ['K'] },
 };
 
 /** Energy and power units: a [M L² T⁻²] result built from these is energy, not a moment. */

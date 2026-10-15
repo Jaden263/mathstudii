@@ -329,6 +329,28 @@ export function cadExample(): Worksheet {
   ]);
 }
 
+export function steelCheckExample(): Worksheet {
+  return build('Steel beam check', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Steel beam check (EN 1993-1-1)\nSimply supported floor beam. `section()` and `steel()` come from the built-in library; a comparison such as `M_Ed ≤ M_Rd` is a check: ✓ or ✗ with the utilisation, and the status bar counts them.' }],
+    ['math', L, mm(42), { source: 'L := 6 m' }],
+    ['math', mm(56), mm(42), { source: 'G_k := 5 kN/m' }],
+    ['math', mm(96), mm(42), { source: 'Q_k := 8 kN/m' }],
+    ['math', mm(136), mm(42), { source: 'γ_M0 := 1.0' }],
+    ['math', L, mm(54), { source: 's := section("IPE 300")' }],
+    ['math', mm(96), mm(54), { source: 'm := steel("S355")' }],
+    ['math', L, mm(66), { source: 'q_Ed := 1.35 G_k + 1.5 Q_k =' }],
+    ['math', L, mm(78), { source: 'M_Ed := q_Ed L^2 / 8 =' }],
+    ['math', mm(96), mm(78), { source: 'V_Ed := q_Ed L / 2 =' }],
+    ['math', L, mm(92), { source: 'M_Rd := s.W_pl_y m.f_y / γ_M0 =' }],
+    ['math', mm(96), mm(92), { source: 'V_Rd := s.A_vz m.f_y / (sqrt(3) γ_M0) =' }],
+    ['text', L, mm(108), { width: mm(170), markdown: '## Checks' }],
+    ['math', L, mm(118), { source: 'M_Ed ≤ M_Rd' }],
+    ['math', L, mm(130), { source: 'V_Ed ≤ 0.5 V_Rd' }],
+    ['math', L, mm(142), { source: 'w := 5 (G_k + Q_k) L^4 / (384 m.E s.I_y) =' }],
+    ['math', L, mm(154), { source: 'w ≤ L / 250' }],
+  ]);
+}
+
 export function pythonExample(): Worksheet {
   return build('Python code', [
     ['text', L, mm(12), { width: mm(170), markdown: '# Python in the worksheet\nA **Python** region reads the variables defined above it — with their units — and every variable or function it assigns comes back to the worksheet. `Q(5, "kN")` and `u.mm` make quantities, `M.to("kN*m")` gives a plain number, `f"{M:.1f kN*m}"` formats one. Python starts on first use (a few seconds); numpy and scipy download on first `import`.' }],
@@ -338,13 +360,7 @@ export function pythonExample(): Worksheet {
     ['math', mm(146), mm(46), { source: 'E := 210 GPa' }],
     ['math', mm(178), mm(46), { source: 'γ_M1 := 1.0' }],
     ['python', L, mm(56), { width: mm(170), code: `# Lightest HEB column for N_Ed: flexural buckling about the weak axis
-# (EN 1993-1-1, 6.3.1, curve c)
-HEB = {  # A [cm²], I_z [cm⁴]
-    "HEB 160": (54.3, 889),
-    "HEB 180": (65.3, 1363),
-    "HEB 200": (78.1, 2003),
-    "HEB 220": (91.0, 2843),
-}
+# (EN 1993-1-1, 6.3.1, curve c). section() is the built-in steel table.
 
 def chi(A, I, alpha=0.49):
     i = (I / A) ** 0.5
@@ -353,18 +369,19 @@ def chi(A, I, alpha=0.49):
     return min(1.0, 1 / (phi + (phi**2 - lam**2) ** 0.5))
 
 rows = []
-for name, (A_cm2, I_cm4) in HEB.items():
-    A, I = Q(A_cm2, "cm^2"), Q(I_cm4, "cm^4")
-    N = chi(A, I) * A * f_y / γ_M1
-    rows.append((name, N))
-    print(f"{name}:  N_b,Rd = {N:5.0f kN}   η = {N_Ed / N:.2f}")
+for size in (160, 180, 200, 220, 240):
+    s = section(f"HEB {size}")
+    N = chi(s.A, s.I_z) * s.A * f_y / γ_M1
+    rows.append((s.name, N))
+    print(f"{s.name}:  N_b,Rd = {N:5.0f kN}   η = {N_Ed / N:.2f}")
 
 profile, N_bRd = next((r for r in rows if r[1] >= N_Ed), rows[-1])` }],
     ['math', L, mm(226), { source: 'profile =' }],
     ['math', mm(62), mm(226), { source: 'N_bRd = kN' }],
-    ['math', mm(104), mm(226), { source: 'η := N_Ed / N_bRd =' }],
+    ['math', mm(104), mm(226), { source: 'N_Ed ≤ N_bRd' }],
     ['text', L, mm(240), { width: mm(80), markdown: 'Python functions work in math and plots too — here χ for a HEB 220 as its I_z varies:' }],
-    ['math', L, mm(256), { source: 'chi(91 cm^2, 2843 cm^4) =' }],
+    ['math', L, mm(252), { source: 'S := section("HEB 220")' }],
+    ['math', L, mm(262), { source: 'chi(S.A, S.I_z) =' }],
     ['plot', mm(104), mm(238), { xExpr: 'I', traces: [{ y: 'chi(91 cm^2, I)', style: 'line' }], xmin: '500 cm^4', xmax: '6000 cm^4', xUnit: 'cm^4', width: mm(86), height: mm(56), title: 'χ(I_z)' }],
   ]);
 }
@@ -435,6 +452,7 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Cross-sections (sketch)', make: sectionExample },
   { name: 'Mechanism animation (sketch)', make: mechanismExample },
   { name: 'Beams and frames', make: beamExample },
+  { name: 'Steel beam check (sections, checks)', make: steelCheckExample },
   { name: 'Python code', make: pythonExample },
   { name: 'CAD part design (parametric)', make: cadExample },
 ];

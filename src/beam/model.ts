@@ -2,6 +2,7 @@
 // solved by the direct stiffness method. Plain JSON like the rest of the worksheet.
 // Coordinates are in the region's length unit (y up); load values are worksheet
 // expressions, so the structure follows the calculation around it.
+import { ROLLED_SECTIONS, sectionProps } from '../engine/sections';
 
 export type BeamLengthUnit = 'm' | 'cm' | 'mm' | 'ft' | 'in';
 export type BeamForceUnit = 'kN' | 'N' | 'MN' | 'kip' | 'lbf';
@@ -86,29 +87,12 @@ export interface BeamData {
   loads: BeamLoad[];
 }
 
-/** Common European steel profiles: A [cm²], Iy [cm⁴], Wel,y [cm³]. */
-export const PROFILES: { name: string; A: number; I: number; W: number }[] = [
-  { name: 'IPE 100', A: 10.3, I: 171, W: 34.2 },
-  { name: 'IPE 120', A: 13.2, I: 318, W: 53.0 },
-  { name: 'IPE 140', A: 16.4, I: 541, W: 77.3 },
-  { name: 'IPE 160', A: 20.1, I: 869, W: 109 },
-  { name: 'IPE 180', A: 23.9, I: 1317, W: 146 },
-  { name: 'IPE 200', A: 28.5, I: 1943, W: 194 },
-  { name: 'IPE 220', A: 33.4, I: 2772, W: 252 },
-  { name: 'IPE 240', A: 39.1, I: 3892, W: 324 },
-  { name: 'IPE 270', A: 45.9, I: 5790, W: 429 },
-  { name: 'IPE 300', A: 53.8, I: 8356, W: 557 },
-  { name: 'IPE 330', A: 62.6, I: 11770, W: 713 },
-  { name: 'IPE 360', A: 72.7, I: 16270, W: 904 },
-  { name: 'IPE 400', A: 84.5, I: 23130, W: 1160 },
-  { name: 'IPE 450', A: 98.8, I: 33740, W: 1500 },
-  { name: 'IPE 500', A: 116, I: 48200, W: 1930 },
-  { name: 'IPE 600', A: 156, I: 92080, W: 3070 },
-  { name: 'HEA 200', A: 53.8, I: 3692, W: 389 },
-  { name: 'HEA 300', A: 112.5, I: 18260, W: 1260 },
-  { name: 'HEB 200', A: 78.1, I: 5696, W: 570 },
-  { name: 'HEB 300', A: 149, I: 25170, W: 1680 },
-];
+/** European rolled profiles from the section library: A [cm²], Iy [cm⁴], Wel,y [cm³]. */
+export const PROFILES: { name: string; A: number; I: number; W: number }[] = ROLLED_SECTIONS.map((name) => {
+  const p = sectionProps(name);
+  const r = (v: number) => Number(v.toPrecision(4));
+  return { name, A: r(p.A / 100), I: r(p.I_y / 1e4), W: r(p.W_el_y / 1e3) };
+});
 
 export const DEFAULT_SECTION: BeamSection = { label: 'IPE 300', E: '210 GPa', A: '53.8 cm^2', I: '8356 cm^4', W: '557 cm^3' };
 

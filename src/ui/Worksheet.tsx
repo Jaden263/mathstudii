@@ -55,6 +55,11 @@ function hasError(res: RegionResult | undefined): boolean {
   return false;
 }
 
+function checkClass(res: RegionResult | undefined): string {
+  if (res?.kind !== 'math' || !res.check) return '';
+  return res.check.ok ? ' check-ok' : ' check-fail';
+}
+
 export function Worksheet(p: Props) {
   const sheetRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
@@ -222,7 +227,7 @@ export function Worksheet(p: Props) {
             <div
               key={r.kind === 'plot' ? `${r.id}|${p.ws.settings.format?.fontScale ?? 1}|${p.ws.settings.format?.lineScale ?? 1}` : r.id}
               data-region-id={r.id}
-              className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}`}
+              className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}${checkClass(res)}`}
               style={{ left: r.x, top: r.y, transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined, ...regionLook(r, p.ws.settings.format) }}
               onPointerDown={(e) => onRegionPointerDown(e, r)}
               onContextMenu={(e) => {

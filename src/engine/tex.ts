@@ -48,7 +48,9 @@ export function nameTex(name: string): string {
   if (u > 0 && u < name.length - 1) {
     const base = name.slice(0, u);
     const sub = name.slice(u + 1);
-    return `${identTex(base)}_{${identTex(sub, true)}}`;
+    // W_pl_y → W_{pl,y} (the Eurocode way of writing a second subscript)
+    const subTex = sub.split('_').filter(Boolean).map((p) => identTex(p, true)).join(',');
+    return `${identTex(base)}_{${subTex}}`;
   }
   return identTex(name);
 }

@@ -525,6 +525,24 @@ export function App() {
     return () => window.removeEventListener('paste', onPaste);
   }, [addRegion, pasteRegions]);
 
+  /** Design checks (σ ≤ f_y …) in reading order: how many, which fail, the highest utilisation. */
+  const checks = useMemo(() => {
+    const failing: string[] = [];
+    let total = 0, maxUtil: number | undefined, worst: string | undefined;
+    const ordered = [...ws.regions].sort((a, b) => a.y - b.y || a.x - b.x);
+    for (const r of ordered) {
+      const res = evaluation.results.get(r.id);
+      if (res?.kind !== 'math' || !res.check || r.disabled) continue;
+      total++;
+      if (!res.check.ok) failing.push(r.id);
+      if (res.check.util !== undefined && (maxUtil === undefined || res.check.util > maxUtil)) {
+        maxUtil = res.check.util;
+        worst = r.id;
+      }
+    }
+    return { total, failing, maxUtil, worst };
+  }, [ws.regions, evaluation.results]);
+
   // ------------------------------------------------------------ right-click menus
   const [menu, setMenu] = useState<MenuState | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -946,6 +964,24 @@ export function App() {
           <span className="status-item warn"><AlertTriangle size={13} /> {evaluation.errorCount} region{evaluation.errorCount > 1 ? 's' : ''} with errors</span>
         ) : (
           <span className="status-item ok"><CheckCircle2 size={13} /> Calculated in {evaluation.millis.toFixed(0)} ms</span>
+        )}
+        {checks.total > 0 && (
+          <button
+            className={`status-item status-btn ${checks.failing.length ? 'warn' : 'ok'}`}
+            title={checks.failing.length ? 'Show the first failing check' : 'All design checks pass'}
+            onClick={() => {
+              const id = checks.failing[0] ?? checks.worst;
+              const el = id && document.querySelector<HTMLElement>(`[data-region-id="${id}"]`);
+              if (el) {
+                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                setSelected(new Set([id!]));
+              }
+            }}
+          >
+            {checks.failing.length
+              ? <><AlertTriangle size={13} /> {checks.failing.length} of {checks.total} checks fail</>
+              : <><CheckCircle2 size={13} /> {checks.total} check{checks.total > 1 ? 's' : ''} OK{checks.maxUtil !== undefined ? ` · max ${Math.round(checks.maxUtil * 100)} %` : ''}</>}
+          </button>
         )}
         <span className="spacer" />
         {!s.autoCalc && <span className="status-item">Auto calculation off</span>}

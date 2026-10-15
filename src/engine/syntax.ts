@@ -107,6 +107,34 @@ export function splitComparison(src: string): [string, string, string] | null {
   return res;
 }
 
+/**
+ * A comparison chain for checks (a ≤ b, 0 < x ≤ 10): terms and the operators between
+ * them, or null when the expression is not a comparison. "=" is not a comparison here.
+ */
+export function splitChain(src: string): { terms: string[]; ops: string[] } | null {
+  const ops = ['<=', '>=', '==', '!=', '≤', '≥', '≠', '<', '>'];
+  const terms: string[] = [];
+  const found: string[] = [];
+  let last = 0;
+  scan(src, (i, depth) => {
+    if (depth !== 0) return;
+    for (const op of ops) {
+      if (!src.startsWith(op, i)) continue;
+      if ((op === '<' || op === '>') && src[i + 1] === '=') continue;
+      // a ≤ that is really the second character of "<=" / ">=" / "==" / "!="
+      if (i > last && found.length && src.slice(i - 1, i + 1) !== op && '<>=!'.includes(src[i - 1])) continue;
+      terms.push(src.slice(last, i));
+      found.push(op);
+      last = i + op.length;
+      return;
+    }
+  });
+  if (!found.length) return null;
+  terms.push(src.slice(last));
+  if (terms.some((t) => !t.trim())) return null;
+  return { terms: terms.map((t) => t.trim()), ops: found };
+}
+
 const IDENT = /^[A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ']*$/;
 
 export function isIdentifier(s: string): boolean {
