@@ -4193,3 +4193,43 @@ kbd {
   background: var(--accent-soft);
   color: var(--accent);
 }
+
+/* ---------------------------------------------------------------- beam load cases */
+
+.bm-load.faded {
+  opacity: 0.22;
+}
+
+.bm-view {
+  max-width: 150px;
+  font: 500 calc(11.5px * var(--fs, 1)) var(--font);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.bm-edit .bm-case {
+  margin-left: 4px;
+  font-size: 11px;
+}
+
+.bm-curve.low {
+  stroke-dasharray: 5 3;
+}
+
+.bm-cases input,
+.bm-combos input {
+  width: 100%;
+  min-width: 34px;
+}
+
+.bm-combos select {
+  font-size: 11px;
+}
+
+.props-table td.num {
+  text-align: center;
+  color: var(--text-muted);
+}

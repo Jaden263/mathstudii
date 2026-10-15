@@ -56,16 +56,38 @@ export interface BeamSupport {
 /** Where a load sits: on a node, or a fraction along a member. */
 export type LoadAt = { node: string } | { member: string; t: number };
 
+/** A load case: G (permanent), Q (imposed), W (wind) … */
+export interface BeamLoadCase {
+  id: string;
+  /** Short name used in combinations and the worksheet ("G"). */
+  name: string;
+  /** Description ("Permanent"). */
+  label?: string;
+}
+
+/** A load combination: a factor (worksheet expression) per load case. */
+export interface BeamCombo {
+  id: string;
+  /** "ULS", "SLS" … (worksheet name: b.combos.ULS). */
+  name: string;
+  factors: Record<string, string>;
+  /** Ultimate (strength) or serviceability (deflection). */
+  kind: 'ULS' | 'SLS';
+}
+
+/** What a beam with load cases shows: one case, one combination, or the envelope. */
+export type BeamShow = string;
+
 export type BeamLoad =
   /** Point force; angle of the force direction in degrees (−90 = downwards). */
-  | { id: string; type: 'force'; at: LoadAt; value: string; angle: number }
+  | { id: string; type: 'force'; at: LoadAt; value: string; angle: number; case?: string }
   /** Concentrated moment, counter-clockwise positive. */
-  | { id: string; type: 'moment'; at: LoadAt; value: string }
+  | { id: string; type: 'moment'; at: LoadAt; value: string; case?: string }
   /**
    * Line load from t1 to t2 along a member, q1 → q2 (linear). 'global' acts downwards
    * (gravity, per length of member); 'local' acts perpendicular to the member.
    */
-  | { id: string; type: 'line'; member: string; q1: string; q2?: string; t1?: number; t2?: number; dir: 'global' | 'local' };
+  | { id: string; type: 'line'; member: string; q1: string; q2?: string; t1?: number; t2?: number; dir: 'global' | 'local'; case?: string };
 
 export type BeamDiagram = 'model' | 'reactions' | 'N' | 'V' | 'M' | 'deflection';
 /** A result diagram drawn under the structure. */
@@ -85,6 +107,31 @@ export interface BeamData {
   members: BeamMember[];
   supports: BeamSupport[];
   loads: BeamLoad[];
+}
+
+/** Load cases and combinations of a beam (absent = every load in one case). */
+export interface BeamCases {
+  cases: BeamLoadCase[];
+  combos: BeamCombo[];
+  /** Case id, combination id or 'envelope'. */
+  view?: string;
+}
+
+/** The usual start: permanent and imposed loads, EN 1990 (6.10) and characteristic SLS. */
+export function defaultCases(): BeamCases {
+  return {
+    cases: [{ id: 'G', name: 'G', label: 'Permanent' }, { id: 'Q', name: 'Q', label: 'Imposed' }],
+    combos: [
+      { id: 'uls', name: 'ULS', kind: 'ULS', factors: { G: '1.35', Q: '1.5' } },
+      { id: 'sls', name: 'SLS', kind: 'SLS', factors: { G: '1', Q: '1' } },
+    ],
+    view: 'uls',
+  };
+}
+
+/** The case a load belongs to (loads without one are in the first case). */
+export function loadCase(l: BeamLoad, c: BeamCases): string {
+  return l.case && c.cases.some((q) => q.id === l.case) ? l.case : c.cases[0]?.id ?? '';
 }
 
 /** European rolled profiles from the section library: A [cm²], Iy [cm⁴], Wel,y [cm³]. */

@@ -7,7 +7,7 @@ import type { BeamRegion } from '../../model/types';
 import type { RegionResult } from '../../engine/evaluator';
 import type { BeamResult } from '../../beam/evaluate';
 import {
-  beamId, loadPoint, nextLabel, removeItems, splitMember,
+  beamId, loadCase, loadPoint, nextLabel, removeItems, splitMember,
   type BeamData, type BeamDiagram, type BeamLoad, type BeamMember, type BeamPanel, type BeamView as View,
 } from '../../beam/model';
 import type { Action } from '../store';
@@ -92,6 +92,20 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const drag = useRef<Drag | null>(null);
   const editRef = useRef(edit);
   editRef.current = edit;
+  // load cases: what is shown, the lower envelope bound, the case new loads go into
+  const lc = region.loadCases;
+  const lcView = res?.view;
+  const low = lcView === 'envelope' ? res?.envelope?.min : undefined;
+  const newCase = lc ? (lc.cases.find((c) => c.id === lc.view)?.id ?? lc.cases[0]?.id) : undefined;
+  const loadLook = (l: BeamLoad): { faded: boolean; tag?: string } => {
+    if (!lc) return { faded: false };
+    const cid = loadCase(l, lc);
+    const tag = lc.cases.find((c) => c.id === cid)?.name;
+    if (!lcView || lcView === 'envelope') return { faded: false, tag };
+    if (lc.cases.some((c) => c.id === lcView)) return { faded: cid !== lcView, tag };
+    const f = lc.combos.find((c) => c.id === lcView)?.factors[cid]?.trim();
+    return { faded: !f || f === '0', tag };
+  };
 
   // diagrams under the structure: the structure gets the top of the region
   const stacked = (region.layout ?? 'stack') === 'stack';
@@ -111,7 +125,10 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const modelH = stacked && region.members.length > 0 ? lay.modelH : svgH;
 
   // the page shows the structure framed; while editing the view stays put
-  const autoView = useMemo(() => fitView(data, W, modelH), [region.nodes, W, modelH]); // eslint-disable-line react-hooks/exhaustive-deps
+  // stacked line loads (G and Q on one span) need room above the structure
+  const maxStack = useMemo(() => region.loads.reduce((m, _l, i) => Math.max(m, lineStack(region.loads, i)), 0), [region.loads]);
+  const fitMargins = { l: 100, r: 100, t: 70 + maxStack * 46, b: 100 };
+  const autoView = useMemo(() => fitView(data, W, modelH, fitMargins), [region.nodes, W, modelH, maxStack]); // eslint-disable-line react-hooks/exhaustive-deps
   const view = liveView ?? (editing ? region.view : autoView ?? region.view);
   const vp: Vp = { view, width: W, height: modelH };
 
@@ -291,7 +308,8 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     if (!at.snap || (at.snap.kind !== 'node' && at.snap.kind !== 'member')) return;
     const where = at.snap.kind === 'node' ? { node: at.snap.id } : { member: at.snap.id, t: at.snap.t };
     const id = beamId('l');
-    const l: BeamLoad = kind === 'force' ? { id, type: 'force', at: where, value: '10', angle: -90 } : { id, type: 'moment', at: where, value: '10' };
+    const cs = newCase ? { case: newCase } : {};
+    const l: BeamLoad = kind === 'force' ? { id, type: 'force', at: where, value: '10', angle: -90, ...cs } : { id, type: 'moment', at: where, value: '10', ...cs };
     commit({ ...data, loads: [...data.loads, l] });
     select([id]);
     setEdit({ id, field: 'value', text: '10' });
@@ -301,7 +319,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     const id = beamId('l');
     const [a, b] = t0 <= t1 ? [t0, t1] : [t1, t0];
     const partial = b - a > 0.02 && (a > 0.001 || b < 0.999);
-    const l: BeamLoad = { id, type: 'line', member, q1: '5', dir: 'global', ...(partial ? { t1: +a.toFixed(6), t2: +b.toFixed(6) } : {}) };
+    const l: BeamLoad = { id, type: 'line', member, q1: '5', dir: 'global', ...(partial ? { t1: +a.toFixed(6), t2: +b.toFixed(6) } : {}), ...(newCase ? { case: newCase } : {}) };
     commit({ ...data, loads: [...data.loads, l] });
     select([id]);
     setEdit({ id, field: 'q1', text: '5' });
@@ -338,7 +356,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     setChainFrom(r.node);
     // the first member frames the view
     if (!region.members.length) {
-      const v = fitView(d, W, modelH);
+      const v = fitView(d, W, modelH, fitMargins);
       if (v) set({ view: v }, false);
     }
   };
@@ -350,7 +368,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   };
 
   const fit = () => {
-    const v = fitView(data, W, modelH);
+    const v = fitView(data, W, modelH, fitMargins);
     if (v) set({ view: v }, false);
   };
 
@@ -596,8 +614,8 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       >
         {editing && region.grid > 0 && <BeamGrid vp={vp} step={region.grid} />}
         {hasPanels && res?.solution && (segs
-          ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={W} />
-          : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={W} />)}
+          ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={W} low={low} />
+          : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={W} low={low} />)}
         {hasPanels && !res?.solution && (
           <g>
             <line x1={0} y1={modelH} x2={W} y2={modelH} className="bm-panel-sep" />
@@ -606,7 +624,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             </text>
           </g>
         )}
-        {diagramOn && <Diagram r={region} d={data} vp={vp} res={res!} kind={show as 'N' | 'V' | 'M' | 'deflection'} />}
+        {diagramOn && <Diagram r={region} d={data} vp={vp} res={res!} kind={show as 'N' | 'V' | 'M' | 'deflection'} low={low} />}
         {/* members */}
         {region.members.map((m) => {
           const a = N.get(m.a), b = N.get(m.b);
@@ -642,8 +660,8 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           return <circle key={q.id} cx={c.x} cy={c.y} r={editing ? 3.2 : 2.2} className={`bm-node${sel.has(q.id) ? ' sel' : ''}`} />;
         })}
         {/* loads or reactions */}
-        {(stacked || show !== 'reactions') && region.loads.map((l) => (
-          <LoadGlyph key={l.id} r={region} d={data} l={l} vp={vp} res={res} sel={sel.has(l.id)} label={!diagramOn} />
+        {(stacked || show !== 'reactions') && region.loads.map((l, i) => (
+          <LoadGlyph key={l.id} r={region} d={data} l={l} vp={vp} res={res} sel={sel.has(l.id)} label={!diagramOn} {...loadLook(l)} stack={lineStack(region.loads, i)} />
         ))}
         {reactionsOn && <Reactions r={region} d={data} vp={vp} res={res!} />}
         {/* drafts */}
@@ -688,6 +706,19 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             onBlur={commitEdit}
           />
           <span>{unitHint}</span>
+          {lc && (() => {
+            const l = data.loads.find((q) => q.id === edit.id);
+            if (!l) return null;
+            return (
+              <select
+                className="bm-case" aria-label="Load case" value={loadCase(l, lc)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => commit({ ...data, loads: data.loads.map((q) => (q.id === l.id ? ({ ...q, case: e.target.value } as BeamLoad) : q)) })}
+              >
+                {lc.cases.map((c) => <option key={c.id} value={c.id}>{c.name}{c.label ? ` · ${c.label}` : ''}</option>)}
+              </select>
+            );
+          })()}
         </div>
       )}
       {/* the strip and the summary scale with the drawing */}
@@ -695,6 +726,24 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         {editing && <div className="sk-status bm-status">{cursor ? `${fmt(cursor.p.x)}, ${fmt(cursor.p.y)} ${region.lengthUnit}` : `grid ${region.grid} ${region.lengthUnit}`}</div>}
       {region.members.length > 0 && (
           <div className={`bm-tabs${stacked ? ' stacked' : ''}`} role="toolbar" aria-label="Diagrams" onPointerDown={(e) => e.stopPropagation()}>
+            {lc && (
+              <>
+                <select
+                  className="bm-view" aria-label="Load case or combination shown" value={lcView ?? ''}
+                  title="Show one load case, one combination, or the envelope of the combinations"
+                  onChange={(e) => set({ loadCases: { ...lc, view: e.target.value } }, false)}
+                >
+                  <optgroup label="Combinations">
+                    {lc.combos.map((c) => <option key={c.id} value={c.id}>{c.name} = {comboText(c, lc.cases)}</option>)}
+                    {lc.combos.length > 1 && <option value="envelope">Envelope (min / max)</option>}
+                  </optgroup>
+                  <optgroup label="Load cases">
+                    {lc.cases.map((c) => <option key={c.id} value={c.id}>{c.name}{c.label ? ` · ${c.label}` : ''}</option>)}
+                  </optgroup>
+                </select>
+                <span className="bm-tab-sep" />
+              </>
+            )}
             <span className="bm-seg">
               <button className={stacked ? 'on' : ''} title="Diagrams neatly under the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'stack' }, false); }}>Under</button>
               <button className={!stacked ? 'on' : ''} title="One diagram at a time, drawn on the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'overlay' }, false); }}>On structure</button>
@@ -715,7 +764,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             ))}
           </div>
         )}
-        {sol && (
+        {sol && !lc && (
           <div className={`bm-summary${stacked && region.members.length > 0 ? ' in-strip' : ''}`}>
             {sol.max.M && <span>M<sub>max</sub> {u.moment(sol.max.M.value)}</span>}
             {sol.max.V && !(stacked && region.members.length > 0) && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}
@@ -730,6 +779,29 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       )}
     </div>
   );
+}
+
+/** How many earlier line loads overlap this one on the same member (it is drawn above them). */
+function lineStack(loads: BeamLoad[], i: number): number {
+  const l = loads[i];
+  if (l.type !== 'line') return 0;
+  const a = l.t1 ?? 0, b = l.t2 ?? 1;
+  let n = 0;
+  for (let k = 0; k < i; k++) {
+    const q = loads[k];
+    if (q.type === 'line' && q.member === l.member && (q.t1 ?? 0) < b - 1e-9 && (q.t2 ?? 1) > a + 1e-9) n++;
+  }
+  return n;
+}
+
+/** "1.35 G + 1.5 Q" */
+function comboText(c: { factors: Record<string, string> }, cases: { id: string; name: string }[]): string {
+  const parts = cases.flatMap((k) => {
+    const f = c.factors[k.id]?.trim();
+    if (!f || f === '0') return [];
+    return [f === '1' ? k.name : `${f} ${k.name}`];
+  });
+  return parts.join(' + ') || '0';
 }
 
 function segDist(p: P2, a: P2, b: P2): number {

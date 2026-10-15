@@ -1,7 +1,7 @@
 import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
-import type { BeamData } from '../beam/model';
+import type { BeamCases, BeamData } from '../beam/model';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -415,6 +415,32 @@ export function beamExample(): Worksheet {
       { id: 'fH', type: 'force', at: { node: 'f2' }, value: 'H_w', angle: 0 },
     ],
   };
+  // two spans with pattern loading: G everywhere, Q on span 1, span 2 or both
+  const pattern: BeamData & { loadCases: BeamCases } = {
+    nodes: [{ id: 'pA', x: 0, y: 0 }, { id: 'pB', x: 6, y: 0 }, { id: 'pC', x: 12, y: 0 }],
+    members: [{ id: 'pm1', a: 'pA', b: 'pB' }, { id: 'pm2', a: 'pB', b: 'pC' }],
+    supports: [
+      { id: 'psA', node: 'pA', type: 'pin', angle: 0, label: 'A' },
+      { id: 'psB', node: 'pB', type: 'roller', angle: 0, label: 'B' },
+      { id: 'psC', node: 'pC', type: 'roller', angle: 0, label: 'C' },
+    ],
+    loads: [
+      { id: 'pg1', type: 'line', member: 'pm1', q1: 'g_k', dir: 'global', case: 'G' },
+      { id: 'pg2', type: 'line', member: 'pm2', q1: 'g_k', dir: 'global', case: 'G' },
+      { id: 'pq1', type: 'line', member: 'pm1', q1: 'q_k2', dir: 'global', case: 'Q1' },
+      { id: 'pq2', type: 'line', member: 'pm2', q1: 'q_k2', dir: 'global', case: 'Q2' },
+    ],
+    loadCases: {
+      cases: [{ id: 'G', name: 'G', label: 'Permanent' }, { id: 'Q1', name: 'Q1', label: 'Imposed, span 1' }, { id: 'Q2', name: 'Q2', label: 'Imposed, span 2' }],
+      combos: [
+        { id: 'u1', name: 'ULS 1', kind: 'ULS', factors: { G: '1.35', Q1: '1.5', Q2: '0' } },
+        { id: 'u2', name: 'ULS 2', kind: 'ULS', factors: { G: '1.35', Q1: '0', Q2: '1.5' } },
+        { id: 'u3', name: 'ULS 3', kind: 'ULS', factors: { G: '1.35', Q1: '1.5', Q2: '1.5' } },
+        { id: 's1', name: 'SLS', kind: 'SLS', factors: { G: '1', Q1: '1', Q2: '0' } },
+      ],
+      view: 'envelope',
+    },
+  };
   return build('Beams and frames', [
     ['text', L, mm(12), { width: mm(170), markdown: '# Beams and frames\nPress **Beam** in the toolbar, draw members, click supports and loads onto them — the reactions and the N, V, M and deflection diagrams follow at once. Loads are worksheet expressions, and the results come back as variables. Double-click a structure to edit it; switch diagrams with the strip below it.' }],
     ['math', L, mm(44), { source: 'q_k := 8 kN/m' }],
@@ -440,6 +466,14 @@ export function beamExample(): Worksheet {
     ['math', L, mm(400), { source: 'fr.A.M = kN*m' }],
     ['math', mm(70), mm(400), { source: 'fr.D.Rx = kN' }],
     ['math', mm(125), mm(400), { source: 'fr.w_max = mm' }],
+    ['text', L, mm(418), { width: mm(170), markdown: '## Load cases and pattern loading\nPermanent load G on both spans, imposed load Q1 / Q2 on either span. Three ULS combinations put Q where it hurts most; the strip shows the envelope (max solid, min dashed). Pick a combination or a case there, or edit them in the side panel.' }],
+    ['math', L, mm(440), { source: 'g_k := 6 kN/m' }],
+    ['math', mm(65), mm(440), { source: 'q_k2 := 9 kN/m' }],
+    ['beam', L, mm(450), { name: 'pb', width: mm(170), height: mm(80), ...pattern }],
+    ['math', L, mm(534), { source: 'pb.M_max = kN*m' }],
+    ['math', mm(65), mm(534), { source: 'pb.combos.ULS_1.M_max = kN*m' }],
+    ['math', L, mm(546), { source: 'pb.B.Ry = kN' }],
+    ['math', mm(65), mm(546), { source: 'pb.w_max = mm' }],
   ]);
 }
 

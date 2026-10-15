@@ -5,12 +5,29 @@
 import type { Unit } from 'mathjs';
 import type { BeamRegion } from '../model/types';
 import { math, isUnit } from '../engine/math';
-import type { BeamSection } from './model';
-import { memberAt, solveStructure, StructureError, type BeamSolution, type NumLoad, type NumMember, type NumStructure } from './solve';
+import { loadCase, type BeamSection } from './model';
+import { memberAt, solveStructure, StructureError, type BeamSolution, type Extreme, type MemberResult, type NumLoad, type NumMember, type NumStructure } from './solve';
+
+/** Result of one load case or one combination. */
+export interface CaseResult {
+  id: string;
+  name: string;
+  kind?: 'ULS' | 'SLS';
+  solution?: BeamSolution;
+  error?: string;
+}
 
 export interface BeamResult {
   kind: 'beam';
+  /** What is shown: the only solution, or the chosen case / combination / envelope (max side). */
   solution?: BeamSolution;
+  /** With load cases: each case and combination on its own. */
+  cases?: CaseResult[];
+  combos?: CaseResult[];
+  /** Envelope of the combinations: N, V, M over the ULS ones, deflection over the SLS ones. */
+  envelope?: { max: BeamSolution; min: BeamSolution };
+  /** Case id, combination id or 'envelope' (what `solution` holds). */
+  view?: string;
   /** Load id → evaluated values in SI (force N, moment N·m, line load q1/q2 N/m). */
   values: Record<string, number[]>;
   /** Item id (load, member, 'section') → problem with its expression. */
@@ -66,23 +83,25 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     }
     if (sec) members.push({ id: m.id, a: m.a, b: m.b, ...sec, hingeA: m.hingeA, hingeB: m.hingeB });
   }
-  const loads: NumLoad[] = [];
+  const loads: (NumLoad & { case?: string })[] = [];
+  const cases = r.loadCases;
   for (const l of r.loads) {
+    const tag = cases ? { case: loadCase(l, cases) } : {};
     try {
       if (l.type === 'force') {
         const P = quantity(evalExpr, l.value, 'N', F, 'Force');
         const a = (l.angle * Math.PI) / 180;
         res.values[l.id] = [P];
-        loads.push({ id: l.id, type: 'force', at: l.at, Fx: P * Math.cos(a), Fy: P * Math.sin(a) });
+        loads.push({ id: l.id, type: 'force', at: l.at, Fx: P * Math.cos(a), Fy: P * Math.sin(a), ...tag });
       } else if (l.type === 'moment') {
         const M = quantity(evalExpr, l.value, 'N m', `${F} ${r.lengthUnit}`, 'Moment');
         res.values[l.id] = [M];
-        loads.push({ id: l.id, type: 'moment', at: l.at, M });
+        loads.push({ id: l.id, type: 'moment', at: l.at, M, ...tag });
       } else {
         const q1 = quantity(evalExpr, l.q1, 'N/m', `${F}/${r.lengthUnit}`, 'Line load');
         const q2 = l.q2?.trim() ? quantity(evalExpr, l.q2, 'N/m', `${F}/${r.lengthUnit}`, 'Line load (end)') : q1;
         res.values[l.id] = [q1, q2];
-        loads.push({ id: l.id, type: 'line', member: l.member, t1: l.t1 ?? 0, t2: l.t2 ?? 1, q1, q2, dir: l.dir });
+        loads.push({ id: l.id, type: 'line', member: l.member, t1: l.t1 ?? 0, t2: l.t2 ?? 1, q1, q2, dir: l.dir, ...tag });
       }
     } catch (e) {
       res.errors[l.id] = (e as Error).message;
@@ -94,18 +113,132 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     res.error = firstError ?? 'A member has no section';
     return res;
   }
-  const st: NumStructure = {
+  const base: Omit<NumStructure, 'loads'> = {
     nodes: r.nodes.map((q) => ({ id: q.id, x: q.x * k, y: q.y * k })),
     members,
     supports: r.supports.map((s) => ({ id: s.id, node: s.node, type: s.type, angle: (s.angle * Math.PI) / 180, label: s.label })),
-    loads,
   };
-  try {
-    res.solution = solveStructure(st);
-  } catch (e) {
-    res.error = e instanceof StructureError ? e.message : `Could not solve: ${(e as Error).message}`;
+  const solve = (ls: NumLoad[]): BeamSolution => solveStructure({ ...base, loads: ls });
+  if (!cases) {
+    try {
+      res.solution = solve(loads);
+    } catch (e) {
+      res.error = e instanceof StructureError ? e.message : `Could not solve: ${(e as Error).message}`;
+    }
+    return res;
   }
+  // load cases: each case alone, each combination as its own factored load set (exact for a
+  // linear structure), and the envelope of the combinations
+  try {
+    res.cases = cases.cases.map((c) => ({ id: c.id, name: c.name, solution: solve(loads.filter((l) => l.case === c.id)) }));
+    res.combos = cases.combos.map((cb) => {
+      const factored: NumLoad[] = [];
+      for (const c of cases.cases) {
+        const src = cb.factors[c.id]?.trim() ?? '';
+        if (!src) continue;
+        const f = evalExpr(src);
+        if (typeof f !== 'number' || !Number.isFinite(f)) throw new Error(`${cb.name}: the factor for ${c.name} must be a plain number`);
+        if (f === 0) continue;
+        for (const l of loads) if (l.case === c.id) factored.push(scaleLoad(l, f));
+      }
+      return { id: cb.id, name: cb.name, kind: cb.kind, solution: solve(factored) };
+    });
+  } catch (e) {
+    res.error = e instanceof StructureError ? e.message : (e as Error).message;
+    return res;
+  }
+  const uls = res.combos.filter((c) => c.kind === 'ULS' && c.solution).map((c) => c.solution!);
+  const sls = res.combos.filter((c) => c.kind === 'SLS' && c.solution).map((c) => c.solution!);
+  const all = res.combos.flatMap((c) => (c.solution ? [c.solution] : []));
+  if (all.length) res.envelope = envelopeOf(uls.length ? uls : all, sls.length ? sls : uls.length ? uls : all);
+  const view = cases.view ?? cases.combos.find((c) => c.kind === 'ULS')?.id ?? cases.combos[0]?.id ?? cases.cases[0]?.id;
+  res.view = view;
+  res.solution = view === 'envelope' ? res.envelope?.max
+    : res.combos.find((c) => c.id === view)?.solution ?? res.cases.find((c) => c.id === view)?.solution ?? res.combos[0]?.solution ?? res.cases[0]?.solution;
   return res;
+}
+
+function scaleLoad(l: NumLoad, f: number): NumLoad {
+  if (l.type === 'force') return { ...l, Fx: l.Fx * f, Fy: l.Fy * f };
+  if (l.type === 'moment') return { ...l, M: l.M * f };
+  return { ...l, q1: l.q1 * f, q2: l.q2 * f };
+}
+
+/**
+ * Upper and lower bounds of several solutions of the same structure. Forces come from
+ * `forces`, displacements from `defl`. Stations are the union of every solution's
+ * stations, with both sides of each jump.
+ */
+export function envelopeOf(forces: BeamSolution[], defl: BeamSolution[]): { max: BeamSolution; min: BeamSolution } {
+  const sols = [...new Set([...forces, ...defl])];
+  const first = sols[0];
+  const mk = (): BeamSolution => ({ members: [], reactions: [], nodes: {}, max: {}, indeterminacy: first.indeterminacy });
+  const hi = mk(), lo = mk();
+  for (const m0 of first.members) {
+    const all = sols.map((sol) => sol.members.find((q) => q.id === m0.id)!);
+    const L = m0.L;
+    const jumps = new Set<number>();
+    const stations = new Set<number>();
+    for (const mr of all) {
+      mr.s.forEach((s, i) => {
+        stations.add(s);
+        if (i > 0 && mr.s[i - 1] === s) jumps.add(s);
+      });
+      for (const p of mr.pieces) if (p.s0 > 1e-12) jumps.add(p.s0);
+    }
+    const pts: { s: number; at: number }[] = [];
+    for (const s of [...stations].sort((a, b) => a - b)) {
+      if (jumps.has(s) && s > 0 && s < L) pts.push({ s, at: s - 1e-9 * L });
+      pts.push({ s, at: s });
+    }
+    const empty = (): MemberResult => ({ id: m0.id, L, s: [], N: [], V: [], M: [], dx: [], dy: [], pieces: [] });
+    const H = empty(), Lo = empty();
+    for (const { s, at } of pts) {
+      const f = forces.map((sol) => memberAt(sol.members.find((q) => q.id === m0.id)!, at));
+      const d = defl.map((sol) => memberAt(sol.members.find((q) => q.id === m0.id)!, at));
+      H.s.push(s); Lo.s.push(s);
+      for (const key of ['N', 'V', 'M'] as const) {
+        H[key].push(Math.max(...f.map((v) => v[key])));
+        Lo[key].push(Math.min(...f.map((v) => v[key])));
+      }
+      for (const key of ['dx', 'dy'] as const) {
+        H[key].push(Math.max(...d.map((v) => v[key])));
+        Lo[key].push(Math.min(...d.map((v) => v[key])));
+      }
+    }
+    hi.members.push(H);
+    lo.members.push(Lo);
+  }
+  // extremes over both bounds (largest magnitude), on the max side so labels find them
+  const pick = (key: 'N' | 'V' | 'M'): Extreme | undefined => {
+    let best: Extreme | undefined;
+    for (const env of [hi, lo]) for (const mr of env.members) mr[key].forEach((v, i) => {
+      if (!best || Math.abs(v) > Math.abs(best.value)) best = { value: v, member: mr.id, s: mr.s[i], x: 0, y: 0 };
+    });
+    return best;
+  };
+  for (const key of ['N', 'V', 'M'] as const) {
+    const e = pick(key);
+    if (e) hi.max[key] = lo.max[key] = e;
+  }
+  let w: Extreme | undefined;
+  for (const env of [hi, lo]) for (const mr of env.members) mr.dy.forEach((v, i) => {
+    const mag = Math.hypot(v, mr.dx[i]);
+    if (!w || mag > w.value) w = { value: mag, member: mr.id, s: mr.s[i], x: 0, y: 0 };
+  });
+  if (w) hi.max.w = lo.max.w = w;
+  const sig = forces.map((sol) => sol.max.sigma).filter((x): x is Extreme => !!x).sort((a, b) => b.value - a.value)[0];
+  if (sig) hi.max.sigma = lo.max.sigma = sig;
+  // reactions: per support the largest and smallest of each component over the force solutions
+  hi.reactions = first.reactions.map((r0) => {
+    const rs = forces.map((sol) => sol.reactions.find((q) => q.id === r0.id)!);
+    return { ...r0, Rx: Math.max(...rs.map((q) => q.Rx)), Ry: Math.max(...rs.map((q) => q.Ry)), M: Math.max(...rs.map((q) => q.M)) };
+  });
+  lo.reactions = first.reactions.map((r0) => {
+    const rs = forces.map((sol) => sol.reactions.find((q) => q.id === r0.id)!);
+    return { ...r0, Rx: Math.min(...rs.map((q) => q.Rx)), Ry: Math.min(...rs.map((q) => q.Ry)), M: Math.min(...rs.map((q) => q.M)) };
+  });
+  return { max: hi, min: lo };
 }
 
 /** The members of a straight horizontal beam, left to right, or null for anything else. */
@@ -126,8 +259,53 @@ export function straightBeam(r: BeamRegion): { id: string; x0: number; x1: numbe
 
 /** Worksheet value: reactions per support, extremes and functions along a straight beam. */
 export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
-  const sol = res.solution;
-  if (!sol) return {};
+  if (!r.loadCases || !res.combos) return res.solution ? solutionValue(r, res.solution) : {};
+  // with load cases: b.cases.G, b.combos.ULS, and at the top the governing values:
+  // forces and reactions over the ULS combinations, deflection over the SLS ones
+  const named = (list: CaseResult[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(r, c.solution!)]));
+  const value: Record<string, unknown> = { cases: named(res.cases), combos: named(res.combos) };
+  const uls = res.combos.filter((c) => c.kind === 'ULS' && c.solution);
+  const sls = res.combos.filter((c) => c.kind === 'SLS' && c.solution);
+  const forceSet = uls.length ? uls : res.combos.filter((c) => c.solution);
+  const deflSet = sls.length ? sls : forceSet;
+  if (!forceSet.length) return value;
+  // the functions M(x), w(x) … of the first ULS combination
+  Object.assign(value, solutionValue(r, forceSet[0].solution!));
+  const F = r.forceUnit, Lu = r.lengthUnit;
+  const metric = Lu === 'm' || Lu === 'cm' || Lu === 'mm';
+  const biggest = (sols: CaseResult[], key: 'M' | 'V' | 'N' | 'w' | 'sigma') => {
+    let best: number | undefined;
+    for (const c of sols) {
+      const v = c.solution!.max[key]?.value;
+      if (v !== undefined && (best === undefined || Math.abs(v) > Math.abs(best))) best = v;
+    }
+    return best;
+  };
+  const M = biggest(forceSet, 'M'), V = biggest(forceSet, 'V'), N = biggest(forceSet, 'N'), w = biggest(deflSet, 'w'), sg = biggest(forceSet, 'sigma');
+  if (M !== undefined) value.M_max = math.unit(M, 'N m').to(`${F} ${Lu}`);
+  if (V !== undefined) value.V_max = math.unit(V, 'N').to(F);
+  if (N !== undefined) value.N_max = math.unit(N, 'N').to(F);
+  if (w !== undefined) value.w_max = math.unit(w, 'm').to(metric ? 'mm' : 'in');
+  if (sg !== undefined) value.σ_max = value.sigma_max = math.unit(sg, 'Pa').to('MPa');
+  // reactions: the largest resultant over the ULS combinations
+  const force = (v: number) => math.unit(v, 'N').to(F);
+  for (const q of forceSet[0].solution!.reactions) {
+    let best = forceSet[0].solution!.reactions.find((x) => x.id === q.id)!;
+    for (const c of forceSet) {
+      const x = c.solution!.reactions.find((y) => y.id === q.id)!;
+      if (Math.hypot(x.Rx, x.Ry) > Math.hypot(best.Rx, best.Ry)) best = x;
+    }
+    value[q.label] = { Rx: force(best.Rx), Ry: force(best.Ry), M: math.unit(best.M, 'N m').to(`${F} ${Lu}`), R: force(Math.hypot(best.Rx, best.Ry)) };
+  }
+  return value;
+}
+
+function identifierOf(name: string): string {
+  const s = name.trim().replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^_+|_+$/g, '');
+  return /^\p{L}/u.test(s) ? s : `_${s}`;
+}
+
+function solutionValue(r: BeamRegion, sol: BeamSolution): Record<string, unknown> {
   const F = r.forceUnit, Lu = r.lengthUnit;
   const metric = Lu === 'm' || Lu === 'cm' || Lu === 'mm';
   const force = (v: number) => math.unit(v, 'N').to(F);

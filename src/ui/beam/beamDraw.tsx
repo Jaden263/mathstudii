@@ -3,6 +3,7 @@
 import type { JSX } from 'react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
+import type { BeamSolution } from '../../beam/solve';
 import { loadPoint, type BeamData, type BeamDiagram, type BeamLoad, type BeamPanel, type BeamView } from '../../beam/model';
 
 export const LENGTH_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
@@ -144,10 +145,19 @@ export function MomentArrow({ at, positive, cls = '', r = 15 }: { at: P2; positi
 
 // ------------------------------------------------------------ loads
 
-export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: BeamData; l: BeamLoad; vp: Vp; res?: BeamResult; sel: boolean; label: boolean }) {
+export function LoadGlyph({ r, d, l, vp, res, sel, label, faded = false, tag, stack = 0 }: {
+  r: BeamRegion; d: BeamData; l: BeamLoad; vp: Vp; res?: BeamResult; sel: boolean; label: boolean;
+  /** Line loads already drawn on this stretch of member: this one sits above them. */
+  stack?: number;
+  /** Not acting in the case or combination shown. */
+  faded?: boolean;
+  /** Load case name shown before the value. */
+  tag?: string;
+}) {
   const u = units(r);
   const err = !!res?.errors[l.id];
-  const cls = `bm-load${sel ? ' sel' : ''}${err ? ' err' : ''}`;
+  const cls = `bm-load${sel ? ' sel' : ''}${err ? ' err' : ''}${faded ? ' faded' : ''}`;
+  const pre = tag ? `${tag}: ` : '';
   const vals = res?.values[l.id];
   if (l.type === 'line') {
     const m = d.members.find((q) => q.id === l.member);
@@ -155,8 +165,8 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
     const N = new Map(d.nodes.map((q) => [q.id, q]));
     const a = toS(vp, N.get(m.a)!), b = toS(vp, N.get(m.b)!);
     const t1 = l.t1 ?? 0, t2 = l.t2 ?? 1;
-    const p1 = { x: a.x + (b.x - a.x) * t1, y: a.y + (b.y - a.y) * t1 };
-    const p2 = { x: a.x + (b.x - a.x) * t2, y: a.y + (b.y - a.y) * t2 };
+    let p1 = { x: a.x + (b.x - a.x) * t1, y: a.y + (b.y - a.y) * t1 };
+    let p2 = { x: a.x + (b.x - a.x) * t2, y: a.y + (b.y - a.y) * t2 };
     const q1 = vals?.[0] ?? 1, q2 = vals?.[1] ?? q1;
     const qmax = Math.max(Math.abs(q1), Math.abs(q2), 1e-12);
     const H = 30;
@@ -165,6 +175,12 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
     if (l.dir === 'local') {
       const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       nx = (b.y - a.y) / L; ny = -(b.x - a.x) / L; // screen-left of travel = member's +y side
+    }
+    if (stack) {
+      // stacked above the loads below it (each block is H high plus a gap for its label)
+      const off = stack * (H + 16);
+      p1 = { x: p1.x + nx * off, y: p1.y + ny * off };
+      p2 = { x: p2.x + nx * off, y: p2.y + ny * off };
     }
     const h1 = (H * q1) / qmax, h2 = (H * q2) / qmax;
     const top1 = { x: p1.x + nx * h1, y: p1.y + ny * h1 }, top2 = { x: p2.x + nx * h2, y: p2.y + ny * h2 };
@@ -186,7 +202,7 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
         <path d={`M${p1.x} ${p1.y} L${top1.x} ${top1.y} L${top2.x} ${top2.y} L${p2.x} ${p2.y} Z`} className="bm-load-area" />
         {arrows}
         <line x1={top1.x} y1={top1.y} x2={top2.x} y2={top2.y} />
-        {label && <text x={mid.x} y={mid.y} className="bm-label" textAnchor="start">{text}</text>}
+        {label && <text x={mid.x} y={mid.y} className="bm-label" textAnchor="start">{pre}{text}</text>}
       </g>
     );
   }
@@ -198,7 +214,7 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
     return (
       <g className={cls} data-item={l.id}>
         <MomentArrow at={s} positive={M >= 0} r={16} />
-        {label && <text x={s.x + 19} y={s.y - 16} className="bm-label">{vals ? u.moment(Math.abs(M)) : l.value}</text>}
+        {label && <text x={s.x + 19} y={s.y - 16} className="bm-label">{pre}{vals ? u.moment(Math.abs(M)) : l.value}</text>}
       </g>
     );
   }
@@ -211,7 +227,7 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
     <g className={cls} data-item={l.id}>
       <Arrow from={from} to={{ x: s.x - dir.x * 2, y: s.y - dir.y * 2 }} />
       {label && <text x={from.x - dir.x * 6 + (Math.abs(dir.y) > 0.7 ? 6 : 0)} y={from.y - dir.y * 6 + (dir.y > 0.7 ? -2 : dir.y < -0.7 ? 10 : 4)}
-        className="bm-label" textAnchor={Math.abs(dir.y) > 0.7 ? 'start' : dir.x > 0 ? 'end' : 'start'}>{vals ? u.force(Math.abs(P)) : l.value}</text>}
+        className="bm-label" textAnchor={Math.abs(dir.y) > 0.7 ? 'start' : dir.x > 0 ? 'end' : 'start'}>{pre}{vals ? u.force(Math.abs(P)) : l.value}</text>}
     </g>
   );
 }
@@ -221,7 +237,27 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label }: { r: BeamRegion; d: 
 const DIAGRAM_PX = 52;
 
 /** N, V, M or deflection drawn on every member, with the extreme values labelled. */
-export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number }) {
+export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX, low }: {
+  r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number;
+  /** Lower bound of an envelope (res.solution is the upper one): both are drawn to one scale. */
+  low?: BeamSolution;
+}) {
+  const sol = res.solution;
+  if (!sol) return null;
+  if (low && kind !== 'deflection') {
+    let vmax = 0;
+    for (const so of [sol, low]) for (const mr of so.members) for (const v of kind === 'M' ? mr.M : kind === 'V' ? mr.V : mr.N) vmax = Math.max(vmax, Math.abs(v));
+    return (
+      <g className="bm-envelope">
+        <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} vmaxOverride={vmax} />
+        <DiagramOne r={r} d={d} vp={vp} res={{ ...res, solution: low }} kind={kind} px={px} vmaxOverride={vmax} />
+      </g>
+    );
+  }
+  return <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} />;
+}
+
+function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number; vmaxOverride?: number }) {
   const sol = res.solution;
   if (!sol) return null;
   const u = units(r);
@@ -263,6 +299,7 @@ export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX }: { r: BeamRegio
   const vals = (mr: typeof sol.members[number]) => (kind === 'M' ? mr.M : kind === 'V' ? mr.V : mr.N);
   let vmax = 0;
   for (const mr of sol.members) for (const v of vals(mr)) vmax = Math.max(vmax, Math.abs(v));
+  if (vmaxOverride !== undefined) vmax = vmaxOverride;
   const scale = vmax > 0 ? px / vmax : 0;
   const text = (v: number) => (kind === 'M' ? u.moment(v) : u.force(v));
   const out: JSX.Element[] = [];
@@ -423,15 +460,16 @@ interface Station {
  * the tension side (sagging below the line), shear and normal force positive above,
  * deflection as it goes.
  */
-export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width }: {
+export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width, low }: {
   r: BeamRegion; d: BeamData; res: BeamResult; vp: Vp; top: number; layout: StackLayout; kinds: BeamPanel[];
   segs: { id: string; x0: number; x1: number; flip: boolean }[]; width: number;
+  /** Lower bound of an envelope: drawn with the upper one (res.solution) to one scale. */
+  low?: BeamSolution;
 }) {
   const sol = res.solution;
   if (!sol) return null;
   const u = units(r);
   const Lm = LENGTH_M[r.lengthUnit] ?? 1;
-  const byId = new Map(sol.members.map((m) => [m.id, m]));
   const beamY = d.nodes.length ? d.nodes[0].y : 0;
   const sx = (x: number) => toS(vp, { x, y: beamY }).x;
   const bottom = top + layout.rows * layout.panelH;
@@ -446,7 +484,8 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
   }
   const yBeam = toS(vp, { x: 0, y: beamY }).y;
 
-  const series = (k: BeamPanel): Station[] => {
+  const series = (k: BeamPanel, so: BeamSolution = sol): Station[] => {
+    const byId = new Map(so.members.map((m) => [m.id, m]));
     const out: Station[] = [];
     for (const seg of segs) {
       const mr = byId.get(seg.id);
@@ -476,10 +515,11 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
         const y0 = top + idx * layout.panelH;
         const pts = series(k);
         if (!pts.length) return null;
+        const pts2 = low ? series(k, low) : null;
         // plotted value: moments on the tension side, the rest as they are
         const pv = (v: number) => (k === 'M' ? -v : v);
         let lo = 0, hi = 0, vmax = 0;
-        for (const p of pts) {
+        for (const p of [...pts, ...(pts2 ?? [])]) {
           lo = Math.min(lo, pv(p.v));
           hi = Math.max(hi, pv(p.v));
           vmax = Math.max(vmax, Math.abs(p.v));
@@ -490,6 +530,7 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
         const yb = Y(0);
         const x0 = pts[0].x, x1 = pts[pts.length - 1].x;
         const curve = pts.map((p) => `${p.x.toFixed(1)},${Y(p.v).toFixed(1)}`).join(' ');
+        const curve2 = pts2?.map((p) => `${p.x.toFixed(1)},${Y(p.v).toFixed(1)}`).join(' ');
         // labels: the extremes first, then supports and jumps, then local peaks
         const cands: { i: number; pri: number }[] = [];
         let iMax = 0, iMin = 0;
@@ -506,10 +547,18 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
             if (a && b && !p.edge && Math.abs(p.v) > 0.03 * vmax && ((p.v >= a.v && p.v >= b.v) || (p.v <= a.v && p.v <= b.v))) cands.push({ i, pri: 2 });
           });
         }
+        // an envelope: the upper bound's largest and the lower bound's smallest value
+        const all = pts2 ? [...pts, ...pts2] : pts;
+        if (pts2 && !flat) {
+          let j = 0;
+          pts2.forEach((p, i) => { if (p.v < pts2[j].v) j = i; });
+          if (Math.abs(pts2[j].v) > 1e-9 * vmax) cands.unshift({ i: pts.length + j, pri: 0 });
+          if (k !== 'deflection') for (let c = cands.length - 1; c >= 0; c--) if (cands[c].pri > 0) cands.splice(c, 1);
+        }
         cands.sort((a, b) => a.pri - b.pri);
         const kept: { x: number; y: number; t: string; i: number }[] = [];
         for (const c of cands) {
-          const p = pts[c.i];
+          const p = all[c.i];
           const up = pv(p.v) >= 0;
           const t = text(k, p.v);
           const lx = Math.min(Math.max(p.x, 34), width - 34);
@@ -524,6 +573,8 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
             {!flat && <polygon points={`${x0},${yb} ${curve} ${x1},${yb}`} className={`bm-fill ${k === 'deflection' ? 'D' : k}`} />}
             <line x1={x0} y1={yb} x2={x1} y2={yb} className="bm-panel-base" />
             {!flat && <polyline points={curve} className={`bm-curve ${k === 'deflection' ? 'D' : k}`} />}
+            {!flat && curve2 && <polygon points={`${x0},${yb} ${curve2} ${x1},${yb}`} className={`bm-fill ${k === 'deflection' ? 'D' : k}`} />}
+            {!flat && curve2 && <polyline points={curve2} className={`bm-curve ${k === 'deflection' ? 'D' : k} low`} />}
             {flat && <text x={(x0 + x1) / 2} y={yb - 5} className="bm-value" textAnchor="middle">0</text>}
             {kept.map((q) => <text key={q.i} x={q.x} y={q.y} className="bm-value" textAnchor="middle">{q.t}</text>)}
           </g>
@@ -534,8 +585,8 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
 }
 
 /** For frames: a small copy of the structure per diagram, in a grid under the model. */
-export function FrameMultiples({ r, d, res, top, layout, kinds, width }: {
-  r: BeamRegion; d: BeamData; res: BeamResult; top: number; layout: StackLayout; kinds: BeamPanel[]; width: number;
+export function FrameMultiples({ r, d, res, top, layout, kinds, width, low }: {
+  r: BeamRegion; d: BeamData; res: BeamResult; top: number; layout: StackLayout; kinds: BeamPanel[]; width: number; low?: BeamSolution;
 }) {
   const cellW = width / layout.cols;
   const N = new Map(d.nodes.map((q) => [q.id, q]));
@@ -559,7 +610,7 @@ export function FrameMultiples({ r, d, res, top, layout, kinds, width }: {
               const A = toS(vp, a), B = toS(vp, b);
               return <line key={m.id} x1={A.x} y1={A.y} x2={B.x} y2={B.y} className="bm-mini-member" />;
             })}
-            <Diagram r={r} d={d} vp={vp} res={res} kind={k} px={px} />
+            <Diagram r={r} d={d} vp={vp} res={res} kind={k} px={px} low={low} />
           </g>
         );
       })}

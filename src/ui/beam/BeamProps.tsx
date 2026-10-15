@@ -6,8 +6,8 @@ import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import { straightBeam } from '../../beam/evaluate';
 import {
-  BEAM_FORCE_UNITS, BEAM_LENGTH_UNITS, PROFILES, profileSection, removeItems,
-  type BeamData, type BeamLoad, type BeamMember, type BeamSection, type BeamSupport,
+  BEAM_FORCE_UNITS, BEAM_LENGTH_UNITS, PROFILES, beamId, defaultCases, loadCase, profileSection, removeItems,
+  type BeamCases, type BeamData, type BeamLoad, type BeamMember, type BeamSection, type BeamSupport,
 } from '../../beam/model';
 import type { Action } from '../store';
 import { useSketchUI } from '../sketch/context';
@@ -37,6 +37,73 @@ function SectionFields({ s, onChange }: { s: BeamSection; onChange: (s: BeamSect
         <label className="field" title="Second moment of area; a bare number is cm⁴"><span>I</span><LazyInput label="I" value={s.I} onCommit={(v) => onChange({ ...s, I: v.trim(), label: undefined })} /></label>
         <label className="field" title="Section modulus for the bending stress (optional); a bare number is cm³"><span>W</span><LazyInput label="W" value={s.W ?? ''} placeholder="optional" onCommit={(v) => onChange({ ...s, W: v.trim() || undefined, label: undefined })} /></label>
       </div>
+    </>
+  );
+}
+
+/** Load cases and combinations: add, rename, factors, ULS / SLS. */
+function LoadCases({ lc, onChange, loads }: { lc?: BeamCases; onChange: (lc: BeamCases | undefined) => void; loads: BeamLoad[] }) {
+  if (!lc) {
+    return (
+      <>
+        <button className="btn" onClick={() => onChange(defaultCases())}>Use load cases &amp; combinations</button>
+        <p className="hint">Split the loads into cases (G permanent, Q imposed, wind …) and combine them with factors: ULS 1.35 G + 1.5 Q, SLS G + Q, and the envelope.</p>
+      </>
+    );
+  }
+  const setCase = (id: string, patch: Partial<BeamCases['cases'][number]>) => onChange({ ...lc, cases: lc.cases.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  const setCombo = (id: string, patch: Partial<BeamCases['combos'][number]>) => onChange({ ...lc, combos: lc.combos.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  const count = (id: string) => loads.filter((l) => loadCase(l, lc) === id).length;
+  const addCase = () => {
+    const used = new Set(lc.cases.map((c) => c.name));
+    const name = ['W', 'S', 'Q2', 'T', 'A'].find((n) => !used.has(n)) ?? `C${lc.cases.length + 1}`;
+    const id = beamId('c');
+    onChange({ ...lc, cases: [...lc.cases, { id, name, label: name === 'W' ? 'Wind' : name === 'S' ? 'Snow' : '' }] });
+  };
+  const addCombo = () => {
+    const id = beamId('k');
+    onChange({ ...lc, combos: [...lc.combos, { id, name: `ULS${lc.combos.length + 1}`, kind: 'ULS', factors: Object.fromEntries(lc.cases.map((c) => [c.id, '1'])) }] });
+  };
+  return (
+    <>
+      <table className="props-table bm-cases">
+        <thead><tr><th>Case</th><th>Description</th><th>Loads</th><th /></tr></thead>
+        <tbody>
+          {lc.cases.map((c) => (
+            <tr key={c.id}>
+              <td><LazyInput label="Case name" value={c.name} onCommit={(v) => v.trim() && setCase(c.id, { name: v.trim() })} /></td>
+              <td><LazyInput label="Case description" mono={false} value={c.label ?? ''} placeholder="—" onCommit={(v) => setCase(c.id, { label: v.trim() || undefined })} /></td>
+              <td className="num">{count(c.id)}</td>
+              <td>{lc.cases.length > 1 && <button className="icon-btn" aria-label={`Remove case ${c.name}`} title="Remove (its loads move to the first case)" onClick={() => onChange({ ...lc, cases: lc.cases.filter((q) => q.id !== c.id) })}><Trash2 size={12} /></button>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button className="btn" onClick={addCase}>+ Load case</button>
+      <table className="props-table bm-combos">
+        <thead><tr><th>Combination</th><th />{lc.cases.map((c) => <th key={c.id}>γ {c.name}</th>)}<th /></tr></thead>
+        <tbody>
+          {lc.combos.map((k) => (
+            <tr key={k.id}>
+              <td><LazyInput label="Combination name" value={k.name} onCommit={(v) => v.trim() && setCombo(k.id, { name: v.trim() })} /></td>
+              <td>
+                <select aria-label="Kind" value={k.kind} onChange={(e) => setCombo(k.id, { kind: e.target.value as 'ULS' | 'SLS' })} title="ULS: strength (forces, reactions); SLS: deflection">
+                  <option value="ULS">ULS</option><option value="SLS">SLS</option>
+                </select>
+              </td>
+              {lc.cases.map((c) => (
+                <td key={c.id}><LazyInput label={`Factor for ${c.name}`} value={k.factors[c.id] ?? ''} placeholder="0" onCommit={(v) => setCombo(k.id, { factors: { ...k.factors, [c.id]: v.trim() } })} /></td>
+              ))}
+              <td>{lc.combos.length > 1 && <button className="icon-btn" aria-label={`Remove ${k.name}`} onClick={() => onChange({ ...lc, combos: lc.combos.filter((q) => q.id !== k.id), view: lc.view === k.id ? undefined : lc.view })}><Trash2 size={12} /></button>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="row2">
+        <button className="btn" onClick={addCombo}>+ Combination</button>
+        <button className="btn" onClick={() => onChange(undefined)} title="All loads act together again">Stop using cases</button>
+      </div>
+      <p className="hint">Factors are numbers or worksheet expressions (γ_G, ψ_0 …). The envelope takes N, V and M over the ULS combinations and the deflection over the SLS ones; the worksheet gets the governing values, plus <code>.combos.ULS</code> and <code>.cases.G</code> for each one.</p>
     </>
   );
 }
@@ -136,6 +203,13 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
         <>
           <h3 className="sub">{load.type === 'force' ? 'Point load' : load.type === 'moment' ? 'Moment' : 'Line load'}</h3>
           {err(load.id)}
+          {region.loadCases && (
+            <label className="field"><span>Load case</span>
+              <select value={loadCase(load, region.loadCases)} onChange={(e) => updLoad({ case: e.target.value })}>
+                {region.loadCases.cases.map((c) => <option key={c.id} value={c.id}>{c.name}{c.label ? ` · ${c.label}` : ''}</option>)}
+              </select>
+            </label>
+          )}
           {load.type === 'force' && (
             <>
               <label className="field" title={`A bare number is ${region.forceUnit}`}><span>Force ({region.forceUnit})</span><LazyInput label="Force" value={load.value} onCommit={(v) => updLoad({ value: v.trim() || '0' })} /></label>
@@ -214,13 +288,15 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
           <h3 className="sub">Section (all members)</h3>
           {err('section')}
           <SectionFields s={region.section} onChange={(s) => set({ section: s }, 'section')} />
+          <h3 className="sub">Load cases</h3>
+          <LoadCases lc={region.loadCases} loads={region.loads} onChange={(lc) => set({ loadCases: lc }, 'cases')} />
         </>
       )}
 
       {result?.error && <div className="region-error">{result.error}</div>}
       {sol && (
         <>
-          <h3 className="sub">Results</h3>
+          <h3 className="sub">Results{result?.view ? ` · ${result.view === 'envelope' ? 'envelope (max of |min|, |max|)' : [...(result.combos ?? []), ...(result.cases ?? [])].find((c) => c.id === result.view)?.name ?? ''}` : ''}</h3>
           <p className="hint">{sol.indeterminacy === 0 ? 'Statically determinate.' : sol.indeterminacy > 0 ? `Statically indeterminate, degree ${sol.indeterminacy} (solved by stiffness).` : 'Solved.'}</p>
           <table className="props-table">
             <tbody>

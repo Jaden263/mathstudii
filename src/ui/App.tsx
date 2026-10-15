@@ -153,6 +153,7 @@ export function App() {
   const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
   const separateRef = useRef<(quiet?: boolean, coalesce?: string) => void>(() => {});
+  const separateTimer = useRef<number | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
   const editorRef = useRef<EditorHandle | null>(null);
   const clipboard = useRef<Region[]>([]);
@@ -827,7 +828,11 @@ export function App() {
     setUi: (patch: Partial<SketchUI>) => setSketchUI((u) => ({ ...u, ...patch })),
     getWorksheet: () => wsRef.current,
     showProperties: () => { setTab('properties'); setPanelOpen(true); },
-    separate: (coalesce?: string) => window.setTimeout(() => separateRef.current(true, coalesce), 50),
+    // several regions growing at once (a worksheet opening) must push things apart once, with fresh positions
+    separate: (coalesce?: string) => {
+      window.clearTimeout(separateTimer.current);
+      separateTimer.current = window.setTimeout(() => separateRef.current(true, coalesce), 80);
+    },
   }), [sketchUI]);
   const s = ws.settings;
   const cursorMm = cursor ? `${(cursor.x / PX_PER_MM).toFixed(0)}, ${(cursor.y / PX_PER_MM).toFixed(0)} mm` : '';
