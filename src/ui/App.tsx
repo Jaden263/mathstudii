@@ -29,6 +29,7 @@ import { CadWorkspace } from './cad/CadWorkspace';
 import type { CadResult, MathResult } from '../engine/evaluator';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { findEvalEquals } from '../engine/syntax';
+import { parseDelimited, toTableData, toTsv } from '../model/tableData';
 
 type ThemePref = 'system' | 'light' | 'dark';
 
@@ -347,6 +348,13 @@ export function App() {
         addRegion('image', { src: await readAsDataURL(f) });
         return;
       }
+      // data files become a table where they were dropped
+      if (/\.(csv|tsv|txt)$/i.test(f.name)) {
+        const data = toTableData(parseDelimited(await f.text()));
+        const name = f.name.replace(/\.[^.]+$/, '').replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^(\d)/, '_$1') || 'T';
+        addRegion('table', { name, cells: data.cells, units: data.units, headers: data.headers });
+        return;
+      }
       if (!confirmDiscard()) return;
       const bytes = new Uint8Array(await f.arrayBuffer());
       if (foreignFormat(f.name)) await importForeignFile(bytes, f.name);
@@ -518,6 +526,12 @@ export function App() {
       } catch {
         /* plain text */
       }
+      // a range copied from Excel (tabs, several rows) becomes a table
+      if (text.includes('\t') && text.trim().includes('\n')) {
+        const data = toTableData(parseDelimited(text));
+        addRegion('table', { name: 'T', cells: data.cells, units: data.units, headers: data.headers });
+        return;
+      }
       if (text.includes('\n') && /[a-z]{4,}\s+[a-z]{3,}/i.test(text) && !/[:=]/.test(text)) addRegion('text', { markdown: text });
       else addRegion('math', { source: text.trim() });
     };
@@ -585,6 +599,17 @@ export function App() {
         });
       }
       if (m.text) items.push({ label: 'Copy value', icon: <Copy size={14} />, onClick: () => { void navigator.clipboard?.writeText(m.text!); setToast('Value copied'); } });
+      if (m.grid) {
+        const g = m.grid;
+        items.push({
+          label: 'Copy as table (Excel)', icon: <Table2 size={14} />,
+          onClick: () => {
+            const head = g.unit ? [g.rows[0].map(() => `[${g.unit}]`)] : [];
+            void navigator.clipboard?.writeText(toTsv([...head, ...g.rows]));
+            setToast(`Copied ${g.rows.length} × ${g.rows[0]?.length ?? 0} values${g.unit ? ` in ${g.unit}` : ''}`);
+          },
+        });
+      }
     }
     if (items.length) items.push({ separator: true });
     items.push(
@@ -931,7 +956,7 @@ export function App() {
         onDragLeave={(e) => { if (e.currentTarget === e.target) setDropping(false); }}
         onDrop={onDrop}
       >
-        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz) or an image</div>}
+        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz), a CSV / TSV data file or an image</div>}
         <div className="sheet-scroller" ref={scrollerRef}>
           <Worksheet
             ws={ws}

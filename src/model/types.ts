@@ -97,6 +97,10 @@ export interface TableRegion extends RegionBase {
   /** One unit expression per column ("" = dimensionless). */
   units: string[];
   cells: string[][];
+  /** Column names (optional). */
+  headers?: string[];
+  /** Also define each named column as a vector variable (x, F …). */
+  columnVars?: boolean;
 }
 
 export interface ImageRegion extends RegionBase {

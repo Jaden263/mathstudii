@@ -11,6 +11,7 @@ import { useAutocomplete } from './autocomplete';
 import { SketchView } from './sketch/SketchView';
 import { CadView } from './cad/CadView';
 import { BeamView } from './beam/BeamView';
+import { parseDelimited, toCsv, toTableData, type TableData } from '../model/tableData';
 import { PythonView } from './python/PythonView';
 
 export interface RegionViewProps<R> {
@@ -192,24 +193,62 @@ export function SolveView({ region, result, editing, dispatch, onDone, registerE
 
 export function TableView({ region, result, editing, dispatch }: RegionViewProps<TableRegion>) {
   const r = result as TableResult | undefined;
-  const cols = Math.max(1, region.units.length, ...region.cells.map((c) => c.length));
-  const set = (patch: Partial<TableRegion>) => dispatch({ type: 'update', id: region.id, patch, coalesce: `tbl:${region.id}` });
+  const headers = region.headers ?? [];
+  const cols = Math.max(1, region.units.length, headers.length, ...region.cells.map((c) => c.length));
+  const named = headers.some((h) => h.trim());
+  const set = (patch: Partial<TableRegion>, coalesce: string | undefined = `tbl:${region.id}`) => dispatch({ type: 'update', id: region.id, patch, coalesce });
+  const pad = (row: string[], n = cols) => [...row, ...Array(Math.max(0, n - row.length)).fill('')];
   const setCell = (i: number, j: number, v: string) => {
-    const cells = region.cells.map((row) => [...row]);
-    while (cells[i].length < cols) cells[i].push('');
+    const cells = region.cells.map((row) => pad(row));
     cells[i][j] = v;
     set({ cells });
   };
-  const setUnit = (j: number, v: string) => {
-    const units = [...region.units];
-    while (units.length < cols) units.push('');
-    units[j] = v;
-    set({ units });
+  const setUnit = (j: number, v: string) => set({ units: pad(region.units).map((u, k) => (k === j ? v : u)) });
+  const setHeader = (j: number, v: string) => set({ headers: pad(headers).map((h, k) => (k === j ? v : h)) });
+  const addRow = () => set({ cells: [...region.cells, Array(cols).fill('')] }, undefined);
+  const delRow = () => region.cells.length > 1 && set({ cells: region.cells.slice(0, -1) }, undefined);
+  const addCol = () => set({ cells: region.cells.map((row) => [...pad(row), '']), units: [...pad(region.units), ''], headers: [...pad(headers), ''] }, undefined);
+  const delCol = () => cols > 1 && set({ cells: region.cells.map((row) => pad(row).slice(0, cols - 1)), units: pad(region.units).slice(0, cols - 1), headers: pad(headers).slice(0, cols - 1) }, undefined);
+  /** Put a block of data (pasted or imported) into the table, starting at row i, column j. */
+  const putBlock = (data: TableData, i: number, j: number, replace: boolean) => {
+    if (replace) {
+      set({ cells: data.cells, units: data.units, headers: data.headers }, undefined);
+      return;
+    }
+    const w = Math.max(cols, j + Math.max(...data.cells.map((c) => c.length)));
+    const cells = region.cells.map((row) => pad(row, w));
+    data.cells.forEach((row, di) => {
+      while (cells.length <= i + di) cells.push(Array(w).fill(''));
+      row.forEach((c, dj) => { cells[i + di][j + dj] = c; });
+    });
+    const units = pad(region.units, w), hs = pad(headers, w);
+    data.headers.forEach((h, dj) => { if (h) hs[j + dj] = h; });
+    data.units.forEach((u, dj) => { if (u) units[j + dj] = u; });
+    set({ cells, units, headers: hs }, undefined);
   };
-  const addRow = () => set({ cells: [...region.cells, Array(cols).fill('')] });
-  const delRow = () => region.cells.length > 1 && set({ cells: region.cells.slice(0, -1) });
-  const addCol = () => set({ cells: region.cells.map((row) => [...row, '']), units: [...region.units, ''] });
-  const delCol = () => cols > 1 && set({ cells: region.cells.map((row) => row.slice(0, cols - 1)), units: region.units.slice(0, cols - 1) });
+  const onPaste = (e: React.ClipboardEvent<HTMLInputElement>, i: number, j: number) => {
+    const text = e.clipboardData.getData('text/plain');
+    if (!/[\t\n]/.test(text.trim())) return;
+    e.preventDefault();
+    const data = toTableData(parseDelimited(text));
+    // pasting a whole table with a header into the first cell replaces the table
+    putBlock(data, i, j, i === 0 && j === 0 && data.headers.some((h) => h));
+  };
+  const importFile = async () => {
+    const f = await pickTextFile('.csv,.tsv,.txt,text/csv,text/plain');
+    if (!f) return;
+    const data = toTableData(parseDelimited(f.text));
+    const base = f.name.replace(/\.[^.]+$/, '').replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^(\d)/, '_$1');
+    set({ cells: data.cells, units: data.units, headers: data.headers, ...(region.name === 'T' && base ? { name: base } : {}) }, undefined);
+  };
+  const exportFile = () => {
+    const csv = toCsv(headers, region.units, region.cells.filter((row) => row.some((c) => c.trim())));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `${region.name || 'table'}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
   const keyNav = (e: React.KeyboardEvent<HTMLInputElement>, i: number, j: number) => {
     const move = (di: number, dj: number) => {
       const el = (e.currentTarget.closest('table') as HTMLTableElement).querySelector<HTMLInputElement>(`input[data-cell="${i + di},${j + dj}"]`);
@@ -219,6 +258,8 @@ export function TableView({ region, result, editing, dispatch }: RegionViewProps
       if (e.key === 'Enter' && i === region.cells.length - 1) { addRow(); setTimeout(() => move(1, 0)); return; }
       move(1, 0);
     } else if (e.key === 'ArrowUp') move(-1, 0);
+    else if (e.key === 'ArrowRight' && e.currentTarget.selectionStart === e.currentTarget.value.length) move(0, 1);
+    else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) move(0, -1);
     e.stopPropagation();
   };
   return (
@@ -232,6 +273,20 @@ export function TableView({ region, result, editing, dispatch }: RegionViewProps
       </div>
       <table onPointerDown={(e) => editing && e.stopPropagation()}>
         <thead>
+          {(editing || named) && (
+            <tr className="names">
+              <th className="idx" />
+              {Array.from({ length: cols }, (_, j) => (
+                <th key={j}>
+                  {editing ? (
+                    <input value={headers[j] ?? ''} placeholder="name" aria-label={`Column ${j} name`} onChange={(e) => setHeader(j, e.target.value)} />
+                  ) : (
+                    <span className="hname">{headers[j] ?? ''}</span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          )}
           <tr>
             <th className="idx" />
             {Array.from({ length: cols }, (_, j) => (
@@ -252,7 +307,10 @@ export function TableView({ region, result, editing, dispatch }: RegionViewProps
               {Array.from({ length: cols }, (_, j) => (
                 <td key={j}>
                   {editing ? (
-                    <input data-cell={`${i},${j}`} value={row[j] ?? ''} aria-label={`Row ${i} column ${j}`} onChange={(e) => setCell(i, j, e.target.value)} onKeyDown={(e) => keyNav(e, i, j)} />
+                    <input
+                      data-cell={`${i},${j}`} value={row[j] ?? ''} aria-label={`Row ${i} column ${j}`}
+                      onChange={(e) => setCell(i, j, e.target.value)} onKeyDown={(e) => keyNav(e, i, j)} onPaste={(e) => onPaste(e, i, j)}
+                    />
                   ) : (
                     <span>{row[j] ?? ''}</span>
                   )}
@@ -268,11 +326,31 @@ export function TableView({ region, result, editing, dispatch }: RegionViewProps
           <button onClick={delRow} title="Remove last row"><Minus size={13} /> row</button>
           <button onClick={addCol} title="Add column"><Plus size={13} /> col</button>
           <button onClick={delCol} title="Remove last column"><Minus size={13} /> col</button>
+          <button onClick={() => void importFile()} title="Load a CSV or TSV file (the first row may hold names and units: x [m])">Import CSV…</button>
+          <button onClick={exportFile} title="Save as CSV (opens in Excel)">Export CSV</button>
+          <label className="table-opt" title="Define each named column as a vector variable">
+            <input type="checkbox" checked={!!region.columnVars} onChange={(e) => set({ columnVars: e.target.checked }, undefined)} /> columns as variables
+          </label>
         </div>
       )}
+      {editing && <div className="table-hint">Paste a range from Excel into any cell; a header row with units like <code>F [kN]</code> is understood.</div>}
       {r?.error && <div className="region-error">{r.error}</div>}
     </div>
   );
+}
+
+/** Ask for a text file (CSV …) and read it. */
+function pickTextFile(accept: string): Promise<{ name: string; text: string } | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      resolve(f ? { name: f.name, text: await f.text() } : null);
+    };
+    input.click();
+  });
 }
 
 // ---------------------------------------------------------------- image

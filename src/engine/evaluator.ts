@@ -34,6 +34,8 @@ export interface MathResult {
   /** The result in each of `units` (plain text), for previews. */
   unitValues?: string[];
   quantity?: string;
+  /** A vector or matrix result as text cells in one unit, for copying to a spreadsheet. */
+  grid?: { unit: string; rows: string[][] };
   /** A comparison such as σ ≤ f_y: whether it holds and the utilisation (≤ 1 is fine). */
   check?: { ok: boolean; util?: number };
   /** A likely fix for an unknown name: replace `from` with `to`. */
@@ -409,6 +411,25 @@ class Evaluator {
   private resultInfo(value: unknown): Partial<MathResult> {
     if (value === null || value === undefined || typeof value === 'function') return {};
     const out: Partial<MathResult> = { text: valueText(value, this.fmt) };
+    if (isMatrix(value)) {
+      const arr = value.toArray() as unknown[];
+      const grid = (arr.length && Array.isArray(arr[0]) ? arr : arr.map((x) => [x])) as unknown[][];
+      if (grid.length * (grid[0]?.length ?? 0) <= 20000) {
+        const flat = grid.flat();
+        const first = (flat.find((x) => isUnit(x) && x.value !== 0) ?? flat.find(isUnit)) as Unit | undefined;
+        const unit = first ? unitParts(first, undefined, this.fmt.metric).units : '';
+        const cell = (c: unknown) => {
+          try {
+            if (isUnit(c) && unit) return String(Number((c.toNumeric(unit) as number).toPrecision(12)));
+            if (typeof c === 'number') return String(Number(c.toPrecision(12)));
+          } catch {
+            /* different unit in this cell */
+          }
+          return typeof c === 'string' ? c : valueText(c, this.fmt);
+        };
+        out.grid = { unit, rows: grid.map((r) => r.map(cell)) };
+      }
+    }
     const sample = isUnit(value) ? value : isMatrix(value) ? (value.toArray().flat(2) as unknown[]).find(isUnit) : undefined;
     if (sample && (sample as Unit).value !== null) {
       const d = dimsOf(sample as Unit);
@@ -741,14 +762,33 @@ class Evaluator {
   evaluateTable(r: TableRegion): TableResult {
     try {
       if (!isIdentifier(r.name)) throw new Error('Table needs a valid variable name');
-      const units = r.units.map((u) => (u.trim() ? math.evaluate(u.trim()) : null));
+      const width = Math.max(1, r.units.length, r.headers?.length ?? 0, ...r.cells.map((c) => c.length));
+      const units = Array.from({ length: width }, (_, j) => {
+        const u = r.units[j]?.trim();
+        if (!u) return null;
+        try {
+          return math.evaluate(u);
+        } catch {
+          throw new Error(`Column ${j}: "${u}" is not a unit`);
+        }
+      });
       const rows = r.cells
         .filter((row) => row.some((c) => c.trim() !== ''))
-        .map((row) =>
-          row.map((c, j) => {
-            const t = c.trim();
-            let v: unknown = t === '' ? 0 : compileExpr(t).evaluate(this.global);
-            if (units[j]) v = math.multiply(v as never, units[j] as never);
+        .map((row, i) =>
+          Array.from({ length: width }, (_, j) => {
+            const t = (row[j] ?? '').trim();
+            let v: unknown;
+            if (t === '') v = 0;
+            else {
+              try {
+                v = compileExpr(t).evaluate(this.global);
+              } catch (e) {
+                // labels such as "G", "HEB 200" or "case 1" are text, not a failed formula
+                if (/[A-Za-z]/.test(t) && !/[*/^()+=]/.test(t)) return t;
+                throw new Error(`Row ${i}, column ${j}: ${friendlyError(e)}`);
+              }
+            }
+            if (units[j] && typeof v !== 'string') v = math.multiply(v as never, units[j] as never);
             return v;
           }),
         );
@@ -756,6 +796,15 @@ class Evaluator {
       const value = normalize(math.matrix(rows as never));
       this.global.set(r.name, value);
       this.ranges.delete(r.name);
+      if (r.columnVars) {
+        (r.headers ?? []).forEach((h, j) => {
+          const name = h.trim();
+          if (!name) return;
+          if (!isIdentifier(name)) throw new Error(`Column name "${name}" is not a valid variable name`);
+          this.global.set(name, vec(rows.map((row) => row[j])));
+          this.ranges.delete(name);
+        });
+      }
       this.updateDefined();
       return { kind: 'table' };
     } catch (e) {

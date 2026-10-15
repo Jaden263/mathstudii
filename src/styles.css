@@ -852,8 +852,11 @@ select {
 
 .table-tools {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   margin-top: 4px;
+  max-width: 460px;
 }
 
 .table-tools button {
@@ -4031,4 +4034,34 @@ kbd {
   background: var(--surface);
   color: var(--text);
   font: inherit;
+}
+
+.table-region .names th {
+  border-bottom: none;
+}
+
+.table-region .hname {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.table-tools .table-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+.table-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+@media print {
+  .table-hint {
+    display: none;
+  }
 }
