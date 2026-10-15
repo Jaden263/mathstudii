@@ -156,7 +156,9 @@ Values are labelled at supports, jumps and extremes. Moments are drawn on the te
 - **On structure** switches to the other layout: one diagram at a time, drawn on the
   members.
 - The region grows to fit the panels when they first appear (regions below move down),
-  and it can be resized freely afterwards. The panel lists the reactions, the extremes, the bending
+  and it can be resized freely afterwards. The whole drawing scales with its frame like
+  a picture: structure, diagrams, text, lines and symbols together. Plots do the same
+  with their text and lines. The panel lists the reactions, the extremes, the bending
 stress (with a section modulus W) and the degree of static indeterminacy.
 
 **Sections:** IPE/HEA/HEB profiles from a list, or any E, A, I and W. All four are

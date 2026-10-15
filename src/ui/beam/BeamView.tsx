@@ -28,6 +28,8 @@ interface Props {
 }
 
 const SNAP_PX = 10;
+/** Width at which the drawing is shown at its natural size. */
+const BASE_W = 560;
 
 function Glyph({ children }: { children: ReactNode }) {
   return <svg width={18} height={18} viewBox="-10 -10 20 20" className="bm-tool-glyph" aria-hidden>{children}</svg>;
@@ -96,13 +98,22 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const segs = useMemo(() => straightBeam(region), [region.nodes, region.members]); // eslint-disable-line react-hooks/exhaustive-deps
   const kinds = region.panels ?? autoPanels(res);
   const hasPanels = stacked && region.members.length > 0 && kinds.length > 0;
-  const lay = stackLayout(region.height, region.width, hasPanels ? kinds.length : 0, !!segs);
-  const modelH = stacked && region.members.length > 0 ? lay.modelH : region.height;
+  // The drawing scales with its region like a picture: it is laid out at a logical size
+  // (560 px wide at scale 1) and the SVG viewBox maps that onto the region, so text,
+  // lines, symbols and diagrams all grow and shrink together with the frame.
+  const stripH = stacked && region.members.length > 0 ? STRIP_H : 0; // logical height of the diagram strip
+  const nPanels = hasPanels ? kinds.length : 0;
+  const naturalH = nPanels ? stackLayout(0, BASE_W, nPanels, !!segs).required - STRIP_H : 300 - stripH;
+  const kW = region.width / BASE_W;
+  const k = Math.min(3, Math.max(0.5, Math.min(kW, region.height / (naturalH + stripH))));
+  const W = region.width / k, svgH = region.height / k - stripH;
+  const lay = stackLayout(svgH + STRIP_H, W, nPanels, !!segs);
+  const modelH = stacked && region.members.length > 0 ? lay.modelH : svgH;
 
   // the page shows the structure framed; while editing the view stays put
-  const autoView = useMemo(() => fitView(data, region.width, modelH), [region.nodes, region.width, modelH]); // eslint-disable-line react-hooks/exhaustive-deps
+  const autoView = useMemo(() => fitView(data, W, modelH), [region.nodes, W, modelH]); // eslint-disable-line react-hooks/exhaustive-deps
   const view = liveView ?? (editing ? region.view : autoView ?? region.view);
-  const vp: Vp = { view, width: region.width, height: modelH };
+  const vp: Vp = { view, width: W, height: modelH };
 
   // a new set of diagrams makes the region tall enough for them (pushing what is below down)
   const growKey = hasPanels ? `${kinds.join(',')}|${segs ? 'beam' : 'frame'}` : '';
@@ -110,8 +121,10 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   useEffect(() => {
     if (!growKey || grown.current === growKey) return;
     grown.current = growKey;
-    if (region.height < lay.required - 4) {
-      dispatch({ type: 'update', id: region.id, patch: { height: Math.round(lay.required) }, history: false });
+    // tall enough for the panels at the current width's scale
+    const want = Math.round((naturalH + stripH) * kW);
+    if (region.height < want - 4) {
+      dispatch({ type: 'update', id: region.id, patch: { height: want }, history: false });
       window.setTimeout(() => separate(), 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -141,7 +154,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
 
   const screenOf = (e: { clientX: number; clientY: number }): P2 => {
     const rect = svgRef.current!.getBoundingClientRect();
-    const k = rect.width / region.width;
+    const k = rect.width / W;
     return { x: (e.clientX - rect.left) / k, y: (e.clientY - rect.top) / k };
   };
   const nodeById = (id: string) => region.nodes.find((q) => q.id === id);
@@ -325,7 +338,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     setChainFrom(r.node);
     // the first member frames the view
     if (!region.members.length) {
-      const v = fitView(d, region.width, modelH);
+      const v = fitView(d, W, modelH);
       if (v) set({ view: v }, false);
     }
   };
@@ -337,7 +350,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   };
 
   const fit = () => {
-    const v = fitView(data, region.width, modelH);
+    const v = fitView(data, W, modelH);
     if (v) set({ view: v }, false);
   };
 
@@ -529,7 +542,6 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const show = region.show;
   const diagramOn = !stacked && show !== 'model' && show !== 'reactions' && !!res?.solution;
   const reactionsOn = !!res?.solution && (stacked ? !!region.reactions : show === 'reactions');
-  const svgH = stacked && region.members.length > 0 ? region.height - STRIP_H : region.height;
   const togglePanel = (k: BeamPanel) => {
     const order: BeamPanel[] = ['N', 'V', 'M', 'deflection'];
     const next = kinds.includes(k) ? kinds.filter((x) => x !== k) : order.filter((x) => x === k || kinds.includes(x));
@@ -560,7 +572,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const unitHint = editLoad ? (editLoad.type === 'force' ? region.forceUnit : editLoad.type === 'moment' ? `${region.forceUnit}·${region.lengthUnit}` : `${region.forceUnit}/${region.lengthUnit}`) : '';
 
   return (
-    <div ref={wrapRef} className={`sketch-region beam-region${editing ? ' editing' : ''}`} style={{ width: region.width }} tabIndex={editing ? 0 : -1} onKeyDown={onKeyDown}>
+    <div ref={wrapRef} className={`sketch-region beam-region${editing ? ' editing' : ''}`} style={{ width: region.width, height: region.height }} tabIndex={editing ? 0 : -1} onKeyDown={onKeyDown}>
       {editing && (
         <div className="sk-toolbar bm-toolbar" role="toolbar" aria-label="Beam tools" onPointerDown={(e) => e.stopPropagation()}>
           {TOOLS.map((t) => (
@@ -577,19 +589,19 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         </div>
       )}
       <svg
-        ref={svgRef} width={region.width} height={svgH} className="sk-svg bm-svg" style={{ cursor: cursorStyle }}
+        ref={svgRef} width={region.width} height={svgH * k} viewBox={`0 0 ${W} ${svgH}`} className="sk-svg bm-svg" style={{ cursor: cursorStyle }}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         onPointerLeave={() => setCursor(null)} onDoubleClick={onDoubleClick} onContextMenu={(e) => editing && e.preventDefault()}
         role="img" aria-label={region.name ? `Beam ${region.name}` : 'Beam'}
       >
         {editing && region.grid > 0 && <BeamGrid vp={vp} step={region.grid} />}
         {hasPanels && res?.solution && (segs
-          ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={region.width} />
-          : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={region.width} />)}
+          ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={W} />
+          : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={W} />)}
         {hasPanels && !res?.solution && (
           <g>
-            <line x1={0} y1={modelH} x2={region.width} y2={modelH} className="bm-panel-sep" />
-            <text x={region.width / 2} y={modelH + (svgH - modelH) / 2} textAnchor="middle" className="bm-empty">
+            <line x1={0} y1={modelH} x2={W} y2={modelH} className="bm-panel-sep" />
+            <text x={W / 2} y={modelH + (svgH - modelH) / 2} textAnchor="middle" className="bm-empty">
               {res?.error ? `No diagrams yet: ${res.error}` : 'Add supports and loads to see the diagrams'}
             </text>
           </g>
@@ -657,13 +669,13 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           return <circle cx={c.x} cy={c.y} r={cursor.snap ? 6 : 2.5} className={`sk-cursor${cursor.snap ? ' snapped' : ''}`} pointerEvents="none" />;
         })()}
         {!region.members.length && (
-          <text x={region.width / 2} y={svgH / 2} textAnchor="middle" className="bm-empty">
+          <text x={W / 2} y={svgH / 2} textAnchor="middle" className="bm-empty">
             {editing ? 'Click two points to draw a member — then add supports and loads' : 'Empty beam — double-click to draw a structure'}
           </text>
         )}
       </svg>
       {edit && editPos && (
-        <div className="bm-edit" style={{ left: Math.min(Math.max(editPos.x - 70, 4), region.width - 150), top: Math.max(editPos.y - 14, 4) }} onPointerDown={(e) => e.stopPropagation()}>
+        <div className="bm-edit" style={{ left: Math.min(Math.max(editPos.x * k - 70, 4), region.width - 150), top: Math.max(editPos.y * k - 14, 4) }} onPointerDown={(e) => e.stopPropagation()}>
           <input
             autoFocus value={edit.text} spellCheck={false} aria-label="Load value"
             onChange={(e) => setEdit({ ...edit, text: e.target.value })}
@@ -678,37 +690,40 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           <span>{unitHint}</span>
         </div>
       )}
+      {/* the strip and the summary scale with the drawing */}
+      <div className="bm-chrome" style={{ width: W, height: region.height / k, transform: `scale(${k})` }}>
+        {editing && <div className="sk-status bm-status">{cursor ? `${fmt(cursor.p.x)}, ${fmt(cursor.p.y)} ${region.lengthUnit}` : `grid ${region.grid} ${region.lengthUnit}`}</div>}
       {region.members.length > 0 && (
-        <div className={`bm-tabs${stacked ? ' stacked' : ''}`} role="toolbar" aria-label="Diagrams" onPointerDown={(e) => e.stopPropagation()}>
-          <span className="bm-seg">
-            <button className={stacked ? 'on' : ''} title="Diagrams neatly under the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'stack' }, false); }}>Under</button>
-            <button className={!stacked ? 'on' : ''} title="One diagram at a time, drawn on the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'overlay' }, false); }}>On structure</button>
-          </span>
-          <span className="bm-tab-sep" />
-          {stacked ? (
-            <>
-              {(['N', 'V', 'M', 'deflection'] as BeamPanel[]).map((k) => (
-                <button key={k} className={kinds.includes(k) ? 'on' : ''} aria-pressed={kinds.includes(k)} title={DIAGRAMS.find((d) => d.id === k)?.title}
-                  onClick={(e) => { e.stopPropagation(); togglePanel(k); }}>{k === 'deflection' ? 'δ' : k}</button>
-              ))}
-              <button className={region.reactions ? 'on' : ''} aria-pressed={!!region.reactions} title="Show the support reactions on the structure"
-                onClick={(e) => { e.stopPropagation(); set({ reactions: !region.reactions }, false); }}>Reactions</button>
-            </>
-          ) : DIAGRAMS.map((dg) => (
-            <button key={dg.id} role="tab" aria-selected={show === dg.id} className={show === dg.id ? 'on' : ''} title={dg.title}
-              disabled={dg.id !== 'model' && !res?.solution} onClick={(e) => { e.stopPropagation(); set({ show: dg.id }, false); }}>{dg.label}</button>
-          ))}
-        </div>
-      )}
-      {sol && (
-        <div className={`bm-summary${stacked && region.members.length > 0 ? ' in-strip' : ''}`}>
-          {sol.max.M && <span>M<sub>max</sub> {u.moment(sol.max.M.value)}</span>}
-          {sol.max.V && !(stacked && region.members.length > 0) && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}
-          {sol.max.w && <span>δ<sub>max</sub> {u.defl(sol.max.w.value)}</span>}
-          {sol.max.sigma && !(stacked && region.members.length > 0) && <span>σ<sub>max</sub> {u.stress(sol.max.sigma.value)}</span>}
-        </div>
-      )}
-      {editing && <div className="sk-status bm-status">{cursor ? `${fmt(cursor.p.x)}, ${fmt(cursor.p.y)} ${region.lengthUnit}` : `grid ${region.grid} ${region.lengthUnit}`}</div>}
+          <div className={`bm-tabs${stacked ? ' stacked' : ''}`} role="toolbar" aria-label="Diagrams" onPointerDown={(e) => e.stopPropagation()}>
+            <span className="bm-seg">
+              <button className={stacked ? 'on' : ''} title="Diagrams neatly under the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'stack' }, false); }}>Under</button>
+              <button className={!stacked ? 'on' : ''} title="One diagram at a time, drawn on the structure" onClick={(e) => { e.stopPropagation(); set({ layout: 'overlay' }, false); }}>On structure</button>
+            </span>
+            <span className="bm-tab-sep" />
+            {stacked ? (
+              <>
+                {(['N', 'V', 'M', 'deflection'] as BeamPanel[]).map((k) => (
+                  <button key={k} className={kinds.includes(k) ? 'on' : ''} aria-pressed={kinds.includes(k)} title={DIAGRAMS.find((d) => d.id === k)?.title}
+                    onClick={(e) => { e.stopPropagation(); togglePanel(k); }}>{k === 'deflection' ? 'δ' : k}</button>
+                ))}
+                <button className={region.reactions ? 'on' : ''} aria-pressed={!!region.reactions} title="Show the support reactions on the structure"
+                  onClick={(e) => { e.stopPropagation(); set({ reactions: !region.reactions }, false); }}>Reactions</button>
+              </>
+            ) : DIAGRAMS.map((dg) => (
+              <button key={dg.id} role="tab" aria-selected={show === dg.id} className={show === dg.id ? 'on' : ''} title={dg.title}
+                disabled={dg.id !== 'model' && !res?.solution} onClick={(e) => { e.stopPropagation(); set({ show: dg.id }, false); }}>{dg.label}</button>
+            ))}
+          </div>
+        )}
+        {sol && (
+          <div className={`bm-summary${stacked && region.members.length > 0 ? ' in-strip' : ''}`}>
+            {sol.max.M && <span>M<sub>max</sub> {u.moment(sol.max.M.value)}</span>}
+            {sol.max.V && !(stacked && region.members.length > 0) && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}
+            {sol.max.w && <span>δ<sub>max</sub> {u.defl(sol.max.w.value)}</span>}
+            {sol.max.sigma && !(stacked && region.members.length > 0) && <span>σ<sub>max</sub> {u.stress(sol.max.sigma.value)}</span>}
+          </div>
+        )}
+      </div>
       {(editing || regionSelected) && <div className="resize-handle sk-resize" onPointerDown={startResize} title="Drag to resize" aria-label="Resize beam" />}
       {(res?.error || (res && Object.keys(res.errors).length > 0)) && (
         <div className="region-error" role="alert">{res.error ?? Object.values(res.errors)[0]}</div>

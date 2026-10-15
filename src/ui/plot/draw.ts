@@ -147,8 +147,10 @@ function drawXY(ctx: CanvasRenderingContext2D, w: number, h: number, region: Plo
   }
   if (region.logX && x0 <= 0) x0 = Math.min(...finite(allX).filter((x) => x > 0), 1);
   if (region.logY && y0 <= 0) y0 = Math.min(...finite(allY).filter((x) => x > 0), 1);
-  const titleH = region.title ? 18 : 0;
-  const L: Layout = { left: 54, top: 10 + titleH, width: w - 54 - 14, height: h - 10 - titleH - 40, x0, x1, y0, y1, logX: region.logX, logY: region.logY };
+  // margins grow with the text, which grows with the plot
+  const f = theme.fs;
+  const titleH = region.title ? 18 * f : 0;
+  const L: Layout = { left: 54 * f, top: 10 + titleH, width: w - 54 * f - 14, height: h - 10 - titleH - 40 * f, x0, x1, y0, y1, logX: region.logX, logY: region.logY };
   if (L.width < 20 || L.height < 20) return L;
   const xt = region.logX ? logTicks(x0, x1) : niceTicks(x0, x1, Math.max(2, Math.floor(L.width / 70)));
   const yt = region.logY ? logTicks(y0, y1) : niceTicks(y0, y1, Math.max(2, Math.floor(L.height / 40)));

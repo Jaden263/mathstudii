@@ -41,7 +41,10 @@ export function PlotView({ region, data, selected, dispatch, zoom = 1 }: { regio
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    layout.current = drawPlot(ctx, region.width, region.height, region, data, readTheme(c), view);
+    // text and lines scale with the plot, as if it were a picture (420 × 280 is the normal size)
+    const t = readTheme(c);
+    const k = Math.min(2.5, Math.max(0.75, Math.min(region.width / 420, region.height / 280)));
+    layout.current = drawPlot(ctx, region.width, region.height, region, data, { ...t, fs: t.fs * k, lw: t.lw * k }, view);
   }, [region, data, view, themeTick, zoom]);
 
   const onPointerDown = (e: React.PointerEvent) => {

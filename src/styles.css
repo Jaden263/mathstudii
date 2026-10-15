@@ -3268,10 +3268,24 @@ kbd {
 
 /* beams: diagrams under the structure */
 .bm-tabs.stacked {
-  position: static;
   display: inline-flex;
-  margin: 4px 0 0 6px;
   height: 26px;
+}
+
+.bm-chrome {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.bm-chrome > * {
+  pointer-events: auto;
+}
+
+.bm-chrome > .bm-summary {
+  pointer-events: none;
 }
 
 .bm-tabs .bm-seg {
