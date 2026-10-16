@@ -15,7 +15,7 @@ import {
 } from './design';
 import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
 import { occ } from './occ/kernel';
-import { measureDesignOcc } from './occ/build';
+import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
 export interface CadResult {
   kind: 'cad';
@@ -259,8 +259,14 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   const K = kernel();
   // without the B-rep kernel the values are approximate (or missing): evaluate again once it is there
   if (!oc) result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed)) || undefined;
-  if (oc) {
-    const m = measureDesignOcc(oc, design, numbers);
+  let m: MeasuredDesign | null = null;
+  try {
+    m = oc && measureDesignOcc(oc, design, numbers);
+  } catch (e) {
+    // OCCT failing outside a feature (out of memory…): the mesh kernel's values rather than none
+    console.warn('the B-rep kernel failed on this part; using the mesh kernel', e);
+  }
+  if (m) {
     dr.kernel = dr.brep = true;
     for (const c of design.components) {
       const masses: Mass3[] = [];

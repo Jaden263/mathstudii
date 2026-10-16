@@ -1,7 +1,7 @@
 // Every feature built by the B-rep kernel, checked against closed-form volumes and
 // inertias. Exact geometry means exact numbers: tolerances are 1e-9 relative unless a
 // test says why not.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { circles, points, poly, rect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
 import type { DesignItem } from '../design';
 import { occ, occError, renewOcc, setOccEnabled } from './kernel';
@@ -425,6 +425,31 @@ describe('B-rep sketch planes and the worksheet', () => {
     const { res } = solve(design);
     expect(res.needsBrep).toBeUndefined();
     near(volumes(res)[0], exact);
+  });
+
+  it('falls back to the mesh kernel when OCCT fails outside a feature', () => {
+    // a failure while measuring (out of memory, say) must not cost the worksheet its values
+    const G = occ()!.BRepGProp as unknown as Record<string, unknown>;
+    const volumeProperties = G.VolumeProperties;
+    G.VolumeProperties = () => {
+      throw new Error('simulated OCCT failure');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { res } = solve(single([
+        { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: circles('c', [[0, 0, 7]]) },
+        { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '13' }, op: 'new' },
+      ]));
+      expect(res.featureError).toBeUndefined();
+      expect(res.design!.brep).toBeUndefined();
+      expect(res.design!.kernel).toBe(true);
+      // a single extrude keeps its exact profile integral in the mesh kernel too
+      near(volumes(res)[0], PI * 49 * 13);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      G.VolumeProperties = volumeProperties;
+      warn.mockRestore();
+    }
   });
 
   it('deletes every OCCT object a build, its result and its export make', () => {
