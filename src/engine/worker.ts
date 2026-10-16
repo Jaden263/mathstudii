@@ -7,10 +7,10 @@ import type { Worksheet } from '../model/types';
 import { loadKernel } from '../cad/kernelBrowser';
 import { loadOcc } from '../cad/occ/browser';
 import { occ } from '../cad/occ/kernel';
-import { displayFor, ensureBrep, serveKernel, setKernelLoaders } from '../cad/kernel/service';
+import { displayFor, ensureBrep, ensureMesh, serveKernel, setKernelLoaders } from '../cad/kernel/service';
 import { isKernelPortMessage, type DisplayMessage } from '../cad/kernel/protocol';
 import type { BuildResult } from '../cad/buildResult';
-import { designOf } from '../cad/design';
+import { designOf, hasFeatures } from '../cad/design';
 import { designNumbers, type CadResult } from '../cad/evaluate';
 import { initPython, preparePackages, pythonReady } from '../python/runtime';
 import { loadPythonBrowser } from '../python/browser';
@@ -50,8 +50,9 @@ async function startPython(): Promise<string | null> {
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
-// CAD parts need the solid kernel (WASM); it loads once, alongside the first evaluation
-const kernelReady = loadKernel().catch((e) => console.warn('3-D kernel failed to load', e));
+// CAD parts need a solid kernel (WASM): the small mesh kernel loads with the first
+// worksheet that has a part with features, and builds it until OpenCascade is in
+const hasParts = (ws: Worksheet) => ws.regions.some((r) => r.kind === 'cad' && hasFeatures(designOf(r)));
 
 // the B-rep kernel is large: it loads for the first worksheet with a CAD part, whose
 // results then follow again with exact values
@@ -94,7 +95,7 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
     const msg: EvalResponse = { id, results, errorCount: out.errorCount, millis: out.millis, partial };
     ctx.postMessage(msg);
   };
-  await kernelReady;
+  if (hasParts(ws)) await ensureMesh();
   const code = pythonCode(ws);
   if (code.length && pythonReady()) await preparePackages(code);
   let out = evaluateWorksheet(ws, overrides);

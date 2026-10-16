@@ -15,6 +15,7 @@ import {
 } from './design';
 import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
 import { designKey } from './keys';
+import { dimensionValue } from './dimension';
 import { occ, occFailure } from './occ/kernel';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
@@ -83,20 +84,7 @@ export { designNumbers } from './keys';
 
 const isAngle = (t: string) => t === 'angle';
 
-/** A dimension expression → sketch units, or radians for angles (bare numbers are degrees). */
-export function dimensionValue(v: unknown, unit: string, angle: boolean): number {
-  if (typeof v === 'number') return angle ? (v * Math.PI) / 180 : v;
-  if (isUnit(v)) {
-    const u = v as Unit;
-    if (angle) {
-      if (!u.equalBase(math.unit('rad'))) throw new Error('expected an angle');
-      return u.toNumeric('rad') as number;
-    }
-    if (!u.equalBase(math.unit('m'))) throw new Error(`expected a length, got ${u.formatUnits()}`);
-    return u.toNumeric(unit) as number;
-  }
-  throw new Error('expected a number');
-}
+export { dimensionValue };
 
 export interface CadSolved {
   result: CadResult;

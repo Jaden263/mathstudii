@@ -496,7 +496,7 @@ part with a feature (or a CAD window opens), only in a worker, and is cached aft
 (offline too).
 
 Until it has loaded, or where it cannot, [Manifold](https://github.com/elalish/manifold)
-(WASM, Apache-2.0) builds the parts. It keeps every solid a closed 2-manifold, so
+(WASM, Apache-2.0, 0.5 MB, also loaded only for a worksheet with a part) builds the parts. It keeps every solid a closed 2-manifold, so
 booleans never leave cracks. Curves become polygons with a vertex every 2°, so volumes of
 booleaned bodies are within about 2·10⁻⁴ of the true solid (a cylinder comes out ~0.02 %
 small). The values refresh by themselves once OpenCascade is ready. If it cannot load,

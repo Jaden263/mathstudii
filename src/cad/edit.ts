@@ -4,7 +4,7 @@ import { math } from '../engine/math';
 import { cadId, isDimension, nextDimName, type CadConstraint, type CadEntity, type CadSketch, type ConstraintType } from './model';
 import { measure, solveSketch } from './solver';
 import type { Vec2 } from './profile';
-import { dimensionValue } from './evaluate';
+import { dimensionValue } from './dimension';
 
 export interface Geo {
   sk: CadSketch;
