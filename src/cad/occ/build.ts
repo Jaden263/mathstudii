@@ -9,7 +9,7 @@ import {
 import { designKey } from '../keys';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
 import { failedComponent, placeBuilt, timelineCache } from './cache';
-import { hasSolid, occBox, renewOcc, scratch, trsf, xyz, type OC } from './kernel';
+import { hasSolid, occBox, renewOcc, scratch, trsf, volumeProperties, xyz, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
 
 export { occBox };
@@ -81,7 +81,7 @@ const shapeMass = (oc: OC, s: TopoDS_Shape) => {
 export function occMass(oc: OC, s: TopoDS_Shape): Mass3 {
   return scratch((t) => {
     const p = t.add(new oc.GProp_GProps());
-    oc.BRepGProp.VolumeProperties(s, p, false, false, false);
+    volumeProperties(oc, s, p);
     const V = p.Mass();
     const g = t.add(p.CentreOfMass());
     const c = xyz(g);

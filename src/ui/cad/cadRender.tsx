@@ -3,8 +3,8 @@
 import type { CadConstraint, CadEntity, CadView } from '../../cad/model';
 import { isDimension } from '../../cad/model';
 import type { Geo } from '../../cad/edit';
-import { GLYPH, entityRadius, isPlainNumber } from '../../cad/edit';
-import { loopPolygon, type ProfileRegion, type Vec2 } from '../../cad/profile';
+import { GLYPH, entityRadius, isPlainNumber, segsOf } from '../../cad/edit';
+import { loopPolygon, segPolyline, type ProfileRegion, type Vec2 } from '../../cad/profile';
 
 export interface Vp {
   view: CadView;
@@ -56,6 +56,14 @@ export function entityPath(g: Geo, e: CadEntity, vp: Vp): string {
     }
     case 'point':
       return '';
+    default: {
+      // splines, ellipses and text: through their curve (text loop by loop)
+      const z = vp.view.zoom;
+      return segsOf(g, e).map((sg) => {
+        const pts = segPolyline(sg, Math.min(Math.PI / 60, Math.max(Math.PI / 720, 2 / (z * 20)))).map((p) => toS(vp, p));
+        return `M${pts.map((p) => `${f(p.x)} ${f(p.y)}`).join('L')}`;
+      }).join('');
+    }
   }
 }
 

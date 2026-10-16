@@ -54,7 +54,7 @@ interface History {
   IsDeleted(s: TopoDS_Shape): boolean;
 }
 
-/** Volume of a shape by exact surface integration. */
+/** Volume of a shape by surface integration (exact on analytic faces; for signs and checks, see volumeProperties). */
 export function shapeVolume(oc: OC, s: TopoDS_Shape): number {
   return scratch((t) => {
     const p = t.add(new oc.GProp_GProps());

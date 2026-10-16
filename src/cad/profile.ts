@@ -2,10 +2,13 @@
 //
 // Loops are found from topology: edges meet at shared points (or points joined by a
 // coincident constraint, or points that the solver put on top of each other). Every
-// loop is integrated exactly with Green's theorem; arcs use Gauss–Legendre quadrature
-// on short pieces, which is exact to rounding for these smooth integrands.
+// loop is integrated exactly with Green's theorem: arcs and ellipses use Gauss–Legendre
+// quadrature on short pieces, which is exact to rounding for these smooth integrands, and
+// B-splines span by span, where they are polynomials (so the quadrature is exact).
 import type { SectionProps } from '../engine/geometry';
 import type { CadSketch, CadPoint } from './model';
+import { bsBreaks, bsDomain, bsEval, bsReverse, ellipseDeriv, ellipsePoint, piecesFor } from './curves';
+import { entityEnds, entityLoops, entitySegs } from './sketchCurves';
 
 export interface Vec2 {
   x: number;
@@ -15,7 +18,11 @@ export interface Vec2 {
 export type Seg =
   | { kind: 'line'; a: Vec2; b: Vec2 }
   /** Arc around c with radius r from angle a0 to a1 (a1 < a0 runs clockwise). */
-  | { kind: 'arc'; c: Vec2; r: number; a0: number; a1: number };
+  | { kind: 'arc'; c: Vec2; r: number; a0: number; a1: number }
+  /** Elliptical arc about c, semi-axis ra along the angle rot and rb across it, parameter t0 to t1 (t1 < t0 runs clockwise). */
+  | { kind: 'ellipse'; c: Vec2; ra: number; rb: number; rot: number; t0: number; t1: number }
+  /** A clamped B-spline (curves.ts), run over its knots' domain. */
+  | { kind: 'bspline'; deg: number; poles: Vec2[]; knots: number[] };
 
 /** A closed boundary, counter-clockwise. */
 export interface Loop {
@@ -37,32 +44,102 @@ export interface ProfileResult {
 
 // ------------------------------------------------------------ segment helpers
 
+const bsAt = (s: Extract<Seg, { kind: 'bspline' }>, t: number) => {
+  const [u0, u1] = bsDomain(s);
+  return u0 + (u1 - u0) * t;
+};
+
 export function segPoint(s: Seg, t: number): Vec2 {
-  if (s.kind === 'line') return { x: s.a.x + (s.b.x - s.a.x) * t, y: s.a.y + (s.b.y - s.a.y) * t };
-  const a = s.a0 + (s.a1 - s.a0) * t;
-  return { x: s.c.x + s.r * Math.cos(a), y: s.c.y + s.r * Math.sin(a) };
+  switch (s.kind) {
+    case 'line': return { x: s.a.x + (s.b.x - s.a.x) * t, y: s.a.y + (s.b.y - s.a.y) * t };
+    case 'arc': {
+      const a = s.a0 + (s.a1 - s.a0) * t;
+      return { x: s.c.x + s.r * Math.cos(a), y: s.c.y + s.r * Math.sin(a) };
+    }
+    case 'ellipse': return ellipsePoint(s, s.t0 + (s.t1 - s.t0) * t);
+    case 'bspline': {
+      // the ends are the end poles exactly, so loops close on them
+      if (t <= 0) return s.poles[0];
+      if (t >= 1) return s.poles[s.poles.length - 1];
+      return bsEval(s, bsAt(s, t))[0];
+    }
+  }
 }
 
-function segDeriv(s: Seg, t: number): Vec2 {
-  if (s.kind === 'line') return { x: s.b.x - s.a.x, y: s.b.y - s.a.y };
-  const a = s.a0 + (s.a1 - s.a0) * t;
-  const k = (s.a1 - s.a0) * s.r;
-  return { x: -k * Math.sin(a), y: k * Math.cos(a) };
+/** d/dt of segPoint. */
+export function segDeriv(s: Seg, t: number): Vec2 {
+  switch (s.kind) {
+    case 'line': return { x: s.b.x - s.a.x, y: s.b.y - s.a.y };
+    case 'arc': {
+      const a = s.a0 + (s.a1 - s.a0) * t;
+      const k = (s.a1 - s.a0) * s.r;
+      return { x: -k * Math.sin(a), y: k * Math.cos(a) };
+    }
+    case 'ellipse': {
+      const d = ellipseDeriv(s, s.t0 + (s.t1 - s.t0) * t), k = s.t1 - s.t0;
+      return { x: d.x * k, y: d.y * k };
+    }
+    case 'bspline': {
+      const [u0, u1] = bsDomain(s);
+      const d = bsEval(s, bsAt(s, t), 1)[1];
+      return { x: d.x * (u1 - u0), y: d.y * (u1 - u0) };
+    }
+  }
 }
 
-function reverseSeg(s: Seg): Seg {
-  return s.kind === 'line' ? { kind: 'line', a: s.b, b: s.a } : { ...s, a0: s.a1, a1: s.a0 };
+export function reverseSeg(s: Seg): Seg {
+  switch (s.kind) {
+    case 'line': return { kind: 'line', a: s.b, b: s.a };
+    case 'arc': return { ...s, a0: s.a1, a1: s.a0 };
+    case 'ellipse': return { ...s, t0: s.t1, t1: s.t0 };
+    case 'bspline': return { kind: 'bspline', ...bsReverse(s) };
+  }
 }
 
-/** Polyline of a loop; arcs get a vertex at least every maxStep radians. Closing vertex omitted. */
+/**
+ * Where a segment is cut into pieces for quadrature and polylines (t in [0, 1]): arcs and
+ * ellipses every 22.5° at most, B-splines at their knots (and arcs and ellipses longer
+ * than `step` radians into more pieces when asked for).
+ */
+export function segBreaks(s: Seg, step = Math.PI / 8): number[] {
+  if (s.kind === 'line') return [0, 1];
+  if (s.kind === 'bspline') {
+    const [u0, u1] = bsDomain(s);
+    return bsBreaks(s).map((u) => (u - u0) / (u1 - u0));
+  }
+  const n = piecesFor(s.kind === 'arc' ? s.a1 - s.a0 : s.t1 - s.t0, step);
+  return Array.from({ length: n + 1 }, (_, i) => i / n);
+}
+
+/** Polyline of a loop; curves get a vertex at least every maxStep radians of turning. Closing vertex omitted. */
 export function loopPolygon(loop: Loop, maxStep = Math.PI / 90): Vec2[] {
   const out: Vec2[] = [];
-  for (const s of loop.segs) {
-    if (s.kind === 'line') out.push(s.a);
-    else {
-      const n = Math.max(1, Math.ceil(Math.abs(s.a1 - s.a0) / maxStep));
-      for (let i = 0; i < n; i++) out.push(segPoint(s, i / n));
+  for (const s of loop.segs) out.push(...segPolyline(s, maxStep).slice(0, -1));
+  return out;
+}
+
+/** Points along a segment from its start to its end, the tangent turning at most maxStep between them. */
+export function segPolyline(s: Seg, maxStep = Math.PI / 90): Vec2[] {
+  if (s.kind === 'line') return [s.a, s.b];
+  if (s.kind === 'arc' || s.kind === 'ellipse') {
+    // an ellipse turns fastest at the ends of its major axis: step by the parameter, finer by its eccentricity
+    const sweep = s.kind === 'arc' ? s.a1 - s.a0 : s.t1 - s.t0;
+    const k = s.kind === 'ellipse' ? Math.max(s.ra, s.rb) / Math.max(Math.min(s.ra, s.rb), 1e-12) : 1;
+    const n = piecesFor(sweep * Math.min(k, 50), maxStep);
+    return Array.from({ length: n + 1 }, (_, i) => segPoint(s, i / n));
+  }
+  const br = segBreaks(s);
+  const out: Vec2[] = [segPoint(s, 0)];
+  for (let k = 0; k + 1 < br.length; k++) {
+    // the turning on this span from eight samples of the tangent
+    let turn = 0, prev: Vec2 | null = null;
+    for (let j = 0; j <= 8; j++) {
+      const d = segDeriv(s, br[k] + ((br[k + 1] - br[k]) * j) / 8);
+      if (prev && (d.x || d.y)) turn += Math.abs(Math.atan2(prev.x * d.y - prev.y * d.x, prev.x * d.x + prev.y * d.y));
+      if (d.x || d.y) prev = d;
     }
+    const n = Math.max(4, piecesFor(turn, maxStep));
+    for (let i = 1; i <= n; i++) out.push(segPoint(s, br[k] + ((br[k + 1] - br[k]) * i) / n));
   }
   return out;
 }
@@ -77,15 +154,16 @@ for (let i = 0; i < 8; i++) {
   NODES.push([(1 + GL_X[i]) / 2, GL_W[i] / 2], [(1 - GL_X[i]) / 2, GL_W[i] / 2]);
 }
 
-/** ∮ f(x, y) dy along a segment (pieces of at most 22.5° for arcs). */
+/** ∮ f(x, y) dy along a segment (pieces of at most 22.5° for arcs and ellipses, knot spans for B-splines). */
 function integrateDy(s: Seg, f: (x: number, y: number) => number): number {
-  const pieces = s.kind === 'arc' ? Math.max(1, Math.ceil(Math.abs(s.a1 - s.a0) / (Math.PI / 8))) : 1;
+  const br = segBreaks(s);
   let sum = 0;
-  for (let k = 0; k < pieces; k++) {
+  for (let k = 0; k + 1 < br.length; k++) {
+    const h = br[k + 1] - br[k];
     for (const [t0, w] of NODES) {
-      const t = (k + t0) / pieces;
+      const t = br[k] + h * t0;
       const p = segPoint(s, t);
-      sum += (w / pieces) * f(p.x, p.y) * segDeriv(s, t).y;
+      sum += w * h * f(p.x, p.y) * segDeriv(s, t).y;
     }
   }
   return sum;
@@ -188,24 +266,32 @@ export function findProfiles(sketch: CadSketch, pos?: Map<string, Vec2>, radii?:
 
   const loops: Loop[] = [];
   const edges: Edge[] = [];
+  const R = (id: string) => radii?.get(id);
+  let degenerate = 0;
   for (const e of sketch.entities) {
-    if (e.construction) continue;
+    if (e.construction || e.type === 'point') continue;
     if (e.type === 'line') {
       const a = P(e.p1), b = P(e.p2);
       if (Math.hypot(b.x - a.x, b.y - a.y) <= eps) continue;
       edges.push({ id: e.id, a: find(e.p1), b: find(e.p2), seg: { kind: 'line', a, b } });
-    } else if (e.type === 'arc') {
-      const c = P(e.c), a = P(e.p1), b = P(e.p2);
-      const r = Math.hypot(a.x - c.x, a.y - c.y);
-      const a0 = Math.atan2(a.y - c.y, a.x - c.x);
-      let a1 = Math.atan2(b.y - c.y, b.x - c.x);
-      while (a1 <= a0 + 1e-12) a1 += 2 * Math.PI;
-      edges.push({ id: e.id, a: find(e.p1), b: find(e.p2), seg: { kind: 'arc', c, r, a0, a1 } });
-    } else if (e.type === 'circle') {
-      const r = Math.abs(radii?.get(e.id) ?? e.r);
-      if (r > eps) loops.push({ segs: [{ kind: 'arc', c: P(e.c), r, a0: 0, a1: 2 * Math.PI }], entities: [e.id] });
+      continue;
     }
+    // circles, ellipses, closed splines and text close by themselves; the rest run end to end
+    const own = entityLoops(e, P, R);
+    if (own) {
+      for (const l of own) if (l.segs.length > 1 || segBreaks(l.segs[0]).length > 1) loops.push(l);
+      if (!own.length && e.type !== 'text') degenerate++;
+      continue;
+    }
+    const ends = entityEnds(e);
+    const seg = entitySegs(e, P, R)[0];
+    if (!ends || !seg) {
+      degenerate++;
+      continue;
+    }
+    edges.push({ id: e.id, a: find(ends[0]), b: find(ends[1]), seg });
   }
+  if (degenerate) issues.push(`${degenerate} curve${degenerate > 1 ? 's have' : ' has'} no size (two of its points on one spot)`);
 
   // walk loops through nodes of degree 2
   const at = new Map<string, Edge[]>();
@@ -306,15 +392,16 @@ export function frameMoment(regions: ProfileRegion[], o: Vec2, a: Vec2, i: numbe
   let sum = 0;
   const loopSum = (loop: Loop) => {
     for (const s of loop.segs) {
-      const pieces = s.kind === 'arc' ? Math.max(1, Math.ceil(Math.abs(s.a1 - s.a0) / (Math.PI / 8))) : 1;
-      for (let k = 0; k < pieces; k++) {
+      const br = segBreaks(s);
+      for (let k = 0; k + 1 < br.length; k++) {
+        const h = br[k + 1] - br[k];
         for (const [t0, wt] of NODES) {
-          const t = (k + t0) / pieces;
+          const t = br[k] + h * t0;
           const p = segPoint(s, t), d = segDeriv(s, t);
           const u = (p.x - o.x) * a.x + (p.y - o.y) * a.y;
           const w = -(p.x - o.x) * a.y + (p.y - o.y) * a.x;
           const dw = -d.x * a.y + d.y * a.x;
-          sum += (wt / pieces) * ((u ** (i + 1) * w ** j) / (i + 1)) * dw;
+          sum += wt * h * ((u ** (i + 1) * w ** j) / (i + 1)) * dw;
         }
       }
     }

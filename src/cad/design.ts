@@ -33,7 +33,8 @@ import {
 } from './sweep';
 import { parseThread, threadIn } from './threads';
 import { ribCurve, ribRegion, type RibCurve } from './rib';
-import { loopPolygon } from './profile';
+import { loopPolygon, segDeriv, segPoint } from './profile';
+import { entitySegs } from './sketchCurves';
 
 export type { Helix };
 
@@ -1047,6 +1048,12 @@ function picksIn<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodie
     if (e.type === 'line') {
       const a = P(e.p1), b = P(e.p2), d = norm3(sub3(b, a));
       return { at: (t) => ({ p: add3(a, scale3(sub3(b, a), t)), d }), line: { a, b } };
+    }
+    if (e.type === 'spline' || e.type === 'ellipse' || e.type === 'text') {
+      // the curve's own parameter (not arc length), as for edges of a body
+      const seg = e.type === 'text' ? undefined : entitySegs(e, (id) => (sol.points[id] ? { x: sol.points[id][0], y: sol.points[id][1] } : undefined), (id) => sol.radii[id])[0];
+      if (!seg) throw new Error(`the ${what} is not a curve that can be followed`);
+      return { at: (t) => ({ p: framePoint(f, segPoint(seg, t)), d: norm3(frameDir(f, segDeriv(seg, t))) }) };
     }
     const c = sol.points[e.c];
     const r = e.type === 'circle' ? sol.radii[e.id] ?? e.r : Math.hypot(sol.points[e.p1][0] - c[0], sol.points[e.p1][1] - c[1]);

@@ -435,6 +435,7 @@ export function mirror(sk0: CadSketch, P: Map<string, Vec2>, ids: string[], axis
   let size = 1;
   for (const p of P.values()) size = Math.max(size, Math.abs(p.x), Math.abs(p.y));
   const map = new Map<string, string>();
+  const notes: string[] = [];
   const image = (id: string): string => {
     if (map.has(id)) return map.get(id)!;
     const p = P.get(id)!;
@@ -462,8 +463,17 @@ export function mirror(sk0: CadSketch, P: Map<string, Vec2>, ids: string[], axis
       // a mirror image runs the other way round
       sk.entities.push({ id, type: 'arc', c: image(e.c), p1: image(e.p2), p2: image(e.p1), construction: cons });
       sk.constraints.push(K('equal', [e.id, id]));
-    } else sk.entities.push({ id, type: 'point', p: image(e.p), construction: cons });
+    } else if (e.type === 'ellipse') {
+      sk.entities.push({ id, type: 'ellipse', c: image(e.c), a: image(e.a), r: e.r, ...(e.p1 && e.p2 ? { p1: image(e.p2), p2: image(e.p1) } : {}), construction: cons });
+      sk.constraints.push(K('equal', [e.id, id]));
+    } else if (e.type === 'spline') {
+      sk.entities.push({ ...e, id, pts: e.pts.map(image), ...(e.h1 ? { h1: image(e.h1) } : {}), ...(e.h2 ? { h2: image(e.h2) } : {}), ref: undefined });
+    } else if (e.type === 'point') sk.entities.push({ id, type: 'point', p: image(e.p), construction: cons });
+    else {
+      notes.push('Text is not mirrored (it would read backwards)');
+      continue;
+    }
     out.push(id);
   }
-  return { sketch: sk, ids: out, notes: [] };
+  return { sketch: sk, ids: out, notes };
 }

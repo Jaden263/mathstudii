@@ -4,11 +4,11 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type JSX } from 'react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
-import { cadId, isDimension, nextDimName, removeFromSketch, sketchSig, type CadConstraint, type CadEntity, type CadSketch, type CadView as View, type ConstraintType } from '../../cad/model';
+import { cadId, entityPoints, isDimension, nextDimName, removeFromSketch, sketchSig, type CadConstraint, type CadEntity, type CadSketch, type CadView as View, type ConstraintType } from '../../cad/model';
 import { solveSketch, measure } from '../../cad/solver';
-import { findProfiles, type Vec2 } from '../../cad/profile';
+import { findProfiles, segPolyline, type Vec2 } from '../../cad/profile';
 import {
-  constraintFromSelection, dimensionFromSelection, entityRadius, hitTest, localValues, solveLocal, withSolution, segDist,
+  constraintFromSelection, dimensionFromSelection, entityRadius, hitTest, localValues, segsOf, solveLocal, withSolution, segDist,
   type Geo,
 } from '../../cad/edit';
 import {
@@ -802,11 +802,17 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
           if (ends.some(inside)) return true;
           return box.some((q, i) => segmentsCross(ends[0], ends[1], q, box[(i + 1) % 4]));
         }
-        const c = P(e2.c), r = entityRadius(geo, e2);
-        const full = inside({ x: c.x - r, y: c.y - r }) && inside({ x: c.x + r, y: c.y + r });
-        if (!crossing) return full;
-        const nx = Math.max(a.x, Math.min(c.x, b.x)), ny = Math.max(a.y, Math.min(c.y, b.y));
-        return Math.hypot(nx - c.x, ny - c.y) <= r;
+        if (e2.type === 'circle' || e2.type === 'arc') {
+          const c = P(e2.c), r = entityRadius(geo, e2);
+          const full = inside({ x: c.x - r, y: c.y - r }) && inside({ x: c.x + r, y: c.y + r });
+          if (!crossing) return full;
+          const nx = Math.max(a.x, Math.min(c.x, b.x)), ny = Math.max(a.y, Math.min(c.y, b.y));
+          return Math.hypot(nx - c.x, ny - c.y) <= r;
+        }
+        // splines, ellipses, text: by the points along their curve
+        const pts = segsOf(geo, e2).flatMap((sg) => segPolyline(sg, Math.PI / 30));
+        if (!crossing) return pts.length > 0 && pts.every(inside);
+        return pts.some(inside) || pts.some((q, i) => i > 0 && box.some((r0, k) => segmentsCross(pts[i - 1], q, r0, box[(k + 1) % 4])));
       };
       const ents = shown.entities.filter(hits).map((x) => x.id);
       select([...new Set([...(e.shiftKey ? [...sel] : []), ...ents])]);
@@ -918,7 +924,7 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     }
   };
   const picked = new Set([...sel, ...picks, ...(tool === 'mirror' ? mirrorSet : [])]);
-  const usedPoints = new Set(shown.entities.flatMap((e) => (e.type === 'line' ? [e.p1, e.p2] : e.type === 'arc' ? [e.c, e.p1, e.p2] : e.type === 'circle' ? [e.c] : [e.p])));
+  const usedPoints = new Set(shown.entities.flatMap(entityPoints));
 
   const draftPath = (() => {
     if (!draft) return '';

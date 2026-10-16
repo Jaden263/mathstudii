@@ -2,7 +2,7 @@
 // curve sweeps towards the body. The kernel cuts the bodies out of that strip and keeps the
 // pieces that start at the curve, so the rib closes against whatever faces it meets.
 import type { CadSketch } from './model';
-import { loopMoment, segPoint, type Loop, type ProfileRegion, type Seg, type Vec2 } from './profile';
+import { loopMoment, reverseSeg, segPoint, segPolyline, type Loop, type ProfileRegion, type Seg, type Vec2 } from './profile';
 import { sketchPath, type PathSeg } from './sweep';
 import type { Frame, Vec3 } from './solid';
 
@@ -45,12 +45,21 @@ function arcSeg(a: Vec2, m: Vec2, b: Vec2): Seg {
 function toSeg(s: PathSeg): Seg {
   if (s.kind === 'line') return { kind: 'line', a: flat(s.a), b: flat(s.b) };
   if (s.kind === 'arc') return arcSeg(flat(s.a), flat(s.m), flat(s.b));
+  if (s.kind === 'bspline') return { kind: 'bspline', deg: s.deg, poles: s.poles.map(flat), knots: s.knots };
+  if (s.kind === 'ellipse') return { kind: 'ellipse', c: flat(s.c), ra: s.ra, rb: s.rb, rot: atan2(s.x[1], s.x[0]), t0: s.t0, t1: s.t1 };
   throw new Error('a rib is made from an open curve, not a circle');
 }
 
-const segLength = (s: Seg) => (s.kind === 'line' ? hypot(s.b.x - s.a.x, s.b.y - s.a.y) : s.r * abs(s.a1 - s.a0));
+const segLength = (s: Seg) => {
+  if (s.kind === 'line') return hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+  if (s.kind === 'arc') return s.r * abs(s.a1 - s.a0);
+  const p = segPolyline(s, PI / 720);
+  let L = 0;
+  for (let i = 1; i < p.length; i++) L += hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y);
+  return L;
+};
 
-const reversed = (s: Seg): Seg => (s.kind === 'line' ? { kind: 'line', a: s.b, b: s.a } : { ...s, a0: s.a1, a1: s.a0 });
+const reversed = reverseSeg;
 
 /**
  * The curve of a rib: the lines and arcs of its sketch joined end to end into one open chain
@@ -58,7 +67,7 @@ const reversed = (s: Seg): Seg => (s.kind === 'line' ? { kind: 'line', a: s.b, b
  */
 export function ribCurve(sk: CadSketch, sol: { points: Record<string, [number, number]>; radii: Record<string, number> }, curves?: string[]): RibCurve {
   const chosen = sk.entities.filter((e) => e.type !== 'point' && (curves?.length ? curves.includes(e.id) : !e.construction));
-  if (chosen.some((e) => e.type === 'circle')) throw new Error('a rib is made from an open curve: lines and arcs, not a circle');
+  if (chosen.some((e) => e.type === 'circle' || (e.type === 'ellipse' && !e.p1) || (e.type === 'spline' && e.closed))) throw new Error('a rib is made from an open curve: lines, arcs or splines, not a circle or another closed curve');
   let path: ReturnType<typeof sketchPath>;
   try {
     path = sketchPath(sk, sol, PLANE, curves);
@@ -77,7 +86,7 @@ export function ribCurve(sk: CadSketch, sol: { points: Record<string, [number, n
   const e = { x: c.x / chord, y: c.y / chord };
   // every piece must go on along the chord, never back
   for (const s of segs) {
-    const n = s.kind === 'line' ? 1 : 32;
+    const n = s.kind === 'line' ? 1 : s.kind === 'bspline' ? 32 * (s.knots.length - 2 * s.deg - 1) : 32;
     for (let i = 0; i < n; i++) {
       const p = segPoint(s, i / n), q = segPoint(s, (i + 1) / n);
       if ((q.x - p.x) * e.x + (q.y - p.y) * e.y < -1e-9 * total) {
@@ -105,7 +114,7 @@ export function ribCurve(sk: CadSketch, sol: { points: Record<string, [number, n
  */
 export function ribRegion(c: RibCurve, side: 1 | -1, depth: number): ProfileRegion {
   const d = { x: c.n.x * side * depth, y: c.n.y * side * depth };
-  const moved = (s: Seg): Seg => (s.kind === 'line' ? { kind: 'line', a: plus(s.a, d), b: plus(s.b, d) } : { ...s, c: plus(s.c, d) });
+  const moved = (s: Seg): Seg => (s.kind === 'line' ? { kind: 'line', a: plus(s.a, d), b: plus(s.b, d) } : s.kind === 'bspline' ? { ...s, poles: s.poles.map((q) => plus(q, d)) } : { ...s, c: plus(s.c, d) });
   const far = c.segs.map(moved).reverse().map(reversed);
   let loop: Loop = {
     segs: [...c.segs, { kind: 'line', a: c.b, b: plus(c.b, d) }, ...far, { kind: 'line', a: plus(c.a, d), b: c.a }],

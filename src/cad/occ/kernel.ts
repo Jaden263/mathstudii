@@ -8,7 +8,7 @@
 // Every OCCT object lives in WASM memory and must be deleted. Builds collect what they
 // make in an Arena (solid.ts) and free it at the end; short-lived helpers use their own.
 import type {
-  NCollection_List_TopoDS_Shape, OpenCascadeInstance, TopAbs_ShapeEnum, TopoDS_Shape, gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec,
+  GProp_GProps, NCollection_List_TopoDS_Shape, OpenCascadeInstance, TopAbs_ShapeEnum, TopoDS_Shape, gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec,
 } from 'replicad-opencascadejs';
 import { Arena, norm3, type Frame, type M4, type Vec3 } from '../solid';
 
@@ -228,6 +228,33 @@ export function listShapes(t: Arena, list: NCollection_List_TopoDS_Shape): TopoD
     list.delete();
   }
   return out;
+}
+
+/**
+ * Volume properties into p. OCCT's default integration is exact on planes, cylinders,
+ * cones, spheres and tori but not on the faces a spline or an ellipse sweeps when it is
+ * extruded or revolved (a spline profile extruded comes out 10⁻⁴ off), so shapes with those
+ * go through the adaptive Gauss–Kronrod integration span by span (exact to 10⁻¹²). General
+ * B-spline faces (sweeps along curves, lofts) keep the default: there the adaptive one takes
+ * minutes, and the default is within about 10⁻⁵.
+ */
+export function volumeProperties(oc: OC, s: TopoDS_Shape, p: GProp_GProps): void {
+  const S = oc.GeomAbs_SurfaceType;
+  const analytic = [S.GeomAbs_Plane, S.GeomAbs_Cylinder, S.GeomAbs_Cone, S.GeomAbs_Sphere, S.GeomAbs_Torus];
+  const swept = [S.GeomAbs_SurfaceOfExtrusion, S.GeomAbs_SurfaceOfRevolution];
+  const adaptive = scratch((t) => {
+    let any = false;
+    const ex = t.add(new oc.TopExp_Explorer(s, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; ex.More(); ex.Next()) {
+      const ty = t.add(new oc.BRepAdaptor_Surface(t.add(oc.TopoDS.Face(t.add(ex.Current()))), true)).GetType();
+      if (analytic.includes(ty)) continue;
+      if (!swept.includes(ty)) return false;
+      any = true;
+    }
+    return any;
+  });
+  if (adaptive) oc.BRepGProp.VolumePropertiesGK(s, p, 1e-12, false, true, true, true, false);
+  else oc.BRepGProp.VolumeProperties(s, p, false, false, false);
 }
 
 export function hasSolid(oc: OC, s: TopoDS_Shape): boolean {
