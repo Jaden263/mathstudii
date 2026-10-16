@@ -6,7 +6,8 @@
 // reactions, follow from statics along the members: those are the influence lines,
 // exact at every position.
 //
-// Between positions an influence line is taken as straight. The response to an axle
+// For the trains an influence line is taken as straight between positions (the worksheet
+// reads it exactly, as the cubic it is between joints: ilValue). The response to an axle
 // train is then linear in the train's position until one of its axles passes a vertex,
 // so stopping the train with each axle on each vertex, both ways, finds its extremes
 // exactly (no step to miss them). A uniform load goes on the adverse parts of each line
@@ -47,6 +48,8 @@ export interface InfluenceLine {
   x: number[];
   /** Ordinates for a unit (1 N) downward load: reactions and forces per N, M in m, w in m/N. */
   v: number[];
+  /** Index ranges [first, last] of x where the line is one smooth cubic (between joints, kinks and jumps). */
+  smooth: [number, number][];
 }
 
 export interface TrainSpec {
@@ -239,21 +242,58 @@ function sweep(l: Line, st: Stops): { hi: number; lo: number; ihi: number; ilo: 
   return { hi, lo, ihi, ilo };
 }
 
+/** The polynomial through (px, pf) at x. */
+function lagrange(px: number[], pf: number[], x: number): number {
+  let y = 0;
+  for (let i = 0; i < px.length; i++) {
+    let w = pf[i];
+    for (let j = 0; j < px.length; j++) if (j !== i) w *= (x - px[j]) / (px[i] - px[j]);
+    y += w;
+  }
+  return y;
+}
+
+/**
+ * The ordinate of a line at x (m): the cubic through the nearest four ordinates of its
+ * smooth stretch, so exact between positions too; the right-hand value where it jumps.
+ */
+export function ilValue(l: InfluenceLine, x: number): number {
+  const n = l.x.length;
+  let i = 0;
+  while (i + 1 < n - 1 && l.x[i + 1] <= x) i++;
+  const h = l.x[i + 1] - l.x[i];
+  if (!(h > 0)) return l.v[i + 1];
+  const st = l.smooth.find(([a, b]) => a <= i && i + 1 <= b);
+  if (!st) return l.v[i] + ((l.v[i + 1] - l.v[i]) * (x - l.x[i])) / h;
+  const j0 = Math.max(st[0], Math.min(i - 1, st[1] - 3)), j1 = Math.min(st[1], j0 + 3);
+  return lagrange(l.x.slice(j0, j1 + 1), l.v.slice(j0, j1 + 1), x);
+}
+
+/** The largest (dir 1) or smallest (−1) ordinate, between positions too, and where. */
+export function ilPeak(l: InfluenceLine, dir: 1 | -1): { x: number; v: number } {
+  let i = 0;
+  l.v.forEach((v, k) => { if (dir * v > dir * l.v[i]) i = k; });
+  const best = { x: l.x[i], v: l.v[i] };
+  // a smooth crest between its neighbours: golden section on the cubic
+  if (!l.smooth.some(([a, b]) => a < i && i < b)) return best;
+  let a = l.x[i - 1], b = l.x[i + 1];
+  const g = (Math.sqrt(5) - 1) / 2, f = (x: number) => dir * ilValue(l, x);
+  let c = b - g * (b - a), d = a + g * (b - a), fc = f(c), fd = f(d);
+  for (let it = 0; it < 80 && b - a > 1e-12 * (Math.abs(a) + Math.abs(b) + 1); it++) {
+    if (fc > fd) { b = d; d = c; fd = fc; c = b - g * (b - a); fc = f(c); }
+    else { a = c; c = d; fc = fd; d = a + g * (b - a); fd = f(d); }
+  }
+  const xm = (a + b) / 2, vm = ilValue(l, xm);
+  return dir * vm > dir * best.v ? { x: xm, v: vm } : best;
+}
+
 /**
  * Positive and negative parts of ∫ p dx over [a, b], p the polynomial through (px, pf)
  * with p(a) = fa, p(b) = fb: cut at its root where the sign changes, each part by
  * two-point Gauss, which is exact up to cubics.
  */
 function polyParts(px: number[], pf: number[], a: number, b: number, fa: number, fb: number): [number, number] {
-  const p = (x: number) => {
-    let y = 0;
-    for (let i = 0; i < px.length; i++) {
-      let w = pf[i];
-      for (let j = 0; j < px.length; j++) if (j !== i) w *= (x - px[j]) / (px[i] - px[j]);
-      y += w;
-    }
-    return y;
-  };
+  const p = (x: number) => lagrange(px, pf, x);
   const gauss = (u: number, w: number) => {
     const m = (u + w) / 2, d = (w - u) / (2 * Math.sqrt(3));
     return ((w - u) / 2) * (p(m - d) + p(m + d));
@@ -575,17 +615,26 @@ export function influenceAnalysis(st: NumStructure, path: PathSeg[], step: numbe
   };
 
   const toLine = (id: string, l: Line): InfluenceLine => {
-    const x: number[] = [], v: number[] = [];
+    const x: number[] = [], v: number[] = [], smooth: [number, number][] = [];
+    let start = 0;
     for (let k = 0; k < P; k++) {
       if (k === l.k0) {
         x.push(xs[k], xs[k]);
         v.push(l.left, l.right);
+        smooth.push([start, x.length - 2]);
+        start = x.length - 1;
       } else {
         x.push(xs[k]);
         v.push(l.v[k]);
+        // a kink: a joint, or the station's own position
+        if (k > 0 && k < P - 1 && (joint[k] || k === l.kink)) {
+          smooth.push([start, x.length - 1]);
+          start = x.length - 1;
+        }
       }
     }
-    return { id, x, v };
+    smooth.push([start, x.length - 1]);
+    return { id, x, v, smooth: smooth.filter(([a, b]) => b > a) };
   };
   const lines: InfluenceLine[] = [];
   const memo = new Map<string, Lines[]>();

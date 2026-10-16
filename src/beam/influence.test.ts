@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { influenceAnalysis, loadPath, trainLoads, type InfluenceLine, type InfluenceQuery, type TrainSpec } from './influence';
+import { ilPeak, ilValue, influenceAnalysis, loadPath, trainLoads, type InfluenceLine, type InfluenceQuery, type TrainSpec } from './influence';
 import { memberAt, solveStructure, type NumMember, type NumStructure, type NumSupport } from './solve';
 import { SparseSym, skylineCholesky, skylineSolve } from './sparse';
 
@@ -106,6 +106,29 @@ describe('influence lines by unit-load traversal', () => {
       expect(R.v[i]).toBeCloseTo((u * (3 * l * l - u * u)) / (2 * l ** 3), 11);
     });
     expect(at(R, l)).toBeCloseTo(1, 12);
+  });
+
+  it('between positions: the cubic of each smooth stretch, exact; peaks found between positions too', () => {
+    const l = 8;
+    const [R, MB, M] = run(beam([0, l, 2 * l], [0, 1, 2]), 0.25, [
+      { id: 'RB', kind: 'Ry', support: 'B' }, { id: 'MB', kind: 'M', member: 'm0', t: 1 }, { id: 'M', kind: 'M', member: 'm0', t: 0.5 },
+    ]).lines;
+    for (const xi of [0.1, 3.33, 7.9, 8.07, 12.345, 15.99]) {
+      const u = xi <= l ? xi : 2 * l - xi;
+      expect(ilValue(R, xi)).toBeCloseTo((u * (3 * l * l - u * u)) / (2 * l ** 3), 13);
+      // M over B: −u(l² − u²)/(4l²) on either span
+      expect(ilValue(MB, xi)).toBeCloseTo((-u * (l * l - u * u)) / (4 * l * l), 13);
+    }
+    // its lowest ordinate at ξ = l/√3 from either end (4.619 m, off the 0.25 m grid): −l/(6√3)
+    const lo = ilPeak(MB, -1);
+    expect(lo.v).toBeCloseTo(-l / (6 * Math.sqrt(3)), 13);
+    expect(Math.min(Math.abs(lo.x - l / Math.sqrt(3)), Math.abs(2 * l - l / Math.sqrt(3) - lo.x))).toBeLessThan(1e-6);
+    expect(Math.min(...MB.v)).toBeGreaterThan(lo.v);
+    // no cubic across the kink at the section: M at 4 m of span 1, at 3.9 m and 4.1 m
+    // (R_A = 1 − ξ/l + M_B/l; M = 4 R_A − (4 − ξ)₊)
+    const Mx = (xi: number) => 4 * (1 - xi / l + ((-xi * (l * l - xi * xi)) / (4 * l * l)) / l) - Math.max(0, 4 - xi);
+    for (const xi of [3.9, 4, 4.1]) expect(ilValue(M, xi)).toBeCloseTo(Mx(xi), 13);
+    expect(ilPeak(M, 1)).toEqual({ x: 4, v: expect.closeTo(Mx(4), 13) });
   });
 
   it('agrees with the direct solver on a frame with a hinge, a spring and an inclined roller', () => {

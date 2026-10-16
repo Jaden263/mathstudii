@@ -8,7 +8,7 @@ import type { BeamRegion } from '../model/types';
 import { math, isUnit } from '../engine/math';
 import { LM1, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad } from './model';
 import {
-  boundExtremes, influenceAnalysis, linearPieces, loadPath, MAX_POSITIONS,
+  boundExtremes, ilPeak, ilValue, influenceAnalysis, linearPieces, loadPath, MAX_POSITIONS,
   type Critical, type ExtremeKey, type InfluenceQuery, type PathSeg, type ReactionKey, type TrainEnvelope, type TrainSpec,
 } from './influence';
 import { memberAt, StructureError, type BeamSolution, type MemberResult, type NumStructure } from './solve';
@@ -26,6 +26,8 @@ export interface TrafficLine {
   /** Load positions (global x, m; repeated at a jump) and ordinates per newton (M in m, w in m/N). */
   x: number[];
   v: number[];
+  /** Index ranges of x where the line is one cubic (ilValue). */
+  smooth: [number, number][];
   /** The section: member, distance along it (m), and its global x (m). */
   member?: string;
   s?: number;
@@ -195,7 +197,7 @@ export function solveTraffic(r: BeamRegion, base: Omit<NumStructure, 'loads'>, r
     for (const line of res.lines) {
       const l = tr.lines.find((q) => q.id === line.id)!, q = queries.find((x) => x.id === line.id)!;
       const m = q.member ? structure.members.find((x) => x.id === q.member) : undefined;
-      const item: TrafficLine = { id: l.id, name: l.name, quantity: l.quantity, x: line.x, v: line.v };
+      const item: TrafficLine = { id: l.id, name: l.name, quantity: l.quantity, x: line.x, v: line.v, smooth: line.smooth };
       if (m && q.t !== undefined) {
         const N = new Map(structure.nodes.map((n) => [n.id, n]));
         const a = N.get(m.a)!, b = N.get(m.b)!;
@@ -306,15 +308,10 @@ export function trafficValue(r: BeamRegion, tr: TrafficResult, solutionValue: (s
     IL[name] = (x: unknown) => {
       const xm = xOf(x);
       if (xm < l.x[0] - 1e-9 || xm > l.x[l.x.length - 1] + 1e-9) throw new Error(`x is outside the load path (${+(l.x[0] / k).toPrecision(6)} … ${+(l.x[l.x.length - 1] / k).toPrecision(6)} ${Lu})`);
-      // the right-hand value where the line jumps
-      let i = 0;
-      while (i + 1 < l.x.length - 1 && l.x[i + 1] <= xm) i++;
-      const h = l.x[i + 1] - l.x[i];
-      const v = h > 0 ? l.v[i] + ((l.v[i + 1] - l.v[i]) * (xm - l.x[i])) / h : l.v[i + 1];
-      return ordinate(l.quantity, v);
+      return ordinate(l.quantity, ilValue(l, xm));
     };
-    IL[`${name}_max`] = ordinate(l.quantity, Math.max(...l.v));
-    IL[`${name}_min`] = ordinate(l.quantity, Math.min(...l.v));
+    IL[`${name}_max`] = ordinate(l.quantity, ilPeak(l, 1).v);
+    IL[`${name}_min`] = ordinate(l.quantity, ilPeak(l, -1).v);
     // the ordinates as vectors, for tables and sums (a position repeats where the line jumps)
     IL[`${name}_x`] = math.matrix(l.x.map(length) as never);
     IL[`${name}_η`] = IL[`${name}_eta`] = math.matrix(l.v.map((v) => ordinate(l.quantity, v)) as never);

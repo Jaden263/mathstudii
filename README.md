@@ -458,8 +458,10 @@ settlements are prescribed displacements; both are checked against closed-form r
   train on the structure with a slider (and a direction button): the diagrams become
   those of the train at that position, and the influence-line panels mark each axle
   with Σ P η.
-- **In the worksheet:** `b.IL.M1(x)` (with `b.IL.M1_max`, `_min`, and the ordinates as
-  vectors `b.IL.M1_x`, `b.IL.M1_eta`, a position repeated at a jump), and per moving load
+- **In the worksheet:** `b.IL.M1(x)`, exact between positions too (the line is one cubic
+  between joints, kinks and jumps, read through its four nearest ordinates), with
+  `b.IL.M1_max`, `_min` (a crest between positions included) and the ordinates as
+  vectors `b.IL.M1_x`, `b.IL.M1_eta` (a position repeated at a jump); per moving load
   `b.moving.LM1.M_max`, `M_min`, `V_max`, `V_min`, `w_max`, each with `x_M_max` (the
   section) and `pos_M_max` (the first axle), the reactions `b.moving.LM1.B.Ry_max`,
   `.Ry_min`, and the envelope as functions `b.moving.LM1.max.M(x)`, `.min.M(x)`; a

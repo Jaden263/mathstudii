@@ -6,7 +6,7 @@ import { Trash2 } from 'lucide-react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import { straightBeam } from '../../beam/evaluate';
-import { MAX_POSITIONS, type Critical } from '../../beam/influence';
+import { ilPeak, MAX_POSITIONS, type Critical } from '../../beam/influence';
 import { beamId, movingLoad, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad, type BeamTraffic, type InfluenceQuantity } from '../../beam/model';
 import { identifierOf } from '../../beam/traffic';
 import { LazyInput } from '../sketch/SketchProps';
@@ -203,7 +203,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
             {err(l.id)}
             {peak && (
               <p className="hint">
-                η from {fmt(ordinateValue(region, l.quantity, Math.min(...peak.v)))} to {fmt(ordinateValue(region, l.quantity, Math.max(...peak.v)))}
+                η from {fmt(ordinateValue(region, l.quantity, ilPeak(peak, -1).v))} to {fmt(ordinateValue(region, l.quantity, ilPeak(peak, 1).v))}
                 {ordinateUnit(region, l.quantity) === '–' ? ' per unit load' : ` ${ordinateUnit(region, l.quantity)}`}; <code>{name}.IL.{identifierOf(l.name)}(x)</code>
               </p>
             )}
