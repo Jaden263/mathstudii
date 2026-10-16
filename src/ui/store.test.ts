@@ -77,6 +77,9 @@ describe('locked areas', () => {
     expect(get(run(s, { type: 'add', regions: [math('n', 260, 'n := 1')] }), 'n')).toBeDefined();
     // regions outside are free
     expect(src(run(s, { type: 'update', id: 'd', patch: { source: 'd := 0' } }), 'd')).toBe('d := 0');
+    // but cannot be dragged in (they would be locked there for good): d from 300 into 100 … 220
+    expect(run(s, { type: 'move', ids: ['d'], dx: 0, dy: -140 }).ws).toBe(s.ws);
+    expect(get(run(s, { type: 'move', ids: ['d'], dx: 0, dy: 40 }), 'd')!.y).toBe(340);
   });
 
   it('still collapse and expand (layout, not an edit)', () => {
@@ -120,6 +123,16 @@ describe('protected worksheet', () => {
     expect(run(s, { type: 'settings', patch: { protect: undefined } }).ws.settings.protect).toBeDefined();
     expect(canEdit(s.ws, get(s, 'q')!)).toBe(true);
     expect(canEdit(s.ws, get(s, 'M')!)).toBe(false);
+  });
+
+  it('does not bring back by undo what was deleted before protecting', () => {
+    let s = run(ws(), { type: 'delete', ids: ['M'] });
+    s = prot(s);
+    s = run(s, { type: 'undo' });
+    expect(get(s, 'M')).toBeUndefined();
+    // unprotected, undo restores deleted regions as ever
+    s = run(start([math('a', 40, 'a := 1')]), { type: 'delete', ids: ['a'] }, { type: 'undo' });
+    expect(src(s, 'a')).toBe('a := 1');
   });
 
   it('stays protected through undo, and undo only touches the inputs', () => {

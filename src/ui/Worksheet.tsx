@@ -6,7 +6,7 @@ import { AREA_BAR, hiddenIds, isArea, withContents } from '../model/areas';
 import { canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
 import { AreaBar, areaWidth, useAreaFit, usePrintLayout } from './AreaBar';
 import type { RegionResult } from '../engine/evaluator';
-import type { Action } from './store';
+import { moveResult, type Action } from './store';
 import type { EditorHandle } from './editing';
 import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, SketchRegionView, CadRegionView, BeamRegionView, Frame3DRegionView, PlateRegionView, PythonRegionView, DrawingRegionView, type RegionViewProps } from './regions';
 
@@ -209,7 +209,9 @@ export function Worksheet(p: Props) {
         const dx = snap((ev.clientX - start.x) / p.zoom);
         const dy = snap((ev.clientY - start.y) / p.zoom);
         const go = ids.filter((id) => free.has(id));
-        if ((dx || dy) && go.length) p.dispatch({ type: 'move', ids: go, dx, dy });
+        if (!(dx || dy) || !go.length) return;
+        if (moveResult(p.ws, go, dx, dy) === p.ws) p.notify?.('A locked area takes nothing in: unlock it first');
+        else p.dispatch({ type: 'move', ids: go, dx, dy });
         return;
       }
       p.setCursor(null);
@@ -264,7 +266,7 @@ export function Worksheet(p: Props) {
       case 'area':
         return (
           <AreaBar
-            region={r} count={withContents(view.regions, [r.id]).size - 1} locked={locked.has(r.id)} renaming={editing}
+            region={r} count={withContents(view.regions, [r.id]).size - 1} locked={locked.has(r.id)} canRename={canEdit(p.ws, r, locked)} renaming={editing}
             dispatch={p.dispatch} onRename={() => { p.setSelected(new Set([r.id])); p.setEditingId(r.id); }} onDone={() => p.finishEditing(r.id, false)}
           />
         );

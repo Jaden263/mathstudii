@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRegion, emptyWorksheet, readingOrder, type AreaRegion, type MathRegion, type Region, type Worksheet } from './types';
-import { AREA_BAR, AREA_PAD, areasOf, collapseArea, evaluationOrder, expandArea, fitArea, groupIntoArea, hiddenIds, insertArea, printLayout, revealRegion, ungroupArea, withContents } from './areas';
+import { AREA_BAR, AREA_PAD, areasOf, collapseArea, evaluationOrder, expandArea, fitArea, groupIntoArea, hiddenIds, insertArea, nestBands, printLayout, revealRegion, ungroupArea, withContents } from './areas';
 import { GRID } from './types';
 import { evaluateWorksheet, type MathResult } from '../engine/evaluator';
 
@@ -174,5 +174,45 @@ describe('end line', () => {
     const ws = grouped();
     const A = byId(ws, 'A') as AreaRegion;
     expect(byId(ws, 'e').y).toBeGreaterThanOrEqual(A.y + A.height + AREA_PAD);
+  });
+});
+
+describe('bands nest, never cross', () => {
+  it('nests a group that starts inside an area and ends below it', () => {
+    // c is in A (band 100 … 380), e is under it: the new area N starts in A and ends below A's
+    // end line, so A stretches down to N's end and holds it
+    const ws = groupIntoArea(grouped(), ['c', 'e'], heights, area('N'));
+    const A = byId(ws, 'A') as AreaRegion, N = byId(ws, 'N') as AreaRegion;
+    expect(A.y + A.height).toBe(N.y + N.height);
+    // its bar a grid step in from A's
+    expect(N.x).toBe(A.x + GRID);
+    expect([...withContents(ws.regions, ['A'])].sort()).toEqual(['A', 'N', 'b', 'c', 'd', 'e']);
+    expect([...withContents(ws.regions, ['N'])].sort()).toEqual(['N', 'c', 'd', 'e']);
+    // so collapsing either keeps what the other holds, and every order of opening round-trips
+    for (const [p, q] of [['A', 'N'], ['N', 'A']]) {
+      const shut = collapseArea(collapseArea(ws, p), q);
+      expect(expandArea(expandArea(shut, q), p)).toEqual(ws);
+      expect(evaluationOrder(shut).map((r) => r.id)).toEqual(evaluationOrder(ws).map((r) => r.id));
+    }
+  });
+
+  it('puts a region dropped on a collapsed bar at the foot of the bar, outside the area', () => {
+    const shut = collapseArea(grouped(), 'A');
+    const dropped = nestBands({ ...shut, regions: [...shut.regions, math('n', 80, 110, 'n := 1')] });
+    // on the bar (100 … 124) it would land inside the band when the area opens
+    expect(byId(dropped, 'n').y).toBe(100 + AREA_BAR);
+    const open = expandArea(dropped, 'A');
+    expect(byId(open, 'n').y).toBe(100 + 280);
+    expect(withContents(open.regions, ['A']).has('n')).toBe(false);
+    expect(collapseArea(open, 'A')).toEqual(dropped);
+  });
+
+  it('shrinks an outer band by exactly what an inner one gives back', () => {
+    // O's end line 2 px under I's: collapsed, O is 30 px tall (less than a bar and a grid step)
+    const O = { ...area('O'), y: 0, height: 196 }, I = { ...area('I'), y: 4, height: 190 };
+    const ws = sheet([O, I, math('r', 80, 100, 'r := 1'), math('s', 80, 240, 's := r')]);
+    const shut = collapseArea(ws, 'I');
+    expect((byId(shut, 'O') as AreaRegion).height).toBe(196 - (190 - AREA_BAR));
+    expect(expandArea(shut, 'I')).toEqual(ws);
   });
 });

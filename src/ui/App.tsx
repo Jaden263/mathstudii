@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type AreaRegion, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
 import { EXAMPLES, welcomeWorksheet } from '../model/examples';
-import { useWorksheetStore } from './store';
+import { moveResult, useWorksheetStore } from './store';
 import { useEvaluation } from './useEvaluation';
 import { Worksheet, snap, type Cursor } from './Worksheet';
 import { SidePanel, type SideTab } from './SidePanel';
@@ -38,7 +38,7 @@ import { VersionsDialog } from './VersionsDialog';
 import { isName, replaceInRegion } from '../model/search';
 import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
-import { AREA_BAR, AREA_X, areasOf, hiddenIds, isArea, withContents } from '../model/areas';
+import { AREA_BAR, AREA_X, areasOf, evaluationOrder, hiddenIds, isArea, withContents } from '../model/areas';
 import { canAddAt, canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
 import { regionOwnsKey } from './sheetKeys';
 import { ProtectDialog } from './ProtectDialog';
@@ -619,8 +619,7 @@ export function App() {
   const checks = useMemo(() => {
     const failing: string[] = [];
     let total = 0, maxUtil: number | undefined, worst: string | undefined;
-    const ordered = [...ws.regions].sort((a, b) => a.y - b.y || a.x - b.x);
-    for (const r of ordered) {
+    for (const r of evaluationOrder(ws)) {
       const res = evaluation.results.get(r.id);
       if (res?.kind !== 'math' || !res.check || r.disabled) continue;
       total++;
@@ -631,7 +630,7 @@ export function App() {
       }
     }
     return { total, failing, maxUtil, worst };
-  }, [ws.regions, evaluation.results]);
+  }, [ws, evaluation.results]);
 
   // ------------------------------------------------------------ right-click menus
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -890,7 +889,7 @@ export function App() {
   useEffect(() => {
     const hidden = hiddenIds(ws.regions);
     const er = editingId ? ws.regions.find((q) => q.id === editingId) : undefined;
-    if (er && (hidden.has(er.id) || (!isArea(er) && !canEdit(ws, er)))) setEditingId(null);
+    if (er && (hidden.has(er.id) || !canEdit(ws, er))) setEditingId(null);
     if ([...selected].some((id) => hidden.has(id))) setSelected(new Set([...selected].filter((id) => !hidden.has(id))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws]);
@@ -954,6 +953,7 @@ export function App() {
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
         e.preventDefault();
         if (selected.size && !movableIds(ws, selected).size) lockedNote(selected.size, 'moved');
+        else if (selected.size && moveResult(ws, [...selected], dx, dy) === ws) setToast('A locked area takes nothing in: unlock it first');
         else if (selected.size) dispatch({ type: 'move', ids: [...selected], dx, dy, coalesce: 'nudge' });
         else setCursor((c) => ({ x: Math.max(0, (c?.x ?? PAGE_MARGIN) + dx), y: Math.max(0, (c?.y ?? GRID * 6) + dy) }));
         return;

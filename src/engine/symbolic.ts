@@ -186,8 +186,16 @@ function keptNames(node: MathNode, kws: string[]): Set<string> {
     const name = k.split('=')[0].trim();
     if (/^[A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ]*$/.test(name)) keep.add(name);
   });
+  // nor are the default variables of a transform (s in 1/(2 s + 1) → invlaplace is no second)
+  const tv = TRANSFORM_VARS[kws[0]?.toLowerCase() ?? ''];
+  tv?.forEach((v, i) => {
+    if (kws[i + 1] === undefined) keep.add(v);
+  });
   return keep;
 }
+
+/** Variables a transform keyword uses when none are given: from, to. */
+const TRANSFORM_VARS: Record<string, [string, string]> = { laplace: ['t', 's'], invlaplace: ['s', 't'], ilt: ['s', 't'] };
 
 function unitScope(ctx: SymContext) {
   return { isDefined: (n: string) => ctx.scope.has(n) || ctx.functions.has(n), value: (n: string) => ctx.scope.get(n) };
@@ -253,17 +261,28 @@ export function symbolicEval(exprSrc: string, keywords: string, ctx: SymContext)
   const done = (r: NerdExpr, reshape?: string): string => {
     const str = r.toString();
     if (!hasUnitSymbols(str)) return texOut(r);
-    return unitResultTex(nerd, str, { fmt: ctx.fmt ?? { precision: 4, expThreshold: 6, metric: true }, reshape, texOut });
+    return unitResultTex(nerd, str, { fmt: ctx.fmt ?? { precision: 4, expThreshold: 6, metric: true }, reshape, texOut, written: [...(ctx.units ?? [])] });
+  };
+  // with units, simplify, expand and factor shape each unit's coefficient (done() applies them
+  // again there); the CAS may give up on factoring the unit symbols along (a timeout)
+  const reshape = (k: string) => {
+    if (!hasUnitSymbols(e)) return done(nerd(`${k}(${e})`));
+    let r: NerdExpr;
+    try {
+      r = nerd(k === 'factor' ? e : `${k}(${e})`);
+    } catch (err) {
+      if ((err as Error).message !== 'timeout') throw err;
+      r = nerd(e);
+    }
+    return done(r, k);
   };
   switch (kw) {
     case '':
       return done(nerd(e));
     case 'simplify':
-      return done(nerd(`simplify(${e})`), 'simplify');
     case 'expand':
-      return done(nerd(`expand(${e})`), 'expand');
     case 'factor':
-      return done(nerd(`factor(${e})`), 'factor');
+      return reshape(kw);
     case 'solve': {
       const v = arg(1, guessVar());
       return done(nerd(`solve(${e}, ${v})`));

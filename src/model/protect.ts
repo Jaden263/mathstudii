@@ -76,11 +76,12 @@ export function respectLocks(target: Worksheet, current: Worksheet): Worksheet {
   const locked = lockedIds(current);
   const frozen = new Set(current.regions.filter((r) => !canEdit(current, r, locked)).map((r) => r.id));
   const inTarget = new Set(target.regions.map((r) => r.id));
-  const regions = target.regions.map((r) => {
+  const regions = target.regions.flatMap((r): Region[] => {
     const cur = now.get(r.id);
-    if (!cur) return r;
-    if (frozen.has(r.id)) return clean({ ...cur, ...layoutOf(r) } as Region);
-    return clean({ ...r, locked: cur.locked, input: cur.input } as Region);
+    // a region undo would bring back is an addition: not on a protected sheet, not into a locked area
+    if (!cur) return canAddAt(current, r.y) ? [r] : [];
+    if (frozen.has(r.id)) return [clean({ ...cur, ...layoutOf(r) } as Region)];
+    return [clean({ ...r, locked: cur.locked, input: cur.input } as Region)];
   });
   for (const r of current.regions) if (frozen.has(r.id) && !inTarget.has(r.id)) regions.push(r);
   const prot = current.settings.protect;
@@ -94,9 +95,49 @@ function hex(bytes: ArrayBuffer | Uint8Array): string {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** SHA-256 of a text (UTF-8) in hex, by WebCrypto. */
+/** SHA-256 of a text (UTF-8) in hex, by WebCrypto (or in script where the page is not a secure context). */
 export async function sha256Hex(text: string): Promise<string> {
-  return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  const bytes = new TextEncoder().encode(text);
+  // crypto.subtle only exists on https and localhost; a copy served over plain http still protects
+  const subtle = globalThis.crypto?.subtle;
+  return hex(subtle ? await subtle.digest('SHA-256', bytes) : sha256Bytes(bytes));
+}
+
+const ror = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+const PRIMES = [...Array(312).keys()].filter((n) => n > 1 && [...Array(n).keys()].slice(2).every((d) => n % d)).slice(0, 64);
+/** Round constants and initial hash: the first 32 bits of the fractional parts of the cube and square roots of the first primes (FIPS 180-4, 4.2.2 and 5.3.3). */
+const K = Uint32Array.from(PRIMES, (p) => Math.floor((Math.cbrt(p) % 1) * 2 ** 32));
+const H0 = Uint32Array.from(PRIMES.slice(0, 8), (p) => Math.floor((Math.sqrt(p) % 1) * 2 ** 32));
+
+/** SHA-256 (FIPS 180-4) in plain script. */
+export function sha256Bytes(msg: Uint8Array): Uint8Array {
+  // padding: a 1 bit, zeros, and the length in bits as a 64-bit big-endian number
+  const block = new Uint8Array(Math.ceil((msg.length + 9) / 64) * 64);
+  block.set(msg);
+  block[msg.length] = 0x80;
+  const dv = new DataView(block.buffer);
+  dv.setUint32(block.length - 8, Math.floor(msg.length / 2 ** 29));
+  dv.setUint32(block.length - 4, (msg.length * 8) >>> 0);
+  const h = H0.slice();
+  const w = new Uint32Array(64);
+  for (let o = 0; o < block.length; o += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + 4 * i);
+    for (let i = 16; i < 64; i++) {
+      const s0 = ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    let [a, b, c, d, e, f, g, k] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (k + (ror(e, 6) ^ ror(e, 11) ^ ror(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+      const t2 = ((ror(a, 2) ^ ror(a, 13) ^ ror(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      k = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    [a, b, c, d, e, f, g, k].forEach((x, i) => { h[i] += x; });
+  }
+  const out = new Uint8Array(32);
+  h.forEach((x, i) => new DataView(out.buffer).setUint32(4 * i, x));
+  return out;
 }
 
 /** Protection with this password (none when empty): a random salt and SHA-256(salt + password). */

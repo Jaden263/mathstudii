@@ -107,7 +107,8 @@ function reflow(regions: Region[], from: number, dy: number, grow: Set<string>, 
   return regions.map((r) => {
     let q = r;
     if (moving.has(r.id)) q = { ...q, y: q.y + dy };
-    if (grow.has(r.id) && isArea(q)) q = { ...q, height: Math.max(AREA_BAR + GRID, q.height + dy) };
+    // a band round the collapsing one shrinks by exactly what it gives back (so it grows back exactly)
+    if (grow.has(r.id) && isArea(q)) q = { ...q, height: Math.max(AREA_BAR, q.height + dy) };
     return q;
   });
 }
@@ -216,19 +217,68 @@ export function groupIntoArea(ws: Worksheet, ids: string[], height: (id: string)
   // room for the bar above the first region, then for the end line under the last
   let regions = reflow(ws.regions, top, bar, outer, new Set());
   regions = reflow(regions, bottom + bar, AREA_PAD + GRID, outer, set);
-  // an area round other areas sits a step further out, so the bars read as nested
+  // an area round other areas sits a step further out, one inside others a step further in,
+  // so the bars read as nested
   const inner = ws.regions.filter((r): r is AreaRegion => isArea(r) && set.has(r.id));
-  const x = Math.max(GRID, Math.min(area.x, ...inner.map((r) => r.x - GRID)));
+  const out = Math.min(area.x, ...inner.map((r) => r.x - GRID));
+  const x = Math.max(GRID, inside(ws.regions, outer, out, inner));
   const made: AreaRegion = { ...area, x, y: top, height: bottom + bar + AREA_PAD - top };
   // drawn first, so it never covers a region
-  return { ...ws, regions: [made, ...regions] };
+  return nestBands({ ...ws, regions: [made, ...regions] });
+}
+
+/** Where an area ends on the page: its end line, or the foot of its bar when collapsed. */
+const pageEnd = (a: AreaRegion) => a.y + (a.collapsed ? AREA_BAR : a.height);
+
+/**
+ * Bands nest or lie apart, never cross, and nothing starts on a bar it is not under. Collapsing
+ * relies on this: what an area holds must not change when something else collapses or opens.
+ * - An area whose bar is in another's band but whose end is below that band's end (grouped or
+ *   dragged there) is taken in by stretching the outer band down to its end.
+ * - A region put on a collapsed bar, or level with a bar, goes to the foot of the bar: on a
+ *   collapsed one it would otherwise land inside the band when the area opens.
+ */
+export function nestBands(ws: Worksheet): Worksheet {
+  let regions = ws.regions;
+  for (let guard = 0; guard < 1000; guard++) {
+    const hidden = hiddenIds(regions);
+    const shown = regions.filter((r) => !hidden.has(r.id));
+    const bars = shown.filter(isArea);
+    let next: Region[] | null = null;
+    for (const a of bars) {
+      const on = shown.find((r) => r !== a && r.y >= a.y && r.y < a.y + AREA_BAR && (r.y === a.y || !!a.collapsed));
+      if (on) {
+        const dy = a.y + AREA_BAR - on.y;
+        const block = withContents(regions, [on.id]);
+        next = regions.map((r) => (block.has(r.id) ? { ...r, y: r.y + dy } : r));
+        break;
+      }
+      if (a.collapsed) continue;
+      const q = bars.find((o) => o !== a && o.y > a.y && o.y < pageEnd(a) && pageEnd(o) > pageEnd(a));
+      if (q) {
+        next = regions.map((r) => (r.id === a.id ? { ...a, height: pageEnd(q) - a.y } : r));
+        break;
+      }
+    }
+    if (!next) break;
+    regions = next;
+  }
+  return regions === ws.regions ? ws : { ...ws, regions };
 }
 
 /** An empty area at area.y, `area.height` tall; what is below moves down to make room. */
 export function insertArea(ws: Worksheet, area: AreaRegion): Worksheet {
   const outer = new Set(areasAt(ws.regions, area.y).map((o) => o.id));
   const regions = reflow(ws.regions, area.y, area.height + GRID, outer, new Set());
-  return { ...ws, regions: [area, ...regions] };
+  return { ...ws, regions: [{ ...area, x: inside(ws.regions, outer, area.x, []) }, ...regions] };
+}
+
+/** x of a bar inside the areas `outer`: a step in from theirs, unless that would not clear the bars inside it. */
+function inside(regions: Region[], outer: Set<string>, x: number, inner: AreaRegion[]): number {
+  const xs = regions.filter((r) => outer.has(r.id)).map((r) => r.x + GRID);
+  if (!xs.length) return x;
+  const want = Math.max(x, ...xs);
+  return inner.some((r) => r.x <= want) ? x : want;
 }
 
 /** Space `height` tall at the height `at`: what is there and below moves down, areas round it grow. */

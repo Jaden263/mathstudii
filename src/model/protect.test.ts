@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkPassword, makeProtection, sha256Hex } from './protect';
+import { checkPassword, makeProtection, sha256Bytes, sha256Hex } from './protect';
 
 describe('password hash', () => {
   it('is SHA-256 (FIPS 180-2 test vectors)', async () => {
@@ -22,5 +22,24 @@ describe('password hash', () => {
     // no password: anyone may unprotect
     expect(await makeProtection('')).toEqual({});
     expect(await checkPassword({}, 'anything')).toBe(true);
+  });
+});
+
+describe('SHA-256 without WebCrypto (pages served over plain http)', () => {
+  const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  const enc = (s: string) => new TextEncoder().encode(s);
+  it('matches the FIPS 180-2 test vectors', () => {
+    expect(hex(sha256Bytes(enc('abc')))).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    expect(hex(sha256Bytes(enc('')))).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    // two blocks (448 bits of message, then the padding)
+    expect(hex(sha256Bytes(enc('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')))).toBe('248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1');
+    // one million "a" (FIPS 180-2, appendix B.3)
+    expect(hex(sha256Bytes(new Uint8Array(1e6).fill(0x61)))).toBe('cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0');
+  });
+  it('agrees with WebCrypto at every padding length', async () => {
+    for (let n = 0; n < 140; n++) {
+      const msg = 'ü'.repeat(n % 7) + 'x'.repeat(n);
+      expect(hex(sha256Bytes(enc(msg)))).toBe(await sha256Hex(msg));
+    }
   });
 });

@@ -12,6 +12,8 @@ interface Props {
   count: number;
   /** Locked by itself or by an area it is in. */
   locked: boolean;
+  /** The title may change (not locked, the worksheet not protected). */
+  canRename: boolean;
   renaming: boolean;
   dispatch: Dispatch<Action>;
   onRename: () => void;
@@ -22,7 +24,7 @@ interface Props {
 export const areaWidth = (a: AreaRegion) => Math.max(120, PAGE_WIDTH - PAGE_MARGIN + 8 - a.x);
 
 /** The title bar of an area: collapse / expand, its title, what it holds when collapsed. */
-export function AreaBar({ region: a, count, locked, renaming, dispatch, onRename, onDone }: Props) {
+export function AreaBar({ region: a, count, locked, canRename, renaming, dispatch, onRename, onDone }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState(a.title);
   useEffect(() => {
@@ -38,7 +40,7 @@ export function AreaBar({ region: a, count, locked, renaming, dispatch, onRename
   };
   const toggle = () => dispatch({ type: a.collapsed ? 'expand' : 'collapse', id: a.id });
   return (
-    <div className={`area-bar${a.collapsed ? ' collapsed' : ''}`} style={{ width: areaWidth(a) }} onDoubleClick={(e) => { if (!locked && !(e.target as HTMLElement).closest('button')) onRename(); }}>
+    <div className={`area-bar${a.collapsed ? ' collapsed' : ''}`} style={{ width: areaWidth(a) }} onDoubleClick={(e) => { if (canRename && !(e.target as HTMLElement).closest('button')) onRename(); }}>
       <button
         className="area-toggle" aria-expanded={!a.collapsed} aria-label={a.collapsed ? `Expand ${a.title}` : `Collapse ${a.title}`}
         title={a.collapsed ? 'Expand' : 'Collapse'} onPointerDown={(e) => e.stopPropagation()} onClick={toggle}

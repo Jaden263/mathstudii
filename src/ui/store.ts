@@ -1,7 +1,7 @@
 import { useReducer } from 'react';
 import type { AreaRegion, Region, Worksheet, WorksheetProtection, WorksheetSettings } from '../model/types';
-import { collapseArea, expandArea, fitArea, groupIntoArea, insertArea, isArea, makeRoom, ungroupArea, withContents } from '../model/areas';
-import { canAddAt, canEdit, canMove, isProtected, isViewPatch, movableIds, respectLocks } from '../model/protect';
+import { collapseArea, expandArea, fitArea, groupIntoArea, insertArea, isArea, makeRoom, nestBands, ungroupArea, withContents } from '../model/areas';
+import { canAddAt, canEdit, canMove, isProtected, isViewPatch, lockedIds, movableIds, respectLocks } from '../model/protect';
 
 export type Action =
   | { type: 'load'; ws: Worksheet }
@@ -59,7 +59,7 @@ function apply(ws: Worksheet, a: Action): Worksheet {
       const regions = a.regions.filter((r) => canAddAt(ws, r.y));
       if (!regions.length) return ws;
       const base = a.room ? makeRoom(ws, a.room.at, a.room.height) : ws;
-      return { ...base, regions: [...base.regions, ...regions] };
+      return nestBands({ ...base, regions: [...base.regions, ...regions] });
     }
     case 'update': {
       const r = ws.regions.find((q) => q.id === a.id);
@@ -77,14 +77,18 @@ function apply(ws: Worksheet, a: Action): Worksheet {
         const d = { dx: Math.max(-r.x, a.dx), dy: Math.max(-r.y, a.dy) };
         for (const m of withContents(ws.regions, [id])) if (!step.has(m)) step.set(m, d);
       }
-      return {
+      // an area dragged into another's band is taken in by it
+      const moved = nestBands({
         ...ws,
         regions: ws.regions.map((r) => {
           if (!ids.has(r.id)) return r;
           const d = step.get(r.id);
           return d ? { ...r, x: r.x + d.dx, y: r.y + d.dy } : { ...r, x: Math.max(0, r.x + a.dx), y: Math.max(0, r.y + a.dy) };
         }),
-      };
+      });
+      // nothing is dropped into a locked area (it could not be taken out again)
+      const locked = lockedIds(moved);
+      return [...ids].some((id) => locked.has(id)) ? ws : moved;
     }
     case 'delete': {
       // an area goes with everything in it
@@ -98,7 +102,7 @@ function apply(ws: Worksheet, a: Action): Worksheet {
     case 'group':
       return isProtected(ws) ? ws : groupIntoArea(ws, a.ids, (id) => a.heights[id] ?? 24, a.area);
     case 'insertArea':
-      return canAddAt(ws, a.area.y) ? insertArea(ws, a.area) : ws;
+      return canAddAt(ws, a.area.y) ? nestBands(insertArea(ws, a.area)) : ws;
     case 'ungroup': {
       const r = ws.regions.find((q) => q.id === a.id);
       return r && canMove(ws, r) ? ungroupArea(ws, a.id) : ws;
@@ -145,6 +149,9 @@ function apply(ws: Worksheet, a: Action): Worksheet {
       return ws;
   }
 }
+
+/** What moving these regions would give: the same worksheet when locks refuse the move. */
+export const moveResult = (ws: Worksheet, ids: string[], dx: number, dy: number): Worksheet => apply(ws, { type: 'move', ids, dx, dy });
 
 export function reducer(s: State, a: Action): State {
   switch (a.type) {

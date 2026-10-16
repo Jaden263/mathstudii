@@ -218,7 +218,13 @@ export function unitNode(name: string): MathNode {
 
 export function valueNode(v: unknown): MathNode | null {
   if (!isQuantity(v)) return null;
-  const { scale, dims } = siParts(v as import('mathjs').Unit);
+  const u = v as import('mathjs').Unit;
+  const { scale, dims } = siParts(u);
+  // an angle in degrees stays exact: α := 30° gives sin(α) → 1/2, not the sine of 0.5235987…
+  if (isZero(dims) && u.units.length === 1 && u.units[0].unit.name === 'deg' && u.units[0].power === 1) {
+    // (back from radians: 29.999999999999996 is 30)
+    return math.parse(`(${exactNumber(Number(u.toNumber('deg').toPrecision(12)))}*pi/180)`);
+  }
   return quantityNode(scale, dims);
 }
 
@@ -237,7 +243,7 @@ function describe(d: number[]): string {
   if (isZero(d)) return 'a number';
   const base = d.findIndex((x) => x !== 0);
   const q = quantityName(d)?.split(',')[0] ?? (d.filter((x) => x !== 0).length === 1 && d[base] === 1 ? BASE_NAMES[base] : undefined);
-  return q ? `a ${q}` : `[${siUnit(d).formatUnits()}]`;
+  return q ? `${/^[aeiou]/i.test(q) ? 'an' : 'a'} ${q}` : `[${siUnit(d).formatUnits()}]`;
 }
 
 const TRANSCENDENTAL = new Set([
@@ -454,6 +460,26 @@ export interface UnitTexOptions {
   /** A keyword that shapes the result (factor, expand …), applied again to the coefficient without its unit. */
   reshape?: string;
   texOut: (e: { toTeX(): string }) => string;
+  /** Units written in the expression: a symbolic coefficient keeps them where they fit (x·ft, not 304800·x µm). */
+  written?: string[];
+}
+
+/** The written units and their powers, then products of two of them, that have these dimensions (ft/s from ft and s). */
+function writtenUnits(names: string[], dims: number[]): { single: string[]; pairs: string[] } {
+  const fits = (u: string) => {
+    try {
+      const d = dimsOf(math.unit(1, u));
+      d[ANGLE] = 0;
+      return same(d, dims);
+    } catch {
+      return false;
+    }
+  };
+  const P = [1, 2, 3, -1, -2, -3];
+  const pow = (u: string, k: number) => (k === 1 ? u : `${u}^${k}`);
+  const single = names.flatMap((u) => P.map((k) => pow(u, k))).filter(fits);
+  const pairs = names.flatMap((u) => names.filter((v) => v !== u).flatMap((v) => P.map((k) => `${u}*${pow(v, k)}`))).filter(fits);
+  return { single, pairs };
 }
 
 /** One group of terms with the same unit: a number shown like "=" shows it, or a symbolic coefficient with a unit. */
@@ -469,7 +495,10 @@ function groupTex(nerd: Nerd, coef: string, dims: number[], o: UnitTexOptions): 
   const metric = o.fmt.metric !== false ? compatibleUnits(dims).map((u) => u.u) : [];
   const fallback = math.format(si, { precision: 15 }).replace(/^\s*1\s*/, '') || si.formatUnits();
   let best: { tex: ReturnType<Nerd>; unit: string; len: number } | null = null;
-  for (const unit of [...metric, fallback]) {
+  // a unit the expression was written in comes first and wins a tie; a product of two of them
+  // (ft/s) only beats the practical units when it is simpler (MPa·mm² is shown as N)
+  const written = writtenUnits(o.written ?? [], dims);
+  for (const unit of [...written.single, ...metric, ...written.pairs, fallback]) {
     let scale: number;
     try {
       scale = math.unit(1, unit).value as number;
@@ -481,7 +510,9 @@ function groupTex(nerd: Nerd, coef: string, dims: number[], o: UnitTexOptions): 
     const expanded = nerd(`expand(${q})`);
     if (expanded.toString().length < e.toString().length) e = expanded;
     if (o.reshape) e = nerd(`${o.reshape}(${e.toString()})`);
-    const len = e.toString().length;
+    // simplest: fewest digits (x²/2 kN, not 500 x² N), then shortest
+    const str = e.toString();
+    const len = (str.match(/\d/g)?.length ?? 0) * 1000 + str.length;
     if (!best || len < best.len) best = { tex: e, unit, len };
   }
   const b = best!;

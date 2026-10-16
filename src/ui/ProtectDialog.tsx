@@ -35,6 +35,8 @@ export function ProtectDialog({ current, inputs, onClose, onDone }: Props) {
         if (pw !== pw2) return setError('The passwords differ');
         onDone(await makeProtection(pw));
       }
+    } catch (e) {
+      setError(`Could not ${unprotect ? 'check' : 'set'} the password: ${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -52,7 +54,7 @@ export function ProtectDialog({ current, inputs, onClose, onDone }: Props) {
           ) : (
             <>
               <p>
-                Only regions marked as inputs stay editable ({inputs ? `${inputs} input${inputs === 1 ? '' : 's'}` : 'none yet: right-click a region → Mark as input'}).
+                Only regions marked as inputs stay editable ({inputs ? `${inputs} input${inputs === 1 ? '' : 's'}` : 'none yet: right-click a region → Input'}).
                 Nothing can be moved, deleted, pasted or added, and undo leaves the rest alone.
               </p>
               <p className="hint protect-note">

@@ -71,10 +71,42 @@ describe('units in symbolic results', () => {
     expect(result(['x*kN/m →'])).toBe('x\\,\\frac{\\mathrm{kN}}{\\mathrm{m}}');
     // terms of different units stay apart: x is no length unless it is one
     expect(result(['x + 2 m →'])).toBe('2\\ \\mathrm{m} + x');
+    // in the units it was written in: 1 ft = 0.3048 m, so not 304 800·x µm
+    expect(result(['x*ft →'])).toBe('x\\,\\mathrm{ft}');
+    expect(result(['x*psi →'])).toBe('x\\,\\mathrm{psi}');
+    expect(result(['x*ft/s →'])).toBe('x\\,\\frac{\\mathrm{ft}}{\\mathrm{s}}');
+    // ∫ x kN dx = x²/2 kN (not 500 x² N); σ·A in MPa·mm² is in N (1 MPa·mm² = 1 N)
+    expect(result(['integrate(x*kN, x) →'])).toBe('\\frac{x^{2}}{2}\\,\\mathrm{kN}');
+    expect(result(['x*MPa * 2 mm^2 →'])).toBe('2 \\cdot x\\,\\mathrm{N}');
+  });
+
+  it('shapes the coefficient of each unit with simplify, expand and factor', () => {
+    // factoring the unit symbols along made the CAS time out
+    expect(result(['x*kN + 2 kN → factor'])).toBe('\\left(x+2\\right)\\,\\mathrm{kN}');
+    // x² kN − 4 kN = (x + 2)(x − 2) kN
+    expect(result(['x^2*kN - 4 kN → factor'])).toBe('\\left(x+2\\right) \\cdot \\left(x-2\\right)\\,\\mathrm{kN}');
+    expect(result(['(x*kN + 2 kN)*(x - 1) → expand'])).toBe('\\left(x^{2}+x-2\\right)\\,\\mathrm{kN}');
+    // (x + 2) mm / (x + 2) = 1 mm
+    expect(result(['(x mm + 2 mm)/(x + 2) → simplify'])).toBe('1\\ \\mathrm{mm}');
+  });
+
+  it('keeps angles given in degrees exact', () => {
+    // sin 30° = 1/2, cos² 30° = 3/4, 30° = π/6
+    expect(result(['α := 30 deg', 'sin(α) →'])).toBe('\\frac{1}{2}');
+    expect(result(['α := 30 deg', 'cos(α)^2 →'])).toBe('\\frac{3}{4}');
+    expect(result(['α := 30 deg', 'α →'])).toBe('\\frac{\\pi}{6}');
+  });
+
+  it('reads the variables of a transform as variables, not seconds', () => {
+    // L⁻¹{1/(s + 1)} = e^(−t); "2 s" in 1/(2 s + 1) is no time either
+    expect(result(['1/(s + 1) → invlaplace'])).toBe('\\frac{1}{e^{t}}');
+    expect(run(['1/(2 s + 1) → invlaplace']).error).toBeUndefined();
+    expect(run(['1/(2 s + 1) → invlaplace']).tex).not.toContain('\\mathrm{s}');
   });
 
   it('refuses to add or take functions of mismatched units', () => {
     expect(run(['2 m + 3 s →']).error).toBe('Cannot add a length and a time');
+    expect(run(['2 m^2 + 3 m →']).error).toBe('Cannot add an area and a length');
     expect(run(['F := 10 kN', 'F + 2 m →']).error).toBe('Cannot add a force and a length');
     expect(run(['sin(2 m) →']).error).toBe('sin needs a number, not a length');
     expect(run(['x^2 = 4 m → solve, x']).error).toBeUndefined();

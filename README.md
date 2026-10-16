@@ -120,8 +120,12 @@ the table above:
 | `x^2 = 4 m^2 → solve, x` | [−2 m, 2 m] |
 | `2 m + 3 s →` | error: *Cannot add a length and a time* |
 
-Variables defined with a unit bring their value, as numeric ones always did. A symbolic
-coefficient gets the unit that leaves it simplest (`x·kN`, not `1000·x·N`).
+Variables defined with a unit bring their value, as numeric ones always did; an angle given
+in degrees stays exact (`α := 30 deg`, `sin(α) →` gives 1/2). A symbolic coefficient keeps a
+unit it was written in when that fits (`x·ft →` x ft, `∫ x·kN dx →` x²/2 kN), otherwise it
+gets the practical unit that leaves it simplest (`F·x →` 10·x kN with `F := 10 kN`, not
+`10000·x·N`). `simplify`, `expand` and `factor` shape the coefficient of each unit:
+`x²·kN − 4 kN → factor` gives (x + 2)(x − 2) kN.
 
 Which names are units is the delicate part, because in symbolic math most single letters
 are variables (`q·L²/8` must not become litres, `F/A` not farad per ampere, `s² + 3 s + 2`
@@ -133,6 +137,8 @@ not seconds). The rules:
   as `m/s`, `m/s²`, `N/m`, `N/m²`. So `2 m·a →` and `1/2 m v^2 →` keep the mass `m`.
 - Every other single letter (`L`, `A`, `F`, `t`, `h` …) is a variable in `→`, even where
   the numeric worksheet would read a unit. Define it with a unit (`P := 5 kN`) instead.
+- The variables of `laplace` and `invlaplace` (t and s unless you name others) are never
+  units, so `1/(2 s + 1) → invlaplace` is about the Laplace variable, not seconds.
 
 Units inside functions that the CAS cannot separate (`exp(−t/τ)` with `τ := 2 s`) are shown
 in place. `y'(t)` and `y''(t)` work in `→` for a function `y` defined above (they become
@@ -185,6 +191,9 @@ the band belongs to it, so regions beside the selection come along.
 - Double-click the title to rename. Drag the bar to move the area with its contents; Delete
   removes it with its contents; **Ungroup** removes only the bar. Areas nest, and a band
   grows (pushing what is below down) when its contents get taller.
+- Bands never cross: grouping regions that start inside an area and end below it, or dragging
+  an area there, stretches the outer area down round the new one. A region dropped on a
+  collapsed bar goes just below it, so it stays out of the area when that opens.
 - Right-click → **Print**: as on screen, always expanded or always collapsed.
 - Find and replace look inside collapsed areas: a match lights up the bar, and stepping to
   it (Enter) opens the area.
@@ -193,7 +202,7 @@ the band belongs to it, so regions beside the selection come along.
 
 - Right-click → **Lock** a region, or an area with everything in it. A locked region shows a
   small lock and cannot be edited, moved, deleted, cut, replaced by find and replace or
-  renamed by *Rename everywhere*; nothing can be pasted or typed into a locked area. Undo and
+  renamed by *Rename everywhere*; nothing can be pasted, typed or dragged into a locked area. Undo and
   redo never change or remove a locked region (its place still follows areas collapsing above
   it). Locking is not an undo step: unlock with the same menu.
 - Right-click → **Input (editable when protected)** marks the regions a user of the
@@ -201,7 +210,8 @@ the band belongs to it, so regions beside the selection come along.
 - File menu ▾ or right-click on paper → **Protect worksheet**. Then only the inputs can be
   edited (shown dashed); nothing can be moved, deleted, pasted or added, the formats and the
   title are fixed, and undo only reaches the inputs. Areas still collapse and expand. An
-  optional password is stored as a salted SHA-256 hash; the status bar shows *Protected*,
+  optional password is stored as a salted SHA-256 hash (WebCrypto, or a script version of
+  SHA-256 where the page is not served over https); the status bar shows *Protected*,
   click it to unprotect.
 - Honestly: this prevents accidental edits, not determined ones. A worksheet is readable
   JSON, and anyone with a text editor can change it or delete the protection.
