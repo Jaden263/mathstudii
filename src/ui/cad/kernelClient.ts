@@ -203,7 +203,6 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
   const build = key ? shown.get(key) ?? null : null;
   useEffect(() => {
     if (!key || !dr || build || result?.needsBrep || missing.has(key)) return;
-    let live = true;
     // the calculation worker sends display data right after the results: ask only when it
     // did not come (or in a CAD window of its own, or when it came and was dropped)
     const t = window.setTimeout(() => {
@@ -214,13 +213,12 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
       kernelRequest({ op: 'display', design, numbers }, `display:${regionId}`).then((b) => {
         if (b) put(key, b);
         else missing.add(key);
-        if (live) changed();
+        // every view of the part follows, also when the one that asked has gone (an open
+        // workspace over the page shares the part's lane with the page's view)
+        changed();
       }, () => {});
     }, displayDelay(key));
-    return () => {
-      live = false;
-      window.clearTimeout(t);
-    };
+    return () => window.clearTimeout(t);
   }, [key, build, regionId, !!result?.needsBrep]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!solid) return { build: null, state: 'none' };
   if (build) lastShown.set(regionId, build);
