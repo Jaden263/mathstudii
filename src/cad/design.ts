@@ -885,7 +885,8 @@ function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
   const refs = item.kind === 'fillet' ? item.sets.flatMap((s, set) => s.edges.map((ref) => ({ ref, set }))) : (item.kind === 'chamfer' ? item.edges : item.faces).map((ref) => ({ ref, set: 0 }));
   const what = item.kind === 'fillet' || item.kind === 'chamfer' ? 'edges' : 'faces';
   if (!refs.length) throw new Error(`pick the ${what} to ${item.kind === 'fillet' ? 'round' : item.kind === 'chamfer' ? 'chamfer' : item.kind === 'shell' ? 'open' : item.kind === 'draft' ? 'draft' : 'move'}`);
-  const on = findPicks(ops, design, bodies, refs, `the other ${what} are still ${item.kind === 'fillet' ? 'rounded' : item.kind === 'chamfer' ? 'chamfered' : 'used'}`, warn);
+  const still = { fillet: 'rounded', chamfer: 'chamfered', shell: 'open', draft: 'drafted', presspull: 'moved' }[item.kind];
+  const on = findPicks(ops, design, bodies, refs, `the other ${what} are still ${still}`, warn);
   const plane = item.kind === 'draft' ? planeAt(ops, design, inp, bodies, built, item.plane, 'neutral plane') : null;
   let pull = item.kind === 'draft' ? (item.pull ? axisAt(ops, design, inp, bodies, built, item.pull).d : plane!.n) : null;
   if (item.kind === 'draft' && item.flip) pull = scale3(pull!, -1);
