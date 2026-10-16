@@ -6,6 +6,7 @@ import type { PlateRegion } from '../../model/types';
 import type { PlateResult } from '../../plate/evaluate';
 import { platePreset, type PlatePreset } from '../../plate/model';
 import { toTsv } from '../../model/tableData';
+import { STEEL_GRADES } from '../../engine/materials';
 import type { Action } from '../store';
 import type { MenuItem } from '../ContextMenu';
 import { FORCE_N, LENGTH_M } from '../beam/beamDraw';
@@ -40,7 +41,8 @@ export function plateMenuItems(r: PlateRegion, res: PlateResult | undefined, dis
   const preset = (kind: PlatePreset) => () => {
     if (r.outline.length && !window.confirm('Replace the plate with the preset?')) return;
     const { loadCases, thickness, material, ...data } = platePreset(kind, { length: r.lengthUnit, force: r.forceUnit });
-    set({ ...data, loadCases, thickness: thickness ?? r.thickness, material: material ?? r.material, view: undefined, cut: undefined });
+    // (a steel plate has no reinforcement, as the side panel's presets do it)
+    set({ ...data, loadCases, thickness: thickness ?? r.thickness, material: material ?? r.material, rebar: STEEL_GRADES.includes(material ?? '') ? undefined : r.rebar, view: undefined, cut: undefined });
   };
   return [
     {
