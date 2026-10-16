@@ -116,6 +116,135 @@ const qbeta = (p: unknown, a: unknown, b: unknown) => {
   return N.brent((x) => S.betaInc(x, s1, s2) - pv, 0, 1, 1e-15);
 };
 
+// ---------------------------------------------------------------- more of Mathcad's distributions
+
+function count(v: unknown, what: string): number {
+  const k = int(v, what);
+  if (k < 0) throw new Error(`${what} must be a whole number ≥ 0`);
+  return k;
+}
+
+function chance(v: unknown, what: string): number {
+  const p = num(v, what);
+  if (!(p >= 0 && p <= 1)) throw new Error(`${what} must lie in [0, 1]`);
+  return p;
+}
+
+/** ln C(n, k) for real n ≥ k ≥ 0. */
+const lnChoose = (n: number, k: number) => S.lgamma(n + 1) - S.lgamma(k + 1) - S.lgamma(n - k + 1);
+
+/**
+ * The smallest whole k ≥ lo with cdf(k) ≥ p, by doubling then bisection. p is eased by
+ * 64 ulp (as R does) so that a p computed from the cdf itself gives back its own k.
+ */
+function discreteQuantile(cdf: (k: number) => number, p: number, lo: number, hi = Infinity): number {
+  const target = p * (1 - 64 * Number.EPSILON);
+  if (cdf(lo) >= target) return lo;
+  let a = lo, b = lo + 1;
+  while (b < hi && cdf(b) < target) {
+    a = b;
+    b = Math.min(hi, lo + 2 * (b - lo));
+  }
+  while (b - a > 1) {
+    const m = Math.floor((a + b) / 2);
+    if (cdf(m) >= target) b = m;
+    else a = m;
+  }
+  return b;
+}
+
+const binomCdf = (k: number, n: number, p: number) => (k >= n || p === 0 ? 1 : p === 1 ? 0 : S.betaInc(1 - p, n - k, k + 1));
+const qbinom = (pv: unknown, n: unknown, q: unknown) => {
+  const nn = count(n, 'qbinom: n'), qq = chance(q, 'qbinom: q');
+  return discreteQuantile((k) => binomCdf(k, nn, qq), prob(pv), 0, nn);
+};
+const qpois = (pv: unknown, l: unknown) => {
+  const lam = pos(l, 'qpois: λ');
+  return discreteQuantile((k) => S.gammaPQ(k + 1, lam).q, prob(pv), 0);
+};
+
+// geometric: failures before the first success
+const dgeom = (k: unknown, p: unknown) => {
+  const kk = count(k, 'dgeom: k'), pp = chance(p, 'dgeom: p');
+  return pp * Math.exp(kk * Math.log1p(-pp));
+};
+const geomCdf = (k: number, p: number) => -Math.expm1((k + 1) * Math.log1p(-p));
+const pgeom = (k: unknown, p: unknown) => {
+  const kk = Math.floor(num(k, 'pgeom: k'));
+  return kk < 0 ? 0 : geomCdf(kk, chance(p, 'pgeom: p'));
+};
+const qgeom = (pv: unknown, p: unknown) => {
+  const pp = chance(p, 'qgeom: p');
+  return discreteQuantile((k) => geomCdf(k, pp), prob(pv), 0);
+};
+
+// negative binomial: failures before the n-th success
+const dnbinom = (k: unknown, n: unknown, p: unknown) => {
+  const kk = count(k, 'dnbinom: k'), nn = pos(n, 'dnbinom: n'), pp = chance(p, 'dnbinom: p');
+  return Math.exp(S.lgamma(nn + kk) - S.lgamma(nn) - S.lgamma(kk + 1) + nn * Math.log(pp) + kk * Math.log1p(-pp));
+};
+const nbinomCdf = (k: number, n: number, p: number) => (p === 1 ? 1 : p === 0 ? 0 : S.betaInc(p, n, k + 1));
+const pnbinom = (k: unknown, n: unknown, p: unknown) => {
+  const kk = Math.floor(num(k, 'pnbinom: k'));
+  return kk < 0 ? 0 : nbinomCdf(kk, pos(n, 'pnbinom: n'), chance(p, 'pnbinom: p'));
+};
+const qnbinom = (pv: unknown, n: unknown, p: unknown) => {
+  const nn = pos(n, 'qnbinom: n'), pp = chance(p, 'qnbinom: p');
+  return discreteQuantile((k) => nbinomCdf(k, nn, pp), prob(pv), 0);
+};
+
+// hypergeometric: m successes in n draws from a successes and b failures
+function hyper(m: unknown, a: unknown, b: unknown, n: unknown, fn: string) {
+  const aa = count(a, `${fn}: a`), bb = count(b, `${fn}: b`), nn = count(n, `${fn}: n`);
+  if (nn > aa + bb) throw new Error(`${fn}: n cannot exceed a + b`);
+  const d = (i: number) => (i < Math.max(0, nn - bb) || i > Math.min(nn, aa) ? 0 : Math.exp(lnChoose(aa, i) + lnChoose(bb, nn - i) - lnChoose(aa + bb, nn)));
+  const cdf = (k: number) => {
+    let s = 0;
+    for (let i = Math.max(0, nn - bb); i <= Math.min(k, nn, aa); i++) s += d(i);
+    return Math.min(1, s);
+  };
+  return { m: Math.floor(num(m, `${fn}: m`)), lo: Math.max(0, nn - bb), hi: Math.min(nn, aa), d, cdf };
+}
+const dhypergeom = (m: unknown, a: unknown, b: unknown, n: unknown) => {
+  const h = hyper(m, a, b, n, 'dhypergeom');
+  return Number.isInteger(num(m)) ? h.d(h.m) : 0;
+};
+const phypergeom = (m: unknown, a: unknown, b: unknown, n: unknown) => {
+  const h = hyper(m, a, b, n, 'phypergeom');
+  return h.m < h.lo ? 0 : h.cdf(h.m);
+};
+const qhypergeom = (pv: unknown, a: unknown, b: unknown, n: unknown) => {
+  const h = hyper(0, a, b, n, 'qhypergeom');
+  return discreteQuantile(h.cdf, prob(pv), h.lo, h.hi);
+};
+
+// Cauchy and logistic with location l and scale s
+const z = (x: unknown, l: unknown, s: unknown, fn: string) => (num(x, `${fn}: x`) - num(l, `${fn}: l`)) / pos(s, `${fn}: s`);
+const dcauchy = (x: unknown, l: unknown, s: unknown) => {
+  const t = z(x, l, s, 'dcauchy');
+  return 1 / (Math.PI * num(s) * (1 + t * t));
+};
+// below the centre as atan(1/|t|)/π, which keeps the tail's digits
+const pcauchy = (x: unknown, l: unknown, s: unknown) => {
+  const t = z(x, l, s, 'pcauchy');
+  return t < 0 ? Math.atan(-1 / t) / Math.PI : 0.5 + Math.atan(t) / Math.PI;
+};
+const qcauchy = (p: unknown, l: unknown, s: unknown) => {
+  const pv = prob(p);
+  if (pv === 0 || pv === 1) return pv === 0 ? -Infinity : Infinity;
+  return num(l, 'qcauchy: l') + pos(s, 'qcauchy: s') * Math.tan(Math.PI * (pv - 0.5));
+};
+const dlogis = (x: unknown, l: unknown, s: unknown) => {
+  const t = Math.abs(z(x, l, s, 'dlogis'));
+  const e = Math.exp(-t);
+  return e / (num(s) * (1 + e) * (1 + e));
+};
+const plogis = (x: unknown, l: unknown, s: unknown) => 1 / (1 + Math.exp(-z(x, l, s, 'plogis')));
+const qlogis = (p: unknown, l: unknown, s: unknown) => {
+  const pv = prob(p);
+  return num(l, 'qlogis: l') + pos(s, 'qlogis: s') * (Math.log(pv) - Math.log1p(-pv));
+};
+
 // ---------------------------------------------------------------- registration
 
 const SPECIAL: Record<string, unknown> = {
@@ -139,6 +268,9 @@ const SPECIAL: Record<string, unknown> = {
     return S.betaInc(num(z, 'betainc: z'), av, bv) * S.beta(av, bv);
   },
   digamma: one(S.digamma, 'digamma'),
+  // Mathcad's ψ: Psi(x) digamma, Psi(n, x) the n-th derivative of digamma
+  Psi: (a: unknown, x?: unknown) => (x === undefined ? real(S.digamma(num(a, 'Psi: x')), 'Psi') : S.polygamma(int(a, 'Psi: n'), num(x, 'Psi: x'))),
+  polygamma: (n: unknown, x: unknown) => S.polygamma(int(n, 'polygamma: n'), num(x, 'polygamma: x')),
   // integrals
   Ei: one(S.expintEi, 'Ei'),
   E1: one(S.expintE1, 'E1'),
@@ -176,6 +308,8 @@ const SPECIAL: Record<string, unknown> = {
   Jac: (n: unknown, a: unknown, b: unknown, x: unknown) => S.jacobiP(int(n, 'Jac: n'), num(a, 'Jac: a'), num(b, 'Jac: b'), num(x, 'Jac: x')),
   // distributions
   dF, dweibull, pweibull, qweibull, dlnorm, plnorm, qlnorm, dgamma, pgamma, qgamma, dbeta, pbeta, qbeta,
+  qbinom, qpois, dgeom, pgeom, qgeom, dnbinom, pnbinom, qnbinom, dhypergeom, phypergeom, qhypergeom,
+  dcauchy, pcauchy, qcauchy, dlogis, plogis, qlogis,
 };
 SPECIAL.Jacobi = SPECIAL.Jac;
 SPECIAL.Ibeta = SPECIAL.ibeta;

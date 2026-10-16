@@ -234,14 +234,22 @@ outside the interval it is an error ("u(6 s) is outside the solution interval 0 
 - **Boundary value problems**: conditions at two (or more) points, such as a beam
   `EI * y''''(x) = q` with `y(0) = 0`, `y(L) = 0`, `y''(0) = 0`, `y''(L) = 0`, are solved by
   shooting: Newton on the unknown starting values, with sensitivities computed on a frozen mesh.
+  When the solution grows too fast for that (a long beam on an elastic foundation,
+  `EI * y''''(x) + k * y(x) = q` with λL ≈ 30), it falls back to multiple shooting: the
+  interval is cut into 8 (then 32) pieces tied together by continuity.
 - **Methods**: adaptive Dormand–Prince 5(4) with the worksheet's tolerance (`TOL`, as the
   relative error to each component's peak), switching to **Radau IIA** (implicit, order 5) when
   it detects stiffness — Van der Pol with μ = 1000 over 3000 s takes a fraction of a second.
+  Besides the usual test at the explicit method's stability limit, a short run of Radau is tried
+  now and then where the fastest mode is barely resolved, and kept when it strides much further:
+  that catches forced stiff equations at tight tolerances (`τ y'(t) = cos(ω t) m − y(t)` with
+  τ = 1 ms over 100 s), which the usual test misses.
   `odesolve(t, b, "radau")` asks for the stiff solver, `"rkadapt"` for the explicit one only,
   `odesolve(t, b, 200, "fixed")` for 200 classic RK4 steps; a number alone sets the minimum
   number of steps.
 - **Messages** say what is wrong: `missing initial condition for y'`, a condition on y″ for a
-  second-order equation, units of a condition that do not fit, a singularity (step size too small).
+  second-order equation, units of a condition that do not fit, a singularity (step size too small),
+  boundary conditions that cannot be met or that leave the solution undetermined.
 
 Mathcad's solution-matrix functions work too, with units in each component of y:
 `rkfixed`, `Rkadapt`/`rkadapt`, `Bulstoer`/`bulstoer` (Bulirsch–Stoer), `Radau`/`radau`,
@@ -260,18 +268,23 @@ differential-algebraic systems (an equation without a highest derivative is repo
 Bessel functions of any real order `Jn(m, x)`, `Yn`, `In`, `Kn` (and `J0` … `K1`), spherical
 `js(n, x)`, `ys(n, x)`; Airy `Ai`, `Bi`; `gamma(x)` and the upper incomplete `gamma(a, x)`,
 `gammainc(a, x)` (lower), `gammaP`, `gammaQ` (regularised), `beta`, `ibeta(z, a, b)`
-(regularised incomplete beta), `betainc`, `lgamma`, `digamma`, `zeta`; `erf`, `erfc` (accurate
+(regularised incomplete beta), `betainc`, `lgamma`, `digamma`, `Psi(x)` / `Psi(n, x)` (digamma
+and polygamma), `zeta`; `erf`, `erfc` (accurate
 in the tail), `erfinv`, `erfcinv`; exponential and trigonometric integrals `Ei`, `E1`,
 `En(n, x)`, `Si`, `Ci`, Fresnel `FresnelS`, `FresnelC` (∫ sin(πt²/2)); elliptic integrals
 `ellipK(k)`, `ellipE(k)`, `ellipE(φ, k)`, `ellipF(φ, k)`, `ellipPi(n, k)`, `ellipPi(n, φ, k)`
 with the **modulus k** (parameter m = k²) and φ in rad or deg; `LambertW(x [, −1])`;
 orthogonal polynomials `Leg(n, x)` / `Leg(n, m, x)` (associated, with the (−1)ᵐ phase),
 `Her` (physicists'), `Lag(n, x)` / `Lag(n, α, x)`, `Tcheb`, `Ucheb`, `Jac(n, a, b, x)`; `sinc`.
-Distributions add `dF`, Weibull, lognormal, gamma and beta (`d…`, `p…`, `q…`). The algorithms
+Distributions add `dF`, Weibull, lognormal, gamma, beta, geometric, negative binomial,
+hypergeometric, Cauchy and logistic (`d…`, `p…`, `q…`, Mathcad's arguments), and `qbinom`,
+`qpois`; `pnorm`, `pbinom` and `ppois` keep their digits in the tails. The algorithms
 are the standard ones (Steed/Temme and Hankel asymptotics for Bessel, Lentz continued
 fractions, Carlson's symmetric integrals, Euler–Maclaurin for ζ) and are tested against
-DLMF / Abramowitz & Stegun values to about 1e-13 relative; near zeros of a function only the
-absolute error is that small. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
+DLMF / Abramowitz & Stegun values and checked against 40-digit mpmath values on a few thousand
+points: within 1e-12 relative (most within 1e-14); near zeros of an oscillating function (Bessel
+J, Y of large order) only the absolute error is that small, while the positive roots of ψ and Ei
+keep full relative accuracy. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
 A worksheet variable with one of these names (say `Si := 3 m`) still works as a variable.
 
 ### Sketches (drawing)

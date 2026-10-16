@@ -31,13 +31,14 @@ const tiny = (expr: string, tol = 1e-12, ...pre: string[]) => expect(Math.abs(va
 
 describe('special functions in the worksheet', () => {
   it('Mathcad names and textbook display', () => {
-    const r = run(['Jn(2, 1.5) =', 'Yn(0.5, 2) =', 'Leg(3, 2, 0.5) =', 'Lag(2, 1.5, 0.3) =', 'Jac(3, 0.5, 0.5, 0.2) =', 'ellipPi(0.3, 1, 0.5) =', 'ibeta(0.3, 2, 3) =', 'LambertW(-0.1, -1) =', 'gamma(2, 1) =']);
+    const r = run(['Jn(2, 1.5) =', 'Yn(0.5, 2) =', 'Leg(3, 2, 0.5) =', 'Lag(2, 1.5, 0.3) =', 'Jac(3, 0.5, 0.5, 0.2) =', 'ellipPi(0.3, 1, 0.5) =', 'ibeta(0.3, 2, 3) =', 'LambertW(-0.1, -1) =', 'gamma(2, 1) =', 'Psi(2, 1.5) =']);
     expect(r[0].tex).toMatch(/^ ?J_\{2\}/);
     expect(r[2].tex).toMatch(/P_\{3\}\^\{2\}/);
     expect(r[3].tex).toMatch(/L_\{2\}\^\{\(1\.5\)\}/);
     expect(r[4].tex).toMatch(/P_\{3\}\^\{\(0\.5,0\.5\)\}/);
     expect(r[7].tex).toMatch(/W_\{-1\}/);
     expect(r[8].tex).toMatch(/\\Gamma\\mathopen\{\}\\left\(2,\\,1\\right\)/);
+    expect(r[9].tex).toMatch(/\\psi\^\{\(2\)\}/);
     for (const x of r) expect(x.error).toBeUndefined();
   });
   it('gamma(a, x) is the upper incomplete gamma function', () => {
@@ -71,6 +72,32 @@ describe('special functions in the worksheet', () => {
     tiny('dF(1.5, 2, 2) - 1/2.5^2', 1e-15); // dF(x, 2, 2) = 1/(1 + x)²
     tiny('integral(dF(u, 3, 7), u, 0, 6/7*2) - pF(6/7*2, 3, 7)', 1e-10);
     tiny('pF(2, 3, 7) - 0.7973063575133491', 1e-14); // I_{6/13}(3/2, 7/2): 3x/(3x + 7) = 6/13 at x = 2
+  });
+  it('more distributions, against closed forms', () => {
+    tiny('pnorm(-9) / 1.1285884059538408e-19 - 1', 1e-13); // A&S 26.2.12; 1 + erf(−9/√2) is 0 in doubles
+    tiny('pbinom(3, 10, 0.3) - 0.6496107184', 1e-15); // Σ_(k≤3) C(10,k) 0.3^k 0.7^(10−k)
+    tiny('ppois(2, 3.5) - exp(-3.5) * (1 + 3.5 + 3.5^2/2)', 1e-15);
+    tiny('ppois(5, 200) / (exp(-200) * sum(200^k / k!, k, 0, 5)) - 1', 1e-12); // a tail that summing 1 − … would lose
+    tiny('qbinom(0.6496107184, 10, 0.3) - 3', 1e-15); // the exact cdf value gives back its k
+    tiny('qbinom(0.65, 10, 0.3) - 4', 1e-15);
+    tiny('qpois(ppois(7, 4.2), 4.2) - 7', 1e-15);
+    tiny('dgeom(3, 0.2) - 0.2 * 0.8^3', 1e-15);
+    tiny('pgeom(3, 0.2) - (1 - 0.8^4)', 1e-15);
+    tiny('qgeom(0.5, 0.2) - 3', 1e-15); // 1 − 0.8^(k+1) ≥ ½ first at k = 3
+    tiny('dnbinom(2, 3, 0.4) - 6 * 0.4^3 * 0.6^2', 1e-15); // C(k+n−1, k) pⁿ (1−p)^k
+    tiny('pnbinom(2, 3, 0.4) - 0.064 * (1 + 3 * 0.6 + 6 * 0.36)', 1e-15);
+    tiny('qnbinom(pnbinom(4, 3, 0.4), 3, 0.4) - 4', 1e-15);
+    tiny('dhypergeom(1, 5, 10, 4) - 5 * 120 / 1365', 1e-14); // C(5,1) C(10,3) / C(15,4)
+    tiny('phypergeom(1, 5, 10, 4) - (210 + 600) / 1365', 1e-14);
+    tiny('qhypergeom(0.5, 5, 10, 4) - 1', 1e-15);
+    tiny('pcauchy(-1e10, 0, 1) / (atan(1e-10) / π) - 1', 1e-15); // the far tail, not ½ − ½
+    tiny('qcauchy(0.75, 2, 3) - 5', 1e-14); // l + s tan(π/4)
+    tiny('dcauchy(2, 2, 3) - 1 / (3 π)', 1e-15);
+    tiny('plogis(1, 1, 2) - 0.5', 1e-15);
+    tiny('qlogis(0.75, 0, 1) - ln(3)', 1e-15);
+    tiny('dlogis(0, 0, 1) - 0.25', 1e-15);
+    tiny('Psi(1) + 0.5772156649015329', 1e-15);
+    tiny('Psi(1, 1) - π^2 / 6', 1e-15);
   });
   it('worksheet variables with the same names still multiply', () => {
     const r = run(['Si := 3 m', 'Si (2) =', 'beta := 0.5', 'beta (4) =']);

@@ -194,6 +194,14 @@ export const FUNCTIONS: FunctionDoc[] = [
     ['dbeta', 'dbeta(x, s1, s2)', 'Beta density'], ['pbeta', 'pbeta(x, s1, s2)', 'Beta CDF'], ['qbeta', 'qbeta(p, s1, s2)', 'Beta quantile'],
     ['dunif', 'dunif(x, a, b)', 'Uniform density'], ['punif', 'punif(x, a, b)', 'Uniform CDF'],
     ['rnd', 'rnd(x)', 'Random number in [0, x)'], ['runif', 'runif(m, a, b)', 'm uniform random numbers'], ['rnorm', 'rnorm(m, μ, σ)', 'm normal random numbers'],
+    ['dchisq', 'dchisq(x, d)', 'χ² density'], ['qexp', 'qexp(p, r)', 'Exponential quantile'], ['qunif', 'qunif(p, a, b)', 'Uniform quantile'],
+    ['qbinom', 'qbinom(p, n, q)', 'Binomial quantile: smallest k with pbinom(k, n, q) ≥ p'], ['qpois', 'qpois(p, λ)', 'Poisson quantile'],
+    ['dgeom', 'dgeom(k, p)', 'Geometric probability of k failures before the first success'], ['pgeom', 'pgeom(k, p)', 'Geometric CDF'], ['qgeom', 'qgeom(p, q)', 'Geometric quantile'],
+    ['dnbinom', 'dnbinom(k, n, p)', 'Negative binomial: k failures before the n-th success'], ['pnbinom', 'pnbinom(k, n, p)', 'Negative binomial CDF'], ['qnbinom', 'qnbinom(p, n, q)', 'Negative binomial quantile'],
+    ['dhypergeom', 'dhypergeom(m, a, b, n)', 'Hypergeometric: m successes in n draws from a successes and b failures'],
+    ['phypergeom', 'phypergeom(m, a, b, n)', 'Hypergeometric CDF'], ['qhypergeom', 'qhypergeom(p, a, b, n)', 'Hypergeometric quantile'],
+    ['dcauchy', 'dcauchy(x, l, s)', 'Cauchy density, location l, scale s'], ['pcauchy', 'pcauchy(x, l, s)', 'Cauchy CDF'], ['qcauchy', 'qcauchy(p, l, s)', 'Cauchy quantile'],
+    ['dlogis', 'dlogis(x, l, s)', 'Logistic density, location l, scale s'], ['plogis', 'plogis(x, l, s)', 'Logistic CDF'], ['qlogis', 'qlogis(p, l, s)', 'Logistic quantile'],
   ]),
   ...F('Interpolation & fitting', [
     ['linterp', 'linterp(vx, vy, x)', 'Linear interpolation (unit aware)'], ['cspline', 'cspline(vx, vy)', 'Cubic spline coefficients for interp'],
@@ -221,6 +229,7 @@ export const FUNCTIONS: FunctionDoc[] = [
     ['bulstoer', 'bulstoer(y0, x1, x2, acc, D, kmax, save)', 'Bulirsch–Stoer steps (at most kmax, at least save apart)'],
     ['stiffb', 'stiffb(y0, x1, x2, acc, D, J, kmax, save)', 'Stiff solver steps with a Jacobian'],
     ['stiffr', 'stiffr(y0, x1, x2, acc, D, J, kmax, save)', 'Stiff solver steps with a Jacobian'],
+    ['Odesolve', 'Odesolve(t, b [, steps, "method"])', 'Same as odesolve'], ['Adams', 'Adams(y0, x1, x2, n, D)', 'Non-stiff ODE solution matrix (Dormand–Prince here)'],
   ]),
   ...F('Special functions', [
     ['gamma', 'gamma(x) | gamma(a, x)', 'Gamma function Γ(x); with two arguments the upper incomplete Γ(a, x) = ∫ₓ^∞ t^(a−1) e^−t dt'],
@@ -250,6 +259,8 @@ export const FUNCTIONS: FunctionDoc[] = [
     ['Lag', 'Lag(n, x) | Lag(n, α, x)', 'Laguerre polynomial Lₙ(x), generalised Lₙ^(α)(x)'],
     ['Tcheb', 'Tcheb(n, x)', 'Chebyshev polynomial of the first kind Tₙ(x)'], ['Ucheb', 'Ucheb(n, x)', 'Chebyshev polynomial of the second kind Uₙ(x)'],
     ['Jac', 'Jac(n, a, b, x)', 'Jacobi polynomial Pₙ^(a,b)(x)'], ['sinc', 'sinc(x)', 'sin(x)/x'],
+    ['Jacobi', 'Jacobi(n, a, b, x)', 'Jacobi polynomial Pₙ^(a,b)(x) (same as Jac)'], ['Ibeta', 'Ibeta(z, a, b)', 'Regularised incomplete beta I_z(a, b) (same as ibeta)'],
+    ['Psi', 'Psi(x) | Psi(n, x)', 'Digamma ψ(x); with n the polygamma ψ⁽ⁿ⁾(x), its n-th derivative'], ['polygamma', 'polygamma(n, x)', 'Polygamma ψ⁽ⁿ⁾(x) = dⁿψ/dxⁿ'],
   ]),
   ...F('Sections & materials', [
     ['section', 'section("HEB 200")', 'Steel section properties: h, b, t_w, t_f, A, I_y, I_z, W_el, W_pl, i, I_t, I_w, mass (IPE, HEA, HEB, HEM, CHS D×t, SHS b×t, RHS h×b×t)'],

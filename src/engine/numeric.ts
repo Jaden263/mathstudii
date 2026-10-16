@@ -546,12 +546,18 @@ export function gammaP(a: number, x: number): number {
   return x <= 0 ? 0 : S.gammaPQ(a, x).p;
 }
 
+/** Regularised upper incomplete gamma Q(a, x) = 1 − P(a, x), accurate where it is small. */
+export function gammaQ(a: number, x: number): number {
+  return x <= 0 ? 1 : S.gammaPQ(a, x).q;
+}
+
 /** Regularised incomplete beta I_x(a, b). */
 export function betaI(x: number, a: number, b: number): number {
   return x <= 0 ? 0 : x >= 1 ? 1 : S.betaInc(x, a, b);
 }
 
 export const erf = S.erf;
+export const erfc = S.erfc;
 export const normInv = S.normInv;
 
 /** Invert a monotone increasing CDF on (lo, hi) by bisection + Brent. */

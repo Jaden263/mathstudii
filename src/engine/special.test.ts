@@ -39,6 +39,10 @@ describe('gamma family', () => {
     // a < 0 by recurrence: Γ(−1, x) = E₂(x)/x (DLMF 8.4.13 with 8.19.1)
     close(S.gammaUpper(-1, 2), S.expintEn(2, 2) / 2, 1e-13);
     close(S.gammaLower(2.5, 1.7) + S.gammaUpper(2.5, 1.7), S.gamma(2.5), 1e-14);
+    // large a, small x: P(a, x) underflows (P(200, 1) ≈ 1e−375) but γ(a, x) does not
+    close(S.gammaLower(200, 1), 0.0018485939631227091, 1e-14); // mpmath, 40 digits
+    close(S.gammaLower(1000, 1), 0.00036824732024510294, 1e-14);
+    close(S.gammaLower(201, 1), 200 * S.gammaLower(200, 1) - Math.exp(-1), 1e-13); // γ(a+1, x) = a γ(a, x) − x^a e^−x (DLMF 8.8.1)
   });
   it('incomplete beta', () => {
     for (const x of [0.01, 0.3, 0.5, 0.92]) {
@@ -47,11 +51,30 @@ describe('gamma family', () => {
       close(S.betaInc(x, 3.2, 1.7) + S.betaInc(1 - x, 1.7, 3.2), 1, 1e-14); // symmetry
     }
   });
+  it('polygamma', () => {
+    // ψ⁽ⁿ⁾(1) = (−1)^(n+1) n! ζ(n+1); ψ′(½) = π²/2 (DLMF 5.15.2, 5.15.3)
+    close(S.polygamma(1, 1), Math.PI ** 2 / 6, 1e-15);
+    close(S.polygamma(2, 1), -2 * 1.2020569031595943, 1e-15);
+    close(S.polygamma(3, 1), Math.PI ** 4 / 15, 1e-15);
+    close(S.polygamma(1, 0.5), Math.PI ** 2 / 2, 1e-15);
+    // ψ′(x + 1) = ψ′(x) − 1/x² carries it below zero: ψ′(−½) = π²/2 + 4
+    close(S.polygamma(1, -0.5), Math.PI ** 2 / 2 + 4, 1e-14);
+    // far out ψ′(x) ≈ 1/x + 1/(2x²) + 1/(6x³)
+    close(S.polygamma(1, 1e6), 1e-6 + 0.5e-12 + 1e-18 / 6, 1e-15);
+    expect(S.polygamma(0, 2.5)).toBe(S.digamma(2.5));
+    expect(() => S.polygamma(2, -3)).toThrow(/pole/);
+  });
   it('digamma and zeta', () => {
     close(S.digamma(1), -EULER, 1e-15); // ψ(1) = −γ
     close(S.digamma(0.5), -EULER - 2 * Math.LN2, 1e-15); // ψ(½) = −γ − 2 ln 2
     close(S.digamma(11), 1 + 1 / 2 + 1 / 3 + 1 / 4 + 1 / 5 + 1 / 6 + 1 / 7 + 1 / 8 + 1 / 9 + 1 / 10 - EULER, 1e-15); // H₁₀ − γ
     close(S.digamma(-0.5), 0.03648997397857652, 1e-13); // ψ(1 − x) − π cot πx at x = −½
+    // near the root x₀ = 1.46163…: ψ(x₀ + h) = ψ′(x₀) h + ψ″(x₀) h²/2 + …, the derivatives by polygamma
+    for (const h of [1e-9, 1e-6, -1e-4]) {
+      const x = 1.4616321449683622 + h;
+      const d = x - 1.4616321449683622 - 9.549995429965697e-17; // the h that x really holds
+      close(S.digamma(x), S.polygamma(1, x - d) * d + (S.polygamma(2, x - d) * d * d) / 2 + (S.polygamma(3, x - d) * d ** 3) / 6, 1e-12);
+    }
     close(S.zeta(2), Math.PI ** 2 / 6, 1e-15);
     close(S.zeta(4), Math.PI ** 4 / 90, 1e-15);
     close(S.zeta(3), 1.2020569031595943, 1e-15); // Apéry's constant
@@ -107,6 +130,9 @@ describe('Bessel and Airy functions', () => {
     // integer order: J_{−n} = (−1)^n J_n, J_n(−x) = (−1)^n J_n(x)
     close(S.besselJ(-3, 2.2), -S.besselJ(3, 2.2), 1e-15);
     close(S.besselJ(3, -2.2), -S.besselJ(3, 2.2), 1e-15);
+    // small x: J_ν(x) = (x/2)^ν / Γ(ν+1) · (1 − x²/(4(ν+1)) + …) (DLMF 10.2.2)
+    close(S.besselJ(2.7, 1e-8), Math.pow(5e-9, 2.7) / S.gamma(3.7), 1e-15);
+    close(S.besselI(100, 2.5), 5.342146593758558e-149, 1e-14); // mpmath, 40 digits
   });
   it('spherical Bessel functions (DLMF 10.49.3)', () => {
     for (const x of [0.01, 1.3, 7, 40]) {
@@ -135,6 +161,12 @@ describe('integrals', () => {
     close(S.expintEi(1), 1.8951178163559368, 1e-15);
     close(S.expintEi(-2), -S.expintE1(2), 1e-15);
     for (const x of [0.2, 1, 5.5, 30]) close(S.expintEn(2, x), Math.exp(-x) - x * S.expintE1(x), 1e-13); // DLMF 8.19.12
+    // near the root x₀ = 0.372507…: Ei(x₀ + h) = h e^x₀/x₀ + h² e^x₀ (x₀ − 1)/(2x₀²) + O(h³), Ei′(x) = eˣ/x
+    for (const h of [1e-12, 1e-8, -1e-8]) {
+      const x0 = 0.3725074107813666, x = x0 + h;
+      const d = x - x0 - 1.3140183414386028e-17;
+      close(S.expintEi(x), (d * Math.exp(x0)) / x0 + (d * d * Math.exp(x0) * (x0 - 1)) / (2 * x0 * x0), 1e-12);
+    }
     // Ei(x) ~ e^x/x Σ k!/x^k far out (DLMF 6.12.2)
     let sum = 0, term = 1;
     for (let k = 0; k < 14; k++) { sum += term; term *= (k + 1) / 200; }
@@ -150,6 +182,11 @@ describe('integrals', () => {
     close(S.fresnel(1).s, 0.43825914739035477, 1e-15);
     close(S.fresnel(-3).s, -S.fresnel(3).s, 1e-15);
     expect(S.fresnel(Infinity)).toEqual({ s: 0.5, c: 0.5 });
+    // far out (DLMF 7.12.2, 7.5.3): at x = 10⁴ the phase πx²/2 = 5·10⁷ π, so C = ½ − g(x), S = ½ − f(x),
+    // f ≈ 1/(πx) − 3/(π³x⁵), g ≈ 1/(π²x³)
+    const far = S.fresnel(1e4);
+    expect(Math.abs(far.c - (0.5 - 1 / (Math.PI ** 2 * 1e12)))).toBeLessThan(2e-16);
+    expect(Math.abs(far.s - (0.5 - 1 / (Math.PI * 1e4)))).toBeLessThan(2e-16);
   });
 });
 

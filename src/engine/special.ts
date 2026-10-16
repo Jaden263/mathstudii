@@ -147,6 +147,17 @@ function upperGammaCF(a: number, x: number): number {
   fail('incomplete gamma: continued fraction did not converge');
 }
 
+/** Σ xⁿ / (a (a+1) … (a+n)), so that γ(a, x) = x^a e^−x times this (DLMF 8.11.4 with 8.7.1). */
+function lowerGammaSeries(a: number, x: number): number {
+  let term = 1 / a, sum = term;
+  for (let n = 1; n < 100000; n++) {
+    term *= x / (a + n);
+    sum += term;
+    if (Math.abs(term) < Math.abs(sum) * EPS) break;
+  }
+  return sum;
+}
+
 /** Regularised incomplete gamma P(a, x) and Q(a, x) = 1 − P, each accurate where it is small. */
 export function gammaPQ(a: number, x: number): { p: number; q: number } {
   if (!(a > 0)) fail('incomplete gamma: a must be positive');
@@ -155,14 +166,7 @@ export function gammaPQ(a: number, x: number): { p: number; q: number } {
   if (x === Infinity) return { p: 1, q: 0 };
   const pre = gammaPrefix(a, x);
   if (x < a + 1) {
-    // series (DLMF 8.11.4 with 8.7.1)
-    let term = 1 / a, sum = term;
-    for (let n = 1; n < 100000; n++) {
-      term *= x / (a + n);
-      sum += term;
-      if (Math.abs(term) < Math.abs(sum) * EPS) break;
-    }
-    const p = sum * pre;
+    const p = lowerGammaSeries(a, x) * pre;
     return { p, q: 1 - p };
   }
   const q = pre * upperGammaCF(a, x);
@@ -197,6 +201,10 @@ export function gammaUpper(a: number, x: number): number {
 /** Lower incomplete gamma γ(a, x) = ∫₀ˣ t^(a−1) e^−t dt, a > 0. */
 export function gammaLower(a: number, x: number): number {
   if (!(a > 0)) fail('γ(a, x) needs a > 0');
+  if (x < 0) fail('γ(a, x) needs x ≥ 0');
+  if (x === 0) return 0;
+  // below the peak the series itself, without Γ(a): P(a, x) underflows long before γ(a, x) does
+  if (x < a + 1) return powExp(a, x) * lowerGammaSeries(a, x);
   const pq = gammaPQ(a, x);
   return a < 170 ? pq.p * gamma(a) : Math.exp(Math.log(pq.p) + lgamma(a));
 }
@@ -230,15 +238,42 @@ export function betaInc(x: number, a: number, b: number): number {
     }
     return h;
   };
-  const front = (x: number, a: number, b: number) => Math.exp(a * Math.log(x) + b * Math.log1p(-x) - lnBeta);
+  const front = (x: number, a: number, b: number) => {
+    if (a < 10 || b < 10) return Math.exp(a * Math.log(x) + b * Math.log1p(-x) - lnBeta);
+    // x^a (1−x)^b / B(a, b) by Stirling, with the large logarithms cancelled analytically:
+    // a ln(xc/a) + b ln((1−x)c/b) = a·(ln(1+u) − u) + b·(ln(1+v) − v), as a u + b v = 0
+    const c = a + b;
+    // ln(r) − (r − 1) for r = xc/a or (1−x)c/b, from the series near r = 1
+    const lnmx = (r: number, u: number) => (Math.abs(u) < 0.25 ? log1pmx(u) : Math.log(r) - u);
+    const ln = a * lnmx((x * c) / a, (x * c - a) / a) + b * lnmx(((1 - x) * c) / b, ((1 - x) * c - b) / b)
+      + stirlingCorrection(c) - stirlingCorrection(a) - stirlingCorrection(b);
+    return Math.sqrt((a * b) / (2 * Math.PI * c)) * Math.exp(ln);
+  };
   return x < (a + 1) / (a + b + 2)
     ? (front(x, a, b) * cf(x, a, b)) / a
     : 1 - (front(x, a, b) * cf(1 - x, b, a)) / b;
 }
 
+// The positive root of ψ as a double-double, and the Taylor coefficients there,
+// ψ⁽ᵏ⁾(x₀)/k! = (−1)^(k+1) ζ(k+1, x₀), k = 1 … 19 (computed to 40 digits).
+const PSI_ROOT = [1.4616321449683622, 9.549995429965697e-17];
+const PSI_TAYLOR = [
+  0.9676722454476212, -0.4427631689835921, 0.258499760955651, -0.16394270544240652, 0.10782405069126237,
+  -0.07219956125645471, 0.04880428816414311, -0.03316112647484736, 0.022597648232218104, -0.01542476590494896,
+  0.010538791616612175, -0.007204534386356869, 0.004926781395729853, -0.003369801655439328, 0.002305126326734928,
+  -0.0015769367714301972, 0.0010788252019162967, -0.0007380709389960052, 0.000504953265834602,
+];
+
 /** Digamma ψ(x) = Γ′(x)/Γ(x). */
 export function digamma(x: number): number {
   if (x <= 0 && isInt(x)) fail(`ψ(${x}) is infinite (pole)`);
+  // full relative accuracy near the root (where the general method leaves ~1e-16 absolute)
+  const d = x - PSI_ROOT[0] - PSI_ROOT[1];
+  if (Math.abs(d) < 0.2) {
+    let s = 0;
+    for (let k = PSI_TAYLOR.length - 1; k >= 0; k--) s = s * d + PSI_TAYLOR[k];
+    return s * d;
+  }
   if (x < 0) return digamma(1 - x) - Math.PI * cosPi(x) / sinPi(x);
   let s = 0;
   while (x < 10) { s -= 1 / x; x += 1; }
@@ -248,6 +283,37 @@ export function digamma(x: number): number {
   let t = 0;
   for (let k = B.length - 1; k >= 0; k--) t = t * r + B[k];
   return s + Math.log(x) - 0.5 / x - t * r;
+}
+
+/**
+ * Polygamma ψ⁽ⁿ⁾(x) = dⁿψ/dxⁿ, integer n ≥ 0: the recurrence ψ⁽ⁿ⁾(x) = ψ⁽ⁿ⁾(x+1) − (−1)ⁿ n!/x^(n+1)
+ * up to x ≥ n + 15, then the asymptotic series (DLMF 5.15.1, 5.15.8).
+ */
+export function polygamma(n: number, x: number): number {
+  if (!isInt(n) || n < 0) fail('ψ(n, x): the order n must be an integer ≥ 0');
+  if (n === 0) return digamma(x);
+  if (x <= 0 && isInt(x)) fail(`ψ(${n}, ${x}) is infinite (pole)`);
+  if (n > 100) fail('ψ(n, x): orders above 100 are not supported');
+  const sign = n % 2 === 0 ? -1 : 1; // (−1)^(n+1)
+  let nfact = 1;
+  for (let k = 2; k <= n; k++) nfact *= k;
+  // Σ 1/(x+k)^(n+1) over the shifted-off terms (all one sign for x > 0)
+  let shift = 0;
+  while (x < n + 15) {
+    shift += Math.pow(x, -n - 1);
+    x += 1;
+  }
+  // (n−1)!/xⁿ + n!/(2x^(n+1)) + Σ B₂ₖ (2k+n−1)!/((2k)! x^(2k+n))
+  const r = 1 / (x * x);
+  let t = (nfact / n) / Math.pow(x, n) + nfact / (2 * Math.pow(x, n + 1));
+  let c = (nfact * (n + 1)) / 2 / Math.pow(x, n + 2); // (2k+n−1)!/((2k)! x^(2k+n)) at k = 1
+  for (let k = 1; k <= BERNOULLI.length; k++) {
+    const term = BERNOULLI[k - 1] * c;
+    t += term;
+    if (Math.abs(term) < EPS * Math.abs(t)) break;
+    c *= ((2 * k + n) * (2 * k + n + 1)) / ((2 * k + 1) * (2 * k + 2)) * r;
+  }
+  return sign * (t + nfact * shift);
 }
 
 // Bernoulli numbers B_2 … B_20 for Euler–Maclaurin summation.
@@ -674,10 +740,13 @@ export function besselJ(nu: number, x: number): number {
     fail('Jn(ν, 0) is infinite for negative non-integer ν');
   }
   if (nu < 0) {
-    if (isInt(nu)) return (nu % 2 === 0 ? 1 : -1) * besseljy(-nu, x).j;
+    if (isInt(nu)) return (nu % 2 === 0 ? 1 : -1) * besselJ(-nu, x);
     const r = besseljy(-nu, x);
     return cosPi(-nu) * r.j - sinPi(-nu) * r.y; // DLMF 10.4.7
   }
+  // the power series while its terms shrink from the first (little cancellation); Steed's
+  // normalisation loses digits there for small x
+  if (x * x <= 4 * (nu + 1)) return besselSeries(nu, x, -1);
   return besseljy(nu, x).j;
 }
 
@@ -710,20 +779,23 @@ export function besselI(nu: number, x: number): number {
     return besselI(-nu, x) + (2 / Math.PI) * sinPi(-nu) * besselK(-nu, x); // DLMF 10.27.2
   }
   // the Wronskian in besselik loses digits for small x; the power series has none to lose
-  if (x <= 2) return besselISeries(nu, x);
+  if (x <= 2 || x * x <= 4 * (nu + 1)) return besselSeries(nu, x, 1);
   return besselik(nu, x).i;
 }
 
-/** I_ν(x) = (x/2)^ν Σ (x²/4)^k / (k! Γ(ν+k+1)), ν ≥ 0 (DLMF 10.25.2). */
-function besselISeries(nu: number, x: number): number {
+/**
+ * (x/2)^ν Σ (±x²/4)^k / (k! Γ(ν+k+1)), ν ≥ 0: J_ν with sign −1, I_ν with +1
+ * (DLMF 10.2.2, 10.25.2).
+ */
+function besselSeries(nu: number, x: number, sign: 1 | -1): number {
   const front = nu < 170 ? Math.pow(x / 2, nu) / gamma(nu + 1) : Math.exp(nu * Math.log(x / 2) - lgamma(nu + 1));
   if (front === 0) return 0;
-  const q = (x * x) / 4;
+  const q = (sign * x * x) / 4;
   let term = 1, sum = 1;
-  for (let k = 1; k < 500; k++) {
+  for (let k = 1; k < 1000; k++) {
     term *= q / (k * (nu + k));
     sum += term;
-    if (term < EPS * sum) break;
+    if (Math.abs(term) < EPS * Math.abs(sum)) break;
   }
   return front * sum;
 }
@@ -832,12 +904,36 @@ export function expintE1(x: number): number {
   return expintEn(1, x);
 }
 
+// The positive root of Ei as a double-double.
+const EI_ROOT = [0.3725074107813666, 1.3140183414386028e-17];
+
+/**
+ * Ei near its root x₀ without the cancellation of γ + ln x + Σ xᵏ/(k·k!):
+ * Ei(x) = Ei(x₀) + ln(x/x₀) + Σ (xᵏ − x₀ᵏ)/(k·k!), with Ei(x₀) = 0 and
+ * xᵏ − x₀ᵏ = (x − x₀)(x^(k−1) + x^(k−2) x₀ + … + x₀^(k−1)).
+ */
+function expintEiNearRoot(x: number): number {
+  const d = x - EI_ROOT[0] - EI_ROOT[1];
+  const x0 = EI_ROOT[0];
+  let g = 1, x0k = 1, fact = 1, sum = 0;
+  for (let k = 1; k < 60; k++) {
+    fact *= k;
+    const term = g / (k * fact);
+    sum += term;
+    if (term < EPS * sum) break;
+    x0k *= x0;
+    g = x * g + x0k;
+  }
+  return Math.log1p(d / x0) + d * sum;
+}
+
 /** Exponential integral Ei(x) = −PV∫₋ₓ^∞ e^−t/t dt, x ≠ 0. */
 export function expintEi(x: number): number {
   if (x === 0) fail('Ei(0) is infinite');
   if (x < 0) return -expintE1(-x);
   if (x === Infinity) return Infinity;
   if (x < FPMIN) return Math.log(x) + EULER;
+  if (Math.abs(x - EI_ROOT[0]) < 0.15) return expintEiNearRoot(x);
   if (x <= 40) {
     let sum = 0, fact = 1;
     for (let k = 1; k <= 1000; k++) {
@@ -915,6 +1011,14 @@ export function sici(x: number): { si: number; ci: number } {
   return { si: x < 0 ? -si : si, ci: x < 0 ? NaN : ci };
 }
 
+/** x²/2 mod 2, from an exact split of x² (Veltkamp: x = hi + lo with 26-bit halves). */
+function halfSquareMod2(x: number): number {
+  const c = 134217729 * x; // 2²⁷ + 1
+  const hi = c - (c - x), lo = x - hi;
+  const mod2 = (v: number) => v - 2 * Math.round(v / 2);
+  return mod2(mod2((hi * hi) / 2) + mod2(hi * lo) + mod2((lo * lo) / 2));
+}
+
 /** Fresnel integrals S(x) = ∫₀ˣ sin(πt²/2) dt, C(x) = ∫₀ˣ cos(πt²/2) dt (NR §6.9). */
 export function fresnel(x: number): { s: number; c: number } {
   const ax = Math.abs(x);
@@ -961,7 +1065,9 @@ export function fresnel(x: number): { s: number; c: number } {
     }
     // h *= (ax − i ax);  cs = (½ + i½)(1 − e^(iπx²/2) h)
     const h2r = hr * ax + hi * ax, h2i = hi * ax - hr * ax;
-    const er = Math.cos(0.5 * pix2), ei = Math.sin(0.5 * pix2);
+    // e^(iπx²/2) with x²/2 reduced mod 2 exactly: π x²/2 itself is off by ~1e-16 x² radians
+    const half = halfSquareMod2(ax);
+    const er = cosPi(half), ei = sinPi(half);
     const pr = 1 - (er * h2r - ei * h2i), pi = -(er * h2i + ei * h2r);
     c = 0.5 * pr - 0.5 * pi;
     s = 0.5 * pi + 0.5 * pr;

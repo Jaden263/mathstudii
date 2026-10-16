@@ -30,6 +30,8 @@ export function specialFunctionTex(name: string, a: string[]): string | undefine
     case 'ibeta': case 'Ibeta': return a.length === 3 ? `I_{${a[0]}}${args(a.slice(1))}` : undefined;
     case 'betainc': return a.length === 3 ? `\\mathrm{B}${call(`${a[0]};\\,${a[1]},\\,${a[2]}`)}` : undefined;
     case 'LambertW': return a.length === 2 ? `W_{${a[1]}}${args(a.slice(0, 1))}` : `W${args(a)}`;
+    case 'Psi': return a.length === 2 ? `\\psi^{(${a[0]})}${args(a.slice(1))}` : `\\psi${args(a)}`;
+    case 'polygamma': return a.length === 2 ? `\\psi^{(${a[0]})}${args(a.slice(1))}` : undefined;
   }
   return undefined;
 }
