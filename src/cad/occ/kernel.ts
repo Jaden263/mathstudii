@@ -20,10 +20,16 @@ let loading: Promise<OC> | null = null;
 let renewing: Promise<OC> | null = null;
 let url: string | undefined;
 let enabled = true;
+let failure: string | null = null;
 
 /** The B-rep kernel, or null while it loads, after it failed to, or while switched off. */
 export function occ(): OC | null {
   return enabled ? K : null;
+}
+
+/** Why the kernel could not load, or null (not tried yet, loading, or loaded). */
+export function occFailure(): string | null {
+  return failure;
 }
 
 /** Switch the B-rep kernel off (the mesh kernel then builds everything) and on again. */
@@ -38,7 +44,13 @@ export function setOccEnabled(on: boolean) {
 export function initOcc(wasmUrl?: string): Promise<OC> {
   if (K) return Promise.resolve(K);
   url = wasmUrl;
-  loading ??= instantiate().then((m) => (K = m));
+  loading ??= instantiate().then(
+    (m) => (K = m),
+    (e) => {
+      failure = e instanceof Error ? e.message : String(e);
+      throw e;
+    },
+  );
   return loading;
 }
 

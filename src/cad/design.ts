@@ -546,17 +546,36 @@ function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | M
 }
 
 /**
- * Run the timeline of one component with a solid kernel: the meaning of every feature
- * (extents, automatic cut sides, targets, patterns, booleans) lives here, so the mesh
- * and the B-rep kernel build the same design.
+ * What a component's timeline has built so far. A step returns a new state and leaves
+ * the one it started from as it was, so a cache can resume from any earlier step.
  */
-export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
-  const bodies: TimelineBody<S>[] = [];
-  const tools = new Map<string, TimelineTool<S>>();
-  const errors: Record<string, string> = {};
+export interface TimelineState<S> {
+  bodies: TimelineBody<S>[];
+  tools: Map<string, TimelineTool<S>>;
+  errors: Record<string, string>;
+  /** Ids of every body made so far, in order (default names count them). */
+  made: string[];
+}
+
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, made: [] });
+
+/**
+ * Run one item of a component's timeline with a solid kernel: the meaning of every
+ * feature (extents, automatic cut sides, targets, patterns, booleans) lives here, so the
+ * mesh and the B-rep kernel build the same design. A failing feature records its error.
+ */
+export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignItem): TimelineState<S> {
+  if (item.kind === 'sketch' || item.suppressed) return prev;
+  // copy on write: bodies change their solid in place below
+  const bodies = prev.bodies.map((b) => ({ ...b }));
+  const tools = new Map(prev.tools);
+  const errors = { ...prev.errors };
+  const made = [...prev.made];
   const P = inp.numbers.params;
-  let made = 0;
-  const bodyName = (id: string) => comp.bodyNames?.[id] ?? `Body${++made}`;
+  const created = (id: string, feature: string, solid: S) => {
+    bodies.push({ id, name: '', feature, solid });
+    made.push(id);
+  };
   const targetsOf = (ids?: string[]) => {
     const ts = ids?.length ? bodies.filter((b) => ids.includes(b.id)) : bodies;
     if (ids?.length && ts.length < ids.length) throw new Error('a target body no longer exists');
@@ -565,7 +584,7 @@ export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadCom
   const apply = (id: string, rec: TimelineTool<S>) => {
     const { tool, op, targets } = rec;
     if (op === 'new' || (op === 'join' && !bodies.length)) {
-      bodies.push({ id, name: bodyName(id), feature: id.split('.')[0], solid: tool });
+      created(id, id.split('.')[0], tool);
       return;
     }
     if (op === 'join') {
@@ -578,127 +597,139 @@ export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadCom
     for (const t of ts) t.solid = op === 'cut' ? ops.cut(t.solid, tool) : ops.intersect(t.solid, tool);
   };
 
-  for (const item of activeItems(comp)) {
-    if (item.kind === 'sketch' || item.suppressed) continue;
-    const p = P[item.id] ?? {};
-    try {
-      if (inp.numbers.errors[item.id]) throw new Error(inp.numbers.errors[item.id]);
-      switch (item.kind) {
-        case 'extrude': {
-          const f = frameOf(inp, item.sketch);
-          const regions = selectedProfiles(inp, item.sketch, item.profiles);
-          const ex = item.extent;
-          let z0: number, z1: number;
-          const cutting = item.op === 'cut' || item.op === 'intersect';
-          const tgt = cutting ? targetsOf(item.targets).map((b) => b.solid) : [];
-          if (ex.type === 'symmetric') [z0, z1] = [-p.d / 2, p.d / 2];
-          else if (ex.type === 'two') [z0, z1] = [-p.d2, p.d];
+  const p = P[item.id] ?? {};
+  try {
+    if (inp.numbers.errors[item.id]) throw new Error(inp.numbers.errors[item.id]);
+    switch (item.kind) {
+      case 'extrude': {
+        const f = frameOf(inp, item.sketch);
+        const regions = selectedProfiles(inp, item.sketch, item.profiles);
+        const ex = item.extent;
+        let z0: number, z1: number;
+        const cutting = item.op === 'cut' || item.op === 'intersect';
+        const tgt = cutting ? targetsOf(item.targets).map((b) => b.solid) : [];
+        if (ex.type === 'symmetric') [z0, z1] = [-p.d / 2, p.d / 2];
+        else if (ex.type === 'two') [z0, z1] = [-p.d2, p.d];
+        else {
+          const d = ex.type === 'all' ? reach(ops, f, cutting ? tgt : bodies.map((b) => b.solid)) : p.d;
+          if (ex.type === 'all' && !(d > 0)) throw new Error('“through all” needs a body to go through');
+          if (ex.type === 'all' && ex.both) [z0, z1] = [-d, d];
           else {
-            const d = ex.type === 'all' ? reach(ops, f, cutting ? tgt : bodies.map((b) => b.solid)) : p.d;
-            if (ex.type === 'all' && !(d > 0)) throw new Error('“through all” needs a body to go through');
-            if (ex.type === 'all' && ex.both) [z0, z1] = [-d, d];
-            else {
-              const dir = ex.dir ?? 'auto';
-              const s = dir === '+' ? 1 : dir === '-' ? -1 : cutting ? bestSide(ops, (sg) => ops.extrude(regions, f, sg > 0 ? 0 : -d, sg > 0 ? d : 0, item.id), tgt) : 1;
-              [z0, z1] = s > 0 ? [0, d] : [-d, 0];
-            }
+            const dir = ex.dir ?? 'auto';
+            const s = dir === '+' ? 1 : dir === '-' ? -1 : cutting ? bestSide(ops, (sg) => ops.extrude(regions, f, sg > 0 ? 0 : -d, sg > 0 ? d : 0, item.id), tgt) : 1;
+            [z0, z1] = s > 0 ? [0, d] : [-d, 0];
           }
-          if (item.thin && (p.edgeStart || p.edgeEnd)) throw new Error('a thin extrude cannot also round its edges — use two features');
-          const edge = (e: ExtrudeFeature['edgeStart'], r: number | undefined) => (e && r ? { type: e.type, r } : undefined);
-          const tool = item.thin
-            ? ops.thin(regions, f, z0, z1, { t: p.thin, side: item.thin.side, cap: item.thin.cap }, item.id)
-            : p.edgeStart || p.edgeEnd
-              ? ops.rounded(regions, f, z0, z1, edge(item.edgeStart, p.edgeStart), edge(item.edgeEnd, p.edgeEnd), item.id)
-              : ops.extrude(regions, f, z0, z1, item.id);
-          const rec = { tool, op: item.op, targets: item.targets };
-          tools.set(item.id, rec);
-          apply(item.id, rec);
-          break;
         }
-        case 'loft': {
-          if (item.sketch === item.sketch2) throw new Error('pick two different sketches');
-          const pick = (sid: string, key?: string) => selectedProfiles(inp, sid, key ? [key] : undefined)[0];
-          const tool = ops.loft({ region: pick(item.sketch, item.profile), frame: frameOf(inp, item.sketch) }, { region: pick(item.sketch2, item.profile2), frame: frameOf(inp, item.sketch2) }, item.id);
-          const rec = { tool, op: item.op, targets: item.targets };
-          tools.set(item.id, rec);
-          apply(item.id, rec);
-          break;
-        }
-        case 'revolve': {
-          const f = frameOf(inp, item.sketch);
-          const sk = findSketch(design, item.sketch)!;
-          const regions = selectedProfiles(inp, item.sketch, item.profiles);
-          const ax = sketchAxis(sk, item.axis, inp.numbers.sketches[item.sketch]);
-          if (!ax) throw new Error('pick a line (or the sketch x / y axis) to revolve about');
-          const axis = item.flip ? { p: ax.p, d: { x: -ax.d.x, y: -ax.d.y } } : ax;
-          const rec = { tool: ops.revolve(regions, f, axis, p.angle, item.id), op: item.op, targets: item.targets };
-          tools.set(item.id, rec);
-          apply(item.id, rec);
-          break;
-        }
-        case 'hole': {
-          const f = frameOf(inp, item.sketch);
-          const sk = findSketch(design, item.sketch)!;
-          const sol = inp.numbers.sketches[item.sketch];
-          const ids = item.points?.length ? item.points : sk.sketch.entities.filter((e) => e.type === 'point').map((e) => e.id);
-          const centres = ids.map((id) => sk.sketch.entities.find((e) => e.id === id)).filter((e) => e?.type === 'point').map((e) => sol.points[(e as { p: string }).p]).filter(Boolean);
-          if (!centres.length) throw new Error('place sketch points at the hole centres');
-          const tgt = targetsOf(item.targets).map((b) => b.solid);
-          if (!tgt.length) throw new Error('there is no body to drill');
-          const depth = item.through ? reach(ops, f, tgt) * 2 : p.depth;
-          const dir = item.dir ?? 'auto';
-          const opts: HoleOptions = { d: p.d, depth, style: item.style, cbD: p.cbD, cbDepth: p.cbDepth, csD: p.csD, csAngle: p.csAngle };
-          const make = (sg: number) => ops.hole(centres.map(([x, y]) => framePoint(f, { x, y })), scale3(f.n, sg), opts, item.id);
-          const tool = make(dir === '+' ? 1 : dir === '-' ? -1 : bestSide(ops, make, tgt));
-          const rec: TimelineTool<S> = { tool, op: 'cut', targets: item.targets };
-          tools.set(item.id, rec);
-          apply(item.id, rec);
-          break;
-        }
-        case 'pattern':
-        case 'mirror': {
-          const Ms = copyMatrices(design, inp, item);
-          if (!item.refs.length) throw new Error(`pick the ${item.of} to ${item.kind}`);
-          if (item.of === 'features') {
-            for (const ref of item.refs) {
-              const src = tools.get(ref);
-              if (!src) throw new Error('a patterned feature failed or no longer exists');
-              const copies = Ms.map((M, k) => ops.transform(src.tool, M, `${item.id}.${k + 1}.`));
-              // cutting (or joining) copy after copy is one boolean with all of them: much
-              // faster for a grid of holes, the same solid
-              if (copies.length > 1 && (src.op === 'cut' || (src.op === 'join' && bodies.length))) apply(`${item.id}.1.${ref}`, { ...src, tool: ops.group(copies) });
-              else copies.forEach((tool, k) => apply(`${item.id}.${k + 1}.${ref}`, { ...src, tool }));
-            }
-          } else {
-            for (const ref of item.refs) {
-              const b = bodies.find((q) => q.id === ref);
-              if (!b) throw new Error('a body to copy no longer exists');
-              const copies = Ms.map((M, k) => ops.transform(b.solid, M, `${item.id}.${k + 1}.`));
-              if (item.join) b.solid = ops.union([b.solid, ...copies]);
-              else copies.forEach((s, k) => {
-                const id = `${item.id}.${k + 1}.${ref}`;
-                bodies.push({ id, name: bodyName(id), feature: item.id, solid: s });
-              });
-            }
-          }
-          break;
-        }
-        case 'combine': {
-          const t = bodies.find((b) => b.id === item.target);
-          const ts = bodies.filter((b) => item.tools.includes(b.id) && b !== t);
-          if (!t) throw new Error('pick the target body');
-          if (!ts.length) throw new Error('pick the tool bodies');
-          const u = ts.length > 1 ? ops.union(ts.map((b) => b.solid)) : ts[0].solid;
-          t.solid = item.op === 'join' ? ops.union([t.solid, u]) : item.op === 'cut' ? ops.cut(t.solid, u) : ops.intersect(t.solid, u);
-          if (!item.keepTools) for (const b of ts) bodies.splice(bodies.indexOf(b), 1);
-          break;
-        }
+        if (item.thin && (p.edgeStart || p.edgeEnd)) throw new Error('a thin extrude cannot also round its edges — use two features');
+        const edge = (e: ExtrudeFeature['edgeStart'], r: number | undefined) => (e && r ? { type: e.type, r } : undefined);
+        const tool = item.thin
+          ? ops.thin(regions, f, z0, z1, { t: p.thin, side: item.thin.side, cap: item.thin.cap }, item.id)
+          : p.edgeStart || p.edgeEnd
+            ? ops.rounded(regions, f, z0, z1, edge(item.edgeStart, p.edgeStart), edge(item.edgeEnd, p.edgeEnd), item.id)
+            : ops.extrude(regions, f, z0, z1, item.id);
+        const rec = { tool, op: item.op, targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
       }
-    } catch (e) {
-      errors[item.id] = msg(e);
+      case 'loft': {
+        if (item.sketch === item.sketch2) throw new Error('pick two different sketches');
+        const pick = (sid: string, key?: string) => selectedProfiles(inp, sid, key ? [key] : undefined)[0];
+        const tool = ops.loft({ region: pick(item.sketch, item.profile), frame: frameOf(inp, item.sketch) }, { region: pick(item.sketch2, item.profile2), frame: frameOf(inp, item.sketch2) }, item.id);
+        const rec = { tool, op: item.op, targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
+      }
+      case 'revolve': {
+        const f = frameOf(inp, item.sketch);
+        const sk = findSketch(design, item.sketch)!;
+        const regions = selectedProfiles(inp, item.sketch, item.profiles);
+        const ax = sketchAxis(sk, item.axis, inp.numbers.sketches[item.sketch]);
+        if (!ax) throw new Error('pick a line (or the sketch x / y axis) to revolve about');
+        const axis = item.flip ? { p: ax.p, d: { x: -ax.d.x, y: -ax.d.y } } : ax;
+        const rec = { tool: ops.revolve(regions, f, axis, p.angle, item.id), op: item.op, targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
+      }
+      case 'hole': {
+        const f = frameOf(inp, item.sketch);
+        const sk = findSketch(design, item.sketch)!;
+        const sol = inp.numbers.sketches[item.sketch];
+        const ids = item.points?.length ? item.points : sk.sketch.entities.filter((e) => e.type === 'point').map((e) => e.id);
+        const centres = ids.map((id) => sk.sketch.entities.find((e) => e.id === id)).filter((e) => e?.type === 'point').map((e) => sol.points[(e as { p: string }).p]).filter(Boolean);
+        if (!centres.length) throw new Error('place sketch points at the hole centres');
+        const tgt = targetsOf(item.targets).map((b) => b.solid);
+        if (!tgt.length) throw new Error('there is no body to drill');
+        const depth = item.through ? reach(ops, f, tgt) * 2 : p.depth;
+        const dir = item.dir ?? 'auto';
+        const opts: HoleOptions = { d: p.d, depth, style: item.style, cbD: p.cbD, cbDepth: p.cbDepth, csD: p.csD, csAngle: p.csAngle };
+        const make = (sg: number) => ops.hole(centres.map(([x, y]) => framePoint(f, { x, y })), scale3(f.n, sg), opts, item.id);
+        const tool = make(dir === '+' ? 1 : dir === '-' ? -1 : bestSide(ops, make, tgt));
+        const rec: TimelineTool<S> = { tool, op: 'cut', targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
+      }
+      case 'pattern':
+      case 'mirror': {
+        const Ms = copyMatrices(design, inp, item);
+        if (!item.refs.length) throw new Error(`pick the ${item.of} to ${item.kind}`);
+        if (item.of === 'features') {
+          for (const ref of item.refs) {
+            const src = tools.get(ref);
+            if (!src) throw new Error('a patterned feature failed or no longer exists');
+            const copies = Ms.map((M, k) => ops.transform(src.tool, M, `${item.id}.${k + 1}.`));
+            // cutting (or joining) copy after copy is one boolean with all of them: much
+            // faster for a grid of holes, the same solid
+            if (copies.length > 1 && (src.op === 'cut' || (src.op === 'join' && bodies.length))) apply(`${item.id}.1.${ref}`, { ...src, tool: ops.group(copies) });
+            else copies.forEach((tool, k) => apply(`${item.id}.${k + 1}.${ref}`, { ...src, tool }));
+          }
+        } else {
+          for (const ref of item.refs) {
+            const b = bodies.find((q) => q.id === ref);
+            if (!b) throw new Error('a body to copy no longer exists');
+            const copies = Ms.map((M, k) => ops.transform(b.solid, M, `${item.id}.${k + 1}.`));
+            if (item.join) b.solid = ops.union([b.solid, ...copies]);
+            else copies.forEach((s, k) => created(`${item.id}.${k + 1}.${ref}`, item.id, s));
+          }
+        }
+        break;
+      }
+      case 'combine': {
+        const t = bodies.find((b) => b.id === item.target);
+        const ts = bodies.filter((b) => item.tools.includes(b.id) && b !== t);
+        if (!t) throw new Error('pick the target body');
+        if (!ts.length) throw new Error('pick the tool bodies');
+        const u = ts.length > 1 ? ops.union(ts.map((b) => b.solid)) : ts[0].solid;
+        t.solid = item.op === 'join' ? ops.union([t.solid, u]) : item.op === 'cut' ? ops.cut(t.solid, u) : ops.intersect(t.solid, u);
+        if (!item.keepTools) for (const b of ts) bodies.splice(bodies.indexOf(b), 1);
+        break;
+      }
     }
+  } catch (e) {
+    errors[item.id] = msg(e);
   }
-  return { bodies, errors, tools };
+  return { bodies, tools, errors, made };
+}
+
+/**
+ * The bodies of a finished timeline with their names: the component's own names, else
+ * Body1, Body2 … counting the unnamed bodies in the order they were made.
+ */
+export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): TimelineBody<S>[] {
+  const names = new Map<string, string>();
+  let n = 0;
+  for (const id of st.made) names.set(id, comp.bodyNames?.[id] ?? `Body${++n}`);
+  return st.bodies.map((b) => ({ ...b, name: names.get(b.id) ?? b.id }));
+}
+
+/** Run the timeline of one component with a solid kernel. */
+export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
+  let st = emptyTimeline<S>();
+  for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
+  return { bodies: namedBodies(comp, st), errors: st.errors, tools: st.tools };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */

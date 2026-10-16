@@ -14,7 +14,8 @@ import {
   placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
 } from './design';
 import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
-import { occ } from './occ/kernel';
+import { designKey } from './keys';
+import { occ, occFailure } from './occ/kernel';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
 export interface CadResult {
@@ -70,6 +71,17 @@ export interface DesignResult extends DesignNumbers {
   kernel: boolean;
   /** …by the B-rep kernel: every property is exact. */
   brep?: boolean;
+  /** Why the B-rep kernel is not there (it could not load): the mesh kernel built the part. */
+  brepError?: string;
+  /** Key of the built design (keys.ts): its display data comes separately, once per key. */
+  display?: string;
+  /** The errors of resolving the numbers, before the build added its own (`errors` has both). */
+  resolveErrors?: Record<string, string>;
+}
+
+/** The numbers a design result was built from (a build needs them without the build's own errors). */
+export function designNumbers(dr: DesignResult): DesignNumbers {
+  return { sketches: dr.sketches, frames: dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors };
 }
 
 const isAngle = (t: string) => t === 'angle';
@@ -252,13 +264,19 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   result.dof = dof;
   result.ok = Object.values(numbers.sketches).every((s) => s.ok);
 
-  const dr: DesignResult = { ...numbers, bodies: {}, components: {}, placements: {}, kernel: false };
+  const dr: DesignResult = {
+    ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, display: designKey(design, numbers),
+    bodies: {}, components: {}, placements: {}, kernel: false,
+  };
   const density = (cid: string) => numbers.params[cid]?.density;
   const compMass = new Map<string, Mass3[]>();
   const oc = occ();
   const K = kernel();
-  // without the B-rep kernel the values are approximate (or missing): evaluate again once it is there
-  if (!oc) result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed)) || undefined;
+  // without the B-rep kernel the values are approximate (or missing): evaluate again once it
+  // is there, unless it could not load
+  const failure = occFailure();
+  if (!oc && !failure) result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed)) || undefined;
+  if (!oc && failure) dr.brepError = failure;
   let m: MeasuredDesign | null = null;
   try {
     m = oc && measureDesignOcc(oc, design, numbers);

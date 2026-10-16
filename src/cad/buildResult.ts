@@ -26,6 +26,8 @@ export interface FaceInfo {
   feature: string;
   type: SurfaceKind;
   area: number;
+  /** Centroid of the face (on curved faces it lies off the surface). */
+  c: Vec3;
   /** Planar faces: a frame at the face centroid, n pointing out of the material. */
   frame?: Frame;
   /** Cylinders, cones and tori (and spheres, through the centre). */
@@ -155,11 +157,9 @@ export function meshBody(body: Body): BodyResult {
     }
   }
   out.faces = acc.map((f, index) => {
-    const info: FaceInfo = { index, key: '', feature: '', type: f.flat ? 'plane' : 'other', area: f.area };
-    if (f.flat && f.area > 0) {
-      const c: Vec3 = [f.c[0] / f.area, f.c[1] / f.area, f.c[2] / f.area];
-      info.frame = frameFromNormal(c, f.n);
-    }
+    const c: Vec3 = f.area > 0 ? [f.c[0] / f.area, f.c[1] / f.area, f.c[2] / f.area] : [0, 0, 0];
+    const info: FaceInfo = { index, key: '', feature: '', type: f.flat ? 'plane' : 'other', area: f.area, c };
+    if (f.flat && f.area > 0) info.frame = frameFromNormal(c, f.n);
     out.area += f.area;
     return info;
   });

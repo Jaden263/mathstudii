@@ -19,9 +19,23 @@ export interface MeshOptions {
 const INT_MAX = 2147483647;
 
 /** Copy n values from the WASM heap at a byte address (the heap may move: always a fresh view). */
-function heap<T extends Float32Array | Uint32Array | Int32Array>(oc: OC, Kind: { new (b: ArrayBuffer, o: number, n: number): T }, ptr: number, n: number): T {
+export function heap<T extends Float32Array | Uint32Array | Int32Array>(oc: OC, Kind: { new (b: ArrayBuffer, o: number, n: number): T }, ptr: number, n: number): T {
   const view = new Kind(oc.wasmMemory.buffer as ArrayBuffer, ptr >>> 0, n);
   return view.slice() as T;
+}
+
+/**
+ * OCCT's edge tessellation comes as line segments (a, b, b, c, c, d …): one polyline
+ * (a, b, c, d …) without the repeated points.
+ */
+export function joinSegments(p: Float32Array): Float32Array {
+  const out: number[] = [];
+  for (let i = 0; i + 2 < p.length; i += 3) {
+    const n = out.length;
+    if (n && out[n - 3] === p[i] && out[n - 2] === p[i + 1] && out[n - 1] === p[i + 2]) continue;
+    out.push(p[i], p[i + 1], p[i + 2]);
+  }
+  return new Float32Array(out);
 }
 
 function props(oc: OC, t: Arena, s: TopoDS_Shape, kind: 'surface' | 'linear') {
@@ -38,7 +52,7 @@ function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): FaceInfo 
   const type: SurfaceKind = ty === S.GeomAbs_Plane ? 'plane' : ty === S.GeomAbs_Cylinder ? 'cylinder' : ty === S.GeomAbs_Cone ? 'cone'
     : ty === S.GeomAbs_Sphere ? 'sphere' : ty === S.GeomAbs_Torus ? 'torus' : ty === S.GeomAbs_BSplineSurface || ty === S.GeomAbs_BezierSurface ? 'bspline' : 'other';
   const p = props(oc, t, face, 'surface');
-  const info: FaceInfo = { index, key: '', feature: '', type, area: p.Mass() };
+  const info: FaceInfo = { index, key: '', feature: '', type, area: p.Mass(), c: xyz(t.add(p.CentreOfMass())) };
   const reversed = face.Orientation() === oc.TopAbs_Orientation.TopAbs_REVERSED;
   if (type === 'plane') {
     const pos = t.add(t.add(a.Plane()).Position());
@@ -47,7 +61,7 @@ function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): FaceInfo 
     // Direction), turned out of the material
     const n0 = norm3(cross3(u, xyz(t.add(pos.YDirection()))));
     const n: Vec3 = reversed ? [-n0[0], -n0[1], -n0[2]] : n0;
-    info.frame = { o: xyz(t.add(p.CentreOfMass())), u, v: norm3(cross3(n, u)), n };
+    info.frame = { o: info.c, u, v: norm3(cross3(n, u)), n };
   } else if (type === 'cylinder') {
     const c = t.add(a.Cylinder()), ax = t.add(c.Axis());
     info.axis = { p: xyz(t.add(ax.Location())), d: xyz(t.add(ax.Direction())) };
@@ -162,7 +176,7 @@ export function bodyResultOcc(oc: OC, body: OccBody, o: MeshOptions = {}): BodyR
     });
     for (let g = 0; g < eg.length; g += 3) {
       const ei = edgeByHash.get(eg[g + 2]);
-      if (ei !== undefined && ei >= 0) polyline.set(ei, pts.slice(3 * eg[g], 3 * (eg[g] + eg[g + 1])));
+      if (ei !== undefined && ei >= 0) polyline.set(ei, joinSegments(pts.subarray(3 * eg[g], 3 * (eg[g] + eg[g + 1]))));
     }
     out.edges = edges.shapes.map((e, i) => {
       const [a = -1, b = a] = sides[i];
@@ -175,6 +189,28 @@ export function bodyResultOcc(oc: OC, body: OccBody, o: MeshOptions = {}): BodyR
     });
     return out;
   });
+}
+
+// a solid that did not change keeps its display data (shapes are never modified in place)
+const shown = new WeakMap<TopoDS_Shape, BodyResult>();
+
+/**
+ * BuildResult of a design from the timeline cache: bodies whose solid is the one shown
+ * before are not tessellated again (only their names may differ).
+ */
+export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
+  const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors };
+  for (const [cid, cb] of built.components) {
+    out.components[cid] = {
+      bodies: cb.bodies.map((b) => {
+        let r = shown.get(b.solid.shape);
+        if (!r) shown.set(b.solid.shape, (r = bodyResultOcc(oc, b)));
+        return { ...r, id: b.id, name: b.name, feature: b.feature };
+      }),
+      errors: cb.errors,
+    };
+  }
+  return out;
 }
 
 /** BuildResult of a built design (it stays built; free it yourself). */
