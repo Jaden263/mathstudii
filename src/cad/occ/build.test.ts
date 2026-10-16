@@ -180,23 +180,36 @@ describe('B-rep shells and roundings', () => {
   });
 
   it('lofts between planes at right angles without turning inside out', () => {
-    // from the floor (z = 0) to the wall x = 60, both ends over the same y range: the
-    // straight rulings keep y, so every y slice is the quadrilateral between the floor chord
-    // (x = cx ± w) and the wall chord (z = cz ∓ w), of area (60 − cx + cz) w (shoelace)
-    const elbow = (floor: CadSketch, wall: CadSketch) => solve(single([
+    // from the floor (z = 0) to a wall x = X, both ends over the same y range: the straight
+    // rulings keep y, so every y slice is the quadrilateral between the floor chord
+    // (x = cx ± w) and the wall chord (z = cz ± w), near side to near side, of area
+    // (|X − cx| + cz) w (shoelace); a twisted pairing would cross itself instead
+    const elbow = (floor: CadSketch, wall: CadSketch, X: number) => solve(single([
       { kind: 'sketch', id: 's1', name: 'Floor', plane: { ref: 'XY' }, sketch: floor },
-      { kind: 'sketch', id: 's2', name: 'Wall', plane: { ref: 'YZ', offset: '60' }, sketch: wall },
+      { kind: 'sketch', id: 's2', name: 'Wall', plane: { ref: 'YZ', offset: `${X}` }, sketch: wall },
       { kind: 'loft', id: 'f1', name: 'Loft', sketch: 's1', sketch2: 's2', op: 'new' },
     ])).res;
-    // squares 20 × 20: cx = 10, cz = 20 and w = 10 over 20 of y
-    const sq = elbow(rect('a', 0, 0, 20, 20), rect('b', 0, 10, 20, 30));
-    expect(sq.featureError).toBeUndefined();
-    near(volumes(sq)[0], 70 * 10 * 20);
+    // squares 20 × 20: cx = 10, cz = 20 and w = 10 over 20 of y; the wall on either side
+    // (its normal +x points away from the floor at X = −60), in both kernels
+    for (const brep of [true, false]) {
+      setOccEnabled(brep);
+      try {
+        for (const X of [60, -60]) {
+          const sq = elbow(rect('a', 0, 0, 20, 20), rect('b', 0, 10, 20, 30), X);
+          expect(sq.featureError).toBeUndefined();
+          near(volumes(sq)[0], (Math.abs(X - 10) + 20) * 10 * 20, brep ? 1e-9 : 1e-6);
+        }
+      } finally {
+        setOccEnabled(true);
+      }
+    }
     // circles r = 8 (the wall's sketch x is world y): ∫ w dy is half the disc, π r²/2; the
     // ruled surface between circles at an angle is a B-spline, integrated numerically (1e-8)
-    const ci = elbow(circles('a', [[10, 10, 8]]), circles('b', [[10, 20, 8]]));
-    expect(ci.featureError).toBeUndefined();
-    near(volumes(ci)[0], (70 * PI * 64) / 2, 1e-8);
+    for (const X of [60, -60]) {
+      const ci = elbow(circles('a', [[10, 10, 8]]), circles('b', [[10, 20, 8]]), X);
+      expect(ci.featureError).toBeUndefined();
+      near(volumes(ci)[0], ((Math.abs(X - 10) + 20) * PI * 64) / 2, 1e-8);
+    }
   });
 });
 
