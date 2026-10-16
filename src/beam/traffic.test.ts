@@ -6,6 +6,7 @@ import { math } from '../engine/math';
 import { beamValue, lowerBound } from './evaluate';
 import { solveStructure } from './solve';
 import { autoStep } from './traffic';
+import { MAX_POSITIONS } from './influence';
 import type { BeamCases, BeamData, BeamTraffic } from './model';
 
 /** A simple span of L metres, IPE 300 (the default section). */
@@ -156,6 +157,41 @@ describe('moving loads in a beam region', () => {
     expect(res.traffic!.lines[0].v.length).toBe(res.traffic!.xs.length);
   });
 
+  it('exports the ordinates as vectors, a position repeated at the shear jump', () => {
+    const traffic: BeamTraffic = {
+      lines: [{ id: 'i1', name: 'M1', quantity: 'M', at: { x: 10, y: 0 } }, { id: 'i3', name: 'V1', quantity: 'V', at: { x: 5, y: 0 } }],
+      loads: [],
+      step: '0.5',
+    };
+    const { text, num } = run(span(20), traffic, ['max(b.IL.M1_eta) = m', 'length(b.IL.V1_x) =', 'b.IL.M1_x[20] =']);
+    // 41 positions at 0.5 m; L/4 = 5 m at midspan
+    expect(text(0)).toBe('5 m');
+    expect(text(1)).toBe('42');
+    expect(text(2)).toBe('10 m');
+    const eta = (num('IL.V1_η') as unknown as { toArray: () => number[] }).toArray();
+    // at x = 5 m: −x/L just left, 1 − x/L just right
+    expect(eta[10]).toBeCloseTo(-0.25, 12);
+    expect(eta[11]).toBeCloseTo(0.75, 12);
+  });
+
+  it('a member drawn right to left: influence lines in the sign convention of b.M(x) and b.V(x)', () => {
+    // two spans, the second drawn from C to B: a 1 kN load at 13 m gives b.M(10 m) = η_M(13 m) · 1 kN,
+    // since an ordinate is the response to a unit load there
+    const data: BeamData = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 8, y: 0 }, { id: 'c', x: 16, y: 0 }],
+      members: [{ id: 'm1', a: 'a', b: 'b' }, { id: 'm2', a: 'c', b: 'b' }],
+      supports: [{ id: 'sA', node: 'a', type: 'pin', angle: 0, label: 'A' }, { id: 'sB', node: 'b', type: 'roller', angle: 0, label: 'B' }, { id: 'sC', node: 'c', type: 'roller', angle: 0, label: 'C' }],
+      loads: [{ id: 'P', type: 'force', at: { member: 'm2', t: 3 / 8 }, value: '1', angle: -90 }],
+    };
+    const traffic: BeamTraffic = { lines: [{ id: 'i1', name: 'M1', quantity: 'M', at: { x: 10, y: 0 } }, { id: 'i2', name: 'V1', quantity: 'V', at: { x: 10, y: 0 } }], loads: [], step: '0.5' };
+    const { num } = run(data, traffic, []);
+    const M = num('M', 'kN m', '10 m'), V = num('V', 'kN', '10 m');
+    // the load at 13 m sags the section of span 2
+    expect(M).toBeGreaterThan(0);
+    expect(num('IL.M1', 'm', '13 m')).toBeCloseTo(M, 12);
+    expect(num('IL.V1', undefined, '13 m')).toBeCloseTo(V, 12);
+  });
+
   it('a frame: the deck carries the loads; errors stay with their item', () => {
     // portal frame, deck 0 … 8 m on columns 5 m high
     const data: BeamData = {
@@ -196,5 +232,9 @@ describe('moving loads in a beam region', () => {
     expect(autoStep(100, [0, 1.2])).toBe(0.2);
     expect(autoStep(18, [0, 1.2])).toBe(0.05);
     expect(autoStep(30, [0, 3.5])).toBe(0.1);
+    // 0.1 m divides 1.3 m, but 2000 positions on 200 m are more than the analysis takes: it
+    // would widen the step to 1/3 m, which divides nothing; a round step near L/200 instead
+    expect(200 / 0.1).toBeGreaterThan(MAX_POSITIONS);
+    expect(autoStep(200, [0, 1.3])).toBe(1);
   });
 });

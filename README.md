@@ -427,21 +427,22 @@ settlements are prescribed displacements; both are checked against closed-form r
 - **Influence lines** of a support reaction (R_y, R_x or the moment of a fixed support),
   or of M, V, N or the deflection at a section, drawn in panels under the diagrams
   (positive up, ordinates labelled at the peaks, at supports and on both sides of the
-  shear jump; M in m per kN, deflection in mm per kN). A unit load walks along the
+  shear jump; M in kN·m per kN, deflection in mm per kN). A unit load walks along the
   **load path**: a straight beam, or the members marked *Load path (deck)* (with none
   marked, the horizontal ones), which must form one chain from left to right. The
   stiffness is factorised once and every position is one more right-hand side: the
   fixed-end forces of the load on its member, so members stay whole and the ordinates
   are exact at every position (the forces along members come from statics). Positions
   are every Δx along x (automatic: a round step near 1/200 of the path that the axle
-  spacings divide), plus member ends and the sections asked for.
+  spacings divide; at most 600 positions), plus member ends and the sections asked for.
 - **Moving loads:** a point load; **EN 1991-2 Load Model 1** for one notional lane
   (tandem 2 × α_Q·300 kN at 1.2 m and α_q·9 kN/m² × the lane width, α = 1 by default);
   a crane (two wheels P at a); or any axle train with a uniform load. A train stops with
   each of its axles on every position, both ways (or one way): with the lines straight
   between positions those stops are where its extremes are, so none falls between them. The
   uniform load goes only where the influence line is adverse (Simpson's rule on each
-  smooth stretch, which is exact for the cubic lines of unloaded members). The result
+  smooth stretch, which is exact for the cubic lines of unloaded members; where the line
+  changes sign, the cubic through the nearest four ordinates cut at its zero). The result
   is an envelope (upper and lower bound, the load may also be absent) of N, V, M, the
   deflection and the reactions, with the section and the train position of each
   extreme.
@@ -457,18 +458,22 @@ settlements are prescribed displacements; both are checked against closed-form r
   train on the structure with a slider (and a direction button): the diagrams become
   those of the train at that position, and the influence-line panels mark each axle
   with Σ P η.
-- **In the worksheet:** `b.IL.M1(x)` (with `b.IL.M1_max`, `_min`), and per moving load
+- **In the worksheet:** `b.IL.M1(x)` (with `b.IL.M1_max`, `_min`, and the ordinates as
+  vectors `b.IL.M1_x`, `b.IL.M1_eta`, a position repeated at a jump), and per moving load
   `b.moving.LM1.M_max`, `M_min`, `V_max`, `V_min`, `w_max`, each with `x_M_max` (the
   section) and `pos_M_max` (the first axle), the reactions `b.moving.LM1.B.Ry_max`,
   `.Ry_min`, and the envelope as functions `b.moving.LM1.max.M(x)`, `.min.M(x)`; a
   combination's lower bound is `b.combos.ULS.min`.
 - **Checked against closed forms:** influence lines of M (peak L/4), R_A and V (jump of
   1) on a simple span, Maxwell's deflection line, R_B of two spans against
-  Müller-Breslau ξ(3L² − ξ²)/2L³, and a frame with a hinge, a spring and an inclined
-  roller against the direct solver; PL/4 for a single load, P(2L − a)²/8L for two axles
-  (and PL/4 for a > 0.586 L), R_A = P + P(L − a)/L, −qL²/8 over the middle support and
-  49/512 qL² in a span for a uniform load on the adverse parts, and LM1 on a 20 m span by
-  hand (852 x − 43.5 x²).
+  Müller-Breslau ξ(3L² − ξ²)/2L³, the clamping moment of a propped cantilever
+  ξ(L − ξ)(2L − ξ)/2L², the straight lines of a Gerber beam, and a frame with a hinge, a
+  spring and an inclined roller (and a beam drawn right to left) against the direct
+  solver; PL/4 for a single load, P(2L − a)²/8L for two axles (and PL/4 for a > 0.586 L),
+  R_A = P + P(L − a)/L, −qL²/8 over the middle support and 49/512 qL² in a span for a
+  uniform load on the adverse parts, −0.0736 qL² at 0.9 L with span 1 partly loaded
+  (both spans full give only −0.0675 qL²), and LM1 on a 20 m span by hand
+  (852 x − 43.5 x²).
 - **Limits:** loads act vertically on the path; axle spacings and uniform loads are per
   metre along x (plan length on an inclined deck); sections are searched at the load
   positions, and the axles of a train stand on positions together only when Δx divides

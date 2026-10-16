@@ -167,6 +167,67 @@ describe('influence lines by unit-load traversal', () => {
     expect(at(tim.lines[0], 2)).toBeCloseTo((5 / 48 + psi / 2) / (1 / 3 + psi), 12);
   });
 
+  it('propped cantilever: support moment M_A = ξ(L − ξ)(2L − ξ)/(2L²), 3L/16 at midspan', () => {
+    // R_B = ξ²(3L − ξ)/(2L³) from compatibility at the prop, and M_A = R_B L − ξ (counter-clockwise)
+    const L = 6;
+    const st: NumStructure = { nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }], members: [mem('m', 'a', 'b')], supports: [sup('A', 'a', 'fixed'), sup('B', 'b', 'roller')], loads: [] };
+    const MA = influenceAnalysis(st, loadPath(st), 0.25, [{ id: 'MA', kind: 'Mr', support: 'A' }], []).lines[0];
+    MA.x.forEach((xi, i) => expect(MA.v[i]).toBeCloseTo((xi * (L - xi) * (2 * L - xi)) / (2 * L * L), 12));
+    expect(at(MA, 3)).toBeCloseTo((3 * L) / 16, 12);
+  });
+
+  it('a Gerber beam (hinge in the deck): straight-line influence lines, as statics gives them', () => {
+    // pin 0, roller 10, hinge at 12 (2 m overhang), suspended span 12 … 20 on a roller:
+    // M_B = 0 on span 1, −(ξ − 10) on the overhang, −2(20 − ξ)/8 on the suspended span;
+    // R_C = (ξ − 12)/8 on the suspended span only; M at 5 m = ξ/2 … then R_A·5 with R_A = M_B/10
+    const st: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 10, y: 0 }, { id: 'h', x: 12, y: 0 }, { id: 'c', x: 20, y: 0 }],
+      members: [mem('m1', 'a', 'b'), mem('m2', 'b', 'h', { hingeB: true }), mem('m3', 'h', 'c')],
+      supports: [sup('A', 'a', 'pin'), sup('B', 'b', 'roller'), sup('C', 'c', 'roller')],
+      loads: [],
+    };
+    const [MB, RC, M5] = influenceAnalysis(st, loadPath(st), 0.25, [
+      { id: 'MB', kind: 'M', member: 'm1', t: 1 }, { id: 'RC', kind: 'Ry', support: 'C' }, { id: 'M5', kind: 'M', member: 'm1', t: 0.5 },
+    ], []).lines;
+    MB.x.forEach((xi, i) => {
+      const mb = xi <= 10 ? 0 : xi <= 12 ? -(xi - 10) : (-2 * (20 - xi)) / 8;
+      expect(MB.v[i]).toBeCloseTo(mb, 12);
+      expect(RC.v[i]).toBeCloseTo(xi <= 12 ? 0 : (xi - 12) / 8, 12);
+      expect(M5.v[i]).toBeCloseTo(xi <= 5 ? xi / 2 : xi <= 10 ? (10 - xi) / 2 : mb / 2, 12);
+    });
+  });
+
+  it('a member drawn right to left: the same lines as the direct solver, and the shear jump on the right side', () => {
+    // two spans of 8 m, the second drawn from C to B; sections at x = 10 m (t = 0.75 along it)
+    const st: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 8, y: 0 }, { id: 'c', x: 16, y: 0 }],
+      members: [mem('m1', 'a', 'b'), mem('m2', 'c', 'b')],
+      supports: [sup('A', 'a', 'pin'), sup('B', 'b', 'roller'), sup('C', 'c', 'roller')],
+      loads: [],
+    };
+    const path = loadPath(st);
+    expect(path[1]).toEqual({ member: 'm2', x0: 8, x1: 16, flip: true });
+    const [M, V, w] = influenceAnalysis(st, path, 0.5, [
+      { id: 'M', kind: 'M', member: 'm2', t: 0.75 }, { id: 'V', kind: 'V', member: 'm2', t: 0.75 }, { id: 'w', kind: 'w', member: 'm2', t: 0.75 },
+    ], []).lines;
+    for (const xi of [1, 4, 7.5, 9.5, 10.5, 13, 15.5]) {
+      const s = solveStructure({ ...st, loads: [{ id: 'P', type: 'force', at: xi <= 8 ? { member: 'm1', t: xi / 8 } : { member: 'm2', t: (16 - xi) / 8 }, Fx: 0, Fy: -1 }] });
+      const v = memberAt(s.members[1], 6);
+      // in the member's own axes, as the direct solver gives them
+      expect(at(M, xi)).toBeCloseTo(v.M, 12);
+      expect(at(V, xi)).toBeCloseTo(v.V, 12);
+      expect(at(w, xi)).toBeCloseTo(v.dy, 16);
+    }
+    // the load passing the section from left to right: V(ξ → 10⁻) and V(ξ → 10⁺) differ by 1,
+    // the left value first, as with the direct solver a millimetre either side
+    const i = V.x.findIndex((x) => Math.abs(x - 10) < 1e-12);
+    expect(V.x[i + 1]).toBe(10);
+    expect(V.v[i + 1] - V.v[i]).toBeCloseTo(1, 12);
+    const near = (xi: number) => memberAt(solveStructure({ ...st, loads: [{ id: 'P', type: 'force', at: { member: 'm2', t: (16 - xi) / 8 }, Fx: 0, Fy: -1 }] }).members[1], 6).V;
+    expect(V.v[i]).toBeCloseTo(near(9.999), 3);
+    expect(V.v[i + 1]).toBeCloseTo(near(10.001), 3);
+  });
+
   it('refuses a path that is not one chain', () => {
     const st = beam([0, 5, 10], [0, 2]);
     st.nodes.push({ id: 'x', x: 20, y: 0 }, { id: 'y', x: 25, y: 0 });
@@ -255,6 +316,30 @@ describe('moving loads', () => {
     const full = solveStructure({ ...beam([0, l, 2 * l], [0, 1, 2]), loads: ['m0', 'm1'].map((m) => ({ id: m, type: 'line' as const, member: m, t1: 0, t2: 1, q1: q, q2: q, dir: 'global' as const })) });
     const spanMax = Math.max(...full.members[0].M);
     expect(spanMax).toBeLessThan(t.extremes.M_max!.value * 0.75);
+  });
+
+  it('uniform load near the middle support: partial loading of span 1 hogs more than both spans full', () => {
+    // two spans L, section at x = 0.9 L. With M_B(ξ) = −ξ(L² − ξ²)/(4L²) the line is
+    // ξ(1 − x/L) + (x/L) M_B(ξ) left of the section (negative up to ξ₀² = L²(1 − 4(L − x)/x)),
+    // positive between the section and B, and (x/L) M_B(η) on span 2 (area −xL/16).
+    const l = 10, x = 9, q = 20e3, c = 1 - x / l;
+    const xi2 = l * l * (1 - (4 * c * l) / x);
+    const negSpan1 = (c * xi2) / 2 - (x / (4 * l ** 3)) * ((l * l * xi2) / 2 - (xi2 * xi2) / 4);
+    // span 1 loaded whole: ∫ = x·7L/16 − x²/2, so its positive part is that less the negative one
+    const full1 = (7 * x * l) / 16 - (x * x) / 2, full2 = -(x * l) / 16;
+    // 0.5 m positions: the zero crossing (ξ₀ = 7.454 m) falls between two of them
+    const r = run(beam([0, l, 2 * l], [0, 1, 2]), 0.5, [], [{ id: 'q', P: [], offsets: [], q, dir: 'both' }]);
+    const H = r.trains[0].max.members[0], Lo = r.trains[0].min.members[0];
+    const i = H.s.findIndex((s) => Math.abs(s - x) < 1e-12);
+    expect(Lo.M[i] / (q * (negSpan1 + full2))).toBeCloseTo(1, 12);
+    expect(H.M[i] / (q * (full1 - negSpan1))).toBeCloseTo(1, 10);
+    // both spans full: q(3xL/8 − x²/2) = −0.0675 qL²; the adverse parts only: −0.0736 qL²
+    const both = q * (full1 + full2);
+    expect(both / (q * l * l)).toBeCloseTo(-0.0675, 12);
+    expect(Lo.M[i] / (q * l * l)).toBeCloseTo(-0.073611, 6);
+    expect(Lo.M[i]).toBeLessThan(both * 1.09);
+    const direct = solveStructure({ ...beam([0, l, 2 * l], [0, 1, 2]), loads: ['m0', 'm1'].map((m) => ({ id: m, type: 'line' as const, member: m, t1: 0, t2: 1, q1: q, q2: q, dir: 'global' as const })) });
+    expect(memberAt(direct.members[0], x).M).toBeCloseTo(both, 6);
   });
 
   it('direction matters for an uneven train', () => {

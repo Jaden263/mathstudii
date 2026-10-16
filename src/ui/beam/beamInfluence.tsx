@@ -7,7 +7,7 @@ import type { BeamResult } from '../../beam/evaluate';
 import type { TrafficMoving } from '../../beam/traffic';
 import type { BeamData } from '../../beam/model';
 import { Arrow, LENGTH_M, fmt, toS, units, type P2, type Vp } from './beamDraw';
-import { lineTitle, ordinateUnit, ordinateValue } from './BeamTraffic';
+import { lineTitle, ordinateUnit, ordinateValue, trainUnit } from './BeamTraffic';
 
 /** Screen point of global x (m) on the load path, or null off it. */
 function pathPoint(r: BeamRegion, d: BeamData, res: BeamResult, vp: Vp, xm: number): P2 | null {
@@ -95,8 +95,8 @@ export function InfluencePanels({ r, d, res, vp, top, h, width, train }: {
           <g key={line.id} className="bm-panel IL">
             <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />
             <text x={10} y={y0 + 15} className="bm-panel-title">
-              η {line.name}<tspan className="bm-panel-unit"> {lineTitle(r, def)} [{ordinateUnit(r, line.quantity)}{ordinateUnit(r, line.quantity) === '–' ? '' : ` per ${r.forceUnit}`}]</tspan>
-              {sum !== undefined && <tspan className="bm-panel-unit"> · train: Σ P η = {fmt(sum)}{line.quantity === 'M' || line.quantity === 'Mr' ? ` ${r.forceUnit}·${r.lengthUnit}` : line.quantity === 'w' ? ' mm' : ` ${r.forceUnit}`}</tspan>}
+              η {line.name}<tspan className="bm-panel-unit"> {lineTitle(r, def)} [{ordinateUnit(r, line.quantity)}]</tspan>
+              {sum !== undefined && <tspan className="bm-panel-unit"> · train: Σ P η = {fmt(sum)} {trainUnit(r, line.quantity)}</tspan>}
             </text>
             <g className="bm-guides">
               {supportsX.map((s) => <line key={s.label} x1={X(s.x)} y1={y0 + 18} x2={X(s.x)} y2={y0 + h - 4} />)}

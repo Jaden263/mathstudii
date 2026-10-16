@@ -240,26 +240,59 @@ function sweep(l: Line, st: Stops): { hi: number; lo: number; ihi: number; ilo: 
 }
 
 /**
+ * Positive and negative parts of ∫ p dx over [a, b], p the polynomial through (px, pf)
+ * with p(a) = fa, p(b) = fb: cut at its root where the sign changes, each part by
+ * two-point Gauss, which is exact up to cubics.
+ */
+function polyParts(px: number[], pf: number[], a: number, b: number, fa: number, fb: number): [number, number] {
+  const p = (x: number) => {
+    let y = 0;
+    for (let i = 0; i < px.length; i++) {
+      let w = pf[i];
+      for (let j = 0; j < px.length; j++) if (j !== i) w *= (x - px[j]) / (px[i] - px[j]);
+      y += w;
+    }
+    return y;
+  };
+  const gauss = (u: number, w: number) => {
+    const m = (u + w) / 2, d = (w - u) / (2 * Math.sqrt(3));
+    return ((w - u) / 2) * (p(m - d) + p(m + d));
+  };
+  if (fa * fb >= 0) {
+    const I = gauss(a, b);
+    return fa + fb > 0 || (fa + fb === 0 && I > 0) ? [I, 0] : [0, I];
+  }
+  // p is the line itself here, so its root is where the line crosses zero
+  let lo = a, hi = b;
+  for (let it = 0; it < 80 && hi - lo > 1e-13 * (b - a); it++) {
+    const mid = (lo + hi) / 2;
+    if (p(mid) * fa > 0) lo = mid;
+    else hi = mid;
+  }
+  const r = (lo + hi) / 2, I1 = gauss(a, r), I2 = gauss(r, b);
+  return fa > 0 ? [I1, I2] : [I2, I1];
+}
+
+/**
  * Positive and negative area under a line (the uniform load's adverse parts). Between
  * joints and its own station the line is one cubic (the response to a unit load moving
  * along an unloaded member), so Simpson's rule over two equal steps (3/8 over three at
  * the end of an odd stretch) is exact where the sign does not change; where it does,
- * the trapezoid, cut where it crosses zero.
+ * the cubic through the four nearest ordinates, cut at its root, is exact too.
  */
 function areas(l: Line, xs: number[], joint: boolean[]): [number, number] {
   let pos = 0, neg = 0;
   const P = xs.length;
-  // a value as the segment starting (or ending) there sees it: the two sides of a jump
-  const from = (k: number) => (k === l.k0 ? l.right : l.v[k]);
-  const to = (k: number) => (k === l.k0 ? l.left : l.v[k]);
   let s = 0;
   while (s < P - 1) {
     let e = s + 1;
     while (e < P - 1 && !joint[e] && e !== l.kink && e !== l.k0) e++;
+    // the stretch's ordinates, a jump at its ends seen from inside
+    const val = (k: number) => (k === l.k0 ? (k === s ? l.right : l.left) : l.v[k]);
     for (let k = s; k < e;) {
       const n = e - k, m = n === 3 ? 3 : n >= 2 ? 2 : 1, h = xs[k + 1] - xs[k];
       if (m > 1 && Math.abs(xs[k + 2] - xs[k + 1] - h) < 1e-9 * h && (m === 2 || Math.abs(xs[k + 3] - xs[k + 2] - h) < 1e-9 * h)) {
-        const f0 = from(k), f1 = l.v[k + 1], f2 = m === 2 ? to(k + 2) : l.v[k + 2], f3 = m === 3 ? to(k + 3) : 0;
+        const f0 = val(k), f1 = val(k + 1), f2 = val(k + 2), f3 = m === 3 ? val(k + 3) : 0;
         const lo = Math.min(f0, f1, f2, f3), hi = Math.max(f0, f1, f2, f3);
         if (lo >= 0 || hi <= 0) {
           const I = m === 2 ? (h / 3) * (f0 + 4 * f1 + f2) : ((3 * h) / 8) * (f0 + 3 * f1 + 3 * f2 + f3);
@@ -269,11 +302,13 @@ function areas(l: Line, xs: number[], joint: boolean[]): [number, number] {
           continue;
         }
       }
-      const a = from(k), b = to(k + 1);
-      if (a >= 0 && b >= 0) pos += (h * (a + b)) / 2;
-      else if (a <= 0 && b <= 0) neg += (h * (a + b)) / 2;
-      else if (a > 0) { pos += (h * a * a) / (2 * (a - b)); neg += (h * b * b) / (2 * (b - a)); }
-      else { neg += (h * a * a) / (2 * (a - b)); pos += (h * b * b) / (2 * (b - a)); }
+      // one step at a time: the cubic through the nearest four ordinates of the stretch
+      const j0 = Math.max(s, Math.min(k - 1, e - 3)), j1 = Math.min(e, j0 + 3);
+      const px: number[] = [], pf: number[] = [];
+      for (let j = j0; j <= j1; j++) { px.push(xs[j]); pf.push(val(j)); }
+      const [p, q] = polyParts(px, pf, xs[k], xs[k + 1], val(k), val(k + 1));
+      pos += p;
+      neg += q;
       k += 1;
     }
     s = e;

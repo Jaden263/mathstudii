@@ -1,11 +1,12 @@
 // Side panel blocks for influence lines and moving loads: the lines asked for, the
 // moving loads (a point load, EN 1991-2 Load Model 1, a crane, an axle train), the load
 // path and the step, and each moving load's extremes with where they act.
+import { Fragment } from 'react';
 import { Trash2 } from 'lucide-react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import { straightBeam } from '../../beam/evaluate';
-import type { Critical } from '../../beam/influence';
+import { MAX_POSITIONS, type Critical } from '../../beam/influence';
 import { beamId, movingLoad, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad, type BeamTraffic, type InfluenceQuantity } from '../../beam/model';
 import { identifierOf } from '../../beam/traffic';
 import { LazyInput } from '../sketch/SketchProps';
@@ -37,10 +38,15 @@ function freeName(base: string, used: string[], numbered = false): string {
   }
 }
 
-/** Unit of an influence ordinate: the quantity per unit force. */
+/** Unit of an influence ordinate: the quantity per unit force (kN·m/kN for a moment, a length; – for a force). */
 export function ordinateUnit(r: BeamRegion, q: InfluenceQuantity): string {
+  return q === 'M' || q === 'Mr' ? `${r.forceUnit}·${r.lengthUnit}/${r.forceUnit}` : q === 'w' ? `${trainUnit(r, q)}/${r.forceUnit}` : '–';
+}
+
+/** Unit of Σ P η, the response to the axles. */
+export function trainUnit(r: BeamRegion, q: InfluenceQuantity): string {
   const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
-  return q === 'M' || q === 'Mr' ? r.lengthUnit : q === 'w' ? `${metric ? 'mm' : 'in'}/${r.forceUnit}` : '–';
+  return q === 'M' || q === 'Mr' ? `${r.forceUnit}·${r.lengthUnit}` : q === 'w' ? (metric ? 'mm' : 'in') : r.forceUnit;
 }
 
 /** An ordinate in SI (per newton) in the region's units. */
@@ -198,7 +204,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
             {peak && (
               <p className="hint">
                 η from {fmt(ordinateValue(region, l.quantity, Math.min(...peak.v)))} to {fmt(ordinateValue(region, l.quantity, Math.max(...peak.v)))}
-                {ordinateUnit(region, l.quantity) === '–' ? ' per unit load' : ` ${ordinateUnit(region, l.quantity)} per ${region.forceUnit}`}; <code>{name}.IL.{identifierOf(l.name)}(x)</code>
+                {ordinateUnit(region, l.quantity) === '–' ? ' per unit load' : ` ${ordinateUnit(region, l.quantity)}`}; <code>{name}.IL.{identifierOf(l.name)}(x)</code>
               </p>
             )}
           </div>
@@ -278,7 +284,8 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
             const rows: [string, number | undefined, (v: number) => string, Critical | undefined][] = [
               ['M max', ex?.M_max?.value, u.moment, ex?.M_max], ['M min', ex?.M_min?.value, u.moment, ex?.M_min],
               ['V max', ex?.V_max?.value, u.force, ex?.V_max], ['V min', ex?.V_min?.value, u.force, ex?.V_min],
-              ['δ max', ex?.w_max?.value, u.defl, ex?.w_max],
+              // vertical, like b.moving.….w_max (the δ label on the drawing is the total displacement)
+              ['δy max', ex?.w_max?.value, u.defl, ex?.w_max],
             ];
             return (
               <>
@@ -287,16 +294,26 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
                   <table className="props-table bm-moving">
                     <tbody>
                       {rows.map(([label, v, f, e]) => (v !== undefined && Math.abs(v) > 0 ? (
-                        <tr key={label}><td>{label}</td><td><b>{f(v)}</b> <span className="bm-where">{where(e)}</span></td></tr>
+                        <tr key={label}><td>{label === 'δy max' ? <>δ<sub>y</sub> max</> : label}</td><td><b>{f(v)}</b> <span className="bm-where">{where(e)}</span></td></tr>
                       ) : null))}
                       {region.supports.map((s) => {
                         const rs = env.reactions[s.id];
                         if (!rs) return null;
+                        // a fixed support's moment: where the larger of its bounds happens
+                        const Mgov = Math.abs(rs.M_min?.value ?? 0) > Math.abs(rs.M_max?.value ?? 0) ? rs.M_min : rs.M_max;
                         return (
-                          <tr key={s.id}>
-                            <td>R<sub>y</sub> {s.label}</td>
-                            <td><b>{u.force(rs.Ry_max?.value ?? 0)}</b> … {u.force(rs.Ry_min?.value ?? 0)} <span className="bm-where">{where(rs.Ry_max)}</span></td>
-                          </tr>
+                          <Fragment key={s.id}>
+                            <tr>
+                              <td>R<sub>y</sub> {s.label}</td>
+                              <td><b>{u.force(rs.Ry_max?.value ?? 0)}</b> … {u.force(rs.Ry_min?.value ?? 0)} <span className="bm-where">{where(rs.Ry_max)}</span></td>
+                            </tr>
+                            {s.type === 'fixed' && (
+                              <tr>
+                                <td>M {s.label}</td>
+                                <td><b>{u.moment(rs.M_max?.value ?? 0)}</b> … {u.moment(rs.M_min?.value ?? 0)} <span className="bm-where">{where(Mgov)}</span></td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </tbody>
@@ -324,6 +341,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
             <p className="hint">
               Load path: {res.path.length === region.members.length ? 'the whole beam' : `member${res.path.length > 1 ? 's' : ''} ${res.path.map((p) => region.members.findIndex((m) => m.id === p.member) + 1).join(', ')}`}
               {' '}from x = {fmt(res.path[0].x0 / Lm)} to {fmt(res.path[res.path.length - 1].x1 / Lm)} {region.lengthUnit}, {res.xs.length} load positions.
+              {res.widened ? ` Δx is ${fmt(res.step / Lm)} ${region.lengthUnit}: at most ${MAX_POSITIONS} positions.` : ''}
               {!straight && !region.members.some((m) => m.deck) ? ' Mark the deck members (select one → Load path) if the loads travel elsewhere.' : ''}
             </p>
           )}

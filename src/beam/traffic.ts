@@ -8,7 +8,7 @@ import type { BeamRegion } from '../model/types';
 import { math, isUnit } from '../engine/math';
 import { LM1, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad } from './model';
 import {
-  boundExtremes, influenceAnalysis, linearPieces, loadPath,
+  boundExtremes, influenceAnalysis, linearPieces, loadPath, MAX_POSITIONS,
   type Critical, type ExtremeKey, type InfluenceQuery, type PathSeg, type ReactionKey, type TrainEnvelope, type TrainSpec,
 } from './influence';
 import { memberAt, StructureError, type BeamSolution, type MemberResult, type NumStructure } from './solve';
@@ -49,6 +49,8 @@ export interface TrafficResult {
   /** Load positions (m) and their spacing. */
   xs: number[];
   step: number;
+  /** The step asked for was finer than the analysis takes (MAX_POSITIONS). */
+  widened?: boolean;
   lines: TrafficLine[];
   moving: TrafficMoving[];
   /** The structure without loads or settlements, in SI: the train at one position is solved on it. */
@@ -98,7 +100,8 @@ export function trainOf(ml: BeamMovingLoad, r: BeamRegion, read: Read, evalExpr:
 
 /**
  * A round step near span/200 that divides every axle spacing, so the axles of a train
- * stand on load positions together (1.2 m for LM1: 0.1, 0.2 …).
+ * stand on load positions together (1.2 m for LM1: 0.1, 0.2 …). Not finer than the
+ * analysis takes (MAX_POSITIONS), since a widened step would divide nothing.
  */
 export function autoStep(span: number, offsets: number[]): number {
   const target = span / 200;
@@ -107,7 +110,7 @@ export function autoStep(span: number, offsets: number[]): number {
     for (const m of [5, 2.5, 2, 1]) if (m * 10 ** e <= target * (1 + 1e-9)) nice.push(+(m * 10 ** e).toPrecision(6));
   }
   const divides = (s: number) => offsets.every((o) => Math.abs(o / s - Math.round(o / s)) < 1e-6);
-  return nice.find((s) => s >= target / 20 && divides(s)) ?? nice[0];
+  return nice.find((s) => s >= (span / MAX_POSITIONS) * (1 - 1e-9) && divides(s)) ?? nice[0];
 }
 
 /** The member and fraction of an influence line's section: on its member, else the load path first. */
@@ -188,6 +191,7 @@ export function solveTraffic(r: BeamRegion, base: Omit<NumStructure, 'loads'>, r
     const res = influenceAnalysis(structure, out.path, step, queries, specs);
     out.xs = res.xs;
     out.step = res.step;
+    if (res.step > step * (1 + 1e-9)) out.widened = true;
     for (const line of res.lines) {
       const l = tr.lines.find((q) => q.id === line.id)!, q = queries.find((x) => x.id === line.id)!;
       const m = q.member ? structure.members.find((x) => x.id === q.member) : undefined;
@@ -311,6 +315,9 @@ export function trafficValue(r: BeamRegion, tr: TrafficResult, solutionValue: (s
     };
     IL[`${name}_max`] = ordinate(l.quantity, Math.max(...l.v));
     IL[`${name}_min`] = ordinate(l.quantity, Math.min(...l.v));
+    // the ordinates as vectors, for tables and sums (a position repeats where the line jumps)
+    IL[`${name}_x`] = math.matrix(l.x.map(length) as never);
+    IL[`${name}_η`] = IL[`${name}_eta`] = math.matrix(l.v.map((v) => ordinate(l.quantity, v)) as never);
   }
   if (tr.lines.length) value.IL = IL;
   const moving: Record<string, unknown> = {};
