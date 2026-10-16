@@ -43,18 +43,21 @@ export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3)
   const elems = subdivide(mesh, elementsPerMember(st.members.length));
   const nn = mesh.pos.length;
 
-  // mean axial force of each element (two-point Gauss: exact for N up to cubic); a force
-  // that is only round-off counts as none
+  // axial force of each element as a straight line through its two Gauss points (inside
+  // the element, so clear of jumps at its ends; exact for N linear); a force that is only
+  // round-off counts as none
   const results = new Map(sol.members.map((r) => [r.id, r]));
   const scale = Math.max(Math.abs(sol.max.N?.value ?? 0), Math.abs(sol.max.V?.value ?? 0), 1e-300);
-  const Ne = elems.map((p) => {
+  const tidy = (N: number) => (Math.abs(N) > 1e-9 * scale ? N : 0);
+  const Ne = elems.map((p): [number, number] => {
     const r = results.get(p.member.id);
-    if (!r) return 0;
+    if (!r) return [0, 0];
     const mid = ((p.t0 + p.t1) / 2) * r.L, g = ((p.t1 - p.t0) * r.L) / (2 * Math.sqrt(3));
-    const N = (memberAt(r, mid - g).N + memberAt(r, mid + g).N) / 2;
-    return Math.abs(N) > 1e-9 * scale ? N : 0;
+    const N1 = memberAt(r, mid - g).N, N2 = memberAt(r, mid + g).N;
+    const mean = (N1 + N2) / 2, half = (N2 - N1) * Math.sqrt(3) / 2; // N2 − N1 over 1/√3 of the length
+    return [tidy(mean - half), tidy(mean + half)];
   });
-  if (!Ne.some((N) => N < 0)) return { modes: [], Lcr: {} };
+  if (!Ne.some(([a, b]) => a < 0 || b < 0)) return { modes: [], Lcr: {} };
 
   // unknowns: per node x and y (less what the supports hold) and the rotation (unless
   // held, or every member end there is hinged); a hinged member end turns on its own
@@ -110,7 +113,8 @@ export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3)
   elems.forEach((p, ei) => {
     const m = p.member, GAv = shearStiffness(m);
     scatter(toGlobal(localK(m.E, m.A, m.I, p.L, GAv), p.c, p.s), ends[ei], K);
-    if (Ne[ei]) scatter(toGlobal(geometricK(Ne[ei], p.L, (12 * m.E * m.I) / (GAv * p.L * p.L)), p.c, p.s), ends[ei], G);
+    const [Na, Nb] = Ne[ei];
+    if (Na || Nb) scatter(toGlobal(geometricK(Na, p.L, (12 * m.E * m.I) / (GAv * p.L * p.L), Nb), p.c, p.s), ends[ei], G);
   });
   for (const sp of springs) {
     const [nx, ny] = sp.n;

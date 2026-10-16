@@ -252,4 +252,24 @@ describe('shear deformation, second order and buckling in a worksheet', () => {
     expect(one.res.error).toMatch(/^Above the elastic critical load/);
     expect(num(one.tex(0))).toBeCloseTo((Math.PI ** 2 * EI) / 64 / 3000e3, 3);
   });
+
+  it('two equal columns above the critical load are refused (a repeated α_cr)', () => {
+    // both cantilevers pass P_cr = π²EI/(2L)² = 2706 kN together: two stiffnesses turn
+    // negative at once, which the determinant's sign does not show; α_cr does (4000 kN: 0.677)
+    const d: BeamData = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 0, y: 4 }, { id: 'c', x: 5, y: 0 }, { id: 'e', x: 5, y: 4 }],
+      members: [{ id: 'm1', a: 'a', b: 'b' }, { id: 'm2', a: 'c', b: 'e' }],
+      supports: [{ id: 's1', node: 'a', type: 'fixed', angle: 0, label: 'A' }, { id: 's2', node: 'c', type: 'fixed', angle: 0, label: 'C' }],
+      loads: [
+        { id: 'P1', type: 'force', at: { node: 'b' }, value: '4000', angle: -90 },
+        { id: 'P2', type: 'force', at: { node: 'e' }, value: '4000', angle: -90 },
+        { id: 'H', type: 'force', at: { node: 'b' }, value: '1', angle: 0 },
+      ],
+    };
+    const { res, tex } = run(d, ['b.alpha_cr ='], { analysis: { secondOrder: true } });
+    expect(res.solution).toBeUndefined();
+    expect(res.error).toMatch(/critical load/);
+    expect(num(tex(0))).toBeCloseTo((Math.PI ** 2 * EI) / 64 / 4000e3, 3);
+    expect(res.buckling!.modes[1].alpha / res.buckling!.modes[0].alpha).toBeCloseTo(1, 6);
+  });
 });

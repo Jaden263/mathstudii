@@ -302,7 +302,8 @@ export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX, low }: {
   low?: BeamSolution;
 }) {
   const sol = res.solution;
-  if (!sol) return null;
+  // the buckling mode draws without a solution too (above the critical load in second order)
+  if (!sol) return kind === 'mode' ? <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} /> : null;
   if (low && kind !== 'deflection' && kind !== 'mode') {
     let vmax = 0;
     for (const so of [sol, low]) for (const mr of so.members) for (const v of kind === 'M' ? mr.M : kind === 'V' ? mr.V : mr.N) vmax = Math.max(vmax, Math.abs(v));
@@ -508,6 +509,8 @@ function panelUnit(r: BeamRegion, k: BeamPanel, res?: BeamResult): string {
     const m = modeShown(r, res);
     return m ? `${m.index + 1}: α_cr = ${fmtAlpha(m.alpha)}` : 'none';
   }
+  // only the buckling mode is drawn above the critical load
+  if (res && !res.solution) return 'none: above the critical load';
   return k === 'M' ? `${r.forceUnit}·${r.lengthUnit}` : k === 'deflection' ? (metric ? 'mm' : 'in') : r.forceUnit;
 }
 
@@ -531,7 +534,9 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
   low?: BeamSolution;
 }) {
   const sol = res.solution;
-  if (!sol) return null;
+  const mode = kinds.includes('mode') ? modeShown(r, res) : null;
+  // without a solution (above the critical load in second order) only the mode draws
+  if (!sol && !mode) return null;
   const u = units(r);
   const Lm = LENGTH_M[r.lengthUnit] ?? 1;
   const beamY = d.nodes.length ? d.nodes[0].y : 0;
@@ -548,12 +553,9 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
   }
   const yBeam = toS(vp, { x: 0, y: beamY }).y;
 
-  const mode = kinds.includes('mode') ? modeShown(r, res) : null;
-  const series = (k: BeamPanel, so: BeamSolution = sol): Station[] => {
-    if (k === 'mode') {
-      if (!mode) return [];
-      so = mode.sol;
-    }
+  const series = (k: BeamPanel, so: BeamSolution | undefined = sol): Station[] => {
+    if (k === 'mode') so = mode?.sol;
+    if (!so) return [];
     const byId = new Map(so.members.map((m) => [m.id, m]));
     const out: Station[] = [];
     for (const seg of segs) {
@@ -584,10 +586,11 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
         const y0 = top + idx * layout.panelH;
         const pts = series(k);
         if (!pts.length) {
-          return k === 'mode' ? (
-            <g key={k} className="bm-panel mode">
+          const why = k === 'mode' ? 'none: nothing is in compression' : !sol ? 'none: above the critical load' : null;
+          return why ? (
+            <g key={k} className={`bm-panel ${k}`}>
               <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />
-              <text x={10} y={y0 + 15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [none: nothing is in compression]</tspan></text>
+              <text x={10} y={y0 + 15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{why}]</tspan></text>
             </g>
           ) : null;
         }

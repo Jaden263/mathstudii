@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InstabilityError, memberAt, solveStructure, type NumMember, type NumStructure, type NumSupport } from './solve';
+import { geometricK, InstabilityError, memberAt, solveStructure, type NumMember, type NumStructure, type NumSupport } from './solve';
 import { bucklingAnalysis } from './buckling';
 import { cholesky, largestEigen, symmetricEigen } from './eigen';
 import { POISSON, profileShearArea, rhsShearArea, rolledIShearArea, SHEAR_FACTOR, shearModulus, weldedShearArea } from './shear';
@@ -145,6 +145,32 @@ describe('Euler columns: P_cr = π² EI / (β L)²', () => {
     near(b.modes[2].alpha / b.modes[0].alpha, 9, 0.005);
   });
 
+  it('a column under its own weight (Greenhill): (q L)_cr = 7.837 EI / L²', () => {
+    // Timoshenko & Gere, Theory of Elastic Stability, 2.10: a cantilever under a uniform
+    // axial load q has (q L)_cr = 7.837 EI/L². N varies along every element, so this needs
+    // the geometric stiffness of a linearly varying force (a mean value per element: 0.6 % low)
+    const Lg = 10, q = 1e3;
+    const st: NumStructure = { ...column(Lg, 'fixed', null), loads: [{ id: 'q', type: 'line', member: 'c', t1: 0, t2: 1, q1: q, q2: q, dir: 'global' }] };
+    const b = bucklingAnalysis(st, solveStructure(st));
+    near(b.modes[0].alpha * q * Lg, (7.837 * EI) / Lg ** 2, 0.001);
+    // in second order the sway grows like 1/(1 − 1/α) towards it, and stops at it
+    const at = (f: number): NumStructure => ({ ...st, loads: [{ id: 'q', type: 'line', member: 'c', t1: 0, t2: 1, q1: f * q * b.modes[0].alpha, q2: f * q * b.modes[0].alpha, dir: 'global' }, { id: 'H', type: 'force', at: { node: 'h' }, Fx: 100, Fy: 0 }] });
+    const amp = solveStructure(at(0.9), { secondOrder: true }).nodes.h.dx / solveStructure(at(0.9)).nodes.h.dx;
+    near(amp, 1 / (1 - 0.9), 0.03);
+    expect(() => solveStructure(at(1.01), { secondOrder: true })).toThrow(InstabilityError);
+  });
+
+  it('the geometric stiffness of a linearly varying force agrees with the constant one', () => {
+    // ∫ N ψ′ψ′ dx is linear in N: K(N_a, N_b) + K(N_b, N_a) = 2 K((N_a + N_b)/2), and K(N, N) is the closed form
+    const Lg = 1.7, phi = 0.2;
+    const sum = geometricK(-3, Lg, phi, 5).map((row, i) => row.map((v, j) => v + geometricK(5, Lg, phi, -3)[i][j]));
+    const twice = geometricK(1, Lg, phi).map((row) => row.map((v) => 2 * v));
+    sum.forEach((row, i) => row.forEach((v, j) => expect(v).toBeCloseTo(twice[i][j], 12)));
+    // (the quadrature path, a hair away from constant, against the closed form)
+    const quad = geometricK(2, Lg, phi, 2 * (1 + 1e-12)), closed = geometricK(2, Lg, phi);
+    quad.forEach((row, i) => row.forEach((v, j) => expect(v).toBeCloseTo(closed[i][j], 9)));
+  });
+
   it('a column in tension does not buckle', () => {
     const st = column(L, 'fixed', null, -1e3);
     expect(bucklingAnalysis(st, solveStructure(st)).modes).toEqual([]);
@@ -269,6 +295,28 @@ describe('second order', () => {
     // the textbook amplification 1/(1 − P/P_cr) is within 1.5 % here (exact: (1 + 0.03 P/P_cr)/(1 − P/P_cr) roughly)
     near(w / w0, 1 / (1 - P / Pcr), 0.015);
     expect(sol.max.M!.s).toBeCloseTo(L / 2, 2);
+  });
+
+  it('moment and shear along a beam-column under a central point load', () => {
+    // simple beam, Q at midspan, axial compression P (k² = P/EI): for x ≤ L/2
+    // M(x) = Q sin(kx) / (2k cos(kL/2)), and the shear across the deformed axis V = dM/dx = Q cos(kx) / (2 cos(kL/2))
+    const L = 6, Q = 10e3, P = 0.7 * (Math.PI ** 2 * EI) / L ** 2, k = Math.sqrt(P / EI);
+    const st: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }],
+      members: [mem('m', 'a', 'b')],
+      supports: [sup('A', 'a', 'pin'), sup('B', 'b', 'roller')],
+      loads: [{ id: 'Q', type: 'force', at: { member: 'm', t: 0.5 }, Fx: 0, Fy: -Q }, { id: 'P', type: 'force', at: { node: 'b' }, Fx: -P, Fy: 0 }],
+    };
+    const r = solveStructure(st, { secondOrder: true }).members[0];
+    const c = Math.cos((k * L) / 2);
+    // on both sides of every element boundary (the shear used to jump there by several per cent)
+    for (const p of r.pieces.filter((q) => q.s0 < L / 2 - 1e-9)) {
+      for (const x of [p.s0 + 1e-9, p.s0 + p.L / 2, p.s0 + p.L - 1e-9]) {
+        const v = memberAt(r, x);
+        expect(Math.abs(v.M - (Q * Math.sin(k * x)) / (2 * k * c)) / ((Q * L) / 4)).toBeLessThan(1e-3);
+        expect(Math.abs(v.V - (Q * Math.cos(k * x)) / (2 * c)) / (Q / 2)).toBeLessThan(1e-3);
+      }
+    }
   });
 
   it('above the critical load there is no equilibrium', () => {

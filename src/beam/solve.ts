@@ -180,8 +180,12 @@ export function localK(E: number, A: number, I: number, L: number, GAv = Infinit
 /**
  * Consistent geometric stiffness of an axial force N (tension positive: it stiffens,
  * compression softens), from the cubic shape functions; with shear the Timoshenko ones.
+ * With `Nb` the force varies linearly from N at the start to Nb at the end (an axial line
+ * load, a column's own weight): a constant mean value would make the critical load
+ * converge only with the square of the element length.
  */
-export function geometricK(N: number, L: number, phi = 0): number[][] {
+export function geometricK(N: number, L: number, phi = 0, Nb = N): number[][] {
+  if (Nb !== N) return linearGeometricK(N, Nb, L, phi);
   const f = N / (L * (1 + phi) ** 2);
   const a = (6 / 5 + 2 * phi + phi * phi) * f, b = (L / 10) * f;
   const c = L * L * (2 / 15 + phi / 6 + (phi * phi) / 12) * f, d = -L * L * (1 / 30 + phi / 6 + (phi * phi) / 12) * f;
@@ -193,6 +197,22 @@ export function geometricK(N: number, L: number, phi = 0): number[][] {
     [0, -a, -b, 0, a, -b],
     [0, b, d, 0, -b, c],
   ];
+}
+
+/** Three-point Gauss on [0, 1]: exact for ∫ N ψ′ψ′ dx with N linear and ψ′ quadratic. */
+const GAUSS3: [number, number][] = [[0.5 - Math.sqrt(0.15), 5 / 18], [0.5, 8 / 18], [0.5 + Math.sqrt(0.15), 5 / 18]];
+
+/** K_G = ∫ N(x) ψ′ψ′ᵀ dx for N linear from Na to Nb, ψ the transverse shape functions (v1 θ1 v2 θ2). */
+function linearGeometricK(Na: number, Nb: number, L: number, phi: number): number[][] {
+  const k = Array.from({ length: 6 }, () => new Array<number>(6).fill(0));
+  const dofs = [1, 2, 4, 5], q = 1 + phi;
+  for (const [x, w] of GAUSS3) {
+    const d1 = (6 * x * x - 6 * x - phi) / (q * L);
+    const d = [d1, (3 * x * x - (4 + phi) * x + 1 + phi / 2) / q, -d1, (3 * x * x - (2 - phi) * x - phi / 2) / q];
+    const nw = (Na + (Nb - Na) * x) * w * L;
+    for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) k[dofs[a]][dofs[b]] += nw * d[a] * d[b];
+  }
+  return k;
 }
 
 /**
@@ -471,8 +491,8 @@ export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamS
     if (sp.type === 'fixed' && sp.kr && sp.kr > 0) rotSprings.push({ support: si, node: k, kr: sp.kr });
   });
 
-  /** Global stiffness and load vector; `Ne` (second order) are the elements' axial forces. */
-  const assemble = (Ne?: number[]) => {
+  /** Global stiffness and load vector; `Ne` (second order) are the elements' axial forces at their ends. */
+  const assemble = (Ne?: [number, number][]) => {
     const K = Array.from({ length: ndof }, () => new Array<number>(ndof).fill(0));
     const F = new Array<number>(ndof).fill(0);
     const elemK: number[][][] = [];
@@ -481,7 +501,7 @@ export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamS
       const m = p.member, GAv = shearStiffness(m);
       const k = localK(m.E, m.A, m.I, p.L, GAv);
       if (Ne) {
-        const kg = geometricK(Ne[pi], p.L, (12 * m.E * m.I) / (GAv * p.L * p.L));
+        const kg = geometricK(Ne[pi][0], p.L, (12 * m.E * m.I) / (GAv * p.L * p.L), Ne[pi][1]);
         for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) k[a][b] += kg[a][b];
       }
       const f = fixedEndForces(p, m.E * m.I, GAv);
@@ -567,15 +587,16 @@ export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamS
 
   // second order: re-solve with the geometric stiffness of the current axial forces until
   // the displacements stop changing. A determinant changing sign means a stiffness went
-  // negative: the loads passed a critical load, and there is no stable equilibrium.
+  // negative: the loads passed a critical load, and there is no stable equilibrium. (Two
+  // passed at once, as with two equal columns, keep the sign: evaluate.ts checks α_cr first.)
   let iterations = 0;
   if (second) {
     let converged = false;
     for (let it = 1; it <= MAX_ITERATIONS && !converged; it++) {
-      const Ne = elems.map((p, pi) => {
+      const Ne = elems.map((p, pi): [number, number] => {
         const { pe } = endForces(p, elemK[pi], elemF[pi]);
-        // mean axial force over the element (N varies with an axial line load)
-        return -pe[0] - (p.qxa * p.L) / 2 - ((p.qxb - p.qxa) * p.L) / 6;
+        // axial force at both ends (it varies along the element with an axial line load)
+        return [-pe[0], -pe[0] - ((p.qxa + p.qxb) * p.L) / 2];
       });
       const next = assemble(Ne);
       const det = { sign: 1 };
@@ -734,10 +755,12 @@ export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamS
 
 /**
  * Internal forces and displacements of one second-order element as polynomials. The
- * moment is statics on the deformed element: M = M_I + N₀ (v − v₁), with v the
- * first-order shape, closed onto the end moment the stiffness gives (they differ only
- * by an axial line load's lever arms). V = dM/dx is the shear across the deformed axis,
- * and the deflection is the double integral of M/EI (plus −ΔM/GA_v with shear).
+ * moment is statics on the deformed element: M = M_I + N₀ (v − v₁), where the bending
+ * line v comes from M itself, so a few rounds of substitution (each shrinks the change by
+ * about N L²/10EI of the short element); then it is closed onto the end moment the
+ * stiffness gives (they differ only by an axial line load's lever arms). V = dM/dx is the
+ * shear across the deformed axis, and the deflection is the double integral of M/EI (plus
+ * −ΔM/GA_v with shear).
  */
 function secondOrderPoly(p: Piece, dl: number[], pe: number[], Lm: number): PiecePoly {
   const m = p.member, L = p.L, EI = m.E * m.I, EA = m.E * m.A;
@@ -749,7 +772,16 @@ function secondOrderPoly(p: Piece, dl: number[], pe: number[], Lm: number): Piec
     return padd(W, [v1, (v2 - v1 - polyAt(W, L)) / L]);
   };
   const MI = [-pe[2], pe[1], p.qya / 2, by / 6];
-  let M = padd(MI, pscale(padd(shape(MI), [-v1]), -pe[0]));
+  // (with only the first-order line in it, the shear came out several per cent off and
+  // jumped between elements)
+  let M = MI;
+  const size = Math.max(...MI.map((c, i) => Math.abs(c) * L ** i), Math.abs(pe[5]), 1e-300);
+  for (let round = 0; round < 8; round++) {
+    const next = padd(MI, pscale(padd(shape(M), [-v1]), -pe[0]));
+    const change = Math.max(Math.abs(polyAt(next, L) - polyAt(M, L)), Math.abs(polyAt(next, L / 2) - polyAt(M, L / 2)));
+    M = next;
+    if (change <= 1e-10 * size) break;
+  }
   M = padd(M, [0, (pe[5] - polyAt(M, L)) / L]);
   const Uf = [0, -pe[0] / EA, -p.qxa / (2 * EA), -bx / (6 * EA)];
   const uLin = (u2 - u1 - polyAt(Uf, L)) / L;

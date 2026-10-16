@@ -306,11 +306,14 @@ default, so older worksheets give the same numbers):
   a value. Fixed-end forces and deflection lines stay exact.
 - **Second order (P-Δ and P-δ):** every case and combination is solved on the deformed
   structure. Members are cut into 4–8 elements with the consistent geometric stiffness of
-  their axial force, and the axial forces are iterated until the displacements change by
-  less than 10⁻⁶. Loads at or above the critical load are reported (α_cr ≤ 1, a stiffness
-  turning negative, or no convergence in 30 iterations); a combination that fails does so
-  on its own, and then the governing values are withheld. The panel shows how much M_max
-  and δ_max grew against first order, next to 1/(1 − 1/α_cr).
+  their axial force (varying linearly along each element, so a column's own weight counts
+  properly), and the axial forces are iterated until the displacements change by less
+  than 10⁻⁶. The shear V is then the force across the deformed member axis (dM/dx).
+  Loads at or above the critical load are reported (α_cr ≤ 1, a stiffness turning
+  negative, or no convergence in 30 iterations) and only the buckling mode is drawn; a
+  combination that fails does so on its own, and then the governing values are withheld.
+  The panel shows how much M_max and δ_max grew against first order, next to
+  1/(1 − 1/α_cr).
 - **Buckling:** for each combination the three lowest load factors α_cr from
   (K + α K_G(N)) φ = 0 with the first-order axial forces (supports eliminated, hinges with
   their own rotation, a banded Cholesky factor, then dense eigenvalues or Lanczos). The
@@ -327,7 +330,9 @@ default, so older worksheets give the same numbers):
   second mode (within 0.5 %), Engesser's shear-flexible column, pinned- and fixed-base
   sway portals (Timoshenko & Gere), the Timoshenko cantilever δ = PL³/3EI + PL/GA_v and
   propped cantilevers, the cantilever column δ = H (tan kL − kL)/(P k) and the
-  beam-column under a uniform load with its exact amplification.
+  beam-column under a uniform load with its exact amplification, M(x) and V(x) along a
+  beam-column under a point load, and Greenhill's column under its own weight
+  ((qL)_cr = 7.837 EI/L²).
 
 **Load cases and combinations.** Side panel → *Use load cases & combinations* splits the
 loads into cases (G permanent, Q imposed, wind, snow …; pick a load's case in its value

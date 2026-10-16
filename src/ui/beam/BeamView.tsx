@@ -617,10 +617,10 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         role="img" aria-label={region.name ? `Beam ${region.name}` : 'Beam'}
       >
         {editing && region.grid > 0 && <BeamGrid vp={vp} step={region.grid} />}
-        {hasPanels && res?.solution && (segs
+        {hasPanels && res && (res.solution || mode) && (segs
           ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={W} low={low} />
           : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={W} low={low} />)}
-        {hasPanels && !res?.solution && (
+        {hasPanels && !res?.solution && !mode && (
           <g>
             <line x1={0} y1={modelH} x2={W} y2={modelH} className="bm-panel-sep" />
             <text x={W / 2} y={modelH + (svgH - modelH) / 2} textAnchor="middle" className="bm-empty">
