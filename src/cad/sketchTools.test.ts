@@ -70,6 +70,17 @@ describe('offset', () => {
     near(areaOf(sk, r.ids), (a + 2 * d) * (b + 2 * d) - (4 - PI) * d * d);
   });
 
+  it('says nothing is redundant: the corner arcs\' radii follow from the offset', () => {
+    const free: CadSketch = { ...rectangle(a, b), constraints: rectangle(a, b).constraints.filter((c) => c.type === 'horizontal' || c.type === 'vertical') };
+    const r = offset(free, posOf(free), R0, ['l0', 'l1', 'l2', 'l3'], d, { x: -10, y: -10 });
+    if (typeof r === 'string') throw new Error(r);
+    const { sol } = solved(r.sketch);
+    expect(sol.ok).toBe(true);
+    expect(sol.redundant).toEqual([]);
+    // the rectangle's own freedom (4: corner and size) is all that is left
+    expect(sol.dof).toBe(4);
+  });
+
   it('follows its chain: the rectangle made wider, the offset is still d all round', () => {
     const base = solved(rectangle(a, b)).sk;
     const r = offset(base, posOf(base), R0, ['l0', 'l1', 'l2', 'l3'], d, { x: -10, y: -10 });

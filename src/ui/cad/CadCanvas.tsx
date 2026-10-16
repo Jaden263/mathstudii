@@ -8,9 +8,11 @@ import { cadId, entityPoints, isDimension, nextDimName, removeFromSketch, sketch
 import { solveSketch, measure } from '../../cad/solver';
 import { findProfiles, segPolyline, type Vec2 } from '../../cad/profile';
 import {
-  constraintFromSelection, dimensionFromSelection, entityRadius, hitTest, localValues, segsOf, solveLocal, withSolution, segDist,
+  applyConstraint as constrainSketch, dimensionFromSelection, entityRadius, hitTest, localValues, segsOf, solveLocal, withSolution, segDist,
   type Geo,
 } from '../../cad/edit';
+import { breakCurve, chamfer, connectedChain, ellipse, ellipticalArc, extend, offset, pattern, spline, text } from '../../cad/sketchTools';
+import { controlSpline, interpolate } from '../../cad/curves';
 import {
   addLine, centerArc, centerRectangle, circle, cloneSketch, fillet, mirror, pointFor, polygon, rectangle, slot, threePointArc, trim,
   type Ref, type ToolResult,
@@ -28,6 +30,8 @@ export interface CanvasStatus {
 export interface CadCanvasHandle {
   fit(): void;
   applyConstraint(type: ConstraintType): void;
+  /** A rectangular pattern of the selection (counts and spacings from the ribbon). */
+  rectPattern(): void;
   deleteSelected(): void;
   toggleConstruction(): void;
   selectAll(): void;
@@ -96,6 +100,16 @@ const HINTS: Record<CadTool, string[]> = {
   mirror: ['Mirror: click the line to mirror the selection about'],
   measure: ['Measure: pick one or two items'],
   pan: ['Pan: drag (or use the middle mouse button anywhere)'],
+  spline: ['Spline: click the first fit point', 'Click the next fit point · click the first point to close · Enter, double-click or right-click to finish'],
+  cspline: ['Control-point spline: click the first pole', 'Click the next pole · click the first to close · Enter, double-click or right-click to finish'],
+  ellipse: ['Ellipse: click the centre', 'Click the end of the major axis', 'Click to set the minor axis'],
+  earc: ['Elliptical arc: click the centre', 'Click the end of the major axis', 'Click the start (it sets the minor axis)', 'Click the end (counter-clockwise from the start)'],
+  text: ['Text: click where its baseline starts (the text and its size are in the ribbon)'],
+  offset: ['Offset: click a curve (its whole chain, or the selected curves)', 'Click the side to offset to (distance in the ribbon) · Esc to pick again'],
+  chamfer: ['Chamfer: click a corner where two lines meet (distance in the ribbon)'],
+  extend: ['Extend: click a line or arc near the end to lengthen'],
+  break: ['Break: click a curve where to split it'],
+  cpattern: ['Circular pattern: select the geometry first, then click the centre point (count and angle in the ribbon)'],
 };
 
 function geoOf(sk: CadSketch): Geo {
@@ -189,6 +203,8 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
   const [hover, setHover] = useState<string | null>(null);
   const [picks, setPicks] = useState<string[]>([]);
   const [mirrorSet, setMirrorSet] = useState<string[]>([]);
+  /** The chain an offset was picked on (its side is the next click). */
+  const [offsetChain, setOffsetChain] = useState<string[] | null>(null);
   const [editDim, setEditDim] = useState<{ cid: string; text: string } | null>(null);
   const [typed, setTyped] = useState<Typed | null>(null);
   const [msg, setMsg] = useState('');
@@ -242,7 +258,8 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     setDraft(null);
     setPicks([]);
     setTyped(null);
-    if (ui.cadTool === 'mirror') setMirrorSet(mine ? ui.selected.filter((id) => shown.entities.some((e) => e.id === id)) : []);
+    if (ui.cadTool === 'mirror' || ui.cadTool === 'cpattern') setMirrorSet(mine ? ui.selected.filter((id) => shown.entities.some((e) => e.id === id)) : []);
+    setOffsetChain(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ui.cadTool]);
 
@@ -351,7 +368,7 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     if (opts.alt) return { ref: { p: w }, kind: 'free', guides: {} };
     const pick = hitTest(geo, w, tol, opts.skip);
     if (pick?.kind === 'point') {
-      const isCentre = shown.entities.some((e) => (e.type === 'circle' || e.type === 'arc') && e.c === pick.id);
+      const isCentre = shown.entities.some((e) => (e.type === 'circle' || e.type === 'arc' || e.type === 'ellipse') && e.c === pick.id);
       return { ref: { id: pick.id, p: geo.P.get(pick.id)! }, kind: isCentre ? 'center' : 'point', guides: {} };
     }
     // midpoints of lines
@@ -373,6 +390,20 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         const c = geo.P.get(ent.c)!, r = entityRadius(geo, ent);
         const L = Math.hypot(w.x - c.x, w.y - c.y) || 1;
         return { ref: { on: ent.id, p: { x: c.x + ((w.x - c.x) * r) / L, y: c.y + ((w.y - c.y) * r) / L } }, kind: 'on', guides: {} };
+      }
+      if (ent.type === 'ellipse' || ent.type === 'spline') {
+        // the nearest point of the curve (its polyline: the solver puts the point on the curve itself)
+        let best = w, bd = Infinity;
+        for (const sg of segsOf(geo, ent)) {
+          const pts = segPolyline(sg, Math.PI / 360);
+          for (let i = 1; i < pts.length; i++) {
+            const a = pts[i - 1], dx = pts[i].x - a.x, dy = pts[i].y - a.y, L2 = dx * dx + dy * dy || 1;
+            const t = Math.max(0, Math.min(1, ((w.x - a.x) * dx + (w.y - a.y) * dy) / L2));
+            const q = { x: a.x + t * dx, y: a.y + t * dy }, dd = Math.hypot(q.x - w.x, q.y - w.y);
+            if (dd < bd) [bd, best] = [dd, q];
+          }
+        }
+        return { ref: { on: ent.id, p: best }, kind: 'on', guides: {} };
       }
     }
     // alignment with existing points (and the point being drawn from)
@@ -409,6 +440,13 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     select(r.ids);
   };
 
+  /** A spline from the points clicked so far (closed: back to the first). */
+  const finishSpline = (d: Draft, closed = false) => {
+    setDraft(null);
+    if (d.refs.length < 2) return;
+    applyTool(spline(shown, closed ? [...d.refs, d.refs[0]] : d.refs, { mode: d.tool === 'cspline' ? 'control' : 'fit', closed, construction }));
+  };
+
   const clickDraw = (snap: Snap) => {
     const ref = { ...snap.ref };
     if (!draft) {
@@ -420,6 +458,10 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         commit(sk);
         return;
       }
+      if (tool === 'text') {
+        applyTool(text(shown, ref, ui.cadText, ui.cadTextSize));
+        return;
+      }
       setDraft({ tool, refs: [ref], cur: snap });
       return;
     }
@@ -427,6 +469,28 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     const first = d.refs[0];
     const tiny = (a: Ref, b: Ref) => Math.hypot(b.p.x - a.p.x, b.p.y - a.p.y) * view.zoom < 3;
     switch (d.tool) {
+      case 'spline':
+      case 'cspline': {
+        // the first point again closes it
+        if (ref.id && ref.id === first.id && d.refs.length >= 3) {
+          finishSpline(d, true);
+          return;
+        }
+        if (tiny(lastRef(d), ref)) return;
+        setDraft({ ...d, refs: [...d.refs, ref], cur: snap });
+        return;
+      }
+      case 'ellipse':
+      case 'earc': {
+        if (d.refs.length < (d.tool === 'ellipse' ? 2 : 3)) {
+          if (tiny(lastRef(d), ref)) return;
+          setDraft({ ...d, refs: [...d.refs, ref], cur: snap });
+          return;
+        }
+        if (d.tool === 'ellipse') applyTool(ellipse(shown, first, d.refs[1], minorOf(first.p, d.refs[1].p, ref.p), { construction }));
+        else applyTool(ellipticalArc(shown, first, d.refs[1], d.refs[2].p, ref.p, { construction }));
+        break;
+      }
       case 'line': {
         const last = lastRef(d);
         if (tiny(last, ref) && !(ref.id && ref.id !== last.id)) return;
@@ -542,9 +606,14 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
   // ------------------------------------------------------------ constraints, dimensions, edits
 
   const applyConstraint = (type: ConstraintType) => {
-    const out = constraintFromSelection(type, geo, mine ? ui.selected : []);
+    const out = constrainSketch(type, geo, mine ? ui.selected : []);
     if (typeof out === 'string') return setMsg(out);
-    commit({ ...shown, constraints: [...shown.constraints, ...out] });
+    commit(out);
+  };
+
+  const rectPattern = () => {
+    const ids = (mine ? ui.selected : []).filter((id) => shown.entities.some((e) => e.id === id));
+    applyTool(pattern(shown, geo.P, ids, { kind: 'rect', count: ui.cadCount, spacing: ui.cadSpacing, count2: ui.cadCount2, spacing2: ui.cadSpacing2 }));
   };
 
   const createDimension = (ids: string[], at?: Vec2) => {
@@ -621,6 +690,7 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
   useImperativeHandle(handle, () => ({
     fit,
     applyConstraint,
+    rectPattern,
     deleteSelected,
     toggleConstruction,
     selectAll: () => select(shown.entities.map((e) => e.id)),
@@ -672,10 +742,7 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         if (pick.kind === 'point') pts = [pick.id];
         else {
           const ent = shown.entities.find((x) => x.id === pick.id);
-          if (ent?.type === 'line') pts = [ent.p1, ent.p2];
-          else if (ent?.type === 'circle') pts = [ent.c];
-          else if (ent?.type === 'arc') pts = [ent.c, ent.p1, ent.p2];
-          else if (ent?.type === 'point') pts = [ent.p];
+          if (ent) pts = entityPoints(ent);
         }
         const grab = new Map(pts.map((id) => [id, { x: geo.P.get(id)!.x - w.x, y: geo.P.get(id)!.y - w.y }]));
         drag.current = { mode: 'points', grab, base: shown, moved: false };
@@ -724,6 +791,41 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         if (applyTool(mirror(shown, geo.P, mirrorSet, pick.id))) setUi({ cadTool: 'select' });
         return;
       }
+      case 'offset': {
+        if (!offsetChain) {
+          const pick = hitTest(geo, w, tol, new Set(geo.P.keys()));
+          if (pick?.kind !== 'entity') return;
+          const selCurves = (mine ? ui.selected : []).filter((id) => shown.entities.some((x) => x.id === id && x.type !== 'point'));
+          const chain = selCurves.includes(pick.id) ? selCurves : connectedChain(shown, pick.id);
+          setOffsetChain(chain);
+          setPicks(chain);
+          return;
+        }
+        applyTool(offset(shown, geo.P, geo.R, offsetChain, ui.cadOffset, w));
+        setOffsetChain(null);
+        setPicks([]);
+        return;
+      }
+      case 'chamfer': {
+        const pick = hitTest(geo, w, tol * 1.5);
+        if (pick?.kind !== 'point') return setMsg('Click the corner point');
+        applyTool(chamfer(shown, geo.P, pick.id, ui.cadChamfer));
+        return;
+      }
+      case 'extend':
+      case 'break': {
+        const pick = hitTest(geo, w, tol, new Set(geo.P.keys()));
+        if (pick?.kind !== 'entity') return;
+        applyTool(tool === 'extend' ? extend(shown, geo.P, geo.R, pick.id, w) : breakCurve(shown, geo.P, geo.R, pick.id, w, tol), true);
+        return;
+      }
+      case 'cpattern': {
+        const pick = hitTest(geo, w, tol * 1.5);
+        if (pick?.kind !== 'point') return setMsg('Click the centre point of the pattern');
+        if (!mirrorSet.length) return setMsg('Select the geometry first (Select tool), then choose Circular pattern and click its centre');
+        if (applyTool(pattern(shown, geo.P, mirrorSet, { kind: 'circ', count: ui.cadCount, spacing: 0, about: pick.id, angle: ui.cadAngle }))) setUi({ cadTool: 'select' });
+        return;
+      }
       default:
         clickDraw(snapAt(s, { alt: e.altKey, from: draft ? lastRef(draft).p : undefined }));
     }
@@ -760,8 +862,8 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
       setLiveOffset({ cid: d.cid, offset: c?.type === 'angle' ? { x: d.orig.x + (dx + dy) / 2, y: 0 } : { x: d.orig.x + dx, y: d.orig.y + dy } });
       return;
     }
-    if (['select', 'dim', 'measure', 'trim', 'mirror', 'fillet'].includes(tool)) {
-      const skip = tool === 'trim' || tool === 'mirror' ? new Set(geo.P.keys()) : undefined;
+    if (['select', 'dim', 'measure', 'trim', 'mirror', 'fillet', 'offset', 'chamfer', 'extend', 'break', 'cpattern'].includes(tool)) {
+      const skip = ['trim', 'mirror', 'offset', 'extend', 'break'].includes(tool) ? new Set(geo.P.keys()) : undefined;
       setHover(hitTest(geo, w, SNAP_PX / view.zoom, skip)?.id ?? null);
       setHoverSnap(null);
       return;
@@ -779,8 +881,9 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     if (d.mode === 'pan') {
       if (d.moved) setView(liveView ?? view, true);
       else if (d.button === 2) {
-        // a right click (no drag) ends the line chain or cancels
-        setDraft(null);
+        // a right click (no drag) ends the line chain or the spline, or cancels
+        if (draft && (draft.tool === 'spline' || draft.tool === 'cspline')) finishSpline(draft);
+        else setDraft(null);
         setTyped(null);
       }
       return;
@@ -856,6 +959,7 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
   const TOOL_KEYS: Record<string, CadTool> = {
     s: 'select', l: 'line', r: 'rect', R: 'crect', c: 'circle', a: 'arc', A: 'arc3', g: 'polygon', o: 'slot', p: 'point',
     d: 'dim', i: 'fillet', t: 'trim', m: 'mirror', q: 'measure',
+    n: 'spline', N: 'cspline', E: 'ellipse', O: 'offset', I: 'chamfer', T: 'extend', b: 'break', P: 'text',
   };
   const CONSTRAINT_KEYS: Record<string, ConstraintType> = { h: 'horizontal', v: 'vertical', e: 'equal', k: 'fix' };
 
@@ -888,12 +992,14 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
       handled();
       if (typed) setTyped(null);
       else if (draft) setDraft(null);
+      else if (offsetChain) { setOffsetChain(null); setPicks([]); }
       else if (picks.length) setPicks([]);
       else if (mine && ui.selected.length) select([]);
       else if (ui.cadTool !== 'select') setUi({ cadTool: 'select' });
       return;
     }
     if (e.key === 'Enter' && draft?.tool === 'line') { handled(); setDraft(null); return; }
+    if (e.key === 'Enter' && draft && (draft.tool === 'spline' || draft.tool === 'cspline')) { handled(); finishSpline(draft); return; }
     if (e.key === 'Delete' || e.key === 'Backspace') { handled(); deleteSelected(); return; }
     const hasSel = mine && ui.selected.length > 0;
     if (hasSel && tool === 'select' && CONSTRAINT_KEYS[e.key]) { handled(); applyConstraint(CONSTRAINT_KEYS[e.key]); return; }
@@ -920,11 +1026,15 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
       case 'line': return determined.has(e.p1) && determined.has(e.p2);
       case 'circle': return determined.has(e.c) && detR.has(e.id);
       case 'arc': return determined.has(e.c) && determined.has(e.p1) && determined.has(e.p2);
-      case 'point': return determined.has(e.p);
+      case 'point':
+      case 'text': return determined.has(e.p);
+      case 'ellipse': return entityPoints(e).every((p) => determined.has(p)) && detR.has(e.id);
+      case 'spline': return entityPoints(e).every((p) => determined.has(p));
     }
   };
   const picked = new Set([...sel, ...picks, ...(tool === 'mirror' ? mirrorSet : [])]);
   const usedPoints = new Set(shown.entities.flatMap(entityPoints));
+  const refPoints = new Set(shown.entities.filter((e) => e.ref).flatMap(entityPoints));
 
   const draftPath = (() => {
     if (!draft) return '';
@@ -932,10 +1042,39 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     const cur = draft.cur.ref.p;
     const S = (p: Vec2) => toS(vp, p);
     const circ = (c: Vec2, r: number) => `M${S(c).x - r * z} ${S(c).y}a${r * z} ${r * z} 0 1 0 ${2 * r * z} 0a${r * z} ${r * z} 0 1 0 ${-2 * r * z} 0`;
+    const poly = (pts: Vec2[]) => (pts.length ? `M${pts.map((q) => `${S(q).x} ${S(q).y}`).join('L')}` : '');
     switch (draft.tool) {
       case 'line': {
         const p = S(lastRef(draft).p), q = S(cur);
         return `M${p.x} ${p.y}L${q.x} ${q.y}`;
+      }
+      case 'spline':
+      case 'cspline': {
+        // the curve through (or on) the points so far and the cursor
+        const pts = [...draft.refs.map((r) => r.p), cur];
+        const cv = draft.tool === 'spline' ? interpolate(pts)?.curve : controlSpline(pts);
+        const curve = cv ? poly(segPolyline({ kind: 'bspline', ...cv }, Math.PI / 90)) : poly(pts);
+        return draft.tool === 'cspline' ? `${curve} ${poly(pts)}` : curve;
+      }
+      case 'ellipse':
+      case 'earc': {
+        if (draft.refs.length === 1) return poly([a.p, cur]);
+        const ax = draft.refs[1].p, ra = Math.hypot(ax.x - a.p.x, ax.y - a.p.y), rot = Math.atan2(ax.y - a.p.y, ax.x - a.p.x);
+        const at = (rb: number, t: number) => ({ x: a.p.x + ra * Math.cos(t) * Math.cos(rot) - rb * Math.sin(t) * Math.sin(rot), y: a.p.y + ra * Math.cos(t) * Math.sin(rot) + rb * Math.sin(t) * Math.cos(rot) });
+        const ring = (rb: number, t0 = 0, t1 = 2 * Math.PI) => poly(Array.from({ length: 97 }, (_, i) => at(rb, t0 + ((t1 - t0) * i) / 96)));
+        if (draft.tool === 'ellipse' || draft.refs.length === 2) {
+          // the minor axis from the cursor: its distance from the axis (an arc's start lies on the ellipse)
+          const loc = { x: (cur.x - a.p.x) * Math.cos(rot) + (cur.y - a.p.y) * Math.sin(rot), y: -(cur.x - a.p.x) * Math.sin(rot) + (cur.y - a.p.y) * Math.cos(rot) };
+          const rb = draft.tool === 'ellipse' ? minorOf(a.p, ax, cur) : Math.abs(loc.y) / Math.sqrt(Math.max(1e-9, 1 - (loc.x / ra) ** 2));
+          return `${ring(rb)} ${poly([a.p, ax])}`;
+        }
+        const st = draft.refs[2].p;
+        const loc = (q: Vec2) => ({ x: (q.x - a.p.x) * Math.cos(rot) + (q.y - a.p.y) * Math.sin(rot), y: -(q.x - a.p.x) * Math.sin(rot) + (q.y - a.p.y) * Math.cos(rot) });
+        const ls = loc(st), rb = Math.abs(ls.y) / Math.sqrt(Math.max(1e-9, 1 - (ls.x / ra) ** 2));
+        const t0 = Math.atan2(ls.y / rb, ls.x / ra), lc = loc(cur);
+        let t1 = Math.atan2(lc.y / rb, lc.x / ra);
+        while (t1 <= t0) t1 += 2 * Math.PI;
+        return ring(rb, t0, t1);
       }
       case 'rect': {
         const p = S(a.p), q = S(cur);
@@ -996,6 +1135,11 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
     if (draft.tool === 'crect') return `${fmtNum(2 * Math.abs(cur.x - from.x))} × ${fmtNum(2 * Math.abs(cur.y - from.y))}`;
     if (draft.tool === 'circle') return `Ø ${fmtNum(2 * Math.hypot(cur.x - from.x, cur.y - from.y))}`;
     if (draft.tool === 'polygon') return `R ${fmtNum(Math.hypot(cur.x - from.x, cur.y - from.y))} · ${ui.cadSides} sides`;
+    if (draft.tool === 'ellipse' && draft.refs.length === 2) {
+      const ax = draft.refs[1].p;
+      return `a ${fmtNum(Math.hypot(ax.x - from.x, ax.y - from.y))} · b ${fmtNum(minorOf(from, ax, cur))}`;
+    }
+    if ((draft.tool === 'ellipse' || draft.tool === 'earc') && draft.refs.length === 1) return `a ${fmtNum(Math.hypot(cur.x - from.x, cur.y - from.y))}`;
     return null;
   })();
 
@@ -1009,7 +1153,12 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
         onPointerLeave={() => { setHover(null); setHoverSnap(null); }}
         onContextMenu={(e) => interactive && e.preventDefault()}
-        onDoubleClick={(e) => { if (interactive && draft) { e.preventDefault(); setDraft(null); } }}
+        onDoubleClick={(e) => {
+          if (!interactive || !draft) return;
+          e.preventDefault();
+          if (draft.tool === 'spline' || draft.tool === 'cspline') finishSpline(draft);
+          else setDraft(null);
+        }}
       >
         {interactive && <CadGrid vp={vp} />}
         {reference?.length ? (
@@ -1021,14 +1170,24 @@ export const CadCanvas = forwardRef<CadCanvasHandle, Props>(function CadCanvas({
         <ProfileFill regions={profiles.regions} vp={vp} />
         {shown.entities.map((ent) => {
           if (ent.type === 'point') return null;
-          const cls = ['cad-ent', ent.construction ? 'cons' : '', entDetermined(ent) ? 'det' : '', badEnts.has(ent.id) ? 'bad' : '', picked.has(ent.id) ? 'sel' : '', hover === ent.id ? (tool === 'trim' ? 'trim' : 'hover') : ''].filter(Boolean).join(' ');
+          const cls = ['cad-ent', ent.construction ? 'cons' : '', ent.ref ? 'ref' : '', ent.type === 'text' ? 'text' : '', entDetermined(ent) ? 'det' : '', badEnts.has(ent.id) ? 'bad' : '', picked.has(ent.id) ? 'sel' : '', hover === ent.id ? (tool === 'trim' ? 'trim' : 'hover') : ''].filter(Boolean).join(' ');
           return <path key={ent.id} d={entityPath(geo, ent, vp)} className={cls} />;
+        })}
+        {interactive && shown.entities.map((ent) => {
+          if (ent.type !== 'spline') return null;
+          // tangent handles to their ends, a control spline's polygon through its poles
+          const S = (id: string) => toS(vp, geo.P.get(id)!);
+          const pairs: [string, string][] = [];
+          if (ent.h1) pairs.push([ent.pts[0], ent.h1]);
+          if (ent.h2) pairs.push([ent.pts[ent.pts.length - 1], ent.h2]);
+          if (ent.mode === 'control') ent.pts.forEach((q, i) => (i + 1 < ent.pts.length || ent.closed) && pairs.push([q, ent.pts[(i + 1) % ent.pts.length]]));
+          return pairs.length ? <path key={`h${ent.id}`} className="cad-handle" d={pairs.map(([a, b]) => `M${S(a).x} ${S(a).y}L${S(b).x} ${S(b).y}`).join('')} /> : null;
         })}
         {interactive && shown.points.map((p) => {
           if (!usedPoints.has(p.id)) return null;
           const s = toS(vp, p);
-          const isCentre = shown.entities.some((e) => (e.type === 'circle' || e.type === 'arc') && e.c === p.id);
-          const cls = ['cad-pt', determined.has(p.id) ? 'det' : '', badEnts.has(p.id) ? 'bad' : '', picked.has(p.id) ? 'sel' : '', hover === p.id ? 'hover' : ''].filter(Boolean).join(' ');
+          const isCentre = shown.entities.some((e) => (e.type === 'circle' || e.type === 'arc' || e.type === 'ellipse') && e.c === p.id);
+          const cls = ['cad-pt', refPoints.has(p.id) ? 'ref' : '', determined.has(p.id) ? 'det' : '', badEnts.has(p.id) ? 'bad' : '', picked.has(p.id) ? 'sel' : '', hover === p.id ? 'hover' : ''].filter(Boolean).join(' ');
           return isCentre
             ? <path key={p.id} d={`M${s.x - 4} ${s.y}h8M${s.x} ${s.y - 4}v8`} className={`${cls} ctr`} />
             : <rect key={p.id} x={s.x - 2.6} y={s.y - 2.6} width={5.2} height={5.2} className={cls} />;
@@ -1129,6 +1288,11 @@ function framing(region: CadRegion, width: number, height: number): View | null 
     };
   }
   return Number.isFinite(v.zoom) && v.zoom > 0 ? v : null;
+}
+
+/** The minor semi-axis an ellipse about c with its major axis to a gets from a click at p: p's distance from the axis. */
+function minorOf(c: Vec2, a: Vec2, p: Vec2): number {
+  return segDistInf(p, c, a);
 }
 
 function segDistInf(p: Vec2, a: Vec2, b: Vec2): number {

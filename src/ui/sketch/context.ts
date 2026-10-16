@@ -9,7 +9,8 @@ export type Tool =
 
 export type CadTool =
   | 'select' | 'line' | 'rect' | 'crect' | 'circle' | 'arc' | 'arc3' | 'polygon' | 'slot' | 'point'
-  | 'dim' | 'fillet' | 'trim' | 'mirror' | 'measure' | 'pan';
+  | 'dim' | 'fillet' | 'trim' | 'mirror' | 'measure' | 'pan'
+  | 'spline' | 'cspline' | 'ellipse' | 'earc' | 'text' | 'offset' | 'chamfer' | 'extend' | 'break' | 'cpattern';
 
 export type BeamTool = 'select' | 'member' | 'pin' | 'roller' | 'fixed' | 'hinge' | 'force' | 'line' | 'moment';
 
@@ -31,11 +32,21 @@ export interface SketchUI {
   cadDimKind: 'smart' | 'horizontal' | 'vertical';
   /** Show relation glyphs in the CAD window. */
   cadRelations: boolean;
+  /** Options of the CAD sketch tools: offset and chamfer distances, text, pattern counts and spacings. */
+  cadOffset: number;
+  cadChamfer: number;
+  cadText: string;
+  cadTextSize: number;
+  cadCount: number;
+  cadSpacing: number;
+  cadCount2: number;
+  cadSpacing2: number;
+  cadAngle: number;
   /** Tool of the beam editor. */
   beamTool: BeamTool;
 }
 
-export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false, cadSides: 6, cadFillet: 5, cadGridSnap: false, cadDimKind: 'smart', cadRelations: true, beamTool: 'member' };
+export const INITIAL_SKETCH_UI: SketchUI = { regionId: null, selected: [], tool: 'select', symbol: 'joint', template: 'I', cadTool: 'select', cadConstruction: false, cadSides: 6, cadFillet: 5, cadGridSnap: false, cadDimKind: 'smart', cadRelations: true, beamTool: 'member', cadOffset: 5, cadChamfer: 3, cadText: 'Text', cadTextSize: 10, cadCount: 4, cadSpacing: 20, cadCount2: 1, cadSpacing2: 20, cadAngle: 360 };
 
 export interface SketchContextValue {
   ui: SketchUI;

@@ -226,9 +226,10 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
     }
     case 'rib': {
       // sketches with open curves: lines and arcs
-      const open = sketches.filter((s) => s.sketch.entities.some((e) => e.type === 'line' || e.type === 'arc'));
+      const isOpen = (e: (typeof sketches)[number]['sketch']['entities'][number]) => e.type === 'line' || e.type === 'arc' || (e.type === 'spline' && !e.closed) || (e.type === 'ellipse' && !!e.p1);
+      const open = sketches.filter((s) => s.sketch.entities.some(isOpen));
       const ds = sketches.find((s) => s.id === f.sketch);
-      const curves = ds?.sketch.entities.filter((e) => e.type === 'line' || e.type === 'arc') ?? [];
+      const curves = ds?.sketch.entities.filter(isOpen) ?? [];
       return (
         <>
           <Pick label="Sketch" value={f.sketch} options={open.map((s) => [s.id, s.name])} onChange={(sketch) => onChange({ sketch, curves: undefined })} />

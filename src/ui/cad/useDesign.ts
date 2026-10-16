@@ -8,7 +8,8 @@ import { activeItems, designOf, isSketch, profileKey, type CadDesign, type Desig
 import type { BuildResult } from '../../cad/buildResult';
 import { displayMesh } from '../../cad/display';
 import type { SectionBody } from '../../cad/kernel/protocol';
-import { findProfiles, loopPolygon, type ProfileRegion, type Vec2 } from '../../cad/profile';
+import { findProfiles, loopPolygon, segPolyline, type ProfileRegion, type Vec2 } from '../../cad/profile';
+import { entitySegs } from '../../cad/sketchCurves';
 import type { Mesh } from '../../cad/mesh';
 import { framePoint, type Frame, type M4 } from '../../cad/solid';
 import type { SceneLines, SceneMesh, ScenePlane, Vec3 } from './Scene3D';
@@ -99,6 +100,12 @@ export function sketchSegments(ds: DesignSketch, f: Frame, sol?: { points: Recor
       const p = P(e.p), s = 0.8;
       seg({ x: p.x - s, y: p.y }, { x: p.x + s, y: p.y });
       seg({ x: p.x, y: p.y - s }, { x: p.x, y: p.y + s });
+    } else {
+      // splines, ellipses and text along their curves
+      for (const sg of entitySegs(e, P, (id) => sol?.radii[id])) {
+        const pts = segPolyline(sg, Math.PI / 36);
+        for (let i = 1; i < pts.length; i++) seg(pts[i - 1], pts[i]);
+      }
     }
   }
   return new Float32Array(out);

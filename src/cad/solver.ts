@@ -139,23 +139,6 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
     return { e, vars, curve: (q: Float64Array): BSpline | null => splineOf(e, pointsOf(q)) };
   };
 
-  // arcs keep both ends on the circle, elliptical arcs on the ellipse
-  for (const e of sk.entities) {
-    if (e.type === 'arc') {
-      const c = X(e.c), a = X(e.p1), b = X(e.p2);
-      add(e.id, 1, [...pv(c), ...pv(a), ...pv(b)], (q, o, k) => {
-        o[k] = Math.hypot(q[b] - q[c], q[b + 1] - q[c + 1]) - Math.hypot(q[a] - q[c], q[a + 1] - q[c + 1]);
-      });
-    } else if (e.type === 'ellipse' && e.p1 && e.p2) {
-      const g = ellipseVars(e.id), a = X(e.p1), b = X(e.p2);
-      add(e.id, 2, [...g.vars, ...pv(a), ...pv(b)], (q, o, k) => {
-        const el = g.geo(q);
-        o[k] = (ellipseRho(el, at(q, a)) - 1) * el.rb;
-        o[k + 1] = (ellipseRho(el, at(q, b)) - 1) * el.rb;
-      });
-    }
-  }
-
   function addConstraint(c: CadConstraint, v: number) {
     const [r0, r1, r2] = c.refs;
     switch (c.type) {
@@ -550,6 +533,24 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       addConstraint(c, v);
     } catch {
       /* a constraint whose references are gone is ignored */
+    }
+  }
+
+  // arcs keep both ends on the circle, elliptical arcs on the ellipse: after the constraints, so a
+  // constraint that implies them (an offset's corner arc) is not the one the analysis calls redundant
+  for (const e of sk.entities) {
+    if (e.type === 'arc') {
+      const c = X(e.c), a = X(e.p1), b = X(e.p2);
+      add(e.id, 1, [...pv(c), ...pv(a), ...pv(b)], (q, o, k) => {
+        o[k] = Math.hypot(q[b] - q[c], q[b + 1] - q[c + 1]) - Math.hypot(q[a] - q[c], q[a + 1] - q[c + 1]);
+      });
+    } else if (e.type === 'ellipse' && e.p1 && e.p2) {
+      const g = ellipseVars(e.id), a = X(e.p1), b = X(e.p2);
+      add(e.id, 2, [...g.vars, ...pv(a), ...pv(b)], (q, o, k) => {
+        const el = g.geo(q);
+        o[k] = (ellipseRho(el, at(q, a)) - 1) * el.rb;
+        o[k + 1] = (ellipseRho(el, at(q, b)) - 1) * el.rb;
+      });
     }
   }
 

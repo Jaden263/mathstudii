@@ -5555,3 +5555,70 @@ div.pl-cutplot {
 .cadd-pickfield .btn {
   margin-bottom: 4px;
 }
+
+/* ---------------------------------------------------------------- CAD sketcher: references, splines, text */
+
+.cad-region,
+.cadw {
+  --cad-refgeo: #8e44ad;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .cad-region,
+  :root:not([data-theme='light']) .cadw {
+    --cad-refgeo: #c792ea;
+  }
+}
+
+:root[data-theme='dark'] .cad-region,
+:root[data-theme='dark'] .cadw {
+  --cad-refgeo: #c792ea;
+}
+
+/* projected geometry: fixed, in the reference colour whatever its constraint state */
+.cad-svg .cad-ent.ref,
+.cad-svg .cad-ent.ref.det,
+.cad-svg .cad-pt.ref {
+  stroke: var(--cad-refgeo);
+}
+
+.cad-svg .cad-ent.ref.sel {
+  stroke: var(--accent);
+}
+
+.cad-svg .cad-ent.text {
+  fill: color-mix(in srgb, var(--cad-free) 10%, transparent);
+  fill-rule: evenodd;
+  stroke-width: 1.2;
+}
+
+.cad-svg .cad-ent.text.det {
+  fill: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.cad-svg .cad-handle {
+  fill: none;
+  stroke: var(--cad-free);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.cadw-options input.cadw-text {
+  width: 110px;
+}
+
+.cad-sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cad-sources li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0;
+}

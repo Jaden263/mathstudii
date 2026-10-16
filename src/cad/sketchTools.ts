@@ -694,3 +694,26 @@ export function repattern(sk0: CadSketch, P: Map<string, Vec2>, cid: string, cou
   });
   return r;
 }
+
+/** The curves joined end to end with one (through ends where only two meet), for picking a chain by one click. */
+export function connectedChain(sk: CadSketch, id: string): string[] {
+  const start = sk.entities.find((e) => e.id === id);
+  if (!start || !entityEnds(start)) return start ? [start.id] : [];
+  const curves = sk.entities.filter((e) => entityEnds(e) && !!e.construction === !!start.construction);
+  const at = new Map<string, CadEntity[]>();
+  for (const e of curves) for (const p of entityEnds(e)!) at.set(p, [...(at.get(p) ?? []), e]);
+  const out = new Set([start.id]);
+  const stack = [start];
+  while (stack.length) {
+    const e = stack.pop()!;
+    for (const p of entityEnds(e)!) {
+      const there = at.get(p) ?? [];
+      if (there.length !== 2) continue;
+      for (const f of there) if (!out.has(f.id)) {
+        out.add(f.id);
+        stack.push(f);
+      }
+    }
+  }
+  return [...out];
+}

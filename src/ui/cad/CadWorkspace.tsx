@@ -11,10 +11,13 @@ import {
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
   Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash, FileBox,
   Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate, TriangleRight,
+  LineSquiggle, SplinePointer, Ellipse as EllipseIcon, CircleDotDashed, Type, VectorSquare, CornerRightDown, MoveHorizontal, ScissorsLineDashed,
+  Grid2x2, Rotate3d, ScanLine,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
-import { MATERIALS, cadId, reserveDimNames, type CadSketch, type ConstraintType } from '../../cad/model';
+import { MATERIALS, cadId, reserveDimNames, type CadSketch, type ConstraintType, type SketchSource } from '../../cad/model';
+import { withReferencesOf } from '../../cad/reference';
 import { CONSTRAINT_TOOLS } from '../../cad/edit';
 import {
   FEATURE_LABEL, MODIFY_KINDS, activeItems, designOf, facePlane, findSketch, isConstruct, isModify, isSketch, itemName, nextName, picksOnBodies, profileKey, sketchFace,
@@ -23,13 +26,12 @@ import {
 } from '../../cad/design';
 import { MM_PER, threadFor } from '../../cad/threads';
 import { m4Dir, m4Inv, m4Point, norm3, sub3, type Vec3 } from '../../cad/solid';
-import { baseName, faceWords, keyFeature, refTo, refToken, resolveRef, type TopoRef } from '../../cad/topology';
+import { baseName, edgeWords, faceWords, keyFeature, refTo, refToken, resolveRef, type TopoRef } from '../../cad/topology';
 import type { Vec2 } from '../../cad/profile';
 import { designNumbers } from '../../cad/keys';
 import type { BodyResult } from '../../cad/buildResult';
 import type { Distance, EntityRef, Interference, SectionBody } from '../../cad/kernel/protocol';
 import { bodyOf, pickOf, resolveSelection, select, type Selection } from '../../cad/selection';
-import { projectLoops } from '../../cad/project';
 import type { Action } from '../store';
 import { useSketchUI, type CadTool } from '../sketch/context';
 import { exportFile, pickFile } from '../../platform/files';
@@ -868,6 +870,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   const onPick = (hit: PickHit, shift = false) => {
     if (performance.now() - openedAt.current < 500) return;
+    if (projecting) return projectPick(hit);
     const key = hit.key ?? '';
     if (dialog?.kind === 'feature') {
       const c = design.components.find((q) => q.id === dialog.cid);
@@ -1003,14 +1006,57 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     const { sketchToDxf } = await import('../../cad/dxf');
     await exportFile(`${fileBase}-${ds.name}.dxf`, sketchToDxf(ds.sketch, region.unit), 'application/dxf');
   };
-  const project = () => {
-    if (!ds) return;
-    if (!reference.length) return setMsg('No body crosses this sketch plane');
-    const r = projectLoops(ds.sketch, reference);
-    replaceSketch(ds.id, { sketch: r.sketch });
-    setUi({ regionId: region.id, selected: r.ids });
-    setMsg(`Projected ${r.ids.length} edges (fixed in place)`);
+  // ------------------------------------------------------------ project, include, intersect
+
+  /** Picking edges and faces to project: the 3-D view, the timeline rolled back to the sketch (it can only see the bodies before it). */
+  const [projecting, setProjecting] = useState<{ cid: string; marker: number | undefined } | null>(null);
+  const startProject = () => {
+    if (!ds || !sketchComp) return;
+    const idx = sketchComp.items.indexOf(ds);
+    if ((sketchComp.marker ?? sketchComp.items.length) > idx) setDesign(mapComp(cur(), sketchComp.id, (c) => ({ ...c, marker: idx })), undefined, false);
+    setProjecting({ cid: sketchComp.id, marker: sketchComp.marker });
   };
+  const endProject = () => {
+    if (!projecting) return;
+    const back = projecting.marker;
+    setDesign(mapComp(cur(), projecting.cid, (c) => ({ ...c, marker: back })), undefined, false);
+    setProjecting(null);
+    window.setTimeout(() => canvas.current?.focus(), 60);
+  };
+  useEffect(() => {
+    if (projecting && !ds) setProjecting(null);
+  }, [projecting, ds]);
+  const addSource = (src: SketchSource, what: string) => {
+    if (!ds) return;
+    const now = findSketch(cur(), ds.id)!.sketch;
+    replaceSketch(ds.id, { sketch: { ...now, sources: [...(now.sources ?? []), src] } });
+    setMsg(`${what}: it comes in as fixed reference geometry and follows the model`);
+  };
+  const nameOf = (id: string) => itemName(cur(), id);
+  const projectPick = (hit: PickHit) => {
+    const on = hitBody(hit);
+    if (!on || occOf(on.occ)?.component !== projecting?.cid) return setMsg('Pick an edge or a face of a body of this component');
+    if (hit.edge !== undefined) {
+      const e = on.b.edges[hit.edge];
+      return addSource({ id: cadId('r'), kind: 'edge', ref: refTo('edge', on.b.id, e), label: e.key ? edgeWords(e.key, nameOf).replace(/^the /, '') : 'edge' }, 'Projected the edge');
+    }
+    if (hit.face !== undefined) {
+      const f = on.b.faces[hit.face];
+      return addSource({ id: cadId('r'), kind: 'face', ref: refTo('face', on.b.id, f), label: `outline of ${f.key ? faceWords(f.key, nameOf).replace(/^the /, '') : 'a face'}` }, 'Projected the face\'s outline');
+    }
+  };
+  const intersect = () => addSource({ id: cadId('r'), kind: 'section', label: 'section of the bodies' }, 'The bodies\' section with the sketch plane');
+  /** Construction points and axes before the sketch, to include. */
+  const datumsBefore = ds && sketchComp ? sketchComp.items.slice(0, sketchComp.items.indexOf(ds)).filter((i): i is ConstructItem => i.kind === 'point' || i.kind === 'axis') : [];
+  // what a build projected goes into the stored sketch (no undo step: it is the model's doing)
+  useEffect(() => {
+    for (const [id, built] of Object.entries(dr?.rebuilt ?? {})) {
+      const now = findSketch(designRef.current, id);
+      if (!now) continue;
+      const merged = withReferencesOf(now.sketch, built);
+      if (merged !== now.sketch) replaceSketch(id, { sketch: merged }, undefined, false);
+    }
+  }, [dr?.rebuilt, replaceSketch]);
 
   // ------------------------------------------------------------ keyboard
 
@@ -1021,6 +1067,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) onRedo(); else onUndo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); onRedo(); }
+    else if (e.key === 'Escape' && projecting) endProject();
     else if (e.key === 'Escape' && dialog?.kind === 'feature' && dialog.target) setDialog({ ...dialog, target: undefined });
     else if (e.key === 'Escape' && dialog?.kind === 'feature' && dialog.pick) setDialog({ ...dialog, pick: undefined });
     else if (e.key === 'Escape' && dialog) closeDialog(false);
@@ -1614,14 +1661,28 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               {toolBtn('arc3', <Spline size={20} />, '3-pt arc', '3-point arc (Shift+A)')}
               {toolBtn('polygon', <Hexagon size={20} />, 'Polygon', 'Regular polygon (G)')}
               {toolBtn('slot', <Pill size={20} />, 'Slot', 'Straight slot (O)')}
+              {toolBtn('spline', <LineSquiggle size={20} />, 'Spline', 'Fit-point spline through the points clicked (N); click the first point again to close it')}
+              {toolBtn('cspline', <SplinePointer size={20} />, 'Control spline', 'Control-point spline: the points are its poles (Shift+N)')}
+              {toolBtn('ellipse', <EllipseIcon size={20} />, 'Ellipse', 'Ellipse: centre, end of the major axis, minor axis (Shift+E)')}
+              {toolBtn('earc', <CircleDotDashed size={20} />, 'Ellipse arc', 'Elliptical arc: centre, end of the major axis, start, end')}
               {toolBtn('point', <Dot size={20} />, 'Point', 'Point (P) — hole centres')}
+              {toolBtn('text', <Type size={20} />, 'Text', 'Text (Shift+P): its outline is a profile to extrude or cut')}
             </Group>
             <Group label="Modify">
               {toolBtn('fillet', <SquareRoundCorner size={20} />, 'Fillet', 'Sketch fillet (I)')}
+              {toolBtn('chamfer', <CornerRightDown size={20} />, 'Chamfer', 'Sketch chamfer at a corner of two lines (Shift+I)')}
+              {toolBtn('offset', <VectorSquare size={20} />, 'Offset', 'Offset a chain (or the selected curves) by a distance (Shift+O); it follows its chain')}
               {toolBtn('trim', <Scissors size={20} />, 'Trim', 'Trim (T)')}
+              {toolBtn('extend', <MoveHorizontal size={20} />, 'Extend', 'Extend a line or arc to the next curve (Shift+T)')}
+              {toolBtn('break', <ScissorsLineDashed size={20} />, 'Break', 'Split a curve at a point (B)')}
               {toolBtn('mirror', <SquareSplitHorizontal size={20} />, 'Mirror', 'Mirror the selection about a line (M)')}
+              <RibbonButton icon={<Grid2x2 size={20} />} label="Pattern" title="Rectangular pattern of the selection (counts and spacings in Options)" disabled={!selIds.length} onClick={() => cmd((cv) => cv.rectPattern())} />
+              {toolBtn('cpattern', <Rotate3d size={20} />, 'Circ. pattern', 'Circular pattern of the selection about a point')}
               <RibbonButton icon={<Construction size={20} />} label="Construction" title="Construction geometry (X)" on={ui.cadConstruction} onClick={() => cmd((cv) => cv.toggleConstruction())} />
-              <RibbonButton icon={<Waypoints size={20} />} label="Project" title="Turn the body outlines in this plane into fixed sketch geometry" disabled={!reference.length} onClick={project} />
+            </Group>
+            <Group label="Project">
+              <RibbonButton icon={<Waypoints size={20} />} label="Project" title="Project edges and faces' outlines of the bodies (picked in 3-D) and construction points and axes: fixed reference geometry that follows the model" on={!!projecting} onClick={() => (projecting ? endProject() : startProject())} />
+              <RibbonButton icon={<ScanLine size={20} />} label="Intersect" title="The section of the bodies with the sketch plane, as reference geometry that follows the model" onClick={intersect} />
               <RibbonButton icon={<Trash2 size={20} />} label="Delete" title="Delete the selection (Del)" disabled={!selIds.length} onClick={() => cmd((cv) => cv.deleteSelected())} />
             </Group>
             <Group label="Dimension">{toolBtn('dim', <Ruler size={20} />, 'Dimension', 'Smart dimension (D)')}</Group>
@@ -1629,6 +1690,28 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <div className="cadw-options">
                 {tool === 'polygon' && <label>Sides <input type="number" min={3} max={64} value={ui.cadSides} onChange={(e) => setUi({ cadSides: Math.max(3, Math.min(64, Number(e.target.value) || 6)) })} /></label>}
                 {tool === 'fillet' && <label>Radius <input type="number" min={0} step="any" value={ui.cadFillet} onChange={(e) => setUi({ cadFillet: Math.max(0, Number(e.target.value)) })} /> {u}</label>}
+                {tool === 'offset' && <label title="The offset distance (a dimension you can change afterwards)">Distance <input type="number" min={0} step="any" value={ui.cadOffset} onChange={(e) => setUi({ cadOffset: Math.max(0, Number(e.target.value)) })} /> {u}</label>}
+                {tool === 'chamfer' && <label>Distance <input type="number" min={0} step="any" value={ui.cadChamfer} onChange={(e) => setUi({ cadChamfer: Math.max(0, Number(e.target.value)) })} /> {u}</label>}
+                {tool === 'text' && (
+                  <>
+                    <label>Text <input className="cadw-text" value={ui.cadText} onChange={(e) => setUi({ cadText: e.target.value })} /></label>
+                    <label title="The font size: capitals are 0.694 of it">Size <input type="number" min={0} step="any" value={ui.cadTextSize} onChange={(e) => setUi({ cadTextSize: Math.max(0, Number(e.target.value)) })} /> {u}</label>
+                  </>
+                )}
+                {(tool === 'select' || tool === 'cpattern') && selIds.length > 0 && (
+                  <>
+                    <label title="Copies in the first direction (the original counts)">Count <input type="number" min={1} max={200} value={ui.cadCount} onChange={(e) => setUi({ cadCount: Math.max(1, Math.min(200, Math.round(Number(e.target.value)) || 1)) })} /></label>
+                    {tool === 'cpattern'
+                      ? <label title="The total angle: 360° spreads the copies evenly">Angle <input type="number" step="any" value={ui.cadAngle} onChange={(e) => setUi({ cadAngle: Number(e.target.value) })} /> °</label>
+                      : (
+                        <>
+                          <label title="Spacing along x">Δx <input type="number" step="any" value={ui.cadSpacing} onChange={(e) => setUi({ cadSpacing: Number(e.target.value) })} /></label>
+                          <label title="Copies along y (1: a single row)">Rows <input type="number" min={1} max={200} value={ui.cadCount2} onChange={(e) => setUi({ cadCount2: Math.max(1, Math.min(200, Math.round(Number(e.target.value)) || 1)) })} /></label>
+                          <label title="Spacing along y">Δy <input type="number" step="any" value={ui.cadSpacing2} onChange={(e) => setUi({ cadSpacing2: Number(e.target.value) })} /></label>
+                        </>
+                      )}
+                  </>
+                )}
                 {tool === 'dim' && (
                   <label>Type <select value={ui.cadDimKind} onChange={(e) => setUi({ cadDimKind: e.target.value as typeof ui.cadDimKind })}>
                     <option value="smart">Smart</option><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option>
@@ -1805,7 +1888,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         )}
 
         <section className="cadw-view" ref={viewRef}>
-          {inSketch ? (
+          {inSketch && !projecting ? (
             <CadCanvas ref={canvas} region={sketchRegion!} result={sketchResult} dispatch={sketchDispatch} width={size.w} height={size.h} interactive
               onStatus={setStatus} onUndo={onUndo} onRedo={onRedo} reference={reference} />
           ) : (
@@ -1831,10 +1914,27 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <button className="icon-btn" onClick={() => setSection(null)} aria-label="Close section"><X size={14} /></button>
             </div>
           )}
-          {inSketch && !ds!.sketch.entities.length && (
+          {inSketch && projecting && (
+            <div className="cadw-inspect" onPointerDown={(e) => e.stopPropagation()}>
+              <b>Project</b>
+              <span>Click edges or faces of the bodies</span>
+              {datumsBefore.length > 0 && (
+                <select value="" aria-label="Include construction geometry" onChange={(e) => {
+                  const d = datumsBefore.find((x) => x.id === e.target.value);
+                  if (d) addSource({ id: cadId('r'), kind: 'datum', datum: d.id, label: d.name }, `Included ${d.name}`);
+                }}>
+                  <option value="">Include construction…</option>
+                  {datumsBefore.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.kind})</option>)}
+                </select>
+              )}
+              <button className="btn" onClick={intersect} title="The section of the bodies with the sketch plane">Intersect</button>
+              <button className="btn primary" onClick={endProject}>Done</button>
+            </div>
+          )}
+          {inSketch && !projecting && !ds!.sketch.entities.length && (
             <div className="cadw-empty">
               <b>Sketch on {planeWords(ds!)}</b>
-              <span>Line (L), Rectangle (R), Circle (C) … then add relations and dimensions. Grey outlines are the bodies this plane cuts — Project turns them into geometry.</span>
+              <span>Line (L), Rectangle (R), Circle (C), Spline (N) … then add relations and dimensions. Grey outlines are the bodies this plane cuts — Project and Intersect bring edges, faces and sections in as reference geometry.</span>
             </div>
           )}
         </section>

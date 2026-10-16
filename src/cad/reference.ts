@@ -325,3 +325,23 @@ export function sameReferences(a: CadSketch, b: CadSketch, tol: number): boolean
   }
   return true;
 }
+
+/**
+ * The stored sketch with the reference geometry a build projected (its other entities and
+ * constraints as they are now); the same object when nothing moved.
+ */
+export function withReferencesOf(stored: CadSketch, built: CadSketch): CadSketch {
+  let size = 1;
+  for (const p of built.points) size = max(size, abs(p.x), abs(p.y));
+  const live = new Set((stored.sources ?? []).map((q) => q.id));
+  const refs = built.entities.filter((e) => e.ref && live.has(e.ref));
+  const mine = (e: CadEntity) => !!e.ref && live.has(e.ref);
+  const candidate: CadSketch = { ...stored, entities: [...stored.entities.filter((e) => !mine(e)), ...refs.map((e) => ({ ...e, construction: stored.entities.find((x) => x.id === e.id)?.construction ?? e.construction }))] };
+  const pos = new Map(built.points.map((p) => [p.id, p]));
+  const used = new Set(candidate.entities.flatMap(entityPts));
+  const points = [...stored.points.filter((p) => used.has(p.id)).map((p) => (refs.some((e) => entityPts(e).includes(p.id)) ? pos.get(p.id) ?? p : p))];
+  for (const id of used) if (!points.some((p) => p.id === id) && pos.has(id)) points.push(pos.get(id)!);
+  const alive = new Set([...candidate.entities.map((e) => e.id), ...points.map((p) => p.id)]);
+  const next: CadSketch = { ...candidate, points, constraints: stored.constraints.filter((c) => c.refs.every((r) => alive.has(r))) };
+  return sameReferences(stored, next, 1e-9 * size) ? stored : next;
+}
