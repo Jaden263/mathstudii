@@ -853,8 +853,9 @@ What it is not, honestly:
   - Press-pull extends the neighbours of a flat face bounded by straight edges with flat
     faces around it. A face with a hole, a curved edge or a curved neighbour (next to a
     rounding) moves as a straight prism: a neighbour not square to it gets a step instead
-    of being extended. Cylinders grow or shrink between their two ends; other curved faces
-    cannot be press-pulled.
+    of being extended, and at a corner with other moved faces that is not square a small
+    piece can stay open. Cylinders grow or shrink between their two ends; other curved
+    faces cannot be press-pulled.
   - A shell whose opening is tangent to a face it keeps (the top of a box with a rounded
     rim) is made as the body less its offset inside and the opening pushed through: the
     rounding stays as a lip curving in. Outside shells with such an opening are refused.

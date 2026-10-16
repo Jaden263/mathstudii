@@ -582,6 +582,20 @@ describe('press-pull', () => {
     expect(rh.errors).toEqual({});
     near(rh.V[0], area * 100);
     expect(keys(pulled)).toEqual(['f1/end', 'f1/side:hl0', 'f1/side:hl1', 'f1/side:hl2', 'f1/side:hl3', 'f1/side:hl4', 'f1/start']);
+    // a top with a hole moves as a prism, the sides it meets as offsets: the same box, the hole's wall
+    // carried on, ((100 + d)(60 + d) − π R²)(10 + d) (the corner cube between their wedges filled)
+    const plate: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'Base', plane: { ref: 'XY' }, sketch: withCircles(rect('r', 0, 0, 100, 60), 'h', [[50, 30, 10]]) },
+      { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+    ];
+    const pb = bodiesOf(built(single(plate)))[0];
+    const face = (f: (q: (typeof pb.faces)[number]) => boolean) => refTo('face', 'f1', pb.faces.find(f)!);
+    const [ptop, pright, pfront] = [face((q) => !!q.frame && Math.abs(q.c[2] - 10) < 1e-9), face((q) => Math.abs(q.c[0] - 100) < 1e-9), face((q) => Math.abs(q.c[1]) < 1e-9)];
+    for (const d of [5, -3]) {
+      const rp = run([...plate, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: [ptop, pright, pfront], d: String(d) }]);
+      expect(rp.errors).toEqual({});
+      near(rp.V[0], ((100 + d) * (60 + d) - PI * 100) * (10 + d));
+    }
     // the inner corner of an L (concave) pushed in by 3: the corner square between the prisms goes too
     const L: DesignItem[] = [
       { kind: 'sketch', id: 's1', name: 'L', plane: { ref: 'XY' }, sketch: poly('l', [[0, 0], [60, 0], [60, 10], [10, 10], [10, 40], [0, 40]]) },

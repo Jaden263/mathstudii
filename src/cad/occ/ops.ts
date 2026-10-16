@@ -631,13 +631,14 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       }),
     });
     const out: OccSolid[] = [];
-    const gaps: { faces: [number, number]; ends: [Vec3, Vec3] }[] = [];
+    // where two moved faces part (out of a convex edge when pulled, into a concave one when
+    // pushed), with a filler or meeting halfway
+    const gaps: { faces: [number, number]; ends: [Vec3, Vec3]; filled: boolean }[] = [];
     flat.forEach((q, i) => {
       for (const e of q.E.shapes) {
         const j = flat.findIndex((o, k) => k > i && o.E.has(e));
         if (j < 0) continue;
         const o = flat[j];
-        if (meetHalfway(q.at, o.at)) continue;
         const line = edgeInfo(oc, t, t.add(oc.TopoDS.Edge(e)), 0);
         if (!line.line) continue;
         const c = dot3(q.n, o.n);
@@ -652,20 +653,23 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
         if (t.add(new oc.BRepExtrema_DistShapeShape(probe, q.g)).Value() < h / 2) w = scale(w, -1);
         const convex = dot3(o.n, w) > 0;
         if (convex !== d > 0) continue;
+        const filled = !meetHalfway(q.at, o.at);
+        gaps.push({ faces: [i, j], ends: [a, b], filled });
+        if (!filled) continue;
         // the moved planes meet at a + x
         const x = scale(add3(q.n, o.n), d / (1 + c));
         const shape = polygonPrism(t, [a, add3(a, scale(q.n, d)), add3(a, x), add3(a, scale(o.n, d))], sub3(b, a), 'the faces cannot be moved');
         out.push(named(shape, faceTags(s, q.g)));
-        gaps.push({ faces: [i, j], ends: [a, b] });
       }
     });
-    // corners where the wedges of three square faces meet
+    // corners of three square faces parting from each other: the cube between the wedges (unless
+    // all three meet halfway, which fills it)
     const near = (p: Vec3, r: Vec3) => Math.hypot(...sub3(p, r)) < tol;
     const corners = gaps.flatMap((gp) => gp.ends).filter((p, k, all) => all.findIndex((r) => near(p, r)) === k);
     for (const v of corners) {
       const at = gaps.filter((gp) => gp.ends.some((p) => near(p, v)));
       const fs = [...new Set(at.flatMap((gp) => gp.faces))];
-      if (at.length !== 3 || fs.length !== 3) continue;
+      if (at.length !== 3 || fs.length !== 3 || !at.some((gp) => gp.filled)) continue;
       const [ni, nj, nk] = fs.map((k) => flat[k].n);
       if (Math.abs(dot3(ni, nj)) > 1e-9 || Math.abs(dot3(ni, nk)) > 1e-9 || Math.abs(dot3(nj, nk)) > 1e-9) continue;
       const shape = polygonPrism(t, [v, add3(v, scale(ni, d)), add3(v, scale(add3(ni, nj), d)), add3(v, scale(nj, d))], scale(nk, d), 'the faces cannot be moved');
