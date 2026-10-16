@@ -135,6 +135,36 @@ describe('plate region in a worksheet', () => {
     expect(evaluateWorksheet(old).errorCount).toBe(0);
   });
 
+  it('awkward geometry still carries the whole load', () => {
+    // the default loads at ULS: 1.35 (5 + 1.5) + 1.5 · 3 = 13.275 kN/m² on the net area
+    const q = 13.275;
+    const L = [[0, 0], [8, 0], [8, 3], [3, 3], [3, 6], [0, 6]].map(([x, y]) => ({ x: String(x), y: String(y) }));
+    const sq = rectangle(6, 4);
+    const total = (d: Partial<PlateRegion>) => {
+      const { res } = run({ ...d }, [], []);
+      expect(res.error).toBeUndefined();
+      return res.reactions!.reduce((s, r) => s + r.R, 0) / 1e3;
+    };
+    const free = (n: number) => Array.from({ length: n }, () => ({ support: 'free' as const }));
+    // column heads straddling the corners, grid and triangles
+    const heads = (pts: number[][]) => pts.map(([x, y], i) => ({ id: `c${i}`, name: `C${i + 1}`, x: String(x), y: String(y), b: '400' }));
+    expect(total({ outline: sq, edges: free(4), columns: heads([[0, 0], [6, 0], [6, 4], [0, 4]]) })).toBeCloseTo(q * 24, 3);
+    expect(total({ outline: L, edges: free(6), columns: heads([[0, 0], [8, 0], [8, 3], [3, 6], [0, 6], [3, 3]]) })).toBeCloseTo(q * 33, 3);
+    // a wall through an opening and past the edge; an inclined one through an opening of an L
+    const hole = (x: number, y: number) => [{ id: 'o', name: 'O1', points: rectangle(1, 1, x, y) }];
+    expect(total({ outline: sq, openings: hole(2.5, 1.5), walls: [{ id: 'w', name: 'W1', a: { x: '3', y: '-1' }, b: { x: '3', y: '5' } }] })).toBeCloseTo(q * 23, 3);
+    expect(total({ outline: L, openings: hole(1, 1), edges: ['simple', 'free', 'free', 'free', 'free', 'simple'].map((x) => ({ support: x as 'simple' })), walls: [{ id: 'w', name: 'W1', a: { x: '0', y: '0' }, b: { x: '7', y: '3' } }] })).toBeCloseTo(q * 32, 3);
+    // a column 5 mm from an edge
+    expect(total({ outline: L, columns: [{ id: 'c', name: 'C1', x: '4', y: '0.005' }] })).toBeCloseTo(q * 33, 3);
+    // an element size larger than the plate is held to a quarter of its narrower side
+    const big = run({ outline: sq, mesh: '20' }, [], []).res;
+    expect(big.size).toBeCloseTo(1, 12);
+    expect(big.mesh!.quads.length).toBe(4 * 24);
+    // an outline that crosses itself is reported
+    const bow = run({ outline: [{ x: '0', y: '0' }, { x: '4', y: '4' }, { x: '4', y: '0' }, { x: '0', y: '4' }] }, [], []).res;
+    expect(bow.errors.outline).toMatch(/crosses itself/);
+  });
+
   it('presets solve', () => {
     for (const kind of ['simple', 'flat', 'circle', 'lshape'] as const) {
       const p = platePreset(kind, { length: 'm', force: 'kN' });

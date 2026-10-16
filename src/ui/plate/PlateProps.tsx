@@ -113,6 +113,9 @@ export function PlateProps({ region, result, dispatch }: { region: PlateRegion; 
         <LazyInput label="Element size" value={region.mesh ?? ''} placeholder={auto ? `auto (${fmt(auto)})` : 'auto'} onCommit={(v) => set({ mesh: v.trim() || undefined })} />
       </label>
       {err('mesh')}
+      {result?.size !== undefined && region.mesh?.trim() && result.size < Number.parseFloat(region.mesh) * Lm * (1 - 1e-9) && (
+        <p className="hint">The element size is held to a quarter of the plate’s narrower side: {fmt(result.size / Lm)} {region.lengthUnit}.</p>
+      )}
       {m && (
         <p className="hint">
           {m.quads.length / 4} elements, {m.x.length} nodes, {result?.unknowns} unknowns: {m.structured ? 'a grid through every edge, wall and column' : 'triangles refined to near-equilateral shape, each split into three quads'}; corners {fmt(m.minAngle)}° – {fmt(m.maxAngle)}°.

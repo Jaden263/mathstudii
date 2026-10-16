@@ -228,10 +228,13 @@ export function PlateView({ region, result, editing, selected: regionSelected, d
     const name = region.columns.find((q) => q.id === c.id)?.name;
     const [x, y] = P(c.at[0], c.at[1]);
     const cls = `pl-column${sel.has(c.id) ? ' sel' : ''}${errId.has(c.id) ? ' err' : ''}`;
+    const head = c.head?.map((p) => P(p[0], p[1]));
+    // the name beside the head, not on it
+    const r = head ? Math.max(4, ...head.map(([hx, hy]) => Math.max(Math.abs(hx - x), Math.abs(hy - y)))) : 4;
     return (
       <g key={c.id} className={cls}>
-        {c.head ? <polygon points={pts(c.head.map((p) => P(p[0], p[1])))} /> : <rect x={x - 4} y={y - 4} width={8} height={8} />}
-        {name && editing && <text x={x + 7} y={y - 7} className="pl-name">{name}</text>}
+        {head ? <polygon points={pts(head)} /> : <rect x={x - 4} y={y - 4} width={8} height={8} />}
+        {name && editing && <text x={x + r + 3} y={y - r - 2} className="pl-name">{name}</text>}
       </g>
     );
   });
@@ -455,7 +458,8 @@ export function PlateView({ region, result, editing, selected: regionSelected, d
     e.stopPropagation();
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const p = toSvg(e);
-    const mode = region.deformed ? 'orbit' : cutTool && e.button === 0 && !e.shiftKey ? 'cut' : e.shiftKey || e.button === 1 || e.button === 2 ? 'pan' : 'pan';
+    // dragging turns the deflected shape, draws the cut with the cut tool, else pans
+    const mode = region.deformed ? 'orbit' : cutTool && e.button === 0 && !e.shiftKey ? 'cut' : 'pan';
     drag.current = { x: e.clientX, y: e.clientY, mode, start: toWorld(p.x, p.y), view, cam, moved: false };
     setHover(null);
   };

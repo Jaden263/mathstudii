@@ -16,7 +16,7 @@ import { cleanPolygon, meshPlate, type MeshFeatures, type PlateMesh } from './me
 import { combineFields, lineReactions, PlateError, solvePlate, type NumPlate, type NumPlateLoad, type NumPlateSupport, type PlateFields, type PlateSolution } from './solve';
 import { minimumSteel, principal, rebarProps, steelArea, surfaceStress, woodArmer, type RebarProps } from './design';
 import { PlateSampler } from './sample';
-import { edgeName, type PlateLoad } from './model';
+import { edgeName } from './model';
 import type { Pt } from './cdt';
 
 type Eval = (src: string) => unknown;
@@ -106,6 +106,8 @@ export interface PlateResult {
   design?: { dx: number; dy: number; asMinX: number; asMinY: number; over: number };
   unknowns?: number;
   millis?: number;
+  /** Element size used (m): the one asked or the automatic one, at most a quarter of the plate's narrower side. */
+  size?: number;
   /** The solution came from the cache (nothing about the plate changed). */
   cached?: boolean;
   /** Item id ('t', 'material', 'mesh', a load, wall, column, 'edge:i') → its problem. */
@@ -126,6 +128,21 @@ export function plateMaterial(name: string): { E: number; nu: number; rho: numbe
   if (STEEL_GRADES.some((g) => key.startsWith(g))) return { E: 210e9, nu: POISSON.steel, rho: 7850, steel: true };
   if (/^C\d/.test(key) && !TIMBER_GRADES.some((g) => g.toUpperCase() === key)) return { E: concreteGrade(name).E_cm * 1e9, nu: POISSON.concrete, rho: 25e3 / GRAVITY, steel: false };
   throw new Error(`Plates are isotropic: choose a concrete class (C30/37 …), a steel grade (S355 …) or your own E and ν (not "${name}")`);
+}
+
+/** The first two edges of a polygon that cross (not neighbours), or null. */
+function selfCrossing(p: Pt[]): [number, number] | null {
+  const n = p.length;
+  const orient = (a: Pt, b: Pt, c: Pt) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const a = p[i], b = p[(i + 1) % n], c = p[j], d = p[(j + 1) % n];
+      const o1 = orient(a, b, c), o2 = orient(a, b, d), o3 = orient(c, d, a), o4 = orient(c, d, b);
+      if (o1 * o2 < 0 && o3 * o4 < 0) return [i, j];
+    }
+  }
+  return null;
 }
 
 /** A round element size near A/1200 elements: 1, 2, 2.5, 5 × 10ⁿ. */
@@ -169,6 +186,8 @@ export function solvePlateRegion(r: PlateRegion, evalExpr: Eval): PlateResult {
   try {
     res.outline = r.outline.map((p, i) => point(p, `Corner ${i + 1}`));
     if (res.outline.length < 3) throw new Error('The outline needs at least three corners');
+    const crossing = selfCrossing(res.outline);
+    if (crossing) throw new Error(`The outline crosses itself (edges ${edgeName(crossing[0])} and ${edgeName(crossing[1])}): give the corners in order round it`);
     if (cleanPolygon(res.outline).length < 3) throw new Error('The outline has no area');
   } catch (e) {
     fail('outline', e);
@@ -177,6 +196,7 @@ export function solvePlateRegion(r: PlateRegion, evalExpr: Eval): PlateResult {
     try {
       const pts = o.points.map((p, i) => point(p, `${o.name} corner ${i + 1}`));
       if (pts.length < 3) throw new Error('An opening needs at least three corners');
+      if (selfCrossing(pts)) throw new Error('The opening crosses itself: give its corners in order round it');
       res.openings.push({ id: o.id, points: pts });
     } catch (e) {
       fail(o.id, e);
@@ -355,6 +375,11 @@ export function solvePlateRegion(r: PlateRegion, evalExpr: Eval): PlateResult {
     const A = Math.abs(cleanPolygon(res.outline).reduce((s, p, i, arr) => s + p[0] * arr[(i + 1) % arr.length][1] - arr[(i + 1) % arr.length][0] * p[1], 0) / 2);
     size = r.mesh?.trim() ? length(r.mesh, 'Element size') : autoSize(A);
     if (!(size > 0)) throw new Error('The element size must be positive');
+    // at least four elements across the plate's narrower side
+    const xs = res.outline.map((q) => q[0]), ys = res.outline.map((q) => q[1]);
+    const cap = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 4;
+    if (size > cap) size = cap;
+    res.size = size;
   } catch (e) {
     fail('mesh', e);
     res.error = (e as Error).message;
@@ -525,9 +550,8 @@ export function slimPlate(res: PlateResult): PlateResult {
     return out;
   };
   const slim = (list?: PlateCase[]) => list?.map(({ id, name, kind, error }) => ({ id, name, kind, error }));
+  // (the solution and the reinforcement data stay on the worker side)
   const { solution: _s, rebar: _r, ...rest } = res;
-  void _s;
-  void _r;
   return {
     ...rest, cases: slim(res.cases), combos: slim(res.combos), fields: f32(res.fields), lower: f32(res.lower),
     mesh: res.mesh && { ...res.mesh, tangent: undefined, chord: undefined },
@@ -705,4 +729,3 @@ function caseReactions(res: PlateResult, f: PlateFields): PlateReaction[] {
   });
 }
 
-export type { PlateLoad };
