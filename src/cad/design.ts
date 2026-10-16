@@ -20,8 +20,10 @@ import type { EdgeOptions, ThinOptions } from './shaping';
 import { meshOps } from './meshOps';
 import { meshTopology } from './meshTopology';
 import {
-  anchorPoint, faceAnchor, faceFrame, faceWords, keyFeature, refTo, resolveRef, resolvedEntity, type BodyTopology, type FaceAnchor, type TopoRef,
+  anchorPoint, edgeWords, faceAnchor, faceFrame, faceWords, keyFeature, refTo, refToken, refWords, resolveRef, resolvedEntity,
+  type BodyTopology, type FaceAnchor, type TopoRef,
 } from './topology';
+import { chamferFace, chamferLimit, filletLimit, needsBrep, sizeWords } from './modify';
 import type { FaceInfo } from './buildResult';
 import { snapPlace, type SnapOrigin } from './snaps';
 
@@ -172,7 +174,98 @@ export interface CombineFeature extends FeatureBase {
   keepTools?: boolean;
 }
 
-export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature;
+// ------------------------------------------------------------ modify features
+//
+// Fillet, chamfer, shell, draft and press-pull work on faces and edges picked on the
+// bodies built before them. They store references (topology.ts), so a base made longer
+// keeps its rounded edge rounded.
+
+/** A plane: an origin plane or a sketch's plane (as a mirror's `plane`), or a flat face picked on a body. */
+export type PlanePick = string | TopoRef;
+/** An axis: an origin axis or a sketch line (AxisRef), or a straight edge, circle or round face picked on a body. */
+export type AxisPick = AxisRef | TopoRef;
+
+/** Edges rounded with one radius, or with one that goes linearly from `r` to `r2` along the chain. */
+export interface FilletSet {
+  edges: TopoRef[];
+  r: string;
+  /** Radius at the end of the chain (variable radius); empty = constant. */
+  r2?: string;
+}
+
+export interface FilletFeature extends FeatureBase {
+  kind: 'fillet';
+  sets: FilletSet[];
+  /** Round along the edges tangent to the picked ones (the default); false = only the picked edges. */
+  chain?: boolean;
+}
+
+export interface ChamferFeature extends FeatureBase {
+  kind: 'chamfer';
+  edges: TopoRef[];
+  /** Equal distances, two distances (d on one face, d2 on the other) or a distance and an angle. */
+  type: 'equal' | 'two' | 'angle';
+  d: string;
+  d2?: string;
+  angle?: string;
+  /** Measure d (and the angle) on the other face of each edge. */
+  flip?: boolean;
+  chain?: boolean;
+}
+
+export interface ShellFeature extends FeatureBase {
+  kind: 'shell';
+  /** Faces to remove (the openings); none = `body` is hollowed out. */
+  faces: TopoRef[];
+  body?: string;
+  t: string;
+  side: 'inside' | 'outside';
+}
+
+export interface DraftFeature extends FeatureBase {
+  kind: 'draft';
+  faces: TopoRef[];
+  /** Neutral plane: the faces turn about where they meet it. */
+  plane: PlanePick;
+  /** Pull direction; missing = the neutral plane's normal. */
+  pull?: AxisPick;
+  angle: string;
+  /** Pull the other way. */
+  flip?: boolean;
+}
+
+/** Press-pull: planar faces moved along their normal, cylinders grown or shrunk. */
+export interface PressPullFeature extends FeatureBase {
+  kind: 'presspull';
+  faces: TopoRef[];
+  /** Out of the material (adds) or, negative, into it (removes). */
+  d: string;
+}
+
+export interface SplitFeature extends FeatureBase {
+  kind: 'split';
+  body: string;
+  plane: PlanePick;
+  /** Offset of the plane along its normal. */
+  offset?: string;
+}
+
+/** Move or copy bodies: turned about an axis, then moved by (dx, dy, dz). */
+export interface MoveFeature extends FeatureBase {
+  kind: 'move';
+  bodies: string[];
+  dx?: string;
+  dy?: string;
+  dz?: string;
+  axis?: AxisPick;
+  angle?: string;
+  /** Move a copy and keep the original. */
+  copy?: boolean;
+}
+
+export type ModifyFeature = FilletFeature | ChamferFeature | ShellFeature | DraftFeature | PressPullFeature | SplitFeature | MoveFeature;
+
+export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -238,7 +331,12 @@ export interface CadDesign {
 export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch';
 export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
   sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine', loft: 'Loft',
+  fillet: 'Fillet', chamfer: 'Chamfer', shell: 'Shell', draft: 'Draft', presspull: 'Press pull', split: 'Split', move: 'Move',
 };
+
+/** Features that work on what is picked on the bodies: they are edited with the timeline rolled back to them. */
+export const MODIFY_KINDS = new Set<DesignItem['kind']>(['fillet', 'chamfer', 'shell', 'draft', 'presspull', 'split', 'move']);
+export const isModify = (i: DesignItem): i is ModifyFeature => MODIFY_KINDS.has(i.kind);
 
 /** Profiles are identified by the entities of their outer loop. */
 export function profileKey(r: ProfileRegion): string {
@@ -320,6 +418,8 @@ export interface DesignNumbers {
   params: Record<string, Record<string, number>>;
   /** Item / joint / occurrence id → why it failed. */
   errors: Record<string, string>;
+  /** The part's unit, for sizes in messages ("radius 12 mm is too large …"). */
+  unit?: string;
 }
 
 /** Plane of a sketch before its offset. */
@@ -474,6 +574,39 @@ export interface LoftEnd {
 }
 
 /**
+ * An edge or face a modify operation works on: its index in the body's topology, and the
+ * name the faces made from it carry (a rounding `f5/round:${name}`; refToken of the
+ * reference, so the UI finds the pick again from what it made).
+ */
+export interface ModifyPick {
+  index: number;
+  name: string;
+  /** Chamfers with two distances or an angle: the face (index) the first distance is measured on. */
+  face?: number;
+}
+
+/** A fillet set as the kernel takes it: radius r, or linearly r → r2 from the start of the chain to its end. */
+export interface FilletPicks {
+  picks: ModifyPick[];
+  r: number;
+  r2?: number;
+}
+
+export interface ChamferOptions {
+  type: 'equal' | 'two' | 'angle';
+  d: number;
+  d2?: number;
+  /** Radians, measured from the face the distance is on. */
+  angle?: number;
+}
+
+/** A plane in component coordinates: a point on it and its unit normal. */
+export interface PlaneAt {
+  o: Vec3;
+  n: Vec3;
+}
+
+/**
  * What a solid kernel does for the timeline. S is the kernel's solid; `tag` is the id of
  * the feature (or feature copy) making it, which a kernel may use to name faces.
  */
@@ -501,6 +634,17 @@ export interface SolidOps<S> {
   box(solids: S[]): { min: Vec3; max: Vec3 } | null;
   /** The faces, edges and vertices of a body with their persistent names (topology.ts). */
   topology(s: S, id: string): BodyTopology;
+  /** Round edges (indices in the body's topology); `chain`: along the edges tangent to them too. */
+  fillet(s: S, sets: FilletPicks[], chain: boolean, tag: string): S;
+  chamfer(s: S, picks: ModifyPick[], o: ChamferOptions, chain: boolean, tag: string): S;
+  /** Walls of thickness t inside (or outside) the faces with the picked faces open; none picked: a closed void. */
+  shell(s: S, faces: number[], t: number, outside: boolean, tag: string): S;
+  /** Faces tilted by `angle` about where they meet the neutral plane; angle > 0 removes matter on the pull side. */
+  draft(s: S, faces: number[], pull: Vec3, angle: number, plane: PlaneAt, tag: string): S;
+  /** Flat faces moved d along their normals, cylinders grown by d (d < 0: into the material). */
+  pressPull(s: S, faces: number[], d: number, tag: string): S;
+  /** The pieces on either side of a plane, those behind it first. */
+  split(s: S, plane: PlaneAt, tag: string): S[];
 }
 
 export interface TimelineBody<S> {
@@ -647,6 +791,158 @@ function sketchOnFace<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
   return { ...prev, frames, warnings };
 }
 
+// ------------------------------------------------------------ modify features
+
+/** What a modify feature picked, found again on the bodies of the step it runs at. */
+interface Found {
+  topo: BodyTopology;
+  picks: { ref: TopoRef; index: number; set: number }[];
+}
+
+/**
+ * The faces or edges a modify feature picked, found again by their references
+ * (topology.ts) on the bodies built before it, by body. Picks that are gone are reported:
+ * an error when none is left, else a warning (the feature goes on with the others).
+ */
+function findPicks<S>(ops: SolidOps<S>, design: CadDesign, bodies: TimelineBody<S>[], refs: { ref: TopoRef; set: number }[], goesOn: string, warn: (w: string) => void): Map<string, Found> {
+  const topo = bodies.map((b) => ops.topology(b.solid, b.id));
+  const on = new Map<string, Found>();
+  const lost: TopoRef[] = [];
+  for (const r of refs) {
+    const res = resolveRef(r.ref, topo);
+    if (!res.ok) {
+      lost.push(r.ref);
+      continue;
+    }
+    const g = on.get(res.body) ?? { topo: topo.find((b) => b.id === res.body)!, picks: [] };
+    // two picks that found the same entity (an edge a cut merged with another) count once
+    if (!g.picks.some((q) => q.index === res.index)) g.picks.push({ ...r, index: res.index });
+    on.set(res.body, g);
+  }
+  if (lost.length) {
+    const words = `${refWords(lost[0], (id) => itemName(design, id))}${lost.length > 1 ? ` and ${lost.length - 1} more` : ''} ${lost.length > 1 ? 'are' : 'is'} gone`;
+    if (!on.size) throw new Error(`reference lost: ${words}`);
+    warn(`reference lost: ${words}; ${goesOn}`);
+  }
+  return on;
+}
+
+/** A body's topology entity a reference names, on the bodies as built now (null when lost). */
+function pickedEntity<S, K extends 'face' | 'edge'>(ops: SolidOps<S>, bodies: TimelineBody<S>[], ref: TopoRef, kind: K) {
+  const topo = bodies.map((b) => ops.topology(b.solid, b.id));
+  return { entity: resolvedEntity(topo, kind, resolveRef(ref, topo)), mesh: topo.some((b) => b.named === false) };
+}
+
+const lostPick = (design: CadDesign, ref: TopoRef, what: string, mesh: boolean) => new Error(mesh
+  ? `the mesh kernel cannot follow ${refWords(ref, (id) => itemName(design, id))} (the ${what}) until OpenCascade has loaded`
+  : `reference lost: ${refWords(ref, (id) => itemName(design, id))}, the ${what}, is gone`);
+
+/** A plane a feature picked (origin plane, sketch plane or flat face), in component coordinates. */
+function planeAt<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, pick: PlanePick, what: string): PlaneAt {
+  if (typeof pick === 'string') {
+    const f = pick in ORIGIN_FRAMES ? ORIGIN_FRAMES[pick as PlaneRef] : frameIn(inp, pick, built);
+    return { o: f.o, n: f.n };
+  }
+  const { entity: face, mesh } = pickedEntity(ops, bodies, pick, 'face');
+  if (!face) throw lostPick(design, pick, what, mesh);
+  if (!face.frame) throw new Error(`the ${what} must be a flat face`);
+  return { o: face.frame.o, n: norm3(face.frame.n) };
+}
+
+/** An axis a feature picked (origin axis, sketch line, straight edge, circle or round face), in component coordinates. */
+function axisAt<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, pick: AxisPick): { p: Vec3; d: Vec3 } {
+  if (typeof pick === 'string') return axisOf(design, inp, pick, built);
+  const kind = pick.kind === 'face' ? 'face' : 'edge';
+  const { entity: e, mesh } = pickedEntity(ops, bodies, pick, kind);
+  if (!e) throw lostPick(design, pick, 'axis', mesh);
+  if ('area' in e) {
+    if (e.axis && e.type !== 'sphere') return { p: e.axis.p, d: norm3(e.axis.d) };
+    if (e.frame) return { p: e.frame.o, d: norm3(e.frame.n) };
+  } else {
+    if (e.line) return { p: e.line.a, d: norm3(sub3(e.line.b, e.line.a)) };
+    if (e.circle) return { p: e.circle.c, d: norm3(e.circle.axis) };
+  }
+  throw new Error('the axis must be a straight edge, a circle, a cylinder or a flat face');
+}
+
+/**
+ * Fillet, chamfer, shell, draft and press-pull: what they picked found on the bodies, and
+ * each body they are on made anew by the kernel. A rounding that does not fit says which
+ * edge and about how large it may be.
+ */
+function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, item: FilletFeature | ChamferFeature | ShellFeature | DraftFeature | PressPullFeature, p: Record<string, number>, warn: (w: string) => void): [TimelineBody<S>, S][] {
+  const unit = inp.numbers.unit;
+  const named = (id: string) => itemName(design, id);
+  const topo = bodies.map((b) => ops.topology(b.solid, b.id));
+  if (topo.some((b) => b.named === false)) throw new Error(needsBrep(item.kind));
+  const bodyOf = (id: string) => bodies.find((b) => b.id === id)!;
+  const out: [TimelineBody<S>, S][] = [];
+  if (item.kind === 'shell' && !item.faces.length) {
+    const b = bodies.find((q) => q.id === item.body);
+    if (!b) throw new Error(item.body ? 'the body to hollow no longer exists' : 'pick the faces to open (or a body to hollow out)');
+    return [[b, shellOf(ops, b.solid, [], p.t, item, unit)]];
+  }
+  const refs = item.kind === 'fillet' ? item.sets.flatMap((s, set) => s.edges.map((ref) => ({ ref, set }))) : (item.kind === 'chamfer' ? item.edges : item.faces).map((ref) => ({ ref, set: 0 }));
+  const what = item.kind === 'fillet' || item.kind === 'chamfer' ? 'edges' : 'faces';
+  if (!refs.length) throw new Error(`pick the ${what} to ${item.kind === 'fillet' ? 'round' : item.kind === 'chamfer' ? 'chamfer' : item.kind === 'shell' ? 'open' : item.kind === 'draft' ? 'draft' : 'move'}`);
+  const on = findPicks(ops, design, bodies, refs, `the other ${what} are still ${item.kind === 'fillet' ? 'rounded' : item.kind === 'chamfer' ? 'chamfered' : 'used'}`, warn);
+  const plane = item.kind === 'draft' ? planeAt(ops, design, inp, bodies, built, item.plane, 'neutral plane') : null;
+  let pull = item.kind === 'draft' ? (item.pull ? axisAt(ops, design, inp, bodies, built, item.pull).d : plane!.n) : null;
+  if (item.kind === 'draft' && item.flip) pull = scale3(pull!, -1);
+  for (const [id, g] of on) {
+    const b = bodyOf(id);
+    const pick = (q: Found['picks'][number]): ModifyPick => ({ index: q.index, name: refToken(q.ref) });
+    if (item.kind === 'fillet') {
+      const sets = item.sets.map((_, i) => ({ r: p[`r${i}`], r2: p[`re${i}`], picks: g.picks.filter((q) => q.set === i).map(pick) })).filter((s) => s.picks.length);
+      try {
+        out.push([b, ops.fillet(b.solid, sets, item.chain !== false, item.id)]);
+      } catch (e) {
+        if (!/does not fit/.test(msg(e))) throw e;
+        // the edge whose faces are too narrow for its radius, and about what fits
+        for (const s of sets) for (const q of s.picks) {
+          const lim = filletLimit(g.topo, q.index), r = Math.max(s.r, s.r2 ?? 0);
+          if (lim !== null && r >= lim * (1 - 1e-6)) {
+            throw new Error(`radius ${sizeWords(r, unit)} is too large for ${edgeWords(g.topo.edges[q.index].key, named)} (max ≈ ${sizeWords(lim, unit)})`);
+          }
+        }
+        throw new Error(`the fillet does not fit: ${sets.length > 1 || sets[0].picks.length > 1 ? 'the roundings meet each other or the faces are too narrow' : 'the faces at the edge are too narrow'} — try a smaller radius`);
+      }
+    } else if (item.kind === 'chamfer') {
+      const picks = g.picks.map((q) => ({ ...pick(q), face: chamferFace(g.topo, q.index, item.flip) }));
+      const o: ChamferOptions = { type: item.type, d: p.d, d2: p.d2, angle: p.angle };
+      try {
+        out.push([b, ops.chamfer(b.solid, picks, o, item.chain !== false, item.id)]);
+      } catch (e) {
+        if (!/does not fit/.test(msg(e))) throw e;
+        const other = item.type === 'two' ? p.d2 : item.type === 'angle' ? p.d * Math.tan(p.angle) : p.d;
+        for (const q of picks) {
+          const lim = chamferLimit(g.topo, q.index, q.face);
+          if (!lim) continue;
+          const [d, max] = p.d >= lim.own * (1 - 1e-6) ? [p.d, lim.own] : other >= lim.other * (1 - 1e-6) ? [other, lim.other] : [0, 0];
+          if (d) throw new Error(`${item.type === 'equal' ? 'distance' : 'a chamfer distance of'} ${sizeWords(d, unit)} is too large for ${edgeWords(g.topo.edges[q.index].key, named)} (max ≈ ${sizeWords(max, unit)})`);
+        }
+        throw new Error('the chamfer does not fit: the faces at the edges are too narrow — try a smaller distance');
+      }
+    } else if (item.kind === 'shell') {
+      out.push([b, shellOf(ops, b.solid, g.picks.map((q) => q.index), p.t, item, unit)]);
+    } else if (item.kind === 'draft') {
+      out.push([b, ops.draft(b.solid, g.picks.map((q) => q.index), pull!, p.angle, plane!, item.id)]);
+    } else {
+      out.push([b, ops.pressPull(b.solid, g.picks.map((q) => q.index), p.d, item.id)]);
+    }
+  }
+  return out;
+}
+
+function shellOf<S>(ops: SolidOps<S>, s: S, faces: number[], t: number, item: ShellFeature, unit?: string): S {
+  try {
+    return ops.shell(s, faces, t, item.side === 'outside', item.id);
+  } catch (e) {
+    if (!/does not fit/.test(msg(e))) throw e;
+    throw new Error(`a wall of ${sizeWords(t, unit)} does not fit this body — try a thinner one`);
+  }
+}
+
 /**
  * Run one item of a component's timeline with a solid kernel: the meaning of every
  * feature (extents, automatic cut sides, targets, patterns, booleans) lives here, so the
@@ -662,6 +958,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
   const bodies = prev.bodies.map((b) => ({ ...b }));
   const tools = new Map(prev.tools);
   const errors = { ...prev.errors };
+  const warnings = { ...prev.warnings };
   const made = [...prev.made];
   const built = prev.frames;
   const frameOf = (sketchId: string) => frameIn(inp, sketchId, built);
@@ -801,11 +1098,48 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         if (!item.keepTools) for (const b of ts) bodies.splice(bodies.indexOf(b), 1);
         break;
       }
+      case 'fillet':
+      case 'chamfer':
+      case 'shell':
+      case 'draft':
+      case 'presspull': {
+        // every body changes or none does
+        const next = modifyBodies(ops, design, inp, bodies, built, item, p, (w) => (warnings[item.id] = w));
+        for (const [b, solid] of next) b.solid = solid;
+        break;
+      }
+      case 'split': {
+        const b = bodies.find((q) => q.id === item.body);
+        if (!b) throw new Error(item.body ? 'the body to split no longer exists' : 'pick the body to split');
+        const pl = planeAt(ops, design, inp, bodies, built, item.plane, 'splitting plane');
+        const pieces = ops.split(b.solid, { o: add3(pl.o, scale3(pl.n, p.offset ?? 0)), n: pl.n }, item.id);
+        if (pieces.length < 2) throw new Error('the plane does not cross the body');
+        // the piece behind the plane stays the body; the others are new bodies after it
+        b.solid = pieces[0];
+        pieces.slice(1).forEach((solid, k) => created(`${item.id}.${k + 1}.${b.id}`, item.id, solid));
+        break;
+      }
+      case 'move': {
+        if (!item.bodies.length) throw new Error('pick the bodies to move');
+        let M = m4Translate([p.dx ?? 0, p.dy ?? 0, p.dz ?? 0]);
+        if (item.axis && p.angle) {
+          const a = axisAt(ops, design, inp, bodies, built, item.axis);
+          M = m4Mul(M, m4Rotate(a.p, a.d, p.angle));
+        }
+        const moving = item.bodies.map((id) => bodies.find((q) => q.id === id));
+        if (moving.some((b) => !b)) throw new Error('a body to move no longer exists');
+        for (const b of moving as TimelineBody<S>[]) {
+          // a moved body keeps the names of its faces; a copy's carry a prefix, as a pattern's do
+          if (item.copy) created(`${item.id}.1.${b.id}`, item.id, ops.transform(b.solid, M, `${item.id}.1.`));
+          else b.solid = ops.transform(b.solid, M, '');
+        }
+        break;
+      }
     }
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { ...prev, bodies, tools, errors, made };
+  return { ...prev, bodies, tools, errors, warnings, made };
 }
 
 /**

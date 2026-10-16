@@ -9,6 +9,7 @@ import {
 } from './solid';
 import { loftSolid, shapedExtrude, thinExtrude } from './shaping';
 import { meshTopology } from './meshTopology';
+import { needsBrep } from './modify';
 
 export interface MeshSolid {
   m: Manifold;
@@ -41,5 +42,19 @@ export function meshOps(K: ManifoldToplevel, arena: Arena): SolidOps<MeshSolid> 
     shared: (a, b) => sharedVolume(a.m, b.m),
     box: (ss) => boxOf(ss.map((s) => s.m)),
     topology: (s, id) => meshTopology(s.m, id),
+    // the mesh has no faces or edges of its own to round or move (timelineStep says so first)
+    fillet: () => { throw new Error(needsBrep('fillet')); },
+    chamfer: () => { throw new Error(needsBrep('chamfer')); },
+    shell: () => { throw new Error(needsBrep('shell')); },
+    draft: () => { throw new Error(needsBrep('draft')); },
+    pressPull: () => { throw new Error(needsBrep('presspull')); },
+    split(s, pl) {
+      const [front, back] = s.m.splitByPlane(pl.n, pl.o[0] * pl.n[0] + pl.o[1] * pl.n[1] + pl.o[2] * pl.n[2]);
+      arena.add(front);
+      arena.add(back);
+      // each connected piece is a body of its own
+      const pieces = (m: Manifold) => (m.isEmpty() ? [] : m.decompose().map((q) => ({ m: arena.add(q) })));
+      return [...pieces(back), ...pieces(front)];
+    },
   };
 }

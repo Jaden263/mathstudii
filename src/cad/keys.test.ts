@@ -126,5 +126,18 @@ describe('timeline step keys', () => {
     expect(sketchesOf({ kind: 'mirror', id: 'm', name: 'M', of: 'bodies', refs: [], plane: 's2' })).toEqual(['s2']);
     expect(sketchesOf({ kind: 'pattern', id: 'p', name: 'P', of: 'features', refs: [], type: 'rect', axis: 's1/l0', axis2: 'Z', count: '2', spacing: '5' })).toEqual(['s1']);
     expect(sketchesOf(sketch('s1'))).toEqual([]);
+    // modify features: a sketch's plane or line, not an origin plane or a picked face
+    const face = { kind: 'face' as const, body: 'f1', key: 'f1/end', hint: { p: [0, 0, 0] as [number, number, number], type: 'plane' as const } };
+    expect(sketchesOf({ kind: 'split', id: 'q', name: 'Q', body: 'f1', plane: 's2' })).toEqual(['s2']);
+    expect(sketchesOf({ kind: 'split', id: 'q', name: 'Q', body: 'f1', plane: face })).toEqual([]);
+    expect(sketchesOf({ kind: 'draft', id: 'd', name: 'D', faces: [face], plane: 'XY', pull: 's1/l0', angle: '3' })).toEqual(['s1']);
+    expect(sketchesOf({ kind: 'move', id: 'm', name: 'M', bodies: ['f1'], axis: 's2/l0', angle: '90' })).toEqual(['s2']);
+    expect(sketchesOf({ kind: 'fillet', id: 'r', name: 'R', sets: [{ edges: [], r: '2' }] })).toEqual([]);
+  });
+
+  it('a step key changes with the part unit (its messages say sizes in it)', () => {
+    const find = (id: string) => (id === 's1' ? sketch('s1') : undefined);
+    const f = extrude('f1', 's1');
+    expect(stepKey('root', f, { ...numbers(), unit: 'cm' }, find)).not.toBe(stepKey('root', f, { ...numbers(), unit: 'mm' }, find));
   });
 });

@@ -19,6 +19,7 @@
 // (renamed, not moved), else it is lost.
 import type { CurveKind, EdgeInfo, FaceInfo, SurfaceKind, VertexInfo } from './buildResult';
 import { add3, cross3, dot3, frameFromNormal, len3, norm3, scale3, sub3, type Frame, type Vec3 } from './solid';
+import { hashString } from './keys';
 
 export type TopoKind = 'face' | 'edge' | 'vertex';
 
@@ -340,6 +341,36 @@ export function faceWords(key: string, featureName: (id: string) => string | und
   const hole = /^hole(\d+):(\w+)/.exec(role);
   const what = role === 'start' ? 'start face' : role === 'end' ? 'end face' : role.startsWith('side') ? 'side face'
     : role.startsWith('round') ? 'rounding' : role.startsWith('chamfer') ? 'chamfer'
-      : hole ? `${hole[2] === 'wall' ? 'wall' : hole[2] === 'bottom' ? 'bottom' : 'face'} of hole ${+hole[1] + 1}` : 'face';
+      : role.startsWith('in:') ? 'inner wall' : role.startsWith('out:') ? 'outer wall' : role === 'split' ? 'cut face'
+        : hole ? `${hole[2] === 'wall' ? 'wall' : hole[2] === 'bottom' ? 'bottom' : 'face'} of hole ${+hole[1] + 1}` : 'face';
   return `the ${what} of ${feature}${copy}`;
 }
+
+/** Words for an edge from its name: "the edge between the end face and the side face of Extrude1". */
+export function edgeWords(key: string, featureName: (id: string) => string | undefined): string {
+  const [a, b] = baseName(key).split('|');
+  if (!a || !b) return 'an edge';
+  const wa = faceWords(a, featureName), wb = faceWords(b, featureName);
+  // two faces of the same feature: say it once
+  const of = (w: string) => w.slice(w.indexOf(' of ') + 4);
+  if (a !== b && of(wa) === of(wb) && !wa.includes('(')) return `the edge between ${wa.slice(0, wa.indexOf(' of '))} and ${wb.slice(0, wb.indexOf(' of '))} of ${of(wa)}`;
+  return a === b ? `an edge of ${wa}` : `the edge between ${wa} and ${wb}`;
+}
+
+/** Words for what a reference names. */
+export function refWords(ref: TopoRef, featureName: (id: string) => string | undefined): string {
+  if (!ref.key) return ref.kind === 'face' ? 'a face' : ref.kind === 'edge' ? 'an edge' : 'a vertex';
+  return ref.kind === 'face' ? faceWords(ref.key, featureName) : ref.kind === 'edge' ? edgeWords(ref.key, featureName) : 'a corner';
+}
+
+/**
+ * A short, stable name for a picked entity (from its reference), for the faces an operation
+ * makes from it: a rounding is `f5/round:${token}`, so the pick is found again from it. Its
+ * own name would do, but names hold the separators of names (`a|b`, `a+b`).
+ */
+export function refToken(ref: TopoRef): string {
+  return nameToken(ref.key || ref.hint.p.map((v) => v.toPrecision(9)).join(','));
+}
+
+/** A name as a short token of hex digits (for names inside names). */
+export const nameToken = (name: string) => hashString(name).slice(-6);

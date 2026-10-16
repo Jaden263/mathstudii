@@ -10,6 +10,7 @@ import {
   ArrowUpFromLine, RotateCw, ChevronRight, ChevronDown, ListTree, PanelRight, CircleDot, Grid3x3, FlipHorizontal2, Combine,
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
   Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash, FileBox,
+  Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -166,6 +167,8 @@ const mapComp = (d: CadDesign, cid: string, fn: (c: CadComponent) => CadComponen
 const ICON: Record<DesignItem['kind'], ReactNode> = {
   sketch: <PenTool size={14} />, extrude: <ArrowUpFromLine size={14} />, revolve: <RotateCw size={14} />, hole: <CircleDot size={14} />,
   pattern: <Grid3x3 size={14} />, mirror: <FlipHorizontal2 size={14} />, combine: <Combine size={14} />, loft: <Cone size={14} />,
+  fillet: <Radius size={14} />, chamfer: <Octagon size={14} />, shell: <PackageOpen size={14} />, draft: <Pyramid size={14} />,
+  presspull: <ArrowUpDown size={14} />, split: <Slice size={14} />, move: <Move size={14} />,
 };
 
 /** Where a sketch is: "the XY plane", "the end face of Extrude1", "face of Body1" (made before sketches followed faces). */

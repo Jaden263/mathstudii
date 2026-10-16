@@ -212,6 +212,43 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
             }
             break;
           }
+          case 'fillet': {
+            item.sets.forEach((st, i) => {
+              p[`r${i}`] = positive(value(st.r, '2', 'L', 'radius'), 'radius');
+              if (st.r2?.trim()) p[`re${i}`] = positive(value(st.r2, '2', 'L', 'end radius'), 'end radius');
+            });
+            break;
+          }
+          case 'chamfer': {
+            p.d = positive(value(item.d, '1', 'L', 'distance'), 'distance');
+            if (item.type === 'two') p.d2 = positive(value(item.d2, item.d, 'L', 'second distance'), 'second distance');
+            if (item.type === 'angle') {
+              p.angle = value(item.angle, '45', 'A', 'angle');
+              if (!(p.angle > 0 && p.angle < Math.PI / 2)) throw new Error('the chamfer angle must be between 0 and 90°');
+            }
+            break;
+          }
+          case 'shell':
+            p.t = positive(value(item.t, '2', 'L', 'wall thickness'), 'wall thickness');
+            break;
+          case 'draft': {
+            p.angle = value(item.angle, '3', 'A', 'draft angle');
+            if (!(Math.abs(p.angle) < Math.PI / 2) || !p.angle) throw new Error('the draft angle must be between −90° and 90°, and not 0');
+            break;
+          }
+          case 'presspull': {
+            p.d = value(item.d, '5', 'L', 'distance');
+            if (!p.d) throw new Error('the distance must not be 0');
+            break;
+          }
+          case 'split':
+            p.offset = item.offset?.trim() ? value(item.offset, '0', 'L', 'plane offset') : 0;
+            break;
+          case 'move': {
+            for (const k of ['dx', 'dy', 'dz'] as const) p[k] = item[k]?.trim() ? value(item[k], '0', 'L', k) : 0;
+            p.angle = item.angle?.trim() ? value(item.angle, '0', 'A', 'angle') : 0;
+            break;
+          }
           case 'pattern': {
             p.count = value(item.count, '3', 'N', 'count');
             p.spacing = item.type === 'circ' ? value(item.spacing, '360', 'A', 'total angle') : value(item.spacing, '10', 'L', 'spacing');
@@ -237,7 +274,7 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
       errors[j.id] = msg(e);
     }
   }
-  return { sketches, frames, params, errors };
+  return { sketches, frames, params, errors, unit };
 }
 
 const emptyResult = (): CadResult => ({

@@ -8,13 +8,14 @@
 // them all. The persistent names of faces, edges and vertices are made from the tags
 // (occ/topology.ts).
 import type { NCollection_List_TopoDS_Shape, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire } from 'replicad-opencascadejs';
-import type { HoleOptions, SolidOps } from '../design';
+import type { HoleOptions, ModifyPick, SolidOps } from '../design';
 import type { ProfileRegion } from '../profile';
 import type { EdgeOptions } from '../shaping';
-import { Arena, frameDir, frameFromNormal, framePoint, m4Point, m4Rotate, revolveSide, type Frame, type Vec3 } from '../solid';
+import { Arena, add3, cross3, dot3, frameDir, frameFromNormal, framePoint, m4Point, m4Rotate, revolveSide, sub3, type Frame, type Vec3 } from '../solid';
+import { faceName, nameToken } from '../topology';
 import { alignLoop, loopWire, regionFace, reversedLoop, wireFaces, type ProfileFace, type TaggedEdge } from './geometry';
-import { ShapeIndex, ax1, compound, guard, hasSolid, listShapes, occError, pnt, scratch, shapeIndex, subShapes, trsf, vec, xyz, type OC } from './kernel';
-import { topologyOcc } from './topology';
+import { ShapeIndex, ax1, compound, dir, guard, hasSolid, listShapes, occBox, occError, pnt, scratch, shapeIndex, subShapes, trsf, vec, xyz, type OC } from './kernel';
+import { faceInfo, topologyOcc } from './topology';
 
 export interface FaceTag {
   face: TopoDS_Shape;
@@ -28,6 +29,23 @@ export interface OccSolid {
   shape: TopoDS_Shape;
   tags: FaceTag[];
 }
+
+/** What fillets and chamfers have in common: chains of edges built from a picked one. */
+type RoundingBuilder = {
+  Contour(E: TopoDS_Edge): number;
+  NbEdges(I: number): number;
+  Edge(I: number, J: number): TopoDS_Edge;
+  FirstVertex(IC: number): TopoDS_Shape;
+  LastVertex(IC: number): TopoDS_Shape;
+  Remove(E: TopoDS_Edge): void;
+  Build(r: unknown): void;
+  IsDone(): boolean;
+  Shape(): TopoDS_Shape;
+  Generated(S: TopoDS_Shape): NCollection_List_TopoDS_Shape;
+  Modified(S: TopoDS_Shape): NCollection_List_TopoDS_Shape;
+  IsDeleted(S: TopoDS_Shape): boolean;
+  delete(): void;
+};
 
 /** What OCCT builders tell about the fate of their input shapes. */
 interface History {
@@ -299,6 +317,145 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     });
   };
 
+  // ---------------------------------------------------------- modify features
+
+  /** The tags of one face of a solid. */
+  const faceTags = (s: OccSolid, face: TopoDS_Shape) => s.tags.filter((g) => g.face.IsSame(face));
+  /** A short name for a face from its history keys (shell walls are named after the face they offset). */
+  const faceToken = (s: OccSolid, face: TopoDS_Shape) => nameToken(faceName(faceTags(s, face).map((g) => g.key)));
+
+  /** A solid that passes OCCT's checks (a rounding too large for its faces can "succeed" with a broken one). */
+  const sound = (t: Arena, shape: TopoDS_Shape, what: string) => {
+    if (!hasSolid(oc, shape) || !(shapeVolume(oc, shape) > 0)) throw new Error(what);
+    if (!t.add(new oc.BRepCheck_Analyzer(shape, true, false, false)).IsValid()) throw new Error(what);
+  };
+
+  /** Lexicographic order of two points (x, then y, then z), equal within tol. */
+  const before = (a: Vec3, b: Vec3, tol: number) => {
+    for (let k = 0; k < 3; k++) if (Math.abs(a[k] - b[k]) > tol) return a[k] < b[k];
+    return false;
+  };
+
+  /**
+   * Fillets and chamfers on picked edges. OCCT always takes the chain of edges tangent to a
+   * picked one (a rounded rectangle's whole outline); without `chain` that is refused rather
+   * than rounding more than was picked. The faces made from an edge are named after the pick
+   * whose chain it is.
+   */
+  const roundEdges = (s: OccSolid, kind: 'round' | 'chamfer', picks: { pick: ModifyPick; add: (mk: RoundingBuilder, edge: TopoDS_Edge) => void }[], chain: boolean, tag: string): OccSolid => scratch((t) => {
+    const E = shapeIndex(oc, t, s.shape, EDGE);
+    const mk = t.add(kind === 'round' ? new oc.BRepFilletAPI_MakeFillet(s.shape, oc.ChFi3d_FilletShape.ChFi3d_Rational) : new oc.BRepFilletAPI_MakeChamfer(s.shape)) as RoundingBuilder;
+    const picked = new Set(picks.map((q) => q.pick.index));
+    const named: { edge: TopoDS_Edge; name: string }[] = [];
+    for (const { pick, add } of picks) {
+      const edge = E.shapes[pick.index] && t.add(oc.TopoDS.Edge(E.shapes[pick.index]));
+      if (!edge) throw new Error('a picked edge is not on the body');
+      // an edge an earlier pick's chain took is rounded already
+      if (mk.Contour(edge) > 0) continue;
+      add(mk, edge);
+      const ic = mk.Contour(edge);
+      if (!ic) throw new Error(`the ${kind === 'round' ? 'fillet' : 'chamfer'} does not fit this edge`);
+      const more = [];
+      for (let j = 1; j <= mk.NbEdges(ic); j++) {
+        const e = t.add(mk.Edge(ic, j));
+        named.push({ edge: e, name: pick.name });
+        if (!picked.has(E.indexOf(e))) more.push(e);
+      }
+      if (!chain && more.length) {
+        throw new Error(`OpenCascade rounds along tangent edges, and a picked edge goes on into ${more.length} more: turn Tangent chain on, or pick ${more.length > 1 ? 'them' : 'it'} too`);
+      }
+    }
+    const what = `the ${kind === 'round' ? 'fillet' : 'chamfer'} does not fit`;
+    const shape = arena.add(guard(oc, what, () => {
+      mk.Build(progress(t));
+      if (!mk.IsDone()) throw new Error(what);
+      return mk.Shape();
+    }));
+    sound(t, shape, what);
+    const feature = featureOf(tag);
+    const tags = carry(mk, s.tags, shape);
+    for (const { edge, name } of named) for (const face of listShapes(arena, mk.Generated(edge))) tags.push({ face, key: `${tag}/${kind}:${name}`, feature });
+    return { shape, tags: within(tags, shape) };
+  });
+
+  /**
+   * A tool that moves a face of `s` by d along its normal, to fuse (d > 0) or cut (d < 0):
+   * the prism of a flat face, the ring between the old and the new radius of a cylinder. The
+   * face where the moved one now is keeps its name; the tool's sides are named after the
+   * faces they extend (a flush side merges back into one face of the same name).
+   */
+  const faceMover = (t: Arena, s: OccSolid, face: TopoDS_Shape, d: number): OccSolid => {
+    const f = t.add(oc.TopoDS.Face(face));
+    const info = faceInfo(oc, t, f, 0);
+    const own = faceTags(s, face);
+    // the faces next to it, across each of its edges
+    const allFaces = subShapes(oc, t, s.shape, FACE);
+    const across = (edge: TopoDS_Shape) => allFaces.filter((g) => !g.IsSame(face) && shapeIndex(oc, t, g, EDGE).has(edge));
+    const retag = (target: TopoDS_Shape, from: FaceTag[]) => from.map((g) => ({ face: target, key: g.key, feature: g.feature }));
+    if (info.type === 'plane' && info.frame) {
+      const mk = t.add(new oc.BRepPrimAPI_MakePrism(f, vec(oc, t, scale(info.frame.n, d)), false, true));
+      const shape = arena.add(guard(oc, 'the face cannot be moved', () => mk.Shape()));
+      const tags: FaceTag[] = [];
+      for (const far of subShapes(oc, t, t.add(mk.LastShape()), FACE)) tags.push(...retag(keep(t, far), own));
+      for (const e of subShapes(oc, t, f, EDGE)) {
+        const next = across(e).flatMap((g) => faceTags(s, g));
+        for (const side of listShapes(arena, mk.Generated(e))) tags.push(...retag(side, next));
+      }
+      return { shape, tags: within(tags, shape) };
+    }
+    if (info.type === 'cylinder' && info.axis && info.radius) {
+      const a = t.add(new oc.BRepAdaptor_Surface(f, true));
+      const pos = t.add(t.add(a.Cylinder()).Position());
+      const L = xyz(t.add(pos.Location())), X = xyz(t.add(pos.XDirection())), Z = xyz(t.add(pos.Direction()));
+      const Y = xyz(t.add(pos.YDirection()));
+      const { UMin, UMax, VMin, VMax } = oc.BRepTools.UVBounds(f);
+      const r = info.radius;
+      const at = (u: number, v: number, rad = r): Vec3 => [0, 1, 2].map((k) => L[k] + rad * (Math.cos(u) * X[k] + Math.sin(u) * Y[k]) + v * Z[k]) as Vec3;
+      // the face's normal out of the material, against the way out from the axis: a boss or a hole
+      const um = (UMin + UMax) / 2, vm = (VMin + VMax) / 2, h = 1e-3;
+      const du = sub3(at(um + h, vm), at(um - h, vm)), dv = sub3(at(um, vm + h), at(um, vm - h));
+      let n = cross3(du, dv);
+      if (f.Orientation() === oc.TopAbs_Orientation.TopAbs_REVERSED) n = scale(n, -1);
+      const out = dot3(n, sub3(at(um, vm), at(um, vm, 0))) > 0 ? 1 : -1;
+      const r2 = r + out * d;
+      if (!(r2 > 0)) throw new Error('the cylinder shrinks to nothing');
+      const [r0, r1] = r2 > r ? [r, r2] : [r2, r];
+      // the ring's half section at the face's start angle, swept over its angle (u turns about
+      // Z in a right-handed frame, about −Z in a left-handed one)
+      const pts = [at(UMin, VMin, r0), at(UMin, VMin, r1), at(UMin, VMax, r1), at(UMin, VMax, r0)];
+      const mw = t.add(new oc.BRepBuilderAPI_MakeWire());
+      const vs = pts.map((q) => t.add(t.add(new oc.BRepBuilderAPI_MakeVertex(pnt(oc, t, q))).Vertex()));
+      const sides: TopoDS_Edge[] = [];
+      for (let i = 0; i < 4; i++) {
+        const e = t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(vs[i], vs[(i + 1) % 4])).Edge());
+        mw.Add(e);
+        sides.push(e);
+      }
+      const sec = t.add(t.add(new oc.BRepBuilderAPI_MakeFace(t.add(mw.Wire()), true)).Face());
+      const span = UMax - UMin;
+      const axis = ax1(oc, t, L, pos.Direct() ? Z : scale(Z, -1));
+      const mk = t.add(span >= 2 * Math.PI - 1e-9 ? new oc.BRepPrimAPI_MakeRevol(sec, axis, false) : new oc.BRepPrimAPI_MakeRevol(sec, axis, span, false));
+      const shape = arena.add(guard(oc, 'the cylinder cannot be grown', () => mk.Shape()));
+      // the moved wall is the edge at the new radius; ends and cut sides extend the flat faces they lie in
+      const tags: FaceTag[] = [];
+      const neighbours = subShapes(oc, t, f, EDGE).flatMap(across);
+      const flat = neighbours.map((g) => ({ g, info: faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0) })).filter((q) => q.info.frame);
+      const tol = 1e-7 * (1 + r1 + Math.abs(VMax - VMin));
+      sides.forEach((e, i) => {
+        for (const g of listShapes(arena, mk.Generated(e))) {
+          if (i === (r2 > r ? 1 : 3)) tags.push(...retag(g, own));
+          else if (i === 0 || i === 2) {
+            const c = faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0).c;
+            const on = flat.find((q) => Math.abs(dot3(sub3(c, q.info.frame!.o), q.info.frame!.n)) < tol);
+            if (on) tags.push(...retag(g, faceTags(s, on.g)));
+          }
+        }
+      });
+      return { shape, tags: within(tags, shape) };
+    }
+    throw new Error('press-pull moves flat and cylindrical faces only');
+  };
+
   const ops: SolidOps<OccSolid> = {
     extrude(regions, f, z0, z1, tag) {
       checkExtent(z0, z1);
@@ -426,6 +583,160 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
 
     topology: (s, id) => topologyOcc(oc, s, id),
 
+    fillet(s, sets, chain, tag) {
+      const tol = 1e-9 * (1 + Math.max(...(occBox(oc, [s.shape])?.max.map(Math.abs) ?? [1])));
+      return roundEdges(s, 'round', sets.flatMap((set) => set.picks.map((pick) => ({
+        pick,
+        add: (mk: RoundingBuilder, edge: TopoDS_Edge) => {
+          const fm = mk as unknown as { Add(r1: number, r2: number | TopoDS_Edge, e?: TopoDS_Edge): void };
+          if (set.r2 === undefined || set.r2 === set.r) return fm.Add(set.r, edge);
+          // a linear radius from the start of the chain (its end first in x, then y, then z) to its end
+          fm.Add(set.r, set.r2, edge);
+          const ic = mk.Contour(edge);
+          const p = (v: TopoDS_Shape) => scratch((q) => xyz(q.add(oc.BRep_Tool.Pnt(q.add(oc.TopoDS.Vertex(q.add(v)))))));
+          const first = p(mk.FirstVertex(ic)), last = p(mk.LastVertex(ic));
+          if (before(last, first, tol)) {
+            mk.Remove(edge);
+            fm.Add(set.r2, set.r, edge);
+          }
+        },
+      }))), chain, tag);
+    },
+
+    chamfer(s, picks, o, chain, tag) {
+      return scratch((t) => {
+        const F = shapeIndex(oc, t, s.shape, FACE);
+        return roundEdges(s, 'chamfer', picks.map((pick) => ({
+          pick,
+          add: (mk: RoundingBuilder, edge: TopoDS_Edge) => {
+            const ch = mk as unknown as InstanceType<OC['BRepFilletAPI_MakeChamfer']>;
+            if (o.type === 'equal') return ch.Add(o.d, edge);
+            const face = pick.face !== undefined && F.shapes[pick.face];
+            if (!face) throw new Error('this edge has no two faces to measure the chamfer on');
+            const f = t.add(oc.TopoDS.Face(face));
+            if (o.type === 'two') ch.Add(o.d, o.d2 ?? o.d, edge, f);
+            else ch.AddDA(o.d, o.angle ?? Math.PI / 4, edge, f);
+          },
+        })), chain, tag);
+      });
+    },
+
+    shell(s, faces, th, outside, tag) {
+      return scratch((t) => {
+        // a boolean's result is a compound of its solids, whose offset is only a shell: offset the solid
+        const solids = subShapes(oc, t, s.shape, oc.TopAbs_ShapeEnum.TopAbs_SOLID);
+        if (solids.length !== 1) throw new Error('only a body of one solid can be shelled');
+        const body = solids[0];
+        const F = shapeIndex(oc, t, s.shape, FACE);
+        const what = 'the wall does not fit';
+        const side = outside ? 'out' : 'in';
+        const feature = featureOf(tag);
+        const off = outside ? th : -th;
+        // a wall too thick for the body comes back as the body itself, unchanged
+        const v0 = shapeVolume(oc, s.shape);
+        const changed = (shape: TopoDS_Shape) => {
+          sound(t, shape, what);
+          const v = shapeVolume(oc, shape);
+          if (!(Math.abs(v - v0) > 1e-9 * v0) || (!outside && v > v0)) throw new Error(what);
+        };
+        // the offset walls are named after the faces they offset
+        const walls = (mk: { Generated(s: TopoDS_Shape): NCollection_List_TopoDS_Shape }) => F.shapes.flatMap((g) =>
+          listShapes(arena, mk.Generated(g)).map((face) => ({ face, key: `${tag}/${side}:${faceToken(s, g)}`, feature })));
+        if (faces.length) {
+          const mk = t.add(new oc.BRepOffsetAPI_MakeThickSolid());
+          const open = t.add(new oc.NCollection_List_TopoDS_Shape());
+          for (const i of faces) t.add(open.Append(F.shapes[i]));
+          // sharp corners (offset faces made to meet), not rounded ones
+          guard(oc, what, () => mk.MakeThickSolidByJoin(body, open, off, 1e-7, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, oc.GeomAbs_JoinType.GeomAbs_Intersection, false, progress(t)));
+          if (!mk.IsDone()) throw new Error(what);
+          const shape = arena.add(mk.Shape());
+          changed(shape);
+          return { shape, tags: within([...carry(mk, s.tags, shape), ...walls(mk)], shape) };
+        }
+        // no opening: the body less its offset inside (or the offset outside less the body)
+        const mk = t.add(new oc.BRepOffsetAPI_MakeOffsetShape());
+        guard(oc, what, () => mk.PerformByJoin(body, off, 1e-7, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, oc.GeomAbs_JoinType.GeomAbs_Intersection, false, progress(t)));
+        if (!mk.IsDone()) throw new Error(what);
+        const skin = { shape: arena.add(mk.Shape()), tags: walls(mk) };
+        sound(t, skin.shape, what);
+        const r = outside ? boolean('cut', skin, [s], what) : boolean('cut', s, [skin], what);
+        changed(r.shape);
+        return r;
+      });
+    },
+
+    draft(s, faces, pull, angle, plane) {
+      return scratch((t) => {
+        const F = shapeIndex(oc, t, s.shape, FACE);
+        const mk = t.add(new oc.BRepOffsetAPI_DraftAngle(s.shape));
+        const neutral = t.add(new oc.gp_Pln(pnt(oc, t, plane.o), dir(oc, t, plane.n)));
+        const D = dir(oc, t, pull);
+        for (const i of faces) {
+          guard(oc, 'a picked face cannot be drafted', () => mk.Add(t.add(oc.TopoDS.Face(F.shapes[i])), D, angle, neutral, true));
+          if (!mk.AddDone()) throw new Error('a picked face cannot be drafted: only flat, cylindrical and conical faces that are not parallel to the neutral plane can');
+        }
+        const what = 'the draft does not fit: the tilted faces cannot be joined to their neighbours';
+        guard(oc, what, () => mk.Build(progress(t)));
+        if (!mk.IsDone()) throw new Error(what);
+        const shape = arena.add(mk.Shape());
+        sound(t, shape, what);
+        // faces keep their names: a drafted face is the same face, tilted
+        const tags = s.tags.filter((g) => !mk.IsDeleted(g.face)).map((g) => ({ ...g, face: arena.add(mk.ModifiedShape(g.face)) }));
+        return { shape, tags: within(tags, shape) };
+      });
+    },
+
+    pressPull(s, faces, d) {
+      if (!d) return s;
+      return scratch((t) => {
+        const F = shapeIndex(oc, t, s.shape, FACE);
+        const tools = faces.map((i) => faceMover(t, s, F.shapes[i], d));
+        const r = boolean(d > 0 ? 'fuse' : 'cut', s, tools, d > 0 ? 'the faces cannot be pulled' : 'the faces cannot be pushed');
+        if (!hasSolid(oc, r.shape) || !(shapeVolume(oc, r.shape) > 0)) throw new Error('the faces are pushed through the whole body');
+        return r;
+      });
+    },
+
+    split(s, pl, tag) {
+      return scratch((t) => {
+        const bb = occBox(oc, [s.shape]);
+        if (!bb) throw new Error('the body is empty');
+        // the plane as a face well past the body, centred on it
+        const mid = scale(add3(bb.min, bb.max), 0.5);
+        const at = sub3(mid, scale(pl.n, dot3(sub3(mid, pl.o), pl.n)));
+        const R = 2 * Math.hypot(...sub3(bb.max, bb.min)) + 1;
+        const cutter = t.add(t.add(new oc.BRepBuilderAPI_MakeFace(t.add(new oc.gp_Pln(pnt(oc, t, at), dir(oc, t, pl.n))), -R, R, -R, R)).Face());
+        const sp = t.add(new oc.BRepAlgoAPI_Splitter());
+        const args = t.add(new oc.NCollection_List_TopoDS_Shape());
+        t.add(args.Append(s.shape));
+        const tl = t.add(new oc.NCollection_List_TopoDS_Shape());
+        t.add(tl.Append(cutter));
+        sp.SetArguments(args);
+        sp.SetTools(tl);
+        try {
+          guard(oc, 'the body cannot be split', () => sp.Build(progress(t)));
+          if (sp.HasErrors()) throw new Error('the body cannot be split');
+          const result = t.add(sp.Shape());
+          const cut: FaceTag = { face: cutter, key: `${tag}/split`, feature: featureOf(tag) };
+          const pieces = subShapes(oc, t, result, oc.TopAbs_ShapeEnum.TopAbs_SOLID).map((q) => {
+            const shape = keep(t, q);
+            const c = scratch((u) => {
+              const g = u.add(new oc.GProp_GProps());
+              oc.BRepGProp.VolumeProperties(shape, g, false, false, false);
+              return xyz(u.add(g.CentreOfMass()));
+            });
+            return { solid: { shape, tags: carry(sp, [...s.tags, cut], shape) }, side: dot3(sub3(c, pl.o), pl.n), c };
+          });
+          // behind the plane first, then along x, y, z
+          const tol = 1e-9 * R;
+          pieces.sort((a, b) => (Math.abs(a.side - b.side) > tol && Math.sign(a.side) !== Math.sign(b.side) ? a.side - b.side : before(a.c, b.c, tol) ? -1 : before(b.c, a.c, tol) ? 1 : 0));
+          return pieces.map((q) => q.solid);
+        } finally {
+          release(sp);
+        }
+      });
+    },
+
     union,
     // a compound: booleans take its solids as separate tools
     group: (parts) => (parts.length === 1 ? parts[0] : { shape: compound(oc, arena, parts.map((s) => s.shape)), tags: parts.flatMap((s) => s.tags) }),
@@ -436,8 +747,8 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       return scratch((t) => {
         const xf = t.add(new oc.BRepBuilderAPI_Transform(s.shape, trsf(oc, t, M), false, false));
         const shape = arena.add(guard(oc, 'the copy cannot be placed', () => xf.Shape()));
-        const feature = featureOf(prefix);
-        const tags = s.tags.map((g) => ({ face: arena.add(xf.ModifiedShape(g.face)), key: prefix + g.key, feature }));
+        // a body moved in place keeps its faces' names and features; a copy is the copy's
+        const tags = s.tags.map((g) => ({ face: arena.add(xf.ModifiedShape(g.face)), key: prefix + g.key, feature: prefix ? featureOf(prefix) : g.feature }));
         return { shape, tags };
       });
     },
