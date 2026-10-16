@@ -372,12 +372,15 @@ statically determinate and indeterminate structures are handled alike.
 - Supports are constraints with Lagrange multipliers, so the multipliers are the
   reactions themselves.
 - Hinges are moment releases by static condensation.
-- Members are split where loads sit, so each piece carries at most a linear line load.
-  For such pieces the stiffness method is exact at the nodes. N, V and M along a member
-  come from statics as exact polynomials, and the deflection is the exact double integral
-  of M/EI. The answers therefore match the handbook formulas, not just approximate them:
-  the tests check simply supported, cantilever, propped, continuous and Gerber beams
-  and a truss against closed-form results, and a portal frame for equilibrium.
+- Members stay whole: a point load, moment or (partial, trapezoidal) line load anywhere
+  along a member enters through its exact fixed-end forces, so the stiffness method is
+  exact at the nodes, also for a load a millimetre from a node (splitting the member
+  there used to make a piece 10¹² times stiffer than its neighbour, reported as a
+  mechanism). N, V and M along a member come from statics as exact polynomials between
+  the loads, and the deflection is the exact double integral of M/EI. The answers
+  therefore match the handbook formulas, not just approximate them: the tests check
+  simply supported, cantilever, propped, continuous and Gerber beams and a truss against
+  closed-form results, and a portal frame for equilibrium.
 - **Not included:** plasticity, imperfections (add equivalent sway forces as loads),
   lateral-torsional and out-of-plane buckling, and self-weight. Add self-weight as a
   line load.
@@ -518,6 +521,232 @@ The **Beams and frames** example covers four structures:
 The **Bridge girder** example is a two-span girder (2 × 25 m) under G and LM1: three
 influence lines, the LM1 extremes with where they act, the ULS envelope 1.35 G + 1.35 LM1,
 and a hand check of the hogging moment over the middle support.
+
+### 3-D frames
+
+Press **3-D frame** for a space frame region: buildings, trusses, grillages. The
+structure lives in tables (double-click the region to edit; the tables open under the
+3-D view), every value a worksheet expression with units, so `x = 2*a` or `q = -g_k`
+follow the calculation around them. The side panel starts you from a **preset** (a 3-D
+portal frame of 2 × 1 bays with G, Q and wind, a pin-jointed lattice tower, a floor
+grillage).
+
+- **Nodes:** name and X, Y, Z (Z up). **Members:** start and end node, a section, the
+  rotation β of the section about its axis, and the end forces released at either end
+  (`My Mz` is a hinge; `T My Mz` a ball joint; N, Vy, Vz can be released too). Paste
+  rows straight from Excel into a cell; Enter and ↑ ↓ move along a column.
+- **Sections:** a profile from the library (IPE, HEA, HEB, HEM, CHS, SHS, RHS: A, I_y,
+  I_z, I_t, shear areas and section moduli from the profile), or your own A, I_y, I_z,
+  I_t, A_vy, A_vz. Materials: steel S235 … S460, concrete classes (E_cm, ν = 0.2,
+  25 kN/m³), timber classes (E_0,mean, G_mean, ρ_mean), or your own E, G, ρ.
+- **Supports:** each of u_x, u_y, u_z, φ_x, φ_y, φ_z fixed, free or a spring
+  (`5000 kN/m`, `2e4 kN*m/rad`), with presets (fixed, pinned, rollers).
+- **Loads:** forces and moments on nodes; point forces or moments on members at a
+  distance from the start; linear line loads over the whole or part of a member; all in
+  global X, Y, Z or member x, y, z, line loads also per projected length (snow on a
+  slope); self-weight ρ g A of every member. Load cases and combinations work as in the
+  beam region (default G, Q, W with ULS 1.35 G + 1.5 Q + 0.9 W, 1.35 G + 1.05 Q + 1.5 W
+  and SLS), with the envelope.
+
+**Member axes.** x runs from the start to the end. In a member that is not vertical, z
+lies in its vertical plane and points **down**, and y = z × x is horizontal, so an
+I-profile carries vertical loads about its strong axis I_y; in a vertical member y is
+global Y and z = x × y (a column bends about its strong axis in the X-Z plane). β turns
+y and z about x; a reference direction ("0, 1, 0") can set z instead. Internal forces
+are the vector components on the face whose normal is +x: N tension positive, V_y, V_z,
+T, M_y, M_z, with σ = N/A + M_y z/I_y − M_z y/I_z, so **sagging M_y is positive** in a
+beam. The view draws moments on the tension side.
+
+**The view.** Drag to orbit, Shift-drag or the right button to pan, the wheel to zoom
+(while editing); Iso, Front, Side and Top views. The strip picks the case, combination
+or envelope, and the model with its loads, the deformed shape (with its scale factor),
+N, V_y, V_z, T, M_y or M_z in each member's own plane (largest values labelled), the
+buckling mode, and the reactions. Hover a member for the forces at that point, a node
+for its displacements and reactions. The **Results** tab lists reactions, member
+extremes and node displacements (copy them to Excel; also from the right-click menu); for
+the envelope the minima come from its lower side, with a max and a min row per node.
+
+**In the worksheet** (name the region `f`):
+- per node: `f.N1.ux`, `.uy`, `.uz`, `.u`, `.φx` … and at a support `f.N1.Rx` … `.Rz`,
+  `.Mx` … `.Mz`, `.R`;
+- per member: `f.M1.N_max`, `f.M1.My_min` (… for N, Vy, Vz, T, My, Mz), `f.M1.L`,
+  `f.M1.σ_max` (with section moduli), the forces along it `f.M1.My(x)` (x from its
+  start) and `f.M1.uz(x)`;
+- overall: `f.My_max`, `f.N_min` …, `f.u_max`; with buckling `f.α_cr`, `f.alpha_cr_modes`
+  and `f.M1.L_cr_y`, `f.M1.L_cr_z`;
+- with load cases the governing values (forces and reactions over the ULS combinations,
+  displacements over SLS) plus each one: `f.combos.ULS1.N1.Rz`, `f.cases.W.M1.My_max`.
+
+**How it is solved.** Direct stiffness method with 12 unknowns per member, Euler–Bernoulli
+or Timoshenko (φ = 12EI/(G A_v L²) in each plane). Members stay whole: loads along them
+enter through exact fixed-end forces, N, V, T, M follow from statics between the loads,
+and the displacements from the exact curvatures, so the results match handbook formulas.
+Releases are condensed out of the member and recovered afterwards. Each member is a
+substructure, so only the nodes go into the banded system (reverse Cuthill–McKee, skyline
+Cholesky): a 10 × 10 bay, 6-storey frame (2046 members, 4356 unknowns) solves in about
+0.5 s. Node rotations nothing holds (pin-jointed trusses) are found and fixed, and a
+mechanism is reported with the node and direction it moves in. A node that no member uses
+yet (just added to the table) is left out of the analysis; a load on it is flagged. A
+second set of tests checks random frames (β, inclined and vertical members, releases,
+springs, Timoshenko, loads along members) and α_cr against the textbook 12 × 12 member
+matrices assembled densely.
+- **Second order** (side panel → Analysis): P-Δ and P-δ, members cut into 4–8 elements
+  with the consistent geometric stiffness of their axial force in both bending planes,
+  iterated on the axial forces; the moments are statics on the deformed member.
+- **Buckling:** the lowest three α_cr from (K + α K_G) φ = 0 with the first-order axial
+  forces (dense below 300 unknowns, Lanczos above), with the EN 1993-1-1 5.2.1(3) verdict
+  per combination and the buckling lengths of each compressed member about y and z.
+- **Checked against closed forms:** cantilever tip loads (F L³/3EI about each axis and
+  the clamp's moments), torsion θ = T L/G I_t, an L-shaped grillage δ = P a³/3EI +
+  P b³/3EI + P a² b/G I_t (the leg at the clamp twists), β = 90° swapping the axes, a
+  planar portal against the plane-frame solver, a pin-jointed tripod against the
+  equilibrium of its apex, a Gerber hinge, Timoshenko cantilevers, Euler columns about
+  the weak axis (cantilever, pinned, a pin-jointed bar), the second-order cantilever
+  column H (tan kL − kL)/(P k) and its M(x), and equilibrium of a mixed frame.
+- **Not included:** lateral-torsional and torsional buckling (no Wagner or warping
+  terms; St Venant torsion only), plates and shells, offsets and rigid links,
+  eccentric or curved members, settlements, distributed torque, dynamics, and checks to
+  the codes beyond the stress and α_cr (use the values in the worksheet).
+
+The **3-D steel frame** example is that hall frame with its geometry and loads from the
+worksheet: α_cr against 10, the governing moments and reactions, the stresses of the main
+beam and a column against f_y, the sway against h/300, and M_y(x) of the main beams
+plotted.
+
+### Plates and slabs
+
+Press **Plate** for a slab or plate region: reinforced-concrete slabs on walls and
+columns, flat slabs, steel plates. The plate is drawn in plan; double-click it to edit
+its tables (corners, openings, walls and columns, loads), every value a worksheet
+expression with units. The side panel starts you from a **preset** (a slab on walls, a
+flat slab of 2 × 2 bays on nine columns, a circular slab, an L-shaped slab, a steel
+plate).
+
+- **Outline:** corners in order (paste x, y rows from Excel); each edge from one corner
+  to the next is free, simply supported, clamped or elastic (a spring per length, and
+  against rotation about the edge). **Openings** are polygons of corners.
+- **Walls** inside the plate: rigid lines (w = 0) or springs per length. **Columns:** a
+  rigid point, a point spring, or with a size b × h (or round) a column head on an
+  elastic bedding E/H under its area, the column pressed along its height H (3 m unless
+  given), which spreads the reaction instead of a singular peak.
+- **Material:** concrete classes (E_cm, ν = 0.2, 25 kN/m³), steel grades (210 GPa,
+  ν = 0.3), or your own E, ν, ρ; the thickness in mm.
+- **Loads** act downwards: over the whole plate, on a rectangle (patch), along a line,
+  at a point, and the self-weight ρ g t. Load cases and combinations work as in the
+  beam region (G and Q with ULS 1.35 G + 1.5 Q and SLS by default), with the envelope.
+- **Reinforcement** (concrete): steel grade, cover and bar diameter; the bars along x
+  sit in the outer layer (or along y), so d_x = t − c − Ø/2 and d_y = d_x − Ø.
+
+**On the page:** the plan with its supports, and the result picked in the strip as banded
+contours with a legend in practical units (w in mm, moments in kN·m/m, shear in kN/m,
+a_s in cm²/m, stress in MPa), the zero line of a field of both signs and its largest and
+least values marked: w, m_x, m_y, m_xy, v_x, v_y, and under *More…* the principal
+moments, the Wood–Armer moments for bars along x and y at the bottom and the top, the
+required reinforcement, and the von Mises stress of a steel plate. **Mesh** draws the
+elements, **3-D** the deflected shape in an oblique view (drag to turn it while editing,
+coloured by the field shown), **R** the reactions along edges and walls (per length) and
+at the columns. While editing, the scissors draw a **section cut**: the field along it is
+plotted under the plan. Hover anywhere for w, the moments, shear and a_s there. The
+**Results** tab lists the reactions and every field's extremes (copy to Excel; also from
+the right-click menu).
+
+**In the worksheet** (name the region `p`):
+- extremes: `p.w_max` (deflection, downwards), `p.w_min`, `p.m_x_max`, `p.m_x_min`, the
+  same for `m_y`, `m_xy`, `v_x`, `v_y`, `p.m_1_max`, `p.m_2_min`, `p.v_max` (the largest
+  resultant shear);
+- with reinforcement: `p.m_x_bot_max`, `p.m_y_bot_max`, `p.m_x_top_min`, `p.m_y_top_min`
+  (Wood–Armer), `p.a_s_x_bot_max` … `p.a_s_y_top_max` (cm²/m), `p.a_s_min_x`,
+  `p.a_s_min_y`, `p.d_x`, `p.d_y`; for steel `p.σ_max`;
+- reactions: per edge `p.E1.R` (total), `p.E1.r_max`, `p.E1.r_min` (per length),
+  `p.E1.F_a`, `p.E1.F_b` (the forces at its ends: corner forces where another support
+  meets it), per wall `p.W1.R` …, per column `p.C1.R`, and `p.R_sum`;
+- every field at a point, `p.w(x, y)`, `p.m_x(x, y)`, `p.a_s_y_bot(x, y)` … (bare numbers
+  in the length unit), for plots along a line or checks at a section; `p.t`, `p.D`;
+- with load cases the governing values (moments, shear, reinforcement over the ULS
+  combinations, deflection over SLS; the design fields as functions are the envelope's,
+  the plain ones the first ULS combination's), the envelope's sides `p.max.m_x(x, y)`,
+  `p.min.m_x(x, y)`, and each case and combination: `p.combos.ULS.m_x_max`,
+  `p.cases.Q.w_max`.
+
+**How it is solved.**
+- **Elements:** MITC4 (Bathe and Dvorkin), four-node Reissner–Mindlin quads. Their
+  transverse shear strains are interpolated from the edges' midpoints, so they do not
+  lock: the same element serves 20 mm steel plates and 300 mm slabs, from thin
+  (Kirchhoff) to thick, on distorted meshes too. Triangles (DKT/DKMT) were the
+  alternative; one quad element everywhere keeps the recovery and the tests uniform, and
+  any triangulation becomes quads by splitting.
+- **Mesh:** a rectangle with rectangular openings and walls along the axes gets a
+  structured grid through every edge, wall and column head (loads get grid lines where
+  that leaves no sliver). Any other outline is a constrained Delaunay triangulation
+  refined by Ruppert's algorithm to angles of at least 25° (except at sharp corners: of the
+  outline, or where a wall meets or crosses an edge at a shallow angle) and edges under a
+  size limit; each triangle is split into three quads, which are then smoothed. The
+  automatic size gives about 1200 elements; at most 30 000 are allowed (a smaller element
+  size is refused with a message rather than left to run for minutes).
+- **Curved edges:** a polygon standing for a curve (corners turning by less than 20°) has
+  its boundary nodes moved onto the curve, with the curve's tangent. A simply supported
+  polygon of straight chords converges to another plate than the circle (Babuška's
+  paradox: a 48-gon came out 27 % too stiff).
+- **Solver:** each load is integrated exactly into the elements (patches clipped to each
+  element, lines cut at element edges), so loads need not follow the mesh; the part of a
+  patch or line load beyond the outline or in an opening is dropped, and one wholly off
+  the plate is reported. The stiffness
+  is numbered node by node, by reverse Cuthill–McKee or a sort along the long side,
+  whichever gives the smaller envelope, then assembled straight into that envelope and
+  factorised once (skyline Cholesky). Every load case is one more right-hand side and every
+  combination a sum of cases. In Chrome 10 000 unknowns take 0.3 – 0.4 s and 15 000
+  about 0.7 s, meshing and recovery included. The mesh and the solutions are cached on the
+  numbers that define the plate and its loads, so recalculating the sheet for anything else
+  is instant.
+- **Supports:** a simple support holds w and the rotation along the edge, as w = 0 along a
+  line does in Kirchhoff's theory. The supports' twisting couples are turned into forces
+  (Kelvin–Tait), so edge reactions come out as Kirchhoff's V = q + ∂m_xy/∂s, with the
+  forces that hold the corners down. A clamped edge has no twisting moment (V = q there)
+  and no corner force where it meets a simple one. Near a re-entrant corner the shear is
+  singular, and how the edges meeting there share its load moves by a few per cent from
+  mesh to mesh (their sum does not). On an irregular mesh the nodal reactions alternate
+  from node to node; a [¼ ½ ¼] filter along the line takes that out of the values per
+  length.
+- **Results:** moments by superconvergent patch recovery: a quadratic fitted at each
+  node to the element-centre moments of two rings of elements, never across a wall or a
+  line load, where the shear jumps. Shear forces come from equilibrium,
+  q_x = ∂m_x/∂x + ∂m_xy/∂y, of the recovered moments (the element's own shear strains are
+  far too small to read in a thin plate). Plain Gauss-point extrapolation left a clamped
+  edge's moment 12 % low on a 32 × 32 mesh and the edge shear 25 % low.
+- **Design:** Wood–Armer moments for bars along x and y at both faces. The reinforcement
+  follows EN 1992-1-1: a_s = m_Ed / (z f_yd) with z = 0.9 d, or the rectangular stress
+  block's z where the compression zone is deeper (μ > 0.18). Beyond μ_lim (x/d = 0.45) the
+  slab is flagged too thin. a_s,min of 9.3.1.1(1) / 9.2.1.1(1); γ_s = 1.15, γ_c = 1.5,
+  α_cc = 1.
+- **Checked against** Timoshenko & Woinowsky-Krieger (ν = 0.3, t = a/100):
+  - simply supported square: w = 0.00406 q a⁴/D, m = 0.0479 q a², Q_x = 0.338 q a and
+    V_x = 0.420 q a at mid-edge, corner force 0.065 q a², |m_xy| = 0.0325 q a²;
+  - clamped square: 0.00126, 0.0231 and −0.0513;
+  - central point load: 0.01160 P a²/D;
+  - b/a = 2: 0.01013, 0.1017, 0.0464;
+  - simply supported and clamped circles from the closed forms;
+  - an interior panel of a flat slab on point columns (§ 100, ν = 0.2): 0.00581 q a⁴/D
+    and 0.0331 q a² at the centre;
+  - thick plates (t/a = 0.1, 0.2): the simply supported square's Mindlin deflection
+    w_K + M_K/(κ G t);
+  - second-order convergence to Navier's series, the same square on unstructured and on
+    skew (turned) meshes.
+
+  Besides: a cantilever strip with ν = 0 against the Timoshenko beam, a strip over a
+  wall against the two-span beam (1.25 q L, −q L²/8, the shear jump), a column under a
+  square by compatibility, line and patch loads against Navier's series, springs against
+  rigid-body statics, Wood–Armer against Johansen's criterion in every direction, and
+  a_s by hand.
+- **Not included:** cracking and creep (deflections are elastic and uncracked: multiply
+  for the long term), orthotropic or ribbed slabs, varying thickness, in-plane (membrane)
+  forces and shells, punching shear, shear reinforcement and crack widths, moment
+  redistribution, moments over column faces rather than in the bedded head, and
+  supports on the edges of openings.
+
+The **Flat slab with an opening** example is a 6.0 m × 4.5 m slab, 220 mm C30/37, on six
+columns 350 × 350 with a stair opening. It shows the bottom reinforcement along y with a
+section through the opening, checks the deflection and the bars chosen against the
+required and minimum a_s, and plots m_x along the column line.
 
 ### Python code
 
@@ -873,6 +1102,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
+| 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
@@ -911,6 +1141,8 @@ src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
 src/beam/     Beam and frame analysis (no UI): model, stiffness solver, worksheet evaluation
 src/ui/beam/  Beam region: editor, diagrams, properties panel
+src/frame3d/  3-D frame analysis (no UI): model, substructured stiffness solver, buckling, evaluation
+src/ui/frame3d/ 3-D frame region: orbit view (SVG), tables, properties panel
 src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
               joints), solid kernels (OpenCascade B-rep in occ/, Manifold mesh), mass
               properties, DXF, STL, STEP

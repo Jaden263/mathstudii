@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch } from 'react';
 import { Plus, Minus, Loader2 } from 'lucide-react';
-import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, PythonRegion, DrawingRegion } from '../model/types';
+import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, PythonRegion, DrawingRegion, Frame3DRegion, PlateRegion } from '../model/types';
 import type { MathResult, SolveResult, TableResult, TextResult, PlotResult, RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import { Tex } from './Tex';
@@ -11,6 +11,8 @@ import { useAutocomplete } from './autocomplete';
 import { SketchView } from './sketch/SketchView';
 import { CadView } from './cad/CadView';
 import { BeamView } from './beam/BeamView';
+import { Frame3DView } from './frame3d/Frame3DView';
+import { PlateView } from './plate/PlateView';
 import { parseDelimited, toCsv, toTableData, type TableData } from '../model/tableData';
 import { PythonView } from './python/PythonView';
 import { DrawingView } from './cad/DrawingView';
@@ -381,6 +383,18 @@ export function SketchRegionView({ region, result, editing, selected, dispatch, 
 
 export function BeamRegionView({ region, result, editing, selected, dispatch, onDone }: RegionViewProps<BeamRegion>) {
   return <BeamView region={region} result={result} editing={editing} selected={selected} dispatch={dispatch} onDone={onDone} />;
+}
+
+// ---------------------------------------------------------------- 3-D frame
+
+export function Frame3DRegionView({ region, result, editing, selected, dispatch, onDone }: RegionViewProps<Frame3DRegion>) {
+  return <Frame3DView region={region} result={result} editing={editing} selected={selected} dispatch={dispatch} onDone={onDone} />;
+}
+
+// ---------------------------------------------------------------- plate
+
+export function PlateRegionView({ region, result, editing, selected, dispatch, onDone }: RegionViewProps<PlateRegion>) {
+  return <PlateView region={region} result={result} editing={editing} selected={selected} dispatch={dispatch} onDone={onDone} />;
 }
 
 // ---------------------------------------------------------------- CAD part

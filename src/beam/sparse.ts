@@ -50,8 +50,11 @@ export function bandOrder(adj: number[][]): number[] {
   return order.reverse();
 }
 
-/** Cholesky factor within the envelope, or null when K is not positive definite (a mechanism). */
-export function skylineCholesky(K: SparseSym): Skyline | null {
+/**
+ * Cholesky factor within the envelope, or null when K is not positive definite (a
+ * mechanism); `fail.row` then receives the unknown (original numbering) where it broke down.
+ */
+export function skylineCholesky(K: SparseSym, fail?: { row: number }): Skyline | null {
   const n = K.n;
   const adj = K.rows.map((r, i) => [...r.keys()].filter((j) => j !== i));
   const order = Int32Array.from(bandOrder(adj));
@@ -63,8 +66,7 @@ export function skylineCholesky(K: SparseSym): Skyline | null {
     for (const j of K.rows[order[i]].keys()) f = Math.min(f, inv[j]);
     first[i] = f;
   }
-  let scale = 1e-300;
-  for (let i = 0; i < n; i++) scale = Math.max(scale, Math.abs(K.rows[i].get(i) ?? 0));
+  // (each pivot is judged against its own diagonal, as in eigen.ts cholesky)
   const L: Float64Array[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const fi = first[i];
@@ -80,7 +82,10 @@ export function skylineCholesky(K: SparseSym): Skyline | null {
       for (let k = Math.max(fi, fj); k < j; k++) s -= Li[k - fi] * Lj[k - fj];
       if (j < i) Li[j - fi] = s / Lj[j - fj];
       else {
-        if (!(s > 1e-12 * scale)) return null;
+        if (!(s > 1e-12 * (row.get(order[i]) ?? 0))) {
+          if (fail) fail.row = order[i];
+          return null;
+        }
         Li[i - fi] = Math.sqrt(s);
       }
     }
@@ -90,22 +95,34 @@ export function skylineCholesky(K: SparseSym): Skyline | null {
 }
 
 /** Solve K x = b with the factor (b and x in the original numbering). */
-export function skylineSolve({ order, first, L }: Skyline, b: ArrayLike<number>): Float64Array {
-  const n = order.length;
+export function skylineSolve(ch: Skyline, b: ArrayLike<number>): Float64Array {
+  const { order } = ch, n = order.length;
   const y = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n; i++) y[i] = b[order[i]];
+  skylineBackward(ch, skylineForward(ch, y));
+  const x = new Float64Array(n);
+  for (let i = 0; i < n; i++) x[order[i]] = y[i];
+  return x;
+}
+
+/** L y = b in place, in the factor's numbering. */
+export function skylineForward({ first, L }: Skyline, y: Float64Array): Float64Array {
+  for (let i = 0; i < y.length; i++) {
     const Li = L[i], fi = first[i];
-    let s = b[order[i]];
+    let s = y[i];
     for (let k = fi; k < i; k++) s -= Li[k - fi] * y[k];
     y[i] = s / Li[i - fi];
   }
-  for (let i = n - 1; i >= 0; i--) {
+  return y;
+}
+
+/** Lᵀ x = y in place, in the factor's numbering. */
+export function skylineBackward({ first, L }: Skyline, y: Float64Array): Float64Array {
+  for (let i = y.length - 1; i >= 0; i--) {
     const Li = L[i], fi = first[i];
     y[i] /= Li[i - fi];
     const yi = y[i];
     for (let k = fi; k < i; k++) y[k] -= Li[k - fi] * yi;
   }
-  const x = new Float64Array(n);
-  for (let i = 0; i < n; i++) x[order[i]] = y[i];
-  return x;
+  return y;
 }

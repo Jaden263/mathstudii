@@ -4,8 +4,10 @@ import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
 import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
+import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
+import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate';
 
 interface RegionBase {
   id: string;
@@ -216,7 +218,72 @@ export interface DrawingRegion extends RegionBase {
   date?: string;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion;
+/** 3-D frame: nodes, members, sections, supports and loads as tables, solved in space. */
+export interface Frame3DRegion extends RegionBase, Frame3DData {
+  kind: 'frame3d';
+  /** Variable that receives reactions, displacements, member extremes and forces along members. */
+  name: string;
+  width: number;
+  height: number;
+  lengthUnit: BeamLengthUnit;
+  forceUnit: BeamForceUnit;
+  camera: Frame3DCamera;
+  /** What the 3-D view draws: the model, the deformed shape, a force diagram, the buckling mode. */
+  show: Frame3DShow;
+  /** Size of the deformed shape and diagrams relative to the automatic one (1). */
+  scale?: number;
+  /** Node and member names in the view. */
+  labels?: boolean;
+  /** The members' local axes in the view. */
+  axes?: boolean;
+  /** Support reactions in the view. */
+  reactions?: boolean;
+  /** Table shown while editing. */
+  tab?: Frame3DTab;
+  /** Load cases and combinations (absent: all loads act together). */
+  loadCases?: BeamCases;
+  analysis?: Frame3DAnalysis;
+}
+
+/** Plate or slab: an outline with openings, supports and loads, solved by finite elements. */
+export interface PlateRegion extends RegionBase, PlateData {
+  kind: 'plate';
+  /** Variable that receives deflections, moments, reactions, reinforcement and the fields as functions of (x, y). */
+  name: string;
+  width: number;
+  height: number;
+  lengthUnit: BeamLengthUnit;
+  forceUnit: BeamForceUnit;
+  /** Thickness (bare number mm). */
+  thickness: string;
+  /** Concrete class (C30/37 …), steel grade (S355 …), or 'custom' with E, ν and ρ. */
+  material: string;
+  E?: string;
+  nu?: string;
+  rho?: string;
+  /** Element size (bare number in the length unit); empty: automatic. */
+  mesh?: string;
+  /** Reinforcement of a concrete slab to design (absent: moments only). */
+  rebar?: PlateRebar;
+  /** What the plan shows. */
+  show: PlateShow;
+  /** The element mesh over the plan. */
+  showMesh?: boolean;
+  /** The deflected shape in an oblique view instead of the plan. */
+  deformed?: boolean;
+  /** Support reactions on the plan. */
+  reactions?: boolean;
+  /** Names of edges, walls and columns while editing (absent: shown). */
+  labels?: boolean;
+  /** A section cut (length unit), its values plotted under the plan. */
+  cut?: { x1: number; y1: number; x2: number; y2: number };
+  view?: PlateView;
+  tab?: PlateTab;
+  /** Load cases and combinations (absent: all loads act together). */
+  loadCases?: BeamCases;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion | PlateRegion;
 
 /** Page header and footer for printed calculation sheets. */
 export interface ReportSettings {
@@ -333,6 +400,16 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       return {
         ...base, kind, cad: '', width: 680, height: 481, sheet: 'A4', projection: 'first',
         views: { front: true, top: true, side: true, iso: true }, hidden: true, dims: true, ...(init as Partial<DrawingRegion>),
+      };
+    case 'frame3d':
+      return {
+        ...base, kind, name: '', width: 600, height: 420, lengthUnit: 'm', forceUnit: 'kN', camera: { ...DEFAULT_CAMERA }, show: 'model',
+        ...newFrame(), ...(init as Partial<Frame3DRegion>),
+      };
+    case 'plate':
+      return {
+        ...base, kind, name: '', width: 640, height: 460, lengthUnit: 'm', forceUnit: 'kN', thickness: '200', material: 'C30/37', show: 'model',
+        ...newPlate(), ...(init as Partial<PlateRegion>),
       };
   }
 }

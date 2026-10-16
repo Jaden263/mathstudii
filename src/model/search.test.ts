@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRegion, emptyWorksheet, type BeamRegion, type MathRegion } from './types';
+import { createRegion, emptyWorksheet, type BeamRegion, type Frame3DRegion, type MathRegion } from './types';
 import { findInWorksheet, replaceInRegion } from './search';
 
 describe('find and replace', () => {
@@ -31,5 +31,20 @@ describe('find and replace', () => {
     expect(beam.loads[0].type === 'line' && beam.loads[0].q1).toBe('q*L_span/L_span');
     expect(b.count).toBe(2);
     expect(replaceInRegion(ws.regions[0], 'zz', 'y', whole)).toBeNull();
+  });
+
+  it('renames in a 3-D frame without touching its ids, cases and profiles', () => {
+    const f = createRegion('frame3d', 0, 0, {
+      name: 'G', nodes: [{ id: 'n1', name: 'A', x: 'G', y: '0', z: '2*G' }],
+      members: [{ id: 'm1', name: 'M1', a: 'n1', b: 'n1', section: 'G', relA: ['My'] }],
+      sections: [{ id: 'G', name: 'S', profile: 'HEB 200', material: 'S355' }],
+      loads: [{ id: 'l', type: 'line', member: 'm1', dir: 'Z', q1: '-G', case: 'G' }],
+    }) as Frame3DRegion;
+    const out = replaceInRegion(f, 'G', 'g_k', whole)!.region as Frame3DRegion;
+    expect(out.nodes[0]).toMatchObject({ x: 'g_k', z: '2*g_k' });
+    expect(out.members[0]).toMatchObject({ section: 'G', relA: ['My'] });
+    expect(out.sections[0].id).toBe('G');
+    expect(out.loads[0]).toMatchObject({ q1: '-g_k', case: 'G' });
+    expect(out.name).toBe('g_k');
   });
 });

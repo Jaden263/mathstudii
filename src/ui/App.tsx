@@ -27,7 +27,10 @@ import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/contex
 import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
 import { CadWorkspace } from './cad/CadWorkspace';
 import { exportPart } from './cad/exportPart';
-import type { CadResult, MathResult } from '../engine/evaluator';
+import type { CadResult, Frame3DResult, MathResult } from '../engine/evaluator';
+import { frame3dMenuItems } from './frame3d/frame3dMenu';
+import { plateMenuItems } from './plate/plateMenu';
+import type { PlateResult } from '../plate/evaluate';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FindBar } from './FindBar';
 import { VersionsDialog } from './VersionsDialog';
@@ -50,6 +53,23 @@ function BeamIcon() {
       <line x1={1} y1={6} x2={15} y2={6} strokeWidth={2.2} />
       <path d="M3 6 L1 10 H5 Z M13 6 L11 10 H15 Z" />
       <line x1={8} y1={0.8} x2={8} y2={4} />
+    </svg>
+  );
+}
+/** A frame in three dimensions. */
+function Frame3DIcon() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" aria-hidden>
+      <path d="M2 14 V6 L6 3 H14 V11 L10 14 Z M2 6 H10 V14 M10 6 L14 3" />
+    </svg>
+  );
+}
+/** A plate on columns, its contours. */
+function PlateIcon() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" aria-hidden>
+      <path d="M1.5 5.5 L6 2.5 H14.5 L10 5.5 Z M1.5 5.5 V7 H10 V5.5 M10 7 L14.5 4 V2.5" />
+      <path d="M3 7 V14 M8.5 7 V14 M12.5 4.8 V11" strokeWidth={1.3} />
     </svg>
   );
 }
@@ -270,7 +290,7 @@ export function App() {
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python' || kind === 'frame3d' || kind === 'plate') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
@@ -284,6 +304,10 @@ export function App() {
       setTab('properties');
       setPanelOpen(true);
       setSketchUI({ ...INITIAL_SKETCH_UI, regionId: r.id, beamTool: 'member' });
+    }
+    if (kind === 'frame3d' || kind === 'plate') {
+      setTab('properties');
+      setPanelOpen(true);
     }
     if (kind === 'cad') {
       setTab('properties');
@@ -599,7 +623,7 @@ export function App() {
     const single = regs.length === 1;
     const res = evaluation.results.get(r.id);
     const items: MenuItem[] = [];
-    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python'].includes(r.kind);
+    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python', 'frame3d', 'plate'].includes(r.kind);
     if (single && editable && !r.disabled) {
       items.push({ label: 'Edit', icon: <Pencil size={14} />, shortcut: 'Enter', onClick: () => { setSelected(new Set([r.id])); setEditingId(r.id); } });
     }
@@ -691,7 +715,9 @@ export function App() {
       };
       items.push({ label: 'Export STEP…', icon: <Box size={14} />, onClick: save('step') }, { label: 'Export STL…', icon: <Box size={14} />, onClick: save('stl') });
     }
-    if (single && ['plot', 'image', 'sketch', 'cad', 'beam', 'drawing'].includes(r.kind)) {
+    if (single && r.kind === 'frame3d') items.push(...frame3dMenuItems(r, evaluation.results.get(r.id) as Frame3DResult | undefined, dispatch, setToast));
+    if (single && r.kind === 'plate') items.push(...plateMenuItems(r, evaluation.results.get(r.id) as PlateResult | undefined, dispatch, setToast));
+    if (single && ['plot', 'image', 'sketch', 'cad', 'beam', 'drawing', 'frame3d', 'plate'].includes(r.kind)) {
       items.push({ label: 'Properties…', icon: <SlidersHorizontal size={14} />, onClick: () => { setTab('properties'); setPanelOpen(true); } });
     }
     setMenu({ x, y, items });
@@ -712,6 +738,8 @@ export function App() {
             { label: 'Plot', icon: <LineChart size={14} />, shortcut: '@', onClick: ins('plot') },
             { label: 'Sketch', icon: <PencilRuler size={14} />, shortcut: '#', onClick: ins('sketch') },
             { label: 'Beam', icon: <BeamIcon />, onClick: ins('beam') },
+            { label: '3-D frame', icon: <Frame3DIcon />, onClick: ins('frame3d') },
+            { label: 'Plate / slab', icon: <PlateIcon />, onClick: ins('plate') },
             { label: 'CAD part', icon: <Box size={14} />, shortcut: '&', onClick: ins('cad') },
             { label: 'Python', icon: <Code2 size={14} />, shortcut: '`', onClick: ins('python') },
             { label: 'Solve block', icon: <ListChecks size={14} />, onClick: ins('solve') },
@@ -944,6 +972,8 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('plot')} title="Plot (type @ at the cursor)"><LineChart size={16} /> Plot</button>
           <button className="text-btn" onClick={() => addRegion('sketch')} title="Drawing: sketches, cross-sections, mechanisms (type # at the cursor)"><PencilRuler size={16} /> Sketch</button>
           <button className="text-btn" onClick={() => addRegion('beam')} title="Beam or frame: draw members, supports and loads, get reactions and N, V, M, deflection diagrams"><BeamIcon /> Beam</button>
+          <button className="text-btn" onClick={() => addRegion('frame3d')} title="3-D frame: nodes, members, sections, supports and loads in tables; reactions, displacements and N, V, T, M in space, second order and buckling"><Frame3DIcon /> 3-D frame</button>
+          <button className="text-btn" onClick={() => addRegion('plate')} title="Plate or slab: outline, openings, edge supports, walls, columns and loads; finite elements, contours of deflection, moments, shear and reinforcement"><PlateIcon /> Plate</button>
           <button className="text-btn" onClick={() => addRegion('cad')} title="Parametric CAD part: constrained sketch, dimensions from the worksheet, extrude/revolve, mass properties (type & at the cursor)"><Box size={16} /> CAD</button>
           <button className="text-btn" onClick={() => addRegion('python')} title="Python code: uses the worksheet variables above it and exports what it assigns, units included (type ` at the cursor)"><Code2 size={16} /> Python</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
@@ -1024,7 +1054,7 @@ export function App() {
             dispatch={dispatch}
             zoom={zoom}
             selected={selected}
-            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad' || r.kind === 'beam' || r.kind === 'drawing')) setTab('properties'); } }}
+            setSelected={(sel) => { setSelected(sel); if (sel.size === 1) { const r = ws.regions.find((q) => sel.has(q.id)); if (r && (r.kind === 'plot' || r.kind === 'image' || r.kind === 'sketch' || r.kind === 'cad' || r.kind === 'beam' || r.kind === 'drawing' || r.kind === 'frame3d' || r.kind === 'plate')) setTab('properties'); } }}
             editingId={editingId}
             setEditingId={setEditingId}
             cursor={cursor}

@@ -69,7 +69,7 @@ const LENGTH_TO_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3
 type Eval = (src: string) => unknown;
 
 /** An expression in the given dimension; bare numbers take the default unit. */
-function quantity(evalExpr: Eval, src: string, base: string, fallback: string, what: string): number {
+export function quantity(evalExpr: Eval, src: string, base: string, fallback: string, what: string): number {
   const v = evalExpr(src.trim() || '0');
   const u = typeof v === 'number' ? math.unit(v, fallback) : isUnit(v) ? (v as Unit) : null;
   if (!u) throw new Error(`${what}: expected a number`);

@@ -18,6 +18,9 @@ const SKIP = new Set([
   'profiles', 'points', 'a', 'b', 'p1', 'p2', 'cad', 'center', 'axis', 'axis2', 'plane', 'feature', 'tools', 'target', 'entities', 'ref',
 ]);
 
+/** Fields that hold an id or a list entry when they are text (a beam member's own `section` is an object of expressions). */
+const SKIP_TEXT = new Set(['section', 'case', 'profile', 'material', 'relA', 'relB', 'tab', 'support', 'outer']);
+
 const NAME_CHAR = /[\p{L}\p{N}_']/u;
 
 function escapeRe(s: string): string {
@@ -33,7 +36,7 @@ export function searchRegex(query: string, o: SearchOptions): RegExp | null {
 
 /** Call fn for every user string in a region; fn returns the replacement (or the same string). */
 function mapStrings(v: unknown, fn: (s: string) => string, key = ''): unknown {
-  if (typeof v === 'string') return SKIP.has(key) ? v : fn(v);
+  if (typeof v === 'string') return SKIP.has(key) || SKIP_TEXT.has(key) ? v : fn(v);
   if (Array.isArray(v)) {
     let changed = false;
     const out = v.map((x) => {

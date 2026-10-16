@@ -146,7 +146,7 @@ export function defaultCases(): BeamCases {
 }
 
 /** The case a load belongs to (loads without one are in the first case). */
-export function loadCase(l: BeamLoad, c: BeamCases): string {
+export function loadCase(l: { case?: string }, c: BeamCases): string {
   return l.case && c.cases.some((q) => q.id === l.case) ? l.case : c.cases[0]?.id ?? '';
 }
 
