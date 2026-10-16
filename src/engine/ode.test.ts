@@ -47,6 +47,8 @@ describe('damped oscillator', () => {
     if (method === 'auto') {
       expect(s.stiffAt).toBeUndefined();
       expect(s.kinds.filter((k) => k === 'radau').length).toBeLessThan(0.1 * s.steps);
+      // and they cost little: within 5 % of Dormand–Prince alone
+      expect(s.evals).toBeLessThan(1.05 * solveIvp(f, 0, [y0, 0], 10, { method: 'dopri', rtol: 1e-9 }).evals);
     }
   });
 });
