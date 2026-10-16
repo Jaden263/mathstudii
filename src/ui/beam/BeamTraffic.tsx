@@ -105,11 +105,13 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
     const p = PRESETS.find((q) => q.preset === preset)!;
     const ml = movingLoad(preset, freeName(p.name, [...tr.loads.map((l) => l.name), ...(region.loadCases?.cases.map((c) => c.name) ?? [])]));
     const patch: Partial<BeamRegion> = {};
-    // in the combinations as a variable action: γ_Q 1.35 for road traffic (EN 1990 A2), else 1.5; 1 at SLS.
-    // Not where another moving load already acts: their extremes would add (alternatives, as a rule)
+    // in the combinations as a variable action: γ_Q 1.35 for road traffic (EN 1990 A2) and cranes
+    // (EN 1991-3 A.2), else 1.5; 1 at SLS. Not where another moving load already acts: their
+    // extremes would add (alternatives, as a rule)
     const lc = region.loadCases;
     const acting = (c: BeamCombo) => tr.loads.some((l) => c.factors[l.id]?.trim() && Number(c.factors[l.id]) !== 0);
-    if (lc) patch.loadCases = { ...lc, combos: lc.combos.map((c) => (acting(c) ? c : { ...c, factors: { ...c.factors, [ml.id]: c.kind === 'SLS' ? '1' : preset === 'lm1' ? '1.35' : '1.5' } })) };
+    const gammaQ = preset === 'lm1' || preset === 'crane' ? '1.35' : '1.5';
+    if (lc) patch.loadCases = { ...lc, combos: lc.combos.map((c) => (acting(c) ? c : { ...c, factors: { ...c.factors, [ml.id]: c.kind === 'SLS' ? '1' : gammaQ } })) };
     onChange({ ...patch, traffic: { ...tr, loads: [...tr.loads, ml] } });
   };
 

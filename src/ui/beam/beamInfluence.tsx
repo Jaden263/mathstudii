@@ -6,6 +6,7 @@ import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import type { TrafficMoving } from '../../beam/traffic';
 import type { BeamData } from '../../beam/model';
+import { ilValue } from '../../beam/influence';
 import { Arrow, LENGTH_M, fmt, toS, units, type P2, type Vp } from './beamDraw';
 import { lineTitle, ordinateUnit, ordinateValue, trainUnit } from './BeamTraffic';
 
@@ -79,17 +80,10 @@ export function InfluencePanels({ r, d, res, vp, top, h, width, train }: {
           kept.push({ x: lx, y: ly, t, i: c.i });
         }
         const at = line.xs !== undefined ? X(line.xs) : def.support ? X((d.nodes.find((q) => q.id === r.supports.find((s) => s.id === def.support)?.node)?.x ?? 0) * Lm) : null;
-        // the train on this line: Σ P η, axle by axle (those off the path count nothing)
-        const axles = train?.filter((a) => a.x >= line.x[0] - 1e-9 && a.x <= line.x[line.x.length - 1] + 1e-9).map((a) => {
-          let v = 0;
-          for (let i = 0; i + 1 < line.x.length; i++) {
-            if (a.x < line.x[i] - 1e-9 || a.x > line.x[i + 1] + 1e-9) continue;
-            const span = line.x[i + 1] - line.x[i];
-            v = span > 0 ? vals[i] + ((vals[i + 1] - vals[i]) * (a.x - line.x[i])) / span : vals[i + 1];
-            break;
-          }
-          return { ...a, v };
-        });
+        // the train on this line: Σ P η, axle by axle (those off the path count nothing), read
+        // exactly between positions as the worksheet does
+        const axles = train?.filter((a) => a.x >= line.x[0] - 1e-9 && a.x <= line.x[line.x.length - 1] + 1e-9)
+          .map((a) => ({ ...a, v: ordinateValue(r, line.quantity, ilValue(line, a.x)) }));
         const sum = axles?.reduce((acc, a) => acc + (a.P / u.forceN) * a.v, 0);
         return (
           <g key={line.id} className="bm-panel IL">

@@ -434,8 +434,9 @@ settlements are prescribed displacements; both are checked against closed-form r
   fixed-end forces of the load on its member, so members stay whole and the ordinates
   are exact at every position (the forces along members come from statics). Positions
   are every Δx along x (automatic: a round step near 1/200 of the path that the axle
-  spacings divide; a step asked for is kept between 1/10 of the path and 600 positions),
-  plus member ends and the sections asked for.
+  spacings divide, on a long path a whole fraction of the spacing such as 0.6 m for LM1;
+  a step asked for is kept between 1/10 of the path and 600 positions), plus member ends
+  and the sections asked for.
 - **Moving loads:** a point load; **EN 1991-2 Load Model 1** for one notional lane
   (tandem 2 × α_Q·300 kN at 1.2 m and α_q·9 kN/m² × the lane width, α = 1 by default);
   a crane (two wheels P at a); or any axle train with a uniform load. A train stops with
@@ -450,11 +451,12 @@ settlements are prescribed displacements; both are checked against closed-form r
 - **In the combinations** each moving load has a factor column next to the load cases;
   a combination then has two bounds: its static solution plus the factored moving
   extreme at each station (the overall envelope includes both). A new moving load gets a
-  factor (1.35 for LM1, else 1.5; 1 at SLS) only in the combinations that have no moving
-  load yet; several moving loads in one combination add their extremes (on the safe
-  side, not position by position). Moving loads are linear: with
-  second order on, they are added to the second-order static part as first-order
-  results, and buckling sees the static loads only.
+  factor (1.35 for LM1 and cranes, else 1.5; 1 at SLS) only in the combinations that
+  have no moving load yet; several moving loads in one combination add their extremes
+  (on the safe side, not position by position). Moving loads are linear: with second
+  order on, they are added to the second-order static part as first-order results, and
+  buckling sees the static loads only. If the moving-load analysis fails (say the load
+  path is not one chain), the region says so and the combinations go on without them.
 - **The strip** picks a moving load's envelope like a combination; **Train** places the
   train on the structure with a slider (and a direction button): the diagrams become
   those of the train at that position, and the influence-line panels mark each axle
