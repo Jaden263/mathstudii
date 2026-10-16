@@ -3,7 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import type { KernelCall, KernelReply } from '../../cad/kernel/protocol';
 import type { CadResult } from '../../cad/evaluate';
-import { isSuperseded, kernelHostStopped, kernelRequest, setKernelHost, waitingFor } from './kernelClient';
+import type { BuildResult } from '../../cad/buildResult';
+import { displayDelay, isSuperseded, kernelHostStopped, kernelRequest, receiveDisplay, setKernelHost, waitingFor } from './kernelClient';
 
 /** A stand-in worker that answers section requests with their offset after `ms`. */
 function fakeWorker(ms = 5) {
@@ -80,5 +81,21 @@ describe('kernel requests from the UI', () => {
     // nothing could build it: no build is coming
     expect(waitingFor(res(), 'd1', { missing: true, kernelUp: true })).toBe('none');
     expect(waitingFor(res(), undefined, up)).toBe('none');
+  });
+
+  it('display data dropped from the cache is asked for at once, not waited for', () => {
+    const b = (): BuildResult => ({ kernel: 'brep', components: {}, placements: {}, errors: {} });
+    // the cache keeps 24 designs: the 25th that arrives drops the oldest
+    for (let i = 0; i < 25; i++) receiveDisplay({ display: [[`k${i}`, b()]] });
+    // the calculation worker sent k0 once and will not again; k24 it may still be sending
+    expect(displayDelay('k0', true)).toBe(0);
+    expect(displayDelay('k24', true)).toBe(1500);
+    expect(displayDelay('new', true)).toBe(1500);
+    // a CAD window's own worker sends nothing by itself: it is always asked at once
+    expect(displayDelay('k24', false)).toBe(0);
+    // back in the cache, k0 is no longer missing; k1 was dropped for it
+    receiveDisplay({ display: [['k0', b()]] });
+    expect(displayDelay('k0', true)).toBe(1500);
+    expect(displayDelay('k1', true)).toBe(0);
   });
 });

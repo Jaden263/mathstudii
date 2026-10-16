@@ -127,7 +127,8 @@ export function pickGeometry(build: BuildResult, design: CadDesign, p: Pick): Pi
   const pt = (q: Vec3): Vec3 => [M[0] * q[0] + M[4] * q[1] + M[8] * q[2] + M[12], M[1] * q[0] + M[5] * q[1] + M[9] * q[2] + M[13], M[2] * q[0] + M[6] * q[1] + M[10] * q[2] + M[14]];
   const g: PickGeometry = { pick: p, info, M };
   if ('frame' in info && info.frame) Object.assign(g, { dir: norm3(m4Dir(M, info.frame.n)), p: pt(info.frame.o), normal: true });
-  else if ('axis' in info && info.axis) Object.assign(g, { dir: norm3(m4Dir(M, info.axis.d)), p: pt(info.axis.p) });
+  // a sphere's "axis" only carries its centre: it has no direction to stand in an angle
+  else if ('axis' in info && info.axis && info.type !== 'sphere') Object.assign(g, { dir: norm3(m4Dir(M, info.axis.d)), p: pt(info.axis.p) });
   else if ('line' in info && info.line) Object.assign(g, { dir: norm3(m4Dir(M, sub3(info.line.b, info.line.a))), p: pt(info.line.a) });
   // a circle stands for its plane: parallel to a face it lies in, its gap to it along the normal
   else if ('circle' in info && info.circle) Object.assign(g, { dir: norm3(m4Dir(M, info.circle.axis)), p: pt(info.circle.c), normal: true });

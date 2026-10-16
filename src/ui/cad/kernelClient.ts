@@ -129,10 +129,31 @@ const missing = new Set<string>();
 const listeners = new Set<() => void>();
 let version = 0;
 
+/**
+ * Designs whose display data was dropped to keep the cache small: the calculation worker
+ * sent it once and will not send it again, so a view going back to one asks at once.
+ */
+const dropped = new Set<string>();
+
 function put(key: string, b: BuildResult) {
   shown.delete(key);
+  dropped.delete(key);
   shown.set(key, b);
-  while (shown.size > SHOWN) shown.delete(shown.keys().next().value!);
+  while (shown.size > SHOWN) {
+    const old = shown.keys().next().value!;
+    shown.delete(old);
+    dropped.add(old);
+  }
+  for (const k of dropped) if (dropped.size > 256) dropped.delete(k);
+}
+
+/**
+ * How long a view without display data waits before asking the kernel: in the worksheet
+ * window the calculation worker sends it right after the results (unless it was sent
+ * before and dropped since); a CAD window of its own asks at once.
+ */
+export function displayDelay(key: string, worksheet = !!host): number {
+  return worksheet && !dropped.has(key) ? 1500 : 0;
 }
 
 function changed() {
@@ -184,7 +205,7 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
     if (!key || !dr || build || result?.needsBrep || missing.has(key)) return;
     let live = true;
     // the calculation worker sends display data right after the results: ask only when it
-    // did not come (or in a CAD window of its own)
+    // did not come (or in a CAD window of its own, or when it came and was dropped)
     const t = window.setTimeout(() => {
       const numbers = designNumbers(dr);
       // a part edited since this result was made waits for its own result (a build of the
@@ -195,7 +216,7 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
         else missing.add(key);
         if (live) changed();
       }, () => {});
-    }, host ? 1500 : 0);
+    }, displayDelay(key));
     return () => {
       live = false;
       window.clearTimeout(t);

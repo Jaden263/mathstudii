@@ -6,6 +6,7 @@ import { occ } from './occ/kernel';
 import { buildResultOcc } from './occ/result';
 import { meshBuildResult, type BuildResult } from './buildResult';
 import type { CadDesign } from './design';
+import type { CadSketch } from './model';
 import { displayMesh, weldedMesh } from './display';
 import { kernel } from './solid';
 import { pickGeometry, pickId, pickOf, polylineMid, relation, resolveSelection, select } from './selection';
@@ -141,5 +142,24 @@ describe('selection', () => {
     const t = relation(g(top), g(pickOf(b, d, 'edge', 'o1', 'f1', rim)!));
     expect(t.angle).toBeCloseTo(0, 12);
     near(t.gap!, 10);
+  });
+
+  it('a sphere has no direction: no angle or gap against a face', () => {
+    // a half disc of r = 10 on the x axis, revolved about it: a ball (area 4πr²)
+    const half: CadSketch = {
+      points: [{ id: 'c', x: 0, y: 0 }, { id: 'a', x: 10, y: 0 }, { id: 'b', x: -10, y: 0 }],
+      entities: [{ id: 'arc', type: 'arc', c: 'c', p1: 'a', p2: 'b' }, { id: 'l', type: 'line', p1: 'b', p2: 'a' }],
+      constraints: [],
+    };
+    const ball = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: half },
+      { kind: 'revolve', id: 'f1', name: 'Ball', sketch: 's1', axis: 'x', angle: '360', op: 'new' },
+    ]);
+    const bb = built(ball);
+    const sphere = bb.components.c1.bodies[0].faces.find((f) => f.type === 'sphere')!;
+    near(sphere.area, 4 * PI * 100, 1e-6);
+    const g = pickGeometry(bb, ball, pickOf(bb, ball, 'face', 'o1', 'f1', sphere.index)!)!;
+    expect(g.dir).toBeUndefined();
+    expect(relation(g, pickGeometry(b, d, top)!)).toEqual({});
   });
 });

@@ -529,7 +529,8 @@ bevels them, and a few borderline roundings one kernel accepts the other refuses
 shaded, and edges are the true edges as crisp lines (no seams). In the CAD window:
 
 - **Picking:** faces and edges light up under the pointer; edges within 5 px win.
-- **Selection:** click picks a face or edge, Shift-click adds one or takes it out again.
+- **Selection:** click picks a face or edge, Shift-click adds one or takes it out again,
+  Esc clears it.
 - **Inspector:** shows what is picked:
   - surface or curve type, area, radius / diameter, axis, normal, length
   - totals for several picks
@@ -548,7 +549,8 @@ shaded, and edges are the true edges as crisp lines (no seams). In the CAD windo
 - **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
   POLYLINE with bulges).
 - **STEP AP214:** exact solids with names, colours and the assembly structure.
-- **STL:** binary, tessellated finely from the exact surfaces.
+- **STL:** binary, tessellated finely from the exact surfaces, always in millimetres (STL
+  has no units, and slicers read millimetres), whatever the part's unit.
 
 STEP and STL are on the CAD window's **File** tab and in the part's right-click menu.
 They download in the browser and open a save dialog in the desktop app.

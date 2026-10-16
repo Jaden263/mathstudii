@@ -692,6 +692,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) onRedo(); else onUndo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); onRedo(); }
     else if (e.key === 'Escape' && dialog) closeDialog(false);
+    else if (e.key === 'Escape' && !sketchId && picks.length) setPicks([]);
     else if (!sketchId && !dialog && !mod && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 'e') startFeature('extrude');

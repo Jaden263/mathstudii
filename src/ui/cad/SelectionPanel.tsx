@@ -49,6 +49,14 @@ function facts(info: FaceInfo | EdgeInfo, M: number[], u: string): [string, stri
 
 const asRef = (p: Pick): EntityRef => ({ kind: p.kind, occ: p.occ, body: p.body, index: p.index });
 
+/** The occurrence a pick is in, named as in the browser; only said in an assembly (bodies share names). */
+function occurrenceName(design: CadDesign, id: string): string {
+  const o = design.occurrences.find((q) => q.id === id);
+  if (!o || design.occurrences.length < 2) return '';
+  const c = design.components.find((q) => q.id === o.component);
+  return o.name || `${c?.name ?? '?'}:${design.occurrences.filter((q) => q.component === o.component).indexOf(o) + 1}`;
+}
+
 export function SelectionPanel({ picks, build, design, result, unit, onBody, onClear }: {
   picks: Selection; build: BuildResult; design: CadDesign; result?: CadResult; unit: string;
   onBody: (occ: string, body: string) => void; onClear: () => void;
@@ -80,9 +88,10 @@ export function SelectionPanel({ picks, build, design, result, unit, onBody, onC
           const info = p.kind === 'face' ? b?.faces[p.index] : b?.edges[p.index];
           const M = build.placements[p.occ]?.matrix;
           if (!b || !info || !M) return null;
+          const occ = occurrenceName(design, p.occ);
           return (
             <li key={pickId(p)}>
-              <div className="cadw-sel-title">{pickLabel(p)} <em>on <button className="link" onClick={() => onBody(p.occ, p.body)}>{b.name}</button></em></div>
+              <div className="cadw-sel-title">{pickLabel(p)} <em>on <button className="link" onClick={() => onBody(p.occ, p.body)}>{b.name}</button>{occ && ` · ${occ}`}</em></div>
               <table className="props-table"><tbody>
                 {facts(info, M, u).map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}
               </tbody></table>
