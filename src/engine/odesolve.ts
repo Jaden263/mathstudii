@@ -10,7 +10,8 @@ import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { parseExpr, transformForEval, freeSymbols } from './compile';
 import { isIdentifier, splitTop, findTop, findEvalEquals, parseLhs } from './syntax';
 import { tick } from './library';
-import { solveIvp, type OdeMethod, type OdeSolution } from './ode';
+import type { OdeMethod } from './ode';
+import { solveBvp, solveFromPoint } from './bvp';
 import * as N from './numeric';
 
 type AnyNode = MathNode & Record<string, unknown>;
@@ -461,44 +462,15 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
   } else if (conds.length !== needed.length) {
     throw new Error(`The equations need ${needed.length} conditions (${needed.map(({ j, k }) => derivName(names[j], k)).join(', ')} at some points); there are ${conds.length}`);
   }
-  // shoot from the point with the most conditions
-  const start = groups.reduce((a, b) => (b.conds.length > a.conds.length || (b.conds.length === a.conds.length && b.point < a.point) ? b : a));
-  const others = conds.filter((c) => !start.conds.includes(c));
   const lo = Math.min(endV.value, ...groups.map((g) => g.point));
   const hi = Math.max(endV.value, ...groups.map((g) => g.point));
   if (lo === hi) throw new Error(`odesolve: the interval is empty (the end ${call.end.trim()} is the starting point)`);
-  const freeIdx = needed.filter(({ j, k }) => !start.conds.some((c) => c.j === j && c.k === k)).map(({ j, k }) => offset[j] + k);
-  const Y0base = new Array(dim).fill(0);
-  for (const c of start.conds) Y0base[offset[c.j] + c.k] = c.value;
-
-  let useMethod = method;
-  interface Pieces { fwd: OdeSolution | null; bwd: OdeSolution | null; peak: number[] }
-  const integrate = (x: number[], mesh?: Pieces): Pieces => {
-    const Y0 = Y0base.slice();
-    freeIdx.forEach((i, q) => (Y0[i] = x[q]));
-    const go = (t1: number, prev: OdeSolution | null) => {
-      if (t1 === start.point) return null;
-      const opts = { method: useMethod, rtol, steps, ...(prev ? { mesh: prev.ts } : {}) };
-      const sol = solveIvp(rhs, start.point, Y0, t1, opts);
-      // a switch to the stiff solver mid-way would not replay: solve stiff throughout
-      if (!prev && sol.stiffAt !== undefined && freeIdx.length) {
-        useMethod = 'radau';
-        return solveIvp(rhs, start.point, Y0, t1, { ...opts, method: 'radau' });
-      }
-      return sol;
-    };
-    const fwd = go(hi, mesh?.fwd ?? null);
-    const bwd = go(lo, mesh?.bwd ?? null);
-    const peak = Y0.map(Math.abs);
-    for (const s of [fwd, bwd]) if (s) for (const y of s.ys) y.forEach((v, i) => (peak[i] = Math.max(peak[i], Math.abs(v))));
-    return { fwd, bwd, peak };
-  };
-  const stateAt = (p: Pieces, t: number): number[] => {
-    const s = t >= start.point ? p.fwd ?? p.bwd : p.bwd ?? p.fwd;
-    return s ? s.at(t) : Y0base.slice();
-  };
-  const miss = (p: Pieces) => others.map((c) => stateAt(p, c.point)[offset[c.j] + c.k] - c.value);
-  const pieces = freeIdx.length ? shoot(integrate, miss, others, freeIdx, offset, rtol, names) : integrate([]);
+  const shooting = { method, rtol, steps, names: names.join(', ') };
+  const pointConds = groups.flatMap((g) => g.conds.map((c) => ({ i: offset[c.j] + c.k, point: g.point, value: c.value })));
+  const solution = groups.length === 1
+    ? solveFromPoint(rhs, groups[0].point, pointConds.reduce((y, c) => ((y[c.i] = c.value), y), new Array(dim).fill(0)), lo, hi, shooting)
+    : solveBvp(rhs, dim, pointConds, lo, hi, shooting);
+  const stateAt = (t: number) => solution.at(t);
 
   // the solution functions
   const tq = (v: unknown, name: string): number => {
@@ -514,13 +486,13 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
   const at = (j: number, k: number, v: unknown): unknown => {
     const name = derivName(names[j], k);
     const t = tq(v, name);
-    const Y = stateAt(pieces, t);
+    const Y = stateAt(t);
     if (k < order[j]) return quantity(Y[offset[j] + k], units[j][k]);
     if (k === order[j]) return quantity(highest(t, Y)[j], units[j][k]);
     if (k - order[j] > 4) throw new Error(`${name}: derivatives beyond order ${order[j] + 4} are not available`);
     // beyond the equations' order: differentiate the highest derivative numerically
     const clamp = (s: number) => Math.min(hi, Math.max(lo, s));
-    const d = N.derivative((s) => highest(clamp(s), stateAt(pieces, clamp(s)))[j], t, k - order[j]);
+    const d = N.derivative((s) => highest(clamp(s), stateAt(clamp(s)))[j], t, k - order[j]);
     return quantity(d, per(yUnit[j] ?? null, tUnit, k));
   };
   const functions = names.map((name, j) => {
@@ -532,75 +504,6 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
     return f;
   });
   return { functions, unknowns: names };
-}
-
-/** Newton on the unknown starting values until the conditions at the other points hold. */
-function shoot<P extends { peak: number[] }>(
-  integrate: (x: number[], mesh?: P) => P,
-  miss: (p: P) => number[],
-  others: Condition[],
-  freeIdx: number[],
-  offset: number[],
-  rtol: number,
-  names: string[],
-): P {
-  const m = freeIdx.length;
-  let x = new Array(m).fill(0);
-  let cur = integrate(x);
-  let r = miss(cur);
-  const scaleOf = (p: P) => others.map((c) => Math.max(Math.abs(c.value), p.peak[offset[c.j] + c.k], 1e-300));
-  const norm = (rv: number[], p: P) => {
-    const sc = scaleOf(p);
-    return Math.max(...rv.map((v, i) => Math.abs(v) / sc[i]));
-  };
-  let nr = norm(r, cur);
-  const goal = Math.max(1e-10, 50 * rtol);
-  for (let it = 0; it < 30 && nr > goal; it++) {
-    // sensitivities on the same mesh, so that the map from x to r is smooth
-    const J: number[][] = r.map(() => new Array(m).fill(0));
-    for (let q = 0; q < m; q++) {
-      const sig = cur.peak[freeIdx[q]] || 1;
-      const d = 1e-6 * Math.max(Math.abs(x[q]), sig);
-      const xp = x.slice();
-      xp[q] += d;
-      let rp: number[];
-      try {
-        rp = miss(integrate(xp, cur));
-      } catch {
-        rp = miss(integrate(xp));
-      }
-      for (let i = 0; i < r.length; i++) J[i][q] = (rp[i] - r[i]) / d;
-    }
-    let dx: number[];
-    try {
-      dx = N.solveLinear(J, r.map((v) => -v));
-    } catch {
-      throw new Error('The boundary conditions do not determine the solution (they may contradict each other)');
-    }
-    let lambda = 1;
-    let accepted = false;
-    for (let ls = 0; ls < 10; ls++) {
-      const xn = x.map((v, q) => v + lambda * dx[q]);
-      try {
-        const pn = integrate(xn);
-        const rn = miss(pn);
-        const nn = norm(rn, pn);
-        if (nn < nr || ls === 9) {
-          x = xn; cur = pn; r = rn; nr = nn;
-          accepted = true;
-          break;
-        }
-      } catch {
-        /* overshoot: try a shorter step */
-      }
-      lambda /= 2;
-    }
-    if (!accepted) break;
-  }
-  if (!(nr <= goal * 10)) {
-    throw new Error(`The boundary conditions could not be met (shooting on ${freeIdx.length} unknown starting value${freeIdx.length === 1 ? '' : 's'} of ${names.join(', ')} did not converge)`);
-  }
-  return cur;
 }
 
 /**

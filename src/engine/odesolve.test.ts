@@ -97,6 +97,17 @@ describe('odesolve: initial value problems', () => {
     ];
     for (const t of [3.3, 9, 15]) expect(last([...lv, `abs(V(X(${t}), Y(${t})) / V(10, 5) - 1) =`])).toBeLessThan(1e-6);
   });
+  it('a forced stiff equation with units at the default tolerance', () => {
+    // τ y′ = cos(ω t) · 1 m − y, τ = 1 ms, ω = 1/s, y(0) = 0: y = (cos ωt + ωτ sin ωt − e^(−t/τ)) / (1 + ω²τ²) · 1 m
+    const lines = [
+      'τ := 1 ms', 'ω := 1 / s',
+      block("τ * y'(t) = cos(ω * t) * 1 m - y(t)\ny(0 s) = 0 m", 'y := odesolve(t, 100 s)'),
+      'y_e(t) := (cos(ω t) + ω τ sin(ω t) - exp(-t / τ)) / (1 + (ω τ)^2) * 1 m',
+    ];
+    const t0 = performance.now();
+    for (const t of ['0.002 s', '1 s', '50 s', '100 s']) expect(last([...lines, `abs(y(${t}) - y_e(${t})) / 1 m =`]), t).toBeLessThan(1e-7);
+    expect(performance.now() - t0).toBeLessThan(10000);
+  }, 20000);
   it('stiff Van der Pol (μ = 1000) is detected and solved within the time budget', () => {
     // relaxation period T ≈ (3 − 2 ln 2) μ + 3·2.33811 μ^(−1/3) = 1614.4 (Dorodnitsyn)
     const vdp = ['μ := 1000', block("y''(t) - μ*(1 - y(t)^2)*y'(t) + y(t) = 0\ny(0) = 2\ny'(0) = 0", 'y := odesolve(t, 3000)')];
@@ -132,6 +143,26 @@ describe('odesolve: boundary value problems (shooting)', () => {
     // y = −2 ln(cosh((x − ½) θ/2) / cosh(θ/4)) with θ = √2 cosh(θ/4) (θ ≈ 1.5171645990507543)
     const b = [block("y''(x) = -exp(y(x))\ny(0) = 0\ny(1) = 0", 'y := odesolve(x, 1)'), 'θ := 1.5171645990507543'];
     expect(last([...b, 'abs(y(0.5) - (-2*ln(1/cosh(θ/4)))) ='])).toBeLessThan(1e-8);
+  });
+  it('a long beam on an elastic foundation (multiple shooting)', () => {
+    // EI y⁗ + k y = q, simply supported: y(x) = Σ_(n odd) 4q/(nπ) sin(nπx/L) / (EI (nπ/L)⁴ + k) (Hetényi);
+    // λL = L (k/4EI)^¼ = 27.6, so single shooting would see the integration error grow by e^27.6
+    const found = [
+      'q := 20 kN/m', 'EI := 210 GPa * 8360 cm^4', 'k_s := 50 MPa', 'L := 30 m',
+      block("EI * y''''(x) + k_s * y(x) = q\ny(0) = 0\ny(L) = 0\ny''(0) = 0\ny''(L) = 0", 'y := odesolve(x, L)'),
+      'y_F(x) := sum(4 q / ((2 j + 1) π) * sin((2 j + 1) π x / L) / (EI * ((2 j + 1) π / L)^4 + k_s), j, 0, 3000)',
+    ];
+    const t0 = performance.now();
+    for (const x of ['1 m', '3.3 m', '15 m']) expect(last([...found, `abs(y(${x}) - y_F(${x})) / (q / k_s) =`]), x).toBeLessThan(1e-6);
+    expect(performance.now() - t0).toBeLessThan(15000);
+    // far from the supports the beam just rests on the foundation: y = q/k
+    expect(last([...found, 'y(L/2) = mm'])).toBeCloseTo(0.4, 6);
+  }, 30000);
+  it('says when the conditions cannot be met', () => {
+    // Bratu y″ = −λ e^y, y(0) = y(1) = 0 has no solution for λ > 3.5138 (the fold)
+    expect(solverError([block("y''(x) = -4*exp(y(x))\ny(0) = 0\ny(1) = 0", 'y := odesolve(x, 1)')])).toMatch(/could not be met/);
+    // y″ + y = 0 with y(0) = 0 and y(π) = 1: every solution through the origin vanishes at π
+    expect(solverError([block("y''(x) + y(x) = 0\ny(0) = 0\ny(π) = 1", 'y := odesolve(x, π)')])).toMatch(/do not determine/);
   });
 });
 

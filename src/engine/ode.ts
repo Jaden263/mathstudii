@@ -10,6 +10,8 @@ export type Rhs = (t: number, y: number[]) => number[];
 /** ∂f/∂y as an n×n matrix. */
 export type Jacobian = (t: number, y: number[]) => number[][];
 export type OdeMethod = 'auto' | 'dopri' | 'radau' | 'rk4' | 'bs';
+/** The method that took a step. */
+export type StepKind = 'dopri' | 'radau' | 'rk4' | 'bs';
 
 export interface OdeOptions {
   /** auto = Dormand–Prince, switching to Radau when the problem turns out stiff. */
@@ -22,6 +24,8 @@ export interface OdeOptions {
   jac?: Jacobian;
   /** Replay these mesh points (t0 … t1) without error control, e.g. for finite-difference sensitivities. */
   mesh?: number[];
+  /** The method of each replayed step (a solution's kinds); default Dormand–Prince, or Radau for method radau. */
+  meshKinds?: StepKind[];
   /** Points to land on exactly (Bulirsch–Stoer output points). */
   stops?: number[];
   maxSteps?: number;
@@ -40,6 +44,8 @@ export interface OdeSolution {
   ts: number[];
   ys: number[][];
   segments: Segment[];
+  /** The method of each step (segment). */
+  kinds: StepKind[];
   /** Dense output anywhere between t0 and t1. */
   at(t: number): number[];
   steps: number;
@@ -69,9 +75,10 @@ function finite(v: number[]): boolean {
 
 /** Error weights: each component relative to the largest value it has had (atol a floor). */
 class Scale {
+  /** Shared by the methods of one run, so that a switch keeps the tolerance. */
   readonly peak: number[];
-  constructor(y0: number[], readonly rtol: number, readonly atol: number[]) {
-    this.peak = y0.map(Math.abs);
+  constructor(peak: number[], readonly rtol: number, readonly atol: number[]) {
+    this.peak = peak;
   }
   weights(y: number[], yn?: number[]): number[] {
     return y.map((v, i) => {
@@ -89,6 +96,7 @@ class Run {
   ts: number[];
   ys: number[][];
   segments: Segment[] = [];
+  kinds: StepKind[] = [];
   steps = 0;
   rejected = 0;
   evals = 0;
@@ -96,6 +104,7 @@ class Run {
   stiffAt?: number;
   readonly dir: number;
   readonly span: number;
+  readonly peak: number[];
   readonly f: Rhs;
   readonly maxSteps: number;
 
@@ -110,6 +119,7 @@ class Run {
     this.span = Math.abs(t1 - t0);
     this.ts = [t0];
     this.ys = [y0.slice()];
+    this.peak = y0.map(Math.abs);
     this.maxSteps = opts.maxSteps ?? 2e6;
   }
 
@@ -117,10 +127,11 @@ class Run {
     return this.opts.steps ? this.span / this.opts.steps : this.span;
   }
 
-  push(t: number, y: number[], seg: Segment) {
+  push(t: number, y: number[], seg: Segment, kind: StepKind) {
     this.ts.push(t);
     this.ys.push(y);
     this.segments.push(seg);
+    this.kinds.push(kind);
     if (++this.steps > this.maxSteps) throw new Error('ODE solver: too many steps');
   }
 
@@ -151,7 +162,7 @@ class Run {
       return segs[a].at(t);
     };
     return {
-      t0: this.t0, t1: this.t1, ts: this.ts, ys: this.ys, segments: segs, at,
+      t0: this.t0, t1: this.t1, ts: this.ts, ys: this.ys, segments: segs, kinds: this.kinds, at,
       steps: this.steps, rejected: this.rejected, evals: this.evals, methods: this.methods, stiffAt: this.stiffAt,
     };
   }
@@ -212,20 +223,63 @@ function dopriSegment(t: number, h: number, r1: number[], r2: number[], r3: numb
   };
 }
 
-/** Returns where it stopped: t1, or the point where the problem was found stiff (auto mode). */
-function dopri(run: Run, t: number, y: number[], detectStiff: boolean): { t: number; y: number[] } {
+/** Where a stepper stopped and the step size it was taking (mean of its last steps). */
+interface Leg {
+  t: number;
+  y: number[];
+  /** end: reached t1 (or the end of the mesh); stiff: found stiff; trial: time to try the implicit method. */
+  stop: 'end' | 'stiff' | 'trial';
+  h: number;
+}
+
+function median(v: number[]): number {
+  if (!v.length) return 0;
+  const s = v.slice().sort((a, b) => a - b);
+  return s[s.length >> 1];
+}
+
+/** Mean of the last few accepted step sizes. */
+class RecentSteps {
+  private hs: number[] = [];
+  constructor(private readonly size: number) {}
+  add(h: number) {
+    this.hs.push(Math.abs(h));
+    if (this.hs.length > this.size) this.hs.shift();
+  }
+  mean(): number {
+    return this.hs.length ? this.hs.reduce((a, b) => a + b, 0) / this.hs.length : 0;
+  }
+}
+
+interface StepperOptions {
+  /** Replay these points (from the current t) without error control. */
+  mesh?: number[];
+  /** Stop as stiff on Hairer's test (h|λ| at the stability boundary for 15 steps). */
+  detectStiff?: boolean;
+  /** Stop for a trial of the implicit method after this many accepted steps. */
+  trialAfter?: number;
+  /** Stop after this many accepted steps. */
+  maxSteps?: number;
+  /** First step size to try (default: Hairer's estimate). */
+  h0?: number;
+}
+
+function dopri(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
   const n = y.length;
   const rtol = run.opts.rtol ?? 1e-9;
   const atol = atolArray(run.opts, n);
-  const scale = new Scale(y, rtol, atol);
+  const scale = new Scale(run.peak, rtol, atol);
   run.methods.push('Dormand–Prince 5(4)');
-  const mesh = run.opts.mesh;
+  const { mesh, detectStiff } = o;
+  const recent = new RecentSteps(20);
+  let taken = 0;
   let mi = 1;
   let k1 = run.f(t, y);
   if (!finite(k1)) throw new Error(`ODE solver: the derivative is not finite at t = ${t.toPrecision(6)}`);
-  let h = mesh ? 0 : initialStep(run, t, y, k1, 5, rtol, atol);
+  let h = mesh ? 0 : o.h0 || initialStep(run, t, y, k1, 5, rtol, atol);
   let facmax = 5;
   let stiffCount = 0, nonStiff = 0;
+  const hls: number[] = []; // the last h|λ| estimates
   const k: number[][] = new Array(7);
   const ys = new Array(n);
   while (run.dir * (run.t1 - t) > 0) {
@@ -272,7 +326,9 @@ function dopri(run: Run, t: number, y: number[], detectStiff: boolean): { t: num
         r5[i] = hs * acc;
       }
       const tn = mesh ? mesh[mi++] : Math.abs(run.t1 - t - hs) <= EPS * Math.abs(run.t1) ? run.t1 : t + hs;
-      run.push(tn, y5, dopriSegment(t, tn - t, y.slice(), r2, r3, r4, r5));
+      run.push(tn, y5, dopriSegment(t, tn - t, y.slice(), r2, r3, r4, r5), 'dopri');
+      recent.add(tn - t);
+      taken++;
       // stiffness test: h·|λ| ≈ h‖f(y5) − f(ysti)‖ / ‖y5 − ysti‖ near DOPRI5's stability boundary
       if (detectStiff) {
         let num = 0, den = 0;
@@ -281,12 +337,11 @@ function dopri(run: Run, t: number, y: number[], detectStiff: boolean): { t: num
           den += (y5[i] - ysti[i]) ** 2;
         }
         const hl = den > 0 ? Math.abs(hs) * Math.sqrt(num / den) : 0;
+        hls.push(hl);
+        if (hls.length > 21) hls.shift();
         if (hl > 3.25) {
           nonStiff = 0;
-          if (++stiffCount >= 15) {
-            run.stiffAt = tn;
-            return { t: tn, y: y5 };
-          }
+          if (++stiffCount >= 15) return { t: tn, y: y5, stop: 'stiff', h: recent.mean() };
         } else if (++nonStiff >= 6) stiffCount = 0;
       }
       t = tn;
@@ -296,13 +351,18 @@ function dopri(run: Run, t: number, y: number[], detectStiff: boolean): { t: num
       const fac = err === 0 ? facmax : Math.min(facmax, Math.max(0.2, 0.9 * Math.pow(err, -0.2)));
       h = Math.abs(hs) * fac;
       facmax = 5;
+      // a trial only where the fastest mode is barely resolved (h|λ| ≳ 0.1): below that the
+      // steps are set by accuracy, and no method could stride further
+      if (o.trialAfter && taken >= o.trialAfter && run.dir * (run.t1 - t) > 0 && median(hls) >= 0.1) {
+        return { t, y, stop: 'trial', h: recent.mean() };
+      }
     } else {
       run.rejected++;
       h = Math.abs(hs) * Math.max(0.2, 0.9 * Math.pow(err, -0.2));
       facmax = 1; // no growth right after a rejection
     }
   }
-  return { t, y };
+  return { t, y, stop: 'end', h: recent.mean() };
 }
 
 // ---------------------------------------------------------------- Radau IIA (order 5)
@@ -381,23 +441,27 @@ function radauSegment(t: number, h: number, y0: number[], z: number[][]): Segmen
   };
 }
 
-function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
+function radau(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
   const n = y.length;
   const rtol = Math.max(run.opts.rtol ?? 1e-9, 1e-12);
   const atol = atolArray(run.opts, n);
-  const scale = new Scale(y, rtol, atol);
+  const scale = new Scale(run.peak, rtol, atol);
   run.methods.push('Radau IIA (order 5)');
-  const mesh = run.opts.mesh;
+  const { mesh } = o;
+  const recent = new RecentSteps(5);
+  let taken = 0;
+  const rejected0 = run.rejected;
   let mi = 1;
   const fnewt = Math.max((10 * EPS) / rtol, Math.min(0.03, Math.sqrt(rtol)));
   let fy = run.f(t, y);
   if (!finite(fy)) throw new Error(`ODE solver: the derivative is not finite at t = ${t.toPrecision(6)}`);
-  let h = mesh ? 0 : initialStep(run, t, y, fy, 3, rtol, atol);
+  let h = mesh ? 0 : o.h0 || initialStep(run, t, y, fy, 3, rtol, atol);
   let J: number[][] | null = null;
   let jacFresh = false;
   let prev: Segment | null = null;
   let first = true, reject = false;
   let faccon = 1;
+  let patient = false;
   const jac = () => {
     J = run.opts.jac ? run.opts.jac(t, y) : numericJacobian(run.f, t, y, fy, scale.peak);
     jacFresh = true;
@@ -411,6 +475,8 @@ function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
       hs = run.dir * Math.min(Math.abs(h), run.hmax());
       if (run.dir * (t + 1.01 * hs - run.t1) >= 0) hs = run.t1 - t;
       if (run.tooSmall(t, hs)) run.failSmall(t);
+      // a trial that keeps failing has its answer
+      if (o.maxSteps && run.rejected - rejected0 > o.maxSteps) return { t, y, stop: 'trial', h: recent.mean() };
     }
     if (!J) jac();
     const Jm = J!;
@@ -445,7 +511,9 @@ function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
     let converged = false;
     let theta = 0, dynold = 0, newt = 0;
     faccon = Math.pow(Math.max(faccon, EPS), 0.8);
-    for (newt = 1; newt <= 7; newt++) {
+    // a replayed step cannot be shortened: give Newton more room instead
+    const maxNewt = patient ? 20 : 7;
+    for (newt = 1; newt <= maxNewt; newt++) {
       const F = [0, 1, 2].map((i) => run.f(t + RC[i] * hs, y.map((v, p) => v + z[i][p])));
       if (!F.every(finite)) break;
       const rhs = new Array(N3);
@@ -463,14 +531,20 @@ function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
         if (theta >= 0.99) break;
         faccon = theta / (1 - theta);
         // predicted not to converge within the iteration limit
-        if ((Math.pow(theta, 7 - newt) / (1 - theta)) * dyno > fnewt) break;
+        if ((Math.pow(theta, maxNewt - newt) / (1 - theta)) * dyno > fnewt) break;
       }
       for (let i = 0; i < 3; i++) for (let p = 0; p < n; p++) z[i][p] += dz[i * n + p];
       dynold = Math.max(dyno, EPS);
       if (faccon * dyno <= fnewt) { converged = true; break; }
     }
     if (!converged) {
-      if (mesh) throw new Error('Radau: Newton iteration did not converge on the replayed mesh');
+      if (mesh) {
+        // the same step again, with a fresh Jacobian, then with more iterations
+        if (!jacFresh) jac();
+        else if (!patient) patient = true;
+        else throw new Error('Radau: Newton iteration did not converge on the replayed mesh');
+        continue;
+      }
       run.rejected++;
       h = Math.abs(hs) * 0.5;
       if (!jacFresh) jac();
@@ -499,7 +573,10 @@ function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
     if (mesh || err <= 1) {
       const tn = mesh ? mesh[mi++] : Math.abs(run.t1 - t - hs) <= EPS * Math.abs(run.t1) ? run.t1 : t + hs;
       const seg = radauSegment(t, tn - t, y.slice(), z.map((r) => r.slice()));
-      run.push(tn, yn, seg);
+      run.push(tn, yn, seg, 'radau');
+      recent.add(tn - t);
+      taken++;
+      patient = false;
       prev = seg;
       t = tn;
       y = yn;
@@ -513,6 +590,7 @@ function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
       // keep the Jacobian while Newton converges fast
       if (theta > 0.001 || newt > 2) J = null;
       jacFresh = false;
+      if (o.maxSteps && taken >= o.maxSteps && run.dir * (run.t1 - t) > 0) return { t, y, stop: 'trial', h: recent.mean() };
     } else {
       run.rejected++;
       reject = true;
@@ -520,7 +598,7 @@ function radau(run: Run, t: number, y: number[]): { t: number; y: number[] } {
       if (!jacFresh) J = null;
     }
   }
-  return { t, y };
+  return { t, y, stop: 'end', h: recent.mean() };
 }
 
 // ---------------------------------------------------------------- classic RK4
@@ -551,7 +629,7 @@ function rk4(run: Run, t: number, y: number[]): { t: number; y: number[] } {
     const yn = y.map((v, i) => v + (hs / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
     if (!finite(yn)) throw new Error(`ODE solver: the solution is not finite after t = ${t.toPrecision(6)}`);
     const fn = run.f(tn, yn);
-    run.push(tn, yn, hermiteSegment(t, hs, y, k1, yn, fn));
+    run.push(tn, yn, hermiteSegment(t, hs, y, k1, yn, fn), 'rk4');
     t = tn;
     y = yn;
     k1 = fn;
@@ -583,7 +661,7 @@ function bulirschStoer(run: Run, t: number, y: number[]): { t: number; y: number
   const n = y.length;
   const rtol = run.opts.rtol ?? 1e-9;
   const atol = atolArray(run.opts, n);
-  const scale = new Scale(y, rtol, atol);
+  const scale = new Scale(run.peak, rtol, atol);
   const stops = (run.opts.stops ?? []).filter((s) => run.dir * (s - t) > 0 && run.dir * (run.t1 - s) >= 0).sort((a, b) => run.dir * (a - b));
   let si = 0;
   let f0 = run.f(t, y);
@@ -623,7 +701,7 @@ function bulirschStoer(run: Run, t: number, y: number[]): { t: number; y: number
     }
     const tn = Math.abs(target - t - Hs) <= EPS * Math.abs(target) ? target : t + Hs;
     const fn = run.f(tn, accepted);
-    run.push(tn, accepted, hermiteSegment(t, tn - t, y, f0, accepted, fn));
+    run.push(tn, accepted, hermiteSegment(t, tn - t, y, f0, accepted, fn), 'bs');
     // converging early means the step can grow
     const order = 2 * used + 1;
     const fac = errUsed === 0 ? 4 : Math.min(4, Math.max(0.25, 0.94 * Math.pow(0.65 / errUsed, 1 / order)));
@@ -645,13 +723,58 @@ export function solveIvp(f: Rhs, t0: number, y0: number[], t1: number, opts: Ode
   const run = new Run(f, t0, y0, t1, opts);
   if (t0 === t1) return run.solution();
   const method = opts.method ?? 'auto';
-  if (method === 'rk4') rk4(run, t0, y0.slice());
+  if (opts.mesh) replay(run, opts.mesh, opts.meshKinds, method === 'radau' ? 'radau' : 'dopri');
+  else if (method === 'rk4') rk4(run, t0, y0.slice());
   else if (method === 'bs') bulirschStoer(run, t0, y0.slice());
   else if (method === 'radau') radau(run, t0, y0.slice());
-  else {
-    const end = dopri(run, t0, y0.slice(), method === 'auto' && !opts.mesh);
-    // stiff: carry on with the implicit method from where it was detected
-    if (run.dir * (t1 - end.t) > 0) radau(run, end.t, end.y);
-  }
+  else if (method === 'dopri') dopri(run, t0, y0.slice());
+  else autoSwitch(run, t0, y0.slice());
   return run.solution();
+}
+
+/**
+ * Dormand–Prince until the problem shows itself stiff, then Radau to the end. Hairer's
+ * test only sees steps held at the explicit method's stability boundary; at tight
+ * tolerances a stiff problem keeps h|λ| near 1 instead (order reduction), so after
+ * a few hundred steps (then rarely) a short run of Radau is tried, and kept if it
+ * strides much further than Dormand–Prince did.
+ */
+function autoSwitch(run: Run, t: number, y: number[]) {
+  let wait = 300;
+  let h0 = 0;
+  for (;;) {
+    const d = dopri(run, t, y, { detectStiff: true, trialAfter: wait, h0 });
+    if (d.stop === 'end') return;
+    let at: Leg = d;
+    if (d.stop === 'trial') {
+      const r = radau(run, d.t, d.y, { maxSteps: 10, h0: d.h });
+      if (r.stop === 'end') return;
+      at = r;
+      // an implicit step costs about two explicit ones
+      if (r.h < 3 * d.h) {
+        wait *= 8;
+        h0 = d.h;
+        ({ t, y } = r);
+        continue;
+      }
+    }
+    run.stiffAt = at.t;
+    radau(run, at.t, at.y, { h0: at === d ? 0 : at.h });
+    return;
+  }
+}
+
+/** Replay a mesh without error control, each stretch with the method that made it. */
+function replay(run: Run, mesh: number[], kinds: StepKind[] | undefined, fallback: 'dopri' | 'radau') {
+  let t = run.t0;
+  let y = run.ys[0].slice();
+  const kindOf = (i: number) => (kinds?.[i] === 'radau' ? 'radau' : kinds ? 'dopri' : fallback);
+  for (let i = 0; i < mesh.length - 1;) {
+    const kind = kindOf(i);
+    let j = i + 1;
+    while (j < mesh.length - 1 && kindOf(j) === kind) j++;
+    const sub = mesh.slice(i, j + 1);
+    ({ t, y } = kind === 'radau' ? radau(run, t, y, { mesh: sub }) : dopri(run, t, y, { mesh: sub }));
+    i = j;
+  }
 }

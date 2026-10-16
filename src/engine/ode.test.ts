@@ -43,8 +43,11 @@ describe('damped oscillator', () => {
     let worst = 0;
     for (let i = 0; i <= 1000; i++) worst = Math.max(worst, Math.abs(s.at(i * 0.01)[0] - exact(i * 0.01)));
     expect(worst / y0).toBeLessThan(method === 'rk4' ? 1e-7 : 2e-8);
-    // auto stays explicit: the oscillator is not stiff
-    if (method === 'auto') expect(s.methods).toEqual(['Dormand–Prince 5(4)']);
+    // auto stays explicit: the oscillator is not stiff (its short Radau trials are not kept)
+    if (method === 'auto') {
+      expect(s.stiffAt).toBeUndefined();
+      expect(s.kinds.filter((k) => k === 'radau').length).toBeLessThan(0.1 * s.steps);
+    }
   });
 });
 
@@ -74,6 +77,18 @@ describe('stiff problems', () => {
       expect(cross.length).toBe(2);
       expect(Math.abs(cross[1] - cross[0] - T)).toBeLessThan(0.5);
     }
+  });
+  it('a forced stiff equation at a tight tolerance switches on trial', () => {
+    // y′ = −λ(y − cos t), y(0) = 0: y = (λ² cos t + λ sin t − λ² e^(−λt)) / (λ² + 1). Dormand–Prince
+    // needs h|λ| ≈ 0.9 here (≈ 10⁵ steps), never reaching the stability boundary Hairer's test watches
+    const lam = 1000;
+    const exact = (t: number) => (lam * lam * Math.cos(t) + lam * Math.sin(t) - lam * lam * Math.exp(-lam * t)) / (lam * lam + 1);
+    const s = solveIvp((t, y) => [-lam * (y[0] - Math.cos(t))], 0, [0], 100, { rtol: 1e-9 });
+    expect(s.stiffAt).toBeDefined();
+    expect(s.steps).toBeLessThan(5000);
+    let worst = 0;
+    for (let i = 0; i <= 1000; i++) worst = Math.max(worst, Math.abs(s.at(i * 0.1)[0] - exact(i * 0.1)));
+    expect(worst).toBeLessThan(1e-7);
   });
   it('Robertson kinetics: mass conserved, the explicit solver hands over', () => {
     // y₁′ = −0.04 y₁ + 10⁴ y₂y₃, y₂′ = 0.04 y₁ − 10⁴ y₂y₃ − 3·10⁷ y₂², y₃′ = 3·10⁷ y₂²
@@ -114,5 +129,18 @@ describe('invariants and replay', () => {
     const pert = solveIvp(f, 0, [1, d], 10, { mesh: base.ts, method: 'dopri' });
     expect(pert.steps).toBe(base.steps);
     expect(Math.abs((pert.at(10)[0] - base.at(10)[0]) / d - Math.sin(10))).toBeLessThan(1e-8);
+  });
+  it('replays explicit and implicit stretches with the method that made them', () => {
+    // y₁′ = −a y₁ + (a − 1) y₂, y₂′ = −y₂ + cos t: y₁ = y₂(0) e^−t + (y₁(0) − y₂(0)) e^(−at) + forced part,
+    // so ∂y₁(T)/∂y₂(0) = e^−T − e^(−aT). An explicit replay of the long implicit steps would blow up.
+    const a = 1000;
+    const f = (t: number, y: number[]) => [-a * y[0] + (a - 1) * y[1], -y[1] + Math.cos(t)];
+    const base = solveIvp(f, 0, [0, 1], 3, { rtol: 1e-8 });
+    expect(new Set(base.kinds)).toEqual(new Set(['dopri', 'radau']));
+    const replay = (y0: number[]) => solveIvp(f, 0, y0, 3, { mesh: base.ts, meshKinds: base.kinds });
+    expect(replay([0, 1]).ys.at(-1)![0]).toBeCloseTo(base.ys.at(-1)![0], 12);
+    const d = 1e-6;
+    const sens = (replay([0, 1 + d]).at(3)[0] - replay([0, 1 - d]).at(3)[0]) / (2 * d);
+    expect(Math.abs(sens - (Math.exp(-3) - Math.exp(-3 * a)))).toBeLessThan(1e-7);
   });
 });
