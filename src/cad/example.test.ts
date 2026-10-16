@@ -145,6 +145,13 @@ describe('CAD sketcher curves example worksheet', () => {
       expect(rel(C.cpl!.V, Vp)).toBeLessThan(1e-9);
       // the hole 15 left of the plate's projected right-hand edge (x = w/2): the centroid moves by its moment
       expect(Math.abs(C.cpl!.xg - (-hole * (w / 2 - 15)) / Vp)).toBeLessThan(1e-9);
+      // and its moment of inertia about the vertical axis through its centroid: the box's
+      // V(w² + h²)/12 less the pocket's Vp(a² + b²)/4 and the hole's Vh(r²/2 + x²), moved to
+      // the centroid (Steiner); ρ = 7850 kg/m³ in kg/mm³
+      const Vpk = Math.PI * 30 * 18 * 4, xh = w / 2 - 15;
+      const Jz = (w * 80 * 10 * (w * w + 80 * 80)) / 12 - (Vpk * (30 * 30 + 18 * 18)) / 4 - hole * (5 * 5 / 2 + xh * xh) - Vp * C.cpl!.xg ** 2;
+      expect(rel(C.cpl!.Izz, Jz)).toBeLessThan(1e-8);
+      expect(rel(C.cpl!.Im![2], 7.85e-6 * Jz)).toBeLessThan(1e-8);
       expect(res.design!.sketches.sq2.points.hc[0]).toBeCloseTo(w / 2 - 15, 9);
       // cam: the closed spline's area from the sketch (Green's theorem, exact per knot span) times its thickness
       expect(rel(C.ccm!.V, res.design!.sketches.sm0.section!.A * 12)).toBeLessThan(1e-9);

@@ -171,8 +171,10 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       case 'equal': {
         const e0 = ents.get(r0), e1 = ents.get(r1);
         if (e0?.type === 'ellipse' && e1?.type === 'ellipse') {
-          // both semi-axes (only the minor one when they share their axis: the pieces of a broken arc)
-          const g0 = ellipseVars(r0), g1 = ellipseVars(r1), shared = e0.c === e1.c && e0.a === e1.a;
+          // both semi-axes; only the minor one when the first axes are one already (the pieces of
+          // a broken arc) or mirror images of each other
+          const twin = (p: string, q: string) => p === q || sk.constraints.some((k) => k.type === 'symmetric' && ((k.refs[0] === p && k.refs[1] === q) || (k.refs[0] === q && k.refs[1] === p)));
+          const g0 = ellipseVars(r0), g1 = ellipseVars(r1), shared = twin(e0.c, e1.c) && twin(e0.a, e1.a);
           return add(c.id, shared ? 1 : 2, [...g0.vars, ...g1.vars], (q, o, k) => {
             const a = g0.geo(q), b = g1.geo(q);
             o[k] = a.rb - b.rb;
@@ -229,11 +231,11 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
         return add(c.id, 2, [...pv(c0), ...pv(c1)], (q, o, k) => { o[k] = q[c0] - q[c1]; o[k + 1] = q[c0 + 1] - q[c1 + 1]; });
       }
       case 'collinear': {
-        const [a, b] = lineOf(r0), [p1, p2] = lineOf(r1);
-        return add(c.id, 2, [...pv(a), ...pv(b), ...pv(p1), ...pv(p2)], (q, o, k) => {
+        // the second line's ends on the first (an end they share is on it already: no row)
+        const [a, b] = lineOf(r0), ends = lineOf(r1).filter((p) => p !== a && p !== b);
+        return add(c.id, ends.length, [...pv(a), ...pv(b), ...ends.flatMap(pv)], (q, o, k) => {
           const dx = q[b] - q[a], dy = q[b + 1] - q[a + 1], n = Math.hypot(dx, dy) + EPS;
-          o[k] = (dx * (q[p1 + 1] - q[a + 1]) - dy * (q[p1] - q[a])) / n;
-          o[k + 1] = (dx * (q[p2 + 1] - q[a + 1]) - dy * (q[p2] - q[a])) / n;
+          ends.forEach((p, i) => { o[k + i] = (dx * (q[p + 1] - q[a + 1]) - dy * (q[p] - q[a])) / n; });
         });
       }
       case 'pointOnCurve': {
@@ -549,7 +551,8 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
   for (const f of later) f();
 
   // arcs keep both ends on the circle, elliptical arcs on the ellipse: after the constraints, so a
-  // constraint that implies them (an offset's corner arc) is not the one the analysis calls redundant
+  // constraint that implies them (an offset's corner arc, a mirror image) is not the one the
+  // analysis calls redundant
   for (const e of sk.entities) {
     if (e.type === 'arc') {
       const c = X(e.c), a = X(e.p1), b = X(e.p2);

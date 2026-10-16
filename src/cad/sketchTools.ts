@@ -515,9 +515,9 @@ export function breakCurve(sk0: CadSketch, P: Map<string, Vec2>, R: Map<string, 
     sk.entities.push({ id: piece, type: 'line', p1: x, p2: e.p2, construction: e.construction });
     sk.constraints.push(K('collinear', [entityId, piece]));
   } else if (e.type === 'arc') {
+    // one centre and the break point shared: the pieces are on one circle without more
     sk.entities = sk.entities.map((q) => (q.id === entityId ? { ...e, p2: x } : q));
     sk.entities.push({ id: piece, type: 'arc', c: e.c, p1: x, p2: e.p2, construction: e.construction });
-    sk.constraints.push(K('equal', [entityId, piece]));
   } else if (e.type === 'ellipse') {
     sk.entities = sk.entities.map((q) => (q.id === entityId ? { ...e, p2: x } : q));
     sk.entities.push({ id: piece, type: 'ellipse', c: e.c, a: e.a, r: R.get(e.id) ?? e.r, p1: x, p2: e.p2!, construction: e.construction });

@@ -11,7 +11,7 @@ import { findProfiles, profileProperties, type Vec2 } from './profile';
 import type { CadConstraint, CadEntity, CadSketch } from './model';
 import { bsPoint } from './curves';
 import { splineOf } from './sketchCurves';
-import { circle, fillet, slot } from './tools';
+import { circle, fillet, mirror, slot } from './tools';
 
 describe('a sketch with projected references', () => {
   it('keeps its sources through every edit, so the references go on following the model', () => {
@@ -242,14 +242,26 @@ describe('chamfer, extend and break', () => {
     const mid = r.sketch.points.find((p) => !sk0.points.some((q) => q.id === p.id))!;
     expect(mid.x).toBeCloseTo(12, 9);
     expect(mid.y).toBeCloseTo(0, 12);
+    // a line and a break point on it: 4 + 1 freedoms (the shared end needs no collinear row,
+    // which was once always zero and called redundant), nothing redundant
+    const lineOnly: CadSketch = { ...r.sketch, entities: r.sketch.entities.filter((e) => e.type === 'line'), points: r.sketch.points.filter((p) => ['a', 'b', mid.id].includes(p.id)) };
+    const { sol: sl } = solved(lineOnly);
+    expect(sl.dof).toBe(5);
+    expect(sl.redundant).toEqual([]);
     const r2 = breakCurve(r.sketch, posOf(r.sketch), R0, 'arc', { x: 7, y: 27 });
     if (typeof r2 === 'string') throw new Error(r2);
     const arcs = r2.sketch.entities.filter((e) => e.type === 'arc');
     expect(arcs).toHaveLength(2);
-    expect(r2.sketch.constraints.some((c) => c.type === 'equal' && c.refs.includes('arc'))).toBe(true);
-    // a solve keeps both on the circle
-    const { sol } = solved(r2.sketch);
+    // one centre and the break point shared: one circle, with no constraint that says so twice
+    expect(new Set(arcs.map((e) => (e as { c: string }).c)).size).toBe(1);
+    const { sol, sk } = solved({ ...r2.sketch, constraints: [...r2.sketch.constraints, { id: 'dr', type: 'radius', refs: ['arc'], value: '15' }] });
     expect(sol.ok).toBe(true);
+    expect(sol.redundant).toEqual([]);
+    const C = sk.points.find((p) => p.id === 'c')!;
+    for (const e of arcs) for (const id of [(e as { p1: string }).p1, (e as { p2: string }).p2]) {
+      const p = sk.points.find((q) => q.id === id)!;
+      expect(hypot(p.x - C.x, p.y - C.y)).toBeCloseTo(15, 9);
+    }
   });
 
   it('break: a control spline into two exact pieces', () => {
@@ -364,6 +376,22 @@ describe('patterns', () => {
     // and the dimension reads what it drives (once 810°)
     const pc = sk.constraints.find((c) => c.type === 'pattern')!;
     expect((measure(sk, pc, sol.points) * 180) / PI).toBeCloseTo(-360, 9);
+  });
+});
+
+describe('mirror of the new curves', () => {
+  it('an ellipse mirrored: its image\'s minor radius follows, and nothing is called redundant', () => {
+    // the image's first axis is fixed by the symmetric points already: equal ties only the minor radius
+    const e = ellipse({ points: [], entities: [], constraints: [] }, { p: { x: 10, y: 0 } }, { p: { x: 20, y: 3 } }, 4);
+    if (typeof e === 'string') throw new Error(e);
+    const sk0: CadSketch = { ...e.sketch, points: [...e.sketch.points, { id: 'm1', x: 0, y: -10 }, { id: 'm2', x: 0, y: 10 }], entities: [...e.sketch.entities, { id: 'ax', type: 'line', p1: 'm1', p2: 'm2' }] };
+    const m = mirror(sk0, posOf(sk0), [e.ids[0]], 'ax');
+    if (typeof m === 'string') throw new Error(m);
+    const withB: CadSketch = { ...m.sketch, constraints: [...m.sketch.constraints, { id: 'db', type: 'minorRadius', refs: [e.ids[0]], value: '6' }] };
+    const { sol } = solved(withB);
+    expect(sol.ok).toBe(true);
+    expect(sol.redundant).toEqual([]);
+    expect(sol.radii.get(m.ids[0])).toBeCloseTo(6, 9);
   });
 });
 

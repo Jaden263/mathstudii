@@ -107,7 +107,8 @@ export function dimText(c: CadConstraint, value: number, error?: string): string
   const ang = isAngleDim(c);
   const v = ang ? (value * 180) / Math.PI : value;
   const prefix = c.type === 'radius' ? 'R' : c.type === 'diameter' ? 'Ø' : c.type === 'majorRadius' ? 'a ' : c.type === 'minorRadius' ? 'b ' : '';
-  let s = `${prefix}${fmtNum(Math.abs(v))}${ang ? '°' : ''}`;
+  // a pattern's sign is its direction (clockwise, or against its line)
+  let s = `${prefix}${fmtNum(c.type === 'pattern' ? v : Math.abs(v))}${ang ? '°' : ''}`;
   // a pattern shows its count too
   if (c.type === 'pattern' && c.pattern) s = `${c.pattern.count} × ${s}`;
   if (c.driving === false) return `(${s})`;
