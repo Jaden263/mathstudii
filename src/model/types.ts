@@ -6,8 +6,9 @@ import type { CadDesign } from '../cad/design';
 import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
+import { newSpreadsheet, type SpreadsheetData } from '../sheet/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate' | 'area';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate' | 'area' | 'spreadsheet';
 
 interface RegionBase {
   id: string;
@@ -303,7 +304,12 @@ export interface AreaRegion extends RegionBase {
   print?: 'collapsed' | 'expanded';
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion | PlateRegion | AreaRegion;
+/** Spreadsheet component (Mathcad's Excel component): cells and formulas, inputs from the worksheet, outputs back to it. */
+export interface SpreadsheetRegion extends RegionBase, SpreadsheetData {
+  kind: 'spreadsheet';
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion | PlateRegion | AreaRegion | SpreadsheetRegion;
 
 /** Page header and footer for printed calculation sheets. */
 export interface ReportSettings {
@@ -443,6 +449,8 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       };
     case 'area':
       return { ...base, kind, title: 'Area', height: 96, ...(init as Partial<AreaRegion>) };
+    case 'spreadsheet':
+      return { ...base, kind, ...newSpreadsheet(), ...(init as Partial<SpreadsheetRegion>) };
   }
 }
 

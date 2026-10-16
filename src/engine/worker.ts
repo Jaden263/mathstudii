@@ -14,6 +14,7 @@ import { designOf, hasFeatures } from '../cad/design';
 import { designNumbers, type CadResult } from '../cad/evaluate';
 import { initPython, preparePackages, pythonReady } from '../python/runtime';
 import { loadPythonBrowser } from '../python/browser';
+import { answerExport, isExportRequest } from '../sheet/exportWorker';
 
 export interface EvalRequest {
   id: number;
@@ -87,6 +88,11 @@ function sendDisplays(ws: Worksheet, out: ReturnType<typeof evaluateWorksheet>, 
 ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
   // the UI's kernel requests (section, export …) come on a port of their own
   if (isKernelPortMessage(e.data)) return serveKernel(e.data.kernelPort);
+  // an .xlsx export of the worksheet's values
+  if (isExportRequest(e.data)) {
+    const res = answerExport(e.data);
+    return ctx.postMessage(res, res.bytes ? [res.bytes.buffer as ArrayBuffer] : []);
+  }
   const { id, ws, overrides, only } = e.data;
   latest = id;
   const post = (out: ReturnType<typeof evaluateWorksheet>, partial: boolean) => {

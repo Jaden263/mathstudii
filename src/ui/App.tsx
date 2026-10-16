@@ -6,7 +6,7 @@ import {
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown, Code2,
   Pencil, Scissors, Copy, ClipboardPaste, CopyPlus, Trash2, Ban, BringToFront, SendToBack, AlignStartVertical, AlignStartHorizontal,
   Ruler, WandSparkles, Paintbrush, SlidersHorizontal, SquareDashedMousePointer, Calculator, EyeOff, Eye, Plus,
-  Lock, LockOpen, Group, Ungroup, ShieldCheck, ShieldOff, ChevronsDownUp, ChevronsUpDown, SquarePen,
+  Lock, LockOpen, Group, Ungroup, ShieldCheck, ShieldOff, ChevronsDownUp, ChevronsUpDown, SquarePen, FileSpreadsheet,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type AreaRegion, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
 import { EXAMPLES, welcomeWorksheet } from '../model/examples';
@@ -42,6 +42,9 @@ import { AREA_BAR, AREA_X, areasOf, evaluationOrder, hiddenIds, isArea, withCont
 import { canAddAt, canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
 import { regionOwnsKey } from './sheetKeys';
 import { ProtectDialog } from './ProtectDialog';
+import { askXlsxTable } from './sheet/XlsxTableDialog';
+import { XLSX_MIME } from '../sheet/xlsx';
+import { exportFile } from '../platform/files';
 
 type ThemePref = 'system' | 'light' | 'dark';
 
@@ -299,7 +302,7 @@ export function App() {
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python' || kind === 'frame3d' || kind === 'plate') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python' || kind === 'frame3d' || kind === 'plate' || kind === 'spreadsheet') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
@@ -337,6 +340,18 @@ export function App() {
 
   // ------------------------------------------------------------ files
   const confirmDiscard = () => !dirty || window.confirm('Discard unsaved changes?');
+
+  /** The worksheet's values as an Excel workbook (made by the calculation worker). */
+  const exportXlsx = async () => {
+    setToast('Writing .xlsx…');
+    try {
+      const bytes = await evaluation.exportXlsx(ws);
+      await exportFile(`${(ws.title || 'worksheet').replace(/[\\/:*?"<>|]+/g, '_')}.xlsx`, bytes, XLSX_MIME);
+      setToast(null);
+    } catch (e) {
+      setToast(`Export failed: ${(e as Error).message}`);
+    }
+  };
 
   const newDoc = () => {
     if (!confirmDiscard()) return;
@@ -393,6 +408,13 @@ export function App() {
         const data = toTableData(parseDelimited(await f.text()));
         const name = f.name.replace(/\.[^.]+$/, '').replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^(\d)/, '_$1') || 'T';
         addRegion('table', { name, cells: data.cells, units: data.units, headers: data.headers });
+        return;
+      }
+      // a workbook: a sheet or range of it becomes a table
+      if (/\.xls[xm]$/i.test(f.name)) {
+        const at = cursor;
+        const t = await askXlsxTable(new Uint8Array(await f.arrayBuffer()), f.name);
+        if (t) addRegion('table', { name: t.name, cells: t.cells, units: t.units, headers: t.headers }, at ?? undefined);
         return;
       }
       if (!confirmDiscard()) return;
@@ -671,7 +693,7 @@ export function App() {
     const single = regs.length === 1;
     const res = evaluation.results.get(r.id);
     const items: MenuItem[] = [];
-    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python', 'frame3d', 'plate'].includes(r.kind);
+    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python', 'frame3d', 'plate', 'spreadsheet'].includes(r.kind);
     const locked = lockedIds(ws);
     const prot = isProtected(ws);
     const canChange = regs.every((q) => canEdit(ws, q, locked));
@@ -797,6 +819,7 @@ export function App() {
             { label: 'Python', icon: <Code2 size={14} />, shortcut: '`', onClick: ins('python') },
             { label: 'Solve block', icon: <ListChecks size={14} />, onClick: ins('solve') },
             { label: 'Table', icon: <Table2 size={14} />, onClick: ins('table') },
+            { label: 'Spreadsheet', icon: <FileSpreadsheet size={14} />, onClick: ins('spreadsheet') },
             { label: 'Image…', icon: <ImageIcon size={14} />, onClick: () => void insertImage(at) },
             { separator: true },
             { label: 'Area', icon: <ChevronsDownUp size={14} />, onClick: () => insertArea(at) },
@@ -941,7 +964,7 @@ export function App() {
       if (e.key === 'Enter' && selected.size === 1) {
         e.preventDefault();
         const r = ws.regions.find((q) => selected.has(q.id));
-        if (r && ['math', 'text', 'solve', 'table', 'python'].includes(r.kind)) {
+        if (r && ['math', 'text', 'solve', 'table', 'python', 'spreadsheet'].includes(r.kind)) {
           if (canEdit(ws, r)) setEditingId(r.id);
           else setToast(isProtected(ws) ? 'The worksheet is protected: only inputs can be edited' : 'This region is locked');
         }
@@ -1064,6 +1087,7 @@ export function App() {
                 <button role="menuitem" onClick={() => { setFileMenu(false); void openDoc(); }}>Open file… <kbd>Ctrl+O</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void saveDoc(true); }}>{canLinkFiles ? 'Save as…' : 'Download a copy'} <kbd>Ctrl+Shift+S</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setShowVersions(true); }}>Version history…</button>
+                <button role="menuitem" onClick={() => { setFileMenu(false); void exportXlsx(); }} title="Every variable with its value, unit and expression; vectors, matrices, tables and spreadsheets on sheets of their own">Export to Excel (.xlsx)…</button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setProtectDlg(true); }}>{isProtected(ws) ? 'Unprotect worksheet…' : 'Protect worksheet…'}</button>
                 <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
                 <div className="menu-head">Recent documents</div>
@@ -1121,6 +1145,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('python')} title="Python code: uses the worksheet variables above it and exports what it assigns, units included (type ` at the cursor)"><Code2 size={16} /> Python</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
+          <button className="text-btn" onClick={() => addRegion('spreadsheet')} title="Spreadsheet (Excel component): cells and formulas, worksheet values in, results out as variables; import, link or export .xlsx"><FileSpreadsheet size={16} /> Sheet</button>
           <button className="text-btn" onClick={() => void insertImage()} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
         </div>
         <div className="tb-group" aria-label="Calculation">
@@ -1189,7 +1214,7 @@ export function App() {
             onClose={() => setFind(null)} onHits={onHits} toast={setToast} reveal={reveal}
           />
         )}
-        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz), a CSV / TSV data file or an image</div>}
+        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz), a CSV / TSV / Excel data file or an image</div>}
         <div className="sheet-scroller" ref={scrollerRef}>
           <Worksheet
             ws={ws}

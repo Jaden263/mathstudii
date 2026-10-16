@@ -243,3 +243,24 @@ describe('files saved by Excel and LibreOffice', () => {
     expect(mismatches.length).toBeLessThanOrEqual(Object.keys(excel).length + 7);
   });
 });
+
+describe('tables from sheets', () => {
+  it('a range with a header row gives names, units and values; dates and odd text are kept readable', async () => {
+    const { sheetToTable, looksLikeHeader, withResults, usedArea } = await import('./tableXlsx');
+    const m: WorkbookModel = { sheets: [{ name: 'Loads', cells: {
+      A1: 'case', B1: 'F [kN]', C1: 'a (m)', D1: 'date', E1: 'note',
+      A2: 'G', B2: '20', C2: '1.5', D2: '45000', E2: 'HEB 200',
+      A3: 'Q', B3: '=B2*1.75', C3: '3', D3: '45001', E3: 'a+b',
+    }, styles: { D2: { fmt: 'yyyy-mm-dd' }, D3: { fmt: 'yyyy-mm-dd' } } }] };
+    // written without results, as a program (not Excel) would
+    const sheets = m.sheets.map((s) => ({ name: s.name, styles: s.styles, cells: new Map(Object.entries(s.cells).map(([k, v]) => [k, v.startsWith('=') ? { v: null, f: v } : { v: /^\d/.test(v) ? Number(v) : v, fmt: s.styles?.[k]?.fmt }])) }));
+    const book = withResults(readXlsx(writeXlsx({ sheets })));
+    const area = usedArea(book.sheets[0])!;
+    expect(area).toEqual({ r1: 0, c1: 0, r2: 2, c2: 4 });
+    expect(looksLikeHeader(book.sheets[0], area)).toBe(true);
+    const t = sheetToTable(book.sheets[0], area, true);
+    expect(t.headers).toEqual(['case', 'F', 'a', 'date', 'note']);
+    expect(t.units).toEqual(['', 'kN', 'm', '', '']);
+    expect(t.cells).toEqual([['G', '20', '1.5', '"2023-03-15"', 'HEB 200'], ['Q', '35', '3', '"2023-03-16"', '"a+b"']]);
+  });
+});

@@ -47,7 +47,7 @@ export function canAddAt(ws: Worksheet, y: number): boolean {
 }
 
 /** Fields that only change how a region is looked at (zoom, camera, open tab, how an area prints), not what it is. */
-const VIEW_KEYS = new Set(['view', 'viewW', 'view3d', 'view3dW', 'camera', 'tab', 'print']);
+const VIEW_KEYS = new Set(['view', 'viewW', 'view3d', 'view3dW', 'camera', 'tab', 'print', 'active']);
 
 export function isViewPatch(patch: object): boolean {
   return Object.keys(patch).every((k) => VIEW_KEYS.has(k));

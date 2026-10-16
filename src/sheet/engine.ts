@@ -158,10 +158,10 @@ export class Workbook {
     return sh.spillOwner.has(k) ? (sh.values.get(k) ?? null) : null;
   }
 
-  /** What the cell shows, in its number format. */
-  display(sheet: number, r: number, c: number): string {
+  /** What the cell shows, in its number format (General numbers in `width` characters). */
+  display(sheet: number, r: number, c: number, width?: number): string {
     const sh = this.sheets[sheet];
-    return formatValue(this.value(sheet, r, c), sh.styles[cellName(r, c)]?.fmt, this.date1904);
+    return formatValue(this.value(sheet, r, c), sh.styles[cellName(r, c)]?.fmt, this.date1904, width);
   }
 
   input(sheet: number, r: number, c: number): string {

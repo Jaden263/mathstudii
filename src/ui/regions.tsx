@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch } from 'react';
 import { Plus, Minus, Loader2 } from 'lucide-react';
-import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, PythonRegion, DrawingRegion, Frame3DRegion, PlateRegion } from '../model/types';
+import type { MathRegion, TextRegion, SolveRegion, TableRegion, ImageRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, PythonRegion, DrawingRegion, Frame3DRegion, PlateRegion, SpreadsheetRegion } from '../model/types';
 import type { MathResult, SolveResult, TableResult, TextResult, PlotResult, RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import { Tex } from './Tex';
@@ -17,6 +17,11 @@ import { parseDelimited, toCsv, toTableData, type TableData } from '../model/tab
 import { PythonView } from './python/PythonView';
 import { DrawingView } from './cad/DrawingView';
 import type { CadResult } from '../cad/evaluate';
+import { SpreadsheetView } from './sheet/SpreadsheetView';
+import { askXlsxTable } from './sheet/XlsxTableDialog';
+import { tableToXlsx } from '../sheet/tableXlsx';
+import { XLSX_MIME } from '../sheet/xlsx';
+import { exportFile as saveFile, pickFile } from '../platform/files';
 
 export interface RegionViewProps<R> {
   region: R;
@@ -253,6 +258,24 @@ export function TableView({ region, result, editing, dispatch }: RegionViewProps
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
+  const [xlsxError, setXlsxError] = useState<string | null>(null);
+  /** A sheet or range of an .xlsx file, with names and units from its header row. */
+  const importXlsx = async () => {
+    const f = await pickFile('.xlsx,.xlsm');
+    if (!f) return;
+    try {
+      const t = await askXlsxTable(new Uint8Array(await f.arrayBuffer()), f.name);
+      if (!t) return;
+      set({ cells: t.cells, units: t.units, headers: t.headers, ...(region.name === 'T' ? { name: t.name } : {}) }, undefined);
+      setXlsxError(null);
+    } catch (e) {
+      setXlsxError(`${f.name}: ${(e as Error).message}`);
+    }
+  };
+  const exportXlsx = () => {
+    const values = r?.error ? undefined : r?.values;
+    void saveFile(`${region.name || 'table'}.xlsx`, tableToXlsx({ ...region, cells: region.cells.filter((row) => row.some((c) => c.trim())) }, values), XLSX_MIME);
+  };
   const keyNav = (e: React.KeyboardEvent<HTMLInputElement>, i: number, j: number) => {
     const move = (di: number, dj: number) => {
       const el = (e.currentTarget.closest('table') as HTMLTableElement).querySelector<HTMLInputElement>(`input[data-cell="${i + di},${j + dj}"]`);
@@ -332,12 +355,15 @@ export function TableView({ region, result, editing, dispatch }: RegionViewProps
           <button onClick={delCol} title="Remove last column"><Minus size={13} /> col</button>
           <button onClick={() => void importFile()} title="Load a CSV or TSV file (the first row may hold names and units: x [m])">Import CSV…</button>
           <button onClick={exportFile} title="Save as CSV (opens in Excel)">Export CSV</button>
+          <button onClick={() => void importXlsx()} title="Load a sheet or range of an Excel workbook (a header row with units such as F [kN] gives the column units)">Import Excel…</button>
+          <button onClick={exportXlsx} title="Save as an Excel workbook, the header row with the units">Export Excel</button>
           <label className="table-opt" title="Define each named column as a vector variable">
             <input type="checkbox" checked={!!region.columnVars} onChange={(e) => set({ columnVars: e.target.checked }, undefined)} /> columns as variables
           </label>
         </div>
       )}
       {editing && <div className="table-hint">Paste a range from Excel into any cell; a header row with units like <code>F [kN]</code> is understood.</div>}
+      {xlsxError && <div className="region-error">{xlsxError}</div>}
       {r?.error && <div className="region-error">{r.error}</div>}
     </div>
   );
@@ -413,4 +439,10 @@ export function PythonRegionView({ region, result, editing, dispatch, onDone, re
 
 export function DrawingRegionView({ region, selected, dispatch, cad, cadResult }: RegionViewProps<DrawingRegion> & { cad?: CadRegion; cadResult?: RegionResult }) {
   return <DrawingView region={region} cad={cad} cadResult={cadResult?.kind === 'cad' ? (cadResult as CadResult) : undefined} selected={selected} dispatch={dispatch} />;
+}
+
+// ---------------------------------------------------------------- spreadsheet component
+
+export function SpreadsheetRegionView({ region, result, editing, dispatch, onDone, zoom }: RegionViewProps<SpreadsheetRegion>) {
+  return <SpreadsheetView region={region} result={result} editing={editing} dispatch={dispatch} onDone={onDone} zoom={zoom} />;
 }

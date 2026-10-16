@@ -960,3 +960,53 @@ export function areasExample(): Worksheet {
 }
 
 EXAMPLES.push({ name: 'Areas, protection, units in symbolics', make: areasExample });
+
+// ---------------------------------------------------------------- Excel: spreadsheet component, tables
+
+export function excelExample(): Worksheet {
+  // a simply supported beam tabulated at x = 0, L/8 … L: M(x) = q x (L − x) / 2, w(x) = q x (L³ − 2 L x² + x³) / (24 E I)
+  const cells: Record<string, string> = {
+    A1: 'L [m]', A2: 'q [kN/m]', A3: 'EI [kN·m²]', C1: 'M max [kN·m]', C2: 'w max [mm]', C3: 'w max / L',
+    D1: '=MAX(B6:B14)', D2: '=MAX(C6:C14)*1000', D3: '=TEXT(D2/1000/B1,"0.0000")',
+    A5: 'x [m]', B5: 'M [kN·m]', C5: 'w [m]', D5: 'V [kN]',
+  };
+  for (let i = 0; i <= 8; i++) {
+    const r = 6 + i;
+    cells[`A${r}`] = i === 0 ? '0' : `=A${r - 1}+$B$1/8`;
+    cells[`B${r}`] = `=$B$2*A${r}*($B$1-A${r})/2`;
+    cells[`C${r}`] = `=$B$2*A${r}*($B$1^3-2*$B$1*A${r}^2+A${r}^3)/(24*$B$3)`;
+    cells[`D${r}`] = `=$B$2*($B$1/2-A${r})`;
+  }
+  const styles: Record<string, { fmt?: string; b?: boolean }> = Object.fromEntries(['A5', 'B5', 'C5', 'D5', 'C1', 'C2', 'C3'].map((k) => [k, { b: true }]));
+  for (let i = 6; i <= 14; i++) {
+    styles[`B${i}`] = { fmt: '0.00' };
+    styles[`C${i}`] = { fmt: '0.000E+00' };
+  }
+  styles.D1 = { fmt: '0.00', b: true };
+  styles.D2 = { fmt: '0.00', b: true };
+  return build('Excel: spreadsheet component and tables', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Spreadsheets and Excel files\nA **spreadsheet region** (toolbar → Sheet) is Mathcad\'s Excel component: cells with Excel formulas, worksheet values written into cells in the unit you choose, and cells read back out as variables with units. Click it to edit: type in cells (`=` starts a formula), F2 edits, Ctrl+D fills down, paste ranges from Excel. **Import**, **Link…** (read again when the file changes) and **Export** work with .xlsx files.' }],
+    ['math', L, mm(52), { source: 'L := 6 m' }],
+    ['math', mm(50), mm(52), { source: 'q := 1.35 * 8 kN/m + 1.5 * 5 kN/m =' }],
+    ['math', mm(140), mm(52), { source: 's := section("IPE 300")' }],
+    ['math', L, mm(64), { source: 'E := 210 GPa' }],
+    ['math', mm(50), mm(64), { source: 'EI := E * s.I_y = kN*m^2' }],
+    ['spreadsheet', L, mm(76), {
+      width: mm(170), height: 290, sheets: [{ name: 'Beam', cells, styles, widths: { 0: 84, 1: 84, 2: 96, 3: 84 } }], rows: 15, cols: 6,
+      inputs: [{ expr: 'L', ref: 'B1', unit: 'm' }, { expr: 'q', ref: 'B2', unit: 'kN/m' }, { expr: 'EI', ref: 'B3', unit: 'kN*m^2' }],
+      outputs: [{ name: 'M_max', ref: 'D1', unit: 'kN*m' }, { name: 'w_max', ref: 'D2', unit: 'mm' }, { name: 'x_t', ref: 'A6:A14', unit: 'm' }, { name: 'M_t', ref: 'B6:B14', unit: 'kN*m' }],
+    }],
+    ['text', L, mm(212), { width: mm(80), markdown: '**Back in the worksheet**: the outputs are ordinary variables with units, so the design checks and the plot use them.' }],
+    ['math', L, mm(232), { source: 'σ := M_max / s.W_el_y = MPa' }],
+    ['math', L, mm(246), { source: 'σ ≤ 355 MPa / 1.0' }],
+    ['math', L, mm(260), { source: 'w_max ≤ L / 250' }],
+    ['math', L, mm(274), { source: 'M_max / (q * L^2 / 8) =' }],
+    ['plot', mm(105), mm(212), { xExpr: 'x_t', traces: [{ y: 'M_t', style: 'both' }], xUnit: 'm', yUnit: 'kN*m', title: 'M from the spreadsheet', width: mm(85), height: mm(50) }],
+    ['text', L, mm(305), { width: mm(170), markdown: '## Tables from Excel\nA **table** reads a sheet or a range of an .xlsx (table → *Import Excel…*, or drop the file on the page); a header row such as `F [kN]` gives each column its name and unit, and *Export Excel* writes it back with the units. File menu ▾ → **Export to Excel** writes every variable of the worksheet to a *Results* sheet, with vectors, matrices, tables and spreadsheets on sheets of their own.' }],
+    ['table', L, mm(334), { name: 'loads', headers: ['case', 'F', 'a'], units: ['', 'kN', 'm'], cells: [['G', '20', '1.5'], ['Q', '35', '3'], ['W', '12', '4.5']], columnVars: true }],
+    ['math', mm(90), mm(340), { source: 'sum(F) =' }],
+    ['math', mm(90), mm(352), { source: 'F * a / L =' }],
+  ]);
+}
+
+EXAMPLES.push({ name: 'Excel: spreadsheet component and tables', make: excelExample });

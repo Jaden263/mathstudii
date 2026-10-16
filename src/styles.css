@@ -5754,3 +5754,509 @@ div.pl-cutplot {
     border-color: transparent !important;
   }
 }
+
+/* ------------------------------------------------------------ spreadsheet component, Excel import */
+
+.ss-region {
+  --ss-fs: calc(12.5px * var(--fs, 1));
+  --ss-in: color-mix(in srgb, var(--accent) 13%, transparent);
+  --ss-out: color-mix(in srgb, var(--ok) 15%, transparent);
+  position: relative;
+  border-left: 3px solid #217346;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: var(--ss-fs);
+}
+
+.ss-region.has-error {
+  border-left-color: var(--error);
+}
+
+.ss-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  min-height: 22px;
+  font: 500 calc(11px * var(--fs, 1)) var(--font);
+  color: var(--text-muted);
+}
+
+.ss-head > svg {
+  color: #217346;
+}
+
+.ss-tag {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.ss-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-link.warn {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+
+.ss-tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.ss-tools button,
+.ss-bind-head button,
+.ss-note button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.ss-fx {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ss-namebox {
+  width: 72px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: var(--page);
+  color: var(--text);
+}
+
+.ss-fx-label {
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.ss-fx-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: var(--page);
+  color: var(--text);
+}
+
+.ss-grid {
+  position: relative;
+  background: var(--page);
+  border-top: 1px solid var(--border);
+}
+
+.ss-grid table {
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 11px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-strong);
+  text-align: center;
+  user-select: none;
+  padding: 0;
+}
+
+.ss-grid th.ss-rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border-strong);
+}
+
+.ss-grid th.ss-corner {
+  left: 0;
+  z-index: 3;
+}
+
+.ss-grid th.on {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+  color: var(--text);
+}
+
+.ss-colresize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.ss-grid td {
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  line-height: 19px;
+  max-width: 0;
+  color: var(--text);
+}
+
+.ss-grid td.k-n {
+  text-align: right;
+}
+
+.ss-grid td.k-b {
+  text-align: center;
+}
+
+.ss-grid td.k-e {
+  text-align: center;
+  color: var(--error);
+}
+
+.ss-grid td.k-s {
+  overflow: visible;
+}
+
+.ss-grid td.b {
+  font-weight: 700;
+}
+
+.ss-grid td.in {
+  background: var(--ss-in);
+}
+
+.ss-grid td.out {
+  background: var(--ss-out);
+}
+
+.ss-grid td.sp {
+  color: color-mix(in srgb, var(--text) 80%, var(--accent));
+}
+
+.ss-grid td.sel {
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+}
+
+.ss-grid td.cur {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ss-grid td.editing {
+  overflow: visible;
+  padding: 0;
+}
+
+.ss-edit {
+  width: 100%;
+  min-width: 100%;
+  height: 19px;
+  border: none;
+  outline: 2px solid var(--accent);
+  padding: 0 3px;
+  font: inherit;
+  font-family: var(--mono);
+  background: var(--page);
+  color: var(--text);
+  position: relative;
+  z-index: 1;
+}
+
+.ss-keys {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  resize: none;
+  border: none;
+  padding: 0;
+  pointer-events: none;
+}
+
+.ss-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.ss-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 0 0 5px 5px;
+  background: none;
+  padding: 0 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.ss-tab.on {
+  background: var(--page);
+  border-color: var(--border);
+  border-top-color: var(--page);
+  color: #217346;
+  font-weight: 600;
+}
+
+.ss-tab.add {
+  padding: 0 4px;
+}
+
+.ss-tab-x {
+  opacity: 0.6;
+}
+
+.ss-tab-name {
+  width: 90px;
+  font-size: 11.5px;
+}
+
+.ss-hint {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.ss-bindings-view {
+  padding: 2px 6px;
+}
+
+.ss-binding,
+.ss-binding-res {
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.ss-bindings {
+  padding: 2px 6px 4px;
+  border-top: 1px solid var(--border);
+}
+
+.ss-bind-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.ss-bind-head button {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+.ss-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.ss-bind-row input {
+  min-width: 0;
+  flex: 2;
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: var(--page);
+  color: var(--text);
+}
+
+.ss-bind-row input.ref {
+  flex: 1;
+}
+
+.ss-bind-row input.unit {
+  flex: 1;
+}
+
+.ss-bind-in {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ss-bind-x {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  padding: 0 2px;
+}
+
+.ss-report,
+.ss-note {
+  margin: 2px 6px 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--surface);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.ss-report.warn,
+.ss-note.warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+}
+
+.ss-report ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+
+.ss-resize {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--border-strong);
+  border-bottom: 2px solid var(--border-strong);
+}
+
+.dialog.xlsx-import h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.xlsx-choose {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.xlsx-choose label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-weight: 550;
+  font-size: 13px;
+}
+
+.xlsx-choose label.check {
+  flex-direction: row;
+  align-items: center;
+  font-weight: 400;
+}
+
+.xlsx-choose select,
+.xlsx-choose input:not([type]) {
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.xlsx-preview {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.xlsx-preview table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.xlsx-preview th,
+.xlsx-preview td {
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.xlsx-preview th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+.xlsx-preview tr.units th {
+  font-family: var(--mono);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.dialog.xlsx-import .btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  font-weight: 550;
+}
+
+.dialog.xlsx-import .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+@media print {
+  .ss-tabs .ss-hint,
+  .ss-resize,
+  .ss-tools {
+    display: none !important;
+  }
+
+  .ss-grid {
+    overflow: hidden !important;
+  }
+}

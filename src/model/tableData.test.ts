@@ -34,7 +34,8 @@ describe('table regions', () => {
       createRegion('math', 0, 230, { source: 'x =' }),
     ] };
     const out = evaluateWorksheet(ws);
-    expect(out.results.get(ws.regions[0].id)).toEqual({ kind: 'table' });
+    // the values in the column units, for exporting
+    expect(out.results.get(ws.regions[0].id)).toEqual({ kind: 'table', values: [[0, 1.5, 'G'], [2, 3, 'Q']] });
     expect((out.results.get(ws.regions[1].id) as MathResult).tex).toContain('4.5\\ \\mathrm{kN}');
     const x = out.results.get(ws.regions[2].id) as MathResult;
     expect(x.grid).toEqual({ unit: 'm', rows: [['0'], ['2']] });

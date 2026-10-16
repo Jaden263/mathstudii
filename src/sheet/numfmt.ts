@@ -35,8 +35,9 @@ export function isDateFormat(code: string): boolean {
   return !/^general$/i.test(b.trim()) && /[ymdhs]/i.test(b.replace(/E[+-]/gi, ''));
 }
 
-/** A value in a cell with this format, as shown. */
-export function formatValue(v: Scalar, code: string | undefined, date1904 = false): string {
+/** A value in a cell with this format, as shown; General numbers fit `width` characters. */
+export function formatValue(v: Scalar, code: string | undefined, date1904 = false, width = 11): string {
+  if ((!code || /^general$/i.test(code.trim())) && typeof v === 'number') return generalDisplay(v, width);
   if (!code || /^general$/i.test(code.trim()) || typeof v !== 'number') {
     if (typeof v === 'string' && code) {
       const secs = sections(code);

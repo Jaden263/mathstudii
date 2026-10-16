@@ -1,7 +1,7 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
 import type { Unit } from 'mathjs';
-import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, PlateRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
+import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, PlateRegion, SolveRegion, SpreadsheetRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { evaluationOrder } from '../model/areas';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
@@ -21,11 +21,12 @@ import { solveFrame3D, frame3dValue, slimFrame3D, type Frame3DResult } from '../
 import { solvePlateRegion, plateValue, slimPlate, type PlateResult } from '../plate/evaluate';
 import { pythonReady, runPython, resetPython, pyParams } from '../python/runtime';
 import { odesolveArgs, odesolveNames, solveOdeBlock, type OdeLine } from './odesolve';
+import { solveSpreadsheet, type SpreadsheetResult } from '../sheet/component';
 import './materialsLib';
 import './specialLib';
 import './odeLib';
 
-export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult };
+export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult, SpreadsheetResult };
 
 export interface MathResult {
   kind: 'math';
@@ -79,6 +80,8 @@ export interface SolveResult {
 
 export interface TableResult {
   kind: 'table';
+  /** Cell values in the column units (numbers), or text, for exporting. */
+  values?: (number | string)[][];
   error?: string;
 }
 
@@ -100,7 +103,7 @@ export interface PythonResult {
   loading?: boolean;
 }
 
-export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult | Frame3DResult | PlateResult | PythonResult;
+export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult | Frame3DResult | PlateResult | PythonResult | SpreadsheetResult;
 
 export interface EvaluationOutput {
   results: Map<string, RegionResult>;
@@ -188,6 +191,7 @@ class Evaluator {
         case 'plate': this.results.set(r.id, this.evaluatePlateRegion(r)); break;
         case 'python': this.results.set(r.id, this.evaluatePythonRegion(r)); break;
         case 'text': this.results.set(r.id, this.evaluateText(r)); break;
+        case 'spreadsheet': this.results.set(r.id, this.evaluateSpreadsheetRegion(r)); break;
         default: break;
       }
     }
@@ -806,10 +810,13 @@ class Evaluator {
           throw new Error(`Column ${j}: "${u}" is not a unit`);
         }
       });
+      const plain: (number | string)[][] = [];
       const rows = r.cells
         .filter((row) => row.some((c) => c.trim() !== ''))
-        .map((row, i) =>
-          Array.from({ length: width }, (_, j) => {
+        .map((row, i) => {
+          const out: (number | string)[] = [];
+          plain.push(out);
+          return Array.from({ length: width }, (_, j) => {
             const t = (row[j] ?? '').trim();
             let v: unknown;
             if (t === '') v = 0;
@@ -818,14 +825,15 @@ class Evaluator {
                 v = compileExpr(t).evaluate(this.global);
               } catch (e) {
                 // labels such as "G", "HEB 200" or "case 1" are text, not a failed formula
-                if (/[A-Za-z]/.test(t) && !/[*/^()+=]/.test(t)) return t;
+                if (/[A-Za-z]/.test(t) && !/[*/^()+=]/.test(t)) { out.push(t); return t; }
                 throw new Error(`Row ${i}, column ${j}: ${friendlyError(e)}`);
               }
             }
+            out.push(typeof v === 'number' || typeof v === 'string' ? v : valueText(v, this.fmt));
             if (units[j] && typeof v !== 'string') v = math.multiply(v as never, units[j] as never);
             return v;
-          }),
-        );
+          });
+        });
       if (rows.length === 0) throw new Error('Table is empty');
       const value = normalize(math.matrix(rows as never));
       this.global.set(r.name, value);
@@ -840,9 +848,25 @@ class Evaluator {
         });
       }
       this.updateDefined();
-      return { kind: 'table' };
+      return { kind: 'table', values: plain };
     } catch (e) {
       return { kind: 'table', error: friendlyError(e) };
+    }
+  }
+
+  // ------------------------------------------------------------ spreadsheet components
+
+  evaluateSpreadsheetRegion(r: SpreadsheetRegion): SpreadsheetResult {
+    try {
+      const { result, defined } = solveSpreadsheet(r, (src) => compileExpr(src).evaluate(this.global), this.fmt);
+      for (const [name, v] of defined) {
+        this.global.set(name, v);
+        this.ranges.delete(name);
+      }
+      if (defined.length) this.updateDefined();
+      return result;
+    } catch (e) {
+      return { kind: 'spreadsheet', cells: [], inputs: [], outputs: [], written: [], error: friendlyError(e) };
     }
   }
 
@@ -1236,6 +1260,13 @@ function bigValue(v: unknown): string | null {
     return `object: ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? ', …' : ''}`;
   }
   return null;
+}
+
+/** Evaluate and keep the worksheet's variables as they are at the end (for exporting them). */
+export function evaluateWithScope(ws: Worksheet): { results: Map<string, RegionResult>; variables: Map<string, unknown>; fmt: FormatOptions } {
+  const ev = new Evaluator(ws);
+  ev.run();
+  return { results: ev.results, variables: ev.global.local, fmt: ev.fmt };
 }
 
 export function evaluateWorksheet(ws: Worksheet, overrides?: Record<string, string>): EvaluationOutput {

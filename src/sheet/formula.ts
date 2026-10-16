@@ -477,3 +477,18 @@ export function functionsIn(node: Node, out = new Set<string>()): Set<string> {
   } else if (node.t === 'un' || node.t === 'pct') functionsIn(node.a, out);
   return out;
 }
+
+/** The formula with references to sheets renamed (old name, any case → new name). */
+export function renameSheets(src: string, names: Map<string, string>): string {
+  if (!names.size || !src.startsWith('=')) return src;
+  const find = (s: string | undefined) => (s === undefined ? undefined : names.get(s.toUpperCase()) ?? s);
+  try {
+    return '=' + tokenize(src.slice(1)).map((t) => {
+      if (t.k === 'ref' && t.ref.sheet !== undefined) return refText({ ...t.ref, sheet: find(t.ref.sheet), sheet2: find(t.ref.sheet2) }, t.ref.area);
+      if (t.k === 'name' && t.sheet !== undefined) return sheetPrefix(find(t.sheet)!) + t.v;
+      return t.s;
+    }).join('');
+  } catch {
+    return src;
+  }
+}
