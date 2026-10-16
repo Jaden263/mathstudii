@@ -331,12 +331,18 @@ export interface BeamTraffic {
 /** EN 1991-2 Table 4.2, lane 1: tandem axle load Q₁k and uniform load q₁k. */
 export const LM1 = { Q: 300, q: 9, spacing: 1.2 };
 
-export function movingLoad(preset: BeamMovingLoad['preset'], name: string): BeamMovingLoad {
+/**
+ * A new moving load. Its values are meant in kN and m: bare numbers in a region that
+ * works in those units, else with the unit written (80 kN at 3.5 mm would be one load).
+ */
+export function movingLoad(preset: BeamMovingLoad['preset'], name: string, units?: { force: BeamForceUnit; length: BeamLengthUnit }): BeamMovingLoad {
   const id = beamId('t');
+  const kN = (v: number) => (!units || units.force === 'kN' ? String(v) : `${v} kN`);
+  const m = (v: number) => (!units || units.length === 'm' ? String(v) : `${v} m`);
   switch (preset) {
-    case 'point': return { id, name, preset, P: '100' };
+    case 'point': return { id, name, preset, P: kN(100) };
     case 'lm1': return { id, name, preset, alphaQ: '1', alphaq: '1', w: '3' };
-    case 'crane': return { id, name, preset, P: '80', a: '3.5' };
-    case 'train': return { id, name, preset, axles: [{ P: '100', a: '0' }, { P: '100', a: '2' }], q: '' };
+    case 'crane': return { id, name, preset, P: kN(80), a: m(3.5) };
+    case 'train': return { id, name, preset, axles: [{ P: kN(100), a: '0' }, { P: kN(100), a: m(2) }], q: '' };
   }
 }

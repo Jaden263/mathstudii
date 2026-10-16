@@ -93,6 +93,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
   const name = region.name.trim() || 'beam';
   const straight = straightBeam(region);
   const N = new Map(region.nodes.map((q) => [q.id, q]));
+  const regionUnits = { force: region.forceUnit, length: region.lengthUnit };
   const set = (patch: Partial<BeamTraffic>) => {
     const next = { ...tr, ...patch };
     onChange({ traffic: next.lines.length || next.loads.length || next.step ? next : undefined });
@@ -103,7 +104,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
 
   const addLoad = (preset: BeamMovingLoad['preset']) => {
     const p = PRESETS.find((q) => q.preset === preset)!;
-    const ml = movingLoad(preset, freeName(p.name, [...tr.loads.map((l) => l.name), ...(region.loadCases?.cases.map((c) => c.name) ?? [])]));
+    const ml = movingLoad(preset, freeName(p.name, [...tr.loads.map((l) => l.name), ...(region.loadCases?.cases.map((c) => c.name) ?? [])]), regionUnits);
     const patch: Partial<BeamRegion> = {};
     // in the combinations as a variable action: γ_Q 1.35 for road traffic (EN 1990 A2) and cranes
     // (EN 1991-3 A.2), else 1.5; 1 at SLS. Not where another moving load already acts: their
@@ -223,7 +224,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
           <div className="bm-il-head">
             <LazyInput label="Moving load name" value={ml.name} onCommit={(v) => v.trim() && setLoad(ml.id, { name: v.trim() })} />
             <select aria-label="Kind of moving load" value={ml.preset} onChange={(e) => {
-              const fresh = movingLoad(e.target.value as BeamMovingLoad['preset'], ml.name);
+              const fresh = movingLoad(e.target.value as BeamMovingLoad['preset'], ml.name, regionUnits);
               set({ loads: tr.loads.map((q) => (q.id === ml.id ? { ...fresh, id: ml.id, dir: ml.dir } : q)) });
             }}>
               {PRESETS.map((p) => <option key={p.preset} value={p.preset}>{p.label}</option>)}
@@ -263,7 +264,11 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
                   ))}
                 </tbody>
               </table>
-              <button className="btn" onClick={() => { const last = ml.axles?.at(-1); setLoad(ml.id, { axles: [...(ml.axles ?? []), { P: last?.P ?? '100', a: last && ml.axles!.length > 1 ? last.a : '2' }] }); }}>+ Axle</button>
+              <button className="btn" onClick={() => {
+                // another like the last; the defaults of a new train otherwise (100 kN, 2 m)
+                const last = ml.axles?.at(-1), d = movingLoad('train', '', regionUnits).axles![1];
+                setLoad(ml.id, { axles: [...(ml.axles ?? []), { P: last?.P ?? d.P, a: last && ml.axles!.length > 1 ? last.a : d.a }] });
+              }}>+ Axle</button>
               <label className="field" title={`Put only on the adverse parts of each influence line; empty = none. A bare number is ${region.forceUnit}/${region.lengthUnit}`}>
                 <span>Uniform load q ({region.forceUnit}/{region.lengthUnit})</span>
                 <LazyInput label="Uniform load" value={ml.q ?? ''} placeholder="none" onCommit={(v) => setLoad(ml.id, { q: v.trim() })} />

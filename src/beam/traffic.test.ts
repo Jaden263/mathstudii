@@ -7,7 +7,7 @@ import { beamValue, lowerBound } from './evaluate';
 import { solveStructure } from './solve';
 import { autoStep } from './traffic';
 import { MAX_POSITIONS } from './influence';
-import type { BeamCases, BeamData, BeamTraffic } from './model';
+import { movingLoad, type BeamCases, type BeamData, type BeamTraffic } from './model';
 
 /** A simple span of L metres, IPE 300 (the default section). */
 function span(L: number): BeamData {
@@ -67,6 +67,16 @@ describe('moving loads in a beam region', () => {
     const { num } = run(span(10), { lines: [], loads: [{ id: 'c', name: 'crane', preset: 'crane', P: '80', a: '3.5' }], step: '0.025' }, []);
     expect(num('moving.crane.M_max', 'kN m')).toBeCloseTo((80 * (20 - 3.5) ** 2) / 80, 6);
     expect(Math.abs(num('moving.crane.x_M_max', 'm') - 5)).toBeCloseTo(3.5 / 4, 9);
+  });
+
+  it('a new crane in a region in mm and N keeps 80 kN wheels 3.5 m apart', () => {
+    // the defaults carry their units there: the same P(2L − a)²/(8L) on 10 m drawn as 10000 mm
+    const data = span(10000);
+    const crane = movingLoad('crane', 'crane', { force: 'N', length: 'mm' });
+    expect([crane.P, crane.a]).toEqual(['80 kN', '3.5 m']);
+    expect(movingLoad('crane', 'crane', { force: 'kN', length: 'm' })).toMatchObject({ P: '80', a: '3.5' });
+    const { num } = run(data, { lines: [], loads: [crane], step: '25' }, [], { lengthUnit: 'mm', forceUnit: 'N' });
+    expect(num('moving.crane.M_max', 'kN m')).toBeCloseTo((80 * (20 - 3.5) ** 2) / 80, 6);
   });
 
   it('in a combination: static part plus the factored moving extreme', () => {
