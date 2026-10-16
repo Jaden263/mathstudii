@@ -5,13 +5,13 @@
 // corner; patterns make count copies that follow the source and its spacing.
 import { describe, expect, it } from 'vitest';
 import { chamfer, breakCurve, ellipse, ellipticalArc, extend, offset, pattern, repattern, spline } from './sketchTools';
-import { solveSketch } from './solver';
+import { measure, solveSketch } from './solver';
 import { withSolution } from './edit';
 import { findProfiles, profileProperties, type Vec2 } from './profile';
 import type { CadConstraint, CadEntity, CadSketch } from './model';
 import { bsPoint } from './curves';
 import { splineOf } from './sketchCurves';
-import { circle, fillet } from './tools';
+import { circle, fillet, slot } from './tools';
 
 describe('a sketch with projected references', () => {
   it('keeps its sources through every edit, so the references go on following the model', () => {
@@ -144,7 +144,25 @@ describe('offset', () => {
     expect(r.ids).toHaveLength(8); // no corner arcs: every joint is smooth
     const { sol, sk } = solved(r.sketch);
     expect(sol.ok).toBe(true);
+    expect(sol.redundant).toEqual([]);
     near(areaOf(sk, r.ids), (w + 6) * (h + 6) - (4 - PI) * (rc + 3) ** 2);
+  });
+
+  it('a slot (lines tangent to its end arcs) outward by d: 2(r + d)·L + π(r + d)², nothing called redundant', () => {
+    // the offset arcs' radii follow from the offset lines they meet smoothly: the offset
+    // dimension once came out redundant here
+    const L = 30, r = 5, d = 3;
+    const s0 = slot({ points: [], entities: [], constraints: [] }, { p: { x: 0, y: 0 } }, { x: L, y: 0 }, 2 * r);
+    if (typeof s0 === 'string') throw new Error(s0);
+    const before = solved(s0.sketch).sol;
+    const out = offset(s0.sketch, posOf(s0.sketch), R0, s0.ids, d, { x: L / 2, y: -20 });
+    if (typeof out === 'string') throw new Error(out);
+    const { sol, sk } = solved(out.sketch);
+    expect(sol.ok).toBe(true);
+    expect(sol.redundant).toEqual([]);
+    // the offset adds no freedom of its own
+    expect(sol.dof).toBe(before.dof);
+    near(areaOf(sk, out.ids), 2 * (r + d) * L + PI * (r + d) ** 2);
   });
 
   it('a circle: concentric, r + d', () => {
@@ -302,6 +320,50 @@ describe('patterns', () => {
     expect(p.id).toBe(cid);
     expect(p.pattern!.count).toBe(3);
     expect(solved(r2.sketch).sol.dof).toBe(0);
+  });
+
+  it('repattern with the spacing or angle a worksheet expression: the copies made where they stand', () => {
+    // the dimension's text is no number here (the worksheet resolves it), so the counts take
+    // the spacing from the geometry: a circular one once refused with "the angle must not be 0"
+    const sk0: CadSketch = { ...hole(), points: [...hole().points, { id: 'o', x: 0, y: 0 }], entities: [...hole().entities, { id: 'po', type: 'point', p: 'o' }] };
+    const rc = pattern(sk0, posOf(sk0), ['k'], { kind: 'circ', count: 4, spacing: 0, about: 'o', angle: 360 });
+    if (typeof rc === 'string') throw new Error(rc);
+    const asExpr = (sk: CadSketch, text: string): CadSketch => ({ ...sk, constraints: sk.constraints.map((c) => (c.type === 'pattern' ? { ...c, value: text } : c)) });
+    const skc = asExpr(solved(rc.sketch).sk, 'n_turn');
+    const r6 = repattern(skc, posOf(skc), skc.constraints.find((c) => c.type === 'pattern')!.id, 6);
+    if (typeof r6 === 'string') throw new Error(r6);
+    expect(r6.sketch.constraints.find((c) => c.type === 'pattern')!.value).toBe('n_turn');
+    const R = hypot(10, 10);
+    const centres = r6.sketch.entities.filter((e) => e.type === 'circle').map((e) => r6.sketch.points.find((q) => q.id === (e as { c: string }).c)!);
+    expect(centres).toHaveLength(6);
+    centres.forEach((q, k) => {
+      expect(q.x).toBeCloseTo(R * cos(PI / 4 + (k * PI) / 3), 9);
+      expect(q.y).toBeCloseTo(R * sin(PI / 4 + (k * PI) / 3), 9);
+    });
+    const rr = pattern(sk0, posOf(sk0), ['k'], { kind: 'rect', count: 3, spacing: 15 });
+    if (typeof rr === 'string') throw new Error(rr);
+    const skr = asExpr(solved(rr.sketch).sk, 's_p');
+    const r5 = repattern(skr, posOf(skr), skr.constraints.find((c) => c.type === 'pattern')!.id, 5);
+    if (typeof r5 === 'string') throw new Error(r5);
+    const xs = r5.sketch.entities.filter((e) => e.type === 'circle').map((e) => r5.sketch.points.find((q) => q.id === (e as { c: string }).c)!.x).sort((p, q) => p - q);
+    expect(xs.map((x) => +x.toFixed(9))).toEqual([10, 25, 40, 55, 70]);
+  });
+
+  it('a circular pattern a whole turn clockwise (−360°): evenly round, the source where it was', () => {
+    const sk0: CadSketch = { ...hole(), points: [...hole().points, { id: 'o', x: 0, y: 0 }], entities: [...hole().entities, { id: 'po', type: 'point', p: 'o' }] };
+    const r = pattern(sk0, posOf(sk0), ['k'], { kind: 'circ', count: 4, spacing: 0, about: 'o', angle: -360 });
+    if (typeof r === 'string') throw new Error(r);
+    const { sol, sk } = solved({ ...r.sketch, constraints: [...r.sketch.constraints, { id: 'fo', type: 'fix', refs: ['o'] }] });
+    expect(sol.ok).toBe(true);
+    const centres = sk.entities.filter((e) => e.type === 'circle').map((e) => sk.points.find((q) => q.id === (e as { c: string }).c)!);
+    // 90° apart, clockwise from the source at 45°
+    centres.forEach((q, k) => {
+      expect(q.x).toBeCloseTo(hypot(10, 10) * cos(PI / 4 - (k * PI) / 2), 9);
+      expect(q.y).toBeCloseTo(hypot(10, 10) * sin(PI / 4 - (k * PI) / 2), 9);
+    });
+    // and the dimension reads what it drives (once 810°)
+    const pc = sk.constraints.find((c) => c.type === 'pattern')!;
+    expect((measure(sk, pc, sol.points) * 180) / PI).toBeCloseTo(-360, 9);
   });
 });
 

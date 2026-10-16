@@ -50,8 +50,12 @@ interface Sys {
   q: Float64Array;
   /** Variables of reference geometry, held where they are (projected from the model). */
   fixed: Set<number>;
-  /** Residual blocks: owner id, count, evaluator. */
-  blocks: { owner: string; count: number; f: (q: Float64Array, out: Float64Array, o: number) => void; vars: number[] }[];
+  /**
+   * Residual blocks: owner id, count, evaluator. Quiet blocks restate what the rows before
+   * them already imply where the geometry meets smoothly (an offset arc's radius between
+   * offset lines): they come last and are never the redundant ones.
+   */
+  blocks: { owner: string; count: number; f: (q: Float64Array, out: Float64Array, o: number) => void; vars: number[]; quiet?: boolean }[];
   scale: number;
 }
 
@@ -109,7 +113,9 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
     throw new Error(`${id} is not a circle or arc`);
   };
   const pv = (i: number) => [i, i + 1];
-  const add = (owner: string, count: number, vars: number[], f: Sys['blocks'][number]['f']) => blocks.push({ owner, count, vars, f });
+  const add = (owner: string, count: number, vars: number[], f: Sys['blocks'][number]['f'], quiet = false) => blocks.push({ owner, count, vars, f, ...(quiet ? { quiet } : {}) });
+  /** Quiet blocks, added after every other constraint. */
+  const later: (() => void)[] = [];
   const at = (q: Float64Array, i: number): Vec2 => ({ x: q[i], y: q[i + 1] });
   const pointsOf = (q: Float64Array) => (id: string) => {
     const i = px.get(id);
@@ -475,13 +481,16 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       } else if ((src?.type === 'arc' || src?.type === 'circle') && (dst?.type === 'arc' || dst?.type === 'circle')) {
         const g0 = roundOf(src.id), g1 = roundOf(dst.id);
         const shared = g0.c === g1.c;
-        add(c.id, shared ? 1 : 3, [...g0.vars, ...g1.vars], (q, o, k) => {
+        const rows = () => add(c.id, shared ? 1 : 3, [...g0.vars, ...g1.vars], (q, o, k) => {
           o[k] = g1.r(q) - g0.r(q) - side * v;
           if (!shared) {
             o[k + 1] = q[g1.c] - q[g0.c];
             o[k + 2] = q[g1.c + 1] - q[g0.c + 1];
           }
-        });
+        }, dst.type === 'arc');
+        // an arc joined smoothly to offset lines (a slot) already has its radius from them
+        if (dst.type === 'arc') later.push(rows);
+        else rows();
       }
     }
   }
@@ -493,7 +502,8 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
     const along = pt.along ? lineOf(pt.along) : null;
     const about = pt.about ? X(pt.about) : -1;
     if (pt.kind === 'circ' && about < 0) throw new Error('a circular pattern needs its centre');
-    const full = Math.abs(v - 2 * Math.PI) < 1e-9;
+    // a whole turn either way spreads the copies evenly (the last does not land on the source)
+    const full = Math.abs(Math.abs(v) - 2 * Math.PI) < 1e-9;
     const step = pt.kind === 'circ' ? v / (full ? pt.count : Math.max(1, pt.count - 1)) : v;
     for (let k = 1; k < pt.count; k++) {
       const dst = c.refs.slice(k * pt.n, (k + 1) * pt.n).map(X);
@@ -535,6 +545,8 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       /* a constraint whose references are gone is ignored */
     }
   }
+
+  for (const f of later) f();
 
   // arcs keep both ends on the circle, elliptical arcs on the ellipse: after the constraints, so a
   // constraint that implies them (an offset's corner arc) is not the one the analysis calls redundant
@@ -868,7 +880,7 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
     const rowOwner: string[] = [];
     for (const b of c.blocks) {
       for (let j = 0; j < b.count; j++) {
-        rowOwner.push(b.owner);
+        rowOwner.push(b.quiet ? '' : b.owner);
         if (Math.abs(f[k + j]) > tolF) conflicting.add(b.owner);
       }
       k += b.count;
@@ -878,7 +890,7 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
     const an = analyse(J, c.m, c.vars.length);
     rankTotal += an.rank;
     an.determined.forEach((d, i) => d && detVar.add(c.vars[i]));
-    for (const row of an.dependentRows) if (!conflicting.has(rowOwner[row])) redundant.add(rowOwner[row]);
+    for (const row of an.dependentRows) if (rowOwner[row] && !conflicting.has(rowOwner[row])) redundant.add(rowOwner[row]);
   }
   // reference geometry is fully determined (it does not move at all)
   for (const i of sys.fixed) detVar.add(i);
@@ -953,9 +965,9 @@ export function measure(sk: CadSketch, c: CadConstraint, P: Map<string, Vec2>, R
       const a = pt(c.refs[0]), b = pt(c.refs[pt0.n]);
       if (pt0.kind === 'circ') {
         const o = pt(pt0.about!);
-        let step = Math.atan2((a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x), (a.x - o.x) * (b.x - o.x) + (a.y - o.y) * (b.y - o.y));
-        if (step < 0) step += 2 * Math.PI;
-        const full = Math.abs(step * pt0.count - 2 * Math.PI) < 1e-6;
+        // the turn from the source to the first copy, clockwise negative
+        const step = Math.atan2((a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x), (a.x - o.x) * (b.x - o.x) + (a.y - o.y) * (b.y - o.y));
+        const full = Math.abs(Math.abs(step * pt0.count) - 2 * Math.PI) < 1e-6;
         return step * (full ? pt0.count : pt0.count - 1);
       }
       let u = pt0.dir === 'y' ? { x: 0, y: 1 } : { x: 1, y: 0 };

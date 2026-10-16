@@ -8,6 +8,7 @@ import { reverseSeg, segBreaks, segDeriv, segPoint, segPolyline, type Seg, type 
 import { bsClosest, bsDomain, bsSplit, ellipseParam, ellipsePoint, sweepCCW, type BSpline } from './curves';
 import { entityEnds, entitySegs, segCrossings, splineOf } from './sketchCurves';
 import { cloneSketch, pointFor, type Opts, type Ref, type ToolResult } from './tools';
+import { measure } from './solver';
 
 const { abs, hypot, atan2, cos, sin, sqrt, max, min, PI } = Math;
 
@@ -676,12 +677,13 @@ export function repattern(sk0: CadSketch, P: Map<string, Vec2>, cid: string, cou
   const of = first.pattern!.of ?? [];
   const made = parts.flatMap((k) => k.pattern!.made ?? []);
   const base = removeFromSketch(sk0, new Set([...made, ...parts.map((k) => k.id)]));
+  // the spacing and angle as the copies stand now (the dimension may be an expression of the worksheet's)
   const num = (k: CadConstraint) => {
-    const v = parseFloat(k.value ?? '');
-    return Number.isFinite(v) ? v : 0;
+    const v = measure(sk0, k, P);
+    return Number.isFinite(v) ? v : parseFloat(k.value ?? '') || 0;
   };
   const spec: PatternSpec = first.pattern!.kind === 'circ'
-    ? { kind: 'circ', count, spacing: 0, about: first.pattern!.about, angle: num(first) }
+    ? { kind: 'circ', count, spacing: 0, about: first.pattern!.about, angle: (num(first) * 180) / PI }
     : { kind: 'rect', count, spacing: num(first), along: first.pattern!.along, count2: count2 ?? second?.pattern?.count ?? 1, spacing2: second ? num(second) : 10, along2: second?.pattern?.along };
   const r = pattern(base, P, of, spec, g);
   if (typeof r === 'string') return r;
