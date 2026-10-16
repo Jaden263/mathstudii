@@ -2,8 +2,8 @@
 // prime (y''(t)) or diff(y(t), t, 2) notation with initial or boundary conditions.
 // Higher orders become first-order systems, the equations are solved for the
 // highest derivatives at every step (directly when they are explicit, by Newton
-// otherwise), boundary-value problems are shot from one end, and the result is a
-// function of the independent variable with dense output and units.
+// otherwise), boundary-value problems are shot (single or multiple shooting, bvp.ts),
+// and the result is a function of the independent variable with dense output and units.
 import type { MathNode, Unit } from 'mathjs';
 import { math, isUnit, splitUnit, quantity } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';

@@ -686,6 +686,19 @@ export function odeExample(): Worksheet {
     ['math', L, mm(538), { source: 'q_w := 0.5 kN/m' }],
     ['math', mm(56), mm(538), { source: 'EI_p := 210 GPa * 2000 cm^4' }],
     ['math', mm(120), mm(538), { source: 'L_cr := (9 / 4 * j^2 * EI_p / q_w)^(1/3) = m' }],
+    ['text', L, mm(602), { width: mm(170), markdown: '## A ground beam on an elastic foundation\nA 30 m HEB 300 ground beam, simply supported at its ends, rests on soil with a subgrade reaction k = 50 MN/m² per metre of beam and carries 20 kN/m. With λL ≈ 21 the solution grows like e^(λx) from each end, too fast to shoot from one end, so odesolve switches to multiple shooting. Away from the ends the beam just sits on the soil, w = q/k; near an end the moment peaks at λx = π/4 with q/(2λ²) e^(−π/4) sin(π/4), as for a semi-infinite beam (Hetényi).' }],
+    ['math', L, mm(638), { source: 'q_b := 20 kN/m' }],
+    ['math', mm(56), mm(638), { source: 'k_s := 50 MPa' }],
+    ['math', mm(100), mm(638), { source: 'EI_b := 210 GPa * section("HEB 300").I_y' }],
+    ['math', L, mm(650), { source: 'L_b := 30 m' }],
+    ['math', mm(56), mm(650), { source: 'λ := (k_s / (4 EI_b))^(1/4) =' }],
+    ['math', mm(120), mm(650), { source: 'λ * L_b =' }],
+    ['solve', L, mm(664), { guesses: '', constraints: "EI_b * w''''(x) + k_s * w(x) = q_b\nw(0) = 0\nw(L_b) = 0\nw''(0) = 0\nw''(L_b) = 0", solver: 'w := odesolve(x, L_b)' }],
+    ['math', mm(110), mm(668), { source: 'w(L_b / 2) = mm' }],
+    ['math', mm(110), mm(680), { source: 'q_b / k_s = mm' }],
+    ['math', mm(110), mm(692), { source: "M_max := -EI_b * w''(π / (4 λ)) = kN*m" }],
+    ['math', mm(110), mm(706), { source: 'q_b / (2 λ^2) * exp(-π / 4) * sin(π / 4) = kN*m' }],
+    ['plot', L, mm(724), { xExpr: 'x', traces: [{ y: 'w(x)', style: 'line' }], xmin: '0 m', xmax: '30 m', xUnit: 'm', yUnit: 'mm', title: 'Deflection w(x) of the ground beam', width: mm(130), height: mm(55) }],
   ]);
 }
 
