@@ -2,7 +2,7 @@
 // worker that went away fails what it was asked instead of leaving it hanging.
 import { describe, expect, it } from 'vitest';
 import type { KernelCall, KernelReply } from '../../cad/kernel/protocol';
-import { isSuperseded, kernelRequest, setKernelHost } from './kernelClient';
+import { isSuperseded, kernelHostStopped, kernelRequest, setKernelHost } from './kernelClient';
 
 /** A stand-in worker that answers section requests with their offset after `ms`. */
 function fakeWorker(ms = 5) {
@@ -46,6 +46,23 @@ describe('kernel requests from the UI', () => {
     current = b.worker;
     expect(await kernelRequest(section(2))).toBe(2);
     expect(await lost).toMatch(/interrupted/);
+    setKernelHost(null);
+  });
+
+  it('a stopped worker fails its requests at once, so its lane takes the next one', async () => {
+    // a worker that never answers (it was terminated mid-request)
+    const dead = { postMessage() {} } as unknown as Worker;
+    const b = fakeWorker();
+    let current = dead;
+    setKernelHost(() => current);
+    const stuck = kernelRequest(section(1), 'section').catch((e: Error) => e.message);
+    const next = kernelRequest(section(2), 'section');
+    // the calculation is interrupted: nothing else asks the kernel meanwhile
+    current = b.worker;
+    kernelHostStopped();
+    expect(await stuck).toMatch(/interrupted/);
+    expect(await next).toBe(2);
+    expect(b.asked).toEqual([2]);
     setKernelHost(null);
   });
 });

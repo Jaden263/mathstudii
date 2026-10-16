@@ -3,7 +3,7 @@ import type { Worksheet } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { EvalRequest, EvalResponse } from '../engine/worker';
 import { isDisplayMessage, type DisplayMessage } from '../cad/kernel/protocol';
-import { receiveDisplay, setKernelHost } from './cad/kernelClient';
+import { kernelHostStopped, receiveDisplay, setKernelHost } from './cad/kernelClient';
 
 export interface EvaluationState {
   results: Map<string, RegionResult>;
@@ -76,6 +76,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
   const interrupt = useCallback(() => {
     workerRef.current?.terminate();
     workerRef.current = null;
+    kernelHostStopped();
     reqId.current++;
     window.clearTimeout(slowTimer.current);
     setState((s) => ({ ...s, busy: false, slow: false, interrupted: true }));

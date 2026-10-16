@@ -30,13 +30,27 @@ export function setKernelHost(h: (() => Worker) | null) {
   host = h;
 }
 
+/** Fail everything the linked worker was asked and forget the link. */
+function unlink() {
+  for (const p of waiting.values()) p.reject(new Error('the calculation was interrupted — try again'));
+  waiting.clear();
+  link?.port.close();
+  link = null;
+}
+
+/**
+ * The host worker was stopped (the calculation was interrupted): fail what it was asked
+ * now, not at the next request, so a lane waiting on it moves on.
+ */
+export function kernelHostStopped() {
+  if (link && link.worker !== own) unlink();
+}
+
 function port(): MessagePort {
   const w = host ? host() : (own ??= new Worker(new URL('../../cad/kernel/worker.ts', import.meta.url), { type: 'module' }));
   if (link?.worker === w) return link.port;
   // a new worker (the calculation was interrupted): what the old one was asked is lost
-  for (const p of waiting.values()) p.reject(new Error('the calculation was interrupted — try again'));
-  waiting.clear();
-  link?.port.close();
+  unlink();
   const ch = new MessageChannel();
   ch.port1.onmessage = (e: MessageEvent<KernelReply>) => {
     const r = e.data, p = waiting.get(r.rid);
