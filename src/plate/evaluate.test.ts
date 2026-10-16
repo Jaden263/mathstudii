@@ -125,6 +125,18 @@ describe('plate region in a worksheet', () => {
     const outside = run({ ...ss([{ id: 'q', type: 'area', q: 'q' }]), ...custom }, ['p.w(7 m, 1 m) = mm']);
     const m = outside.out.results.get(outside.maths[0].id) as MathResult;
     expect(m.error).toMatch(/not on the plate/);
+    // a line load or patch that misses the plate is a mistake, not a load of nothing
+    const line = run({ ...ss([{ id: 'L', type: 'line', q: '10', x1: '7', y1: '0', x2: '8', y2: '6' }]), ...custom, mesh: '0.5' }, []);
+    expect(line.res.error).toMatch(/line load .* not on the plate/);
+    const patch = run({ ...ss([{ id: 'P', type: 'patch', q: '10', x1: '-3', y1: '1', x2: '-1', y2: '2' }]), ...custom, mesh: '0.5' }, []);
+    expect(patch.res.error).toMatch(/patch load .* not on the plate/);
+    // 6 m × 6 m at 20 mm would be 90 000 elements: refused before meshing (it hung the page's worker)
+    const fine = run({ ...ss([{ id: 'q', type: 'area', q: 'q' }]), ...custom, mesh: '0.02' }, []);
+    expect(fine.res.errors.mesh).toMatch(/about 90 000 elements \(at most 30 000\)/);
+    // a hand-edited file with an empty list of cases: all loads act together
+    const nocases = run({ ...ss([{ id: 'q', type: 'area', q: 'q', case: 'G' }]), ...custom, mesh: '0.5', loadCases: { cases: [], combos: [] } }, ['p.R_sum = kN']);
+    expect(nocases.res.error).toBeUndefined();
+    expect(nocases.num(0)).toBeCloseTo(360, 6);
   });
 
   it('a second evaluation reuses the solution; a worksheet saved before plates still opens', () => {

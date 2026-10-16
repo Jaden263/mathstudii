@@ -288,6 +288,24 @@ describe('plates against beam theory and Navier series', () => {
     }
   });
 
+  it('clamped edges keep their own reactions (an L with clamped re-entrant edges)', () => {
+    // Kirchhoff: m_ns = 0 along a clamped edge, so V = q_n there and a corner where a clamped
+    // edge meets a simple one has no corner force; each edge's total converges with the mesh
+    const L: Pt[] = [[0, 0], [8, 0], [8, 3.5], [4, 3.5], [4, 7], [0, 7]], q = 13.275e3;
+    const fix: Fix[] = ['simple', 'simple', 'clamped', 'clamped', 'simple', 'simple'];
+    const [coarse, fine] = [0.2, 0.1].map((size) => plate(L, fix, [uniform(q)], { size, t: 0.2, nu: 0.2 }));
+    const total = q * 42;
+    for (const p of [coarse, fine]) expect(p.f.support.reduce((s, r) => s + r, 0) / total).toBeCloseTo(1, 9);
+    // E3 and E4 (supports 2 and 3) meet at the re-entrant corner, where the shear is singular:
+    // their shares move by ±3 % from mesh to mesh round 127 kN each (splitting the corner's
+    // couple between them, one edge took the other's clamping moment: 97 → 154 → 92 → 161 kN)
+    for (const i of [2, 3]) near(fine.f.support[i], coarse.f.support[i], 0.08);
+    near(fine.f.support[2] + fine.f.support[3], coarse.f.support[2] + coarse.f.support[3], 0.01);
+    // the corner (8, 3.5) of simple E2 and clamped E3: no corner force (< 0.2 % of the load)
+    const end = lineReactions(fine.sol, fine.f, 2).ends[0];
+    expect(Math.abs(end) / total).toBeLessThan(0.002);
+  });
+
   it('reports a plate that is not held', () => {
     const mesh = meshPlate({ outline: square(2), openings: [], lines: [], points: [[1, 1]], softLines: [], softPoints: [], size: 0.25 });
     expect(() => solvePlate({ mesh, E, nu, t: 0.1, supports: [{ id: 'p', kind: 'point', at: [1, 1] }], loads: [uniform(1)], cases: ['q'] })).toThrow(/not held enough/);

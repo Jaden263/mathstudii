@@ -59,6 +59,12 @@ export function cleanPolygon(poly: Pt[]): Pt[] {
   return polygonArea(p) < 0 ? p.reverse() : p;
 }
 
+/** Most elements a plate may have: about 90 000 unknowns, solved in some seconds in a browser. */
+export const MAX_ELEMENTS = 30000;
+
+const thousands = (n: number) => Math.round(n).toLocaleString('en').replace(/,/g, ' ');
+const tooMany = (n: number) => `The element size gives about ${thousands(n)} elements (at most ${thousands(MAX_ELEMENTS)}): make it larger`;
+
 const axisAligned = (a: Pt, b: Pt, tol: number) => Math.abs(a[0] - b[0]) <= tol || Math.abs(a[1] - b[1]) <= tol;
 const isRect = (p: Pt[], tol: number) => p.length === 4 && p.every((q, i) => axisAligned(q, p[(i + 1) % 4], tol));
 
@@ -68,9 +74,13 @@ export function meshPlate(f: MeshFeatures): PlateMesh {
   const span = Math.max(...outline.map((p) => p[0])) - Math.min(...outline.map((p) => p[0])) + Math.max(...outline.map((p) => p[1])) - Math.min(...outline.map((p) => p[1]));
   if (!(f.size > 0)) throw new Error('The element size must be positive');
   if (span / f.size > 2000) throw new Error('The element size is too small for the plate');
+  // a finer mesh takes minutes and the page's memory to solve: say so before meshing
+  const net = polygonArea(outline) - openings.reduce((s, h) => s + polygonArea(h), 0);
+  if (net / f.size ** 2 > MAX_ELEMENTS) throw new Error(tooMany(net / f.size ** 2));
   const tol = 1e-9 * span;
   const structured = !f.unstructured && isRect(outline, tol) && openings.every((h) => isRect(h, tol)) && f.lines.every(([a, b]) => axisAligned(a, b, tol));
   const m = structured ? gridMesh(outline, openings, f, tol) : splitMesh(outline, openings, f);
+  if (m.quads.length / 4 > MAX_ELEMENTS) throw new Error(tooMany(m.quads.length / 4));
   const curve = structured ? null : curveBoundary(m, [outline, ...openings], tol * 100);
   return { ...m, structured, ...angles(m.x, m.y, m.quads), ...(curve ?? {}) };
 }
@@ -194,7 +204,7 @@ function splitMesh(outline: Pt[], openings: Pt[][], f: MeshFeatures) {
   // each triangle becomes three quads; with Ruppert's refinement keeping every edge under
   // the limit the triangles' edges average about half of it, so a limit of 3.6 h gives
   // quads whose sides average h (measured: 0.93 – 0.99 h)
-  const tm = triangulateDomain({ outline, openings, lines: [...f.lines, ...f.softLines], points: [...f.points, ...f.softPoints], size: 3.6 * f.size });
+  const tm = triangulateDomain({ outline, openings, lines: [...f.lines, ...f.softLines], points: [...f.points, ...f.softPoints], size: 3.6 * f.size, maxVertices: MAX_ELEMENTS / 3 });
   const x = [...tm.x], y = [...tm.y], fixed = [...tm.fixed];
   const mid = new Map<string, number>();
   const midpoint = (a: number, b: number) => {

@@ -138,7 +138,7 @@ export function solvePlate(p: NumPlate): PlateSolution {
         for (const q of on) if (owner[q.node] < 0 && !wFixed[q.node]) owner[q.node] = si;
         return;
       }
-      lines.push({ si, nodes: on.map((q) => q.node), trib, s: tan });
+      lines.push({ si, nodes: on.map((q) => q.node), trib, s: tan, clamped: s.fix === 'clamped' });
       on.forEach((q, i) => {
         if (!wFixed[q.node]) owner[q.node] = si;
         wFixed[q.node] = 1;
@@ -363,6 +363,7 @@ function addLoad(F: Float64Array, l: NumPlateLoad, m: PlateMesh, index: ElementI
     const poly = l.polygon;
     const bx0 = Math.min(...poly.map((q) => q[0])), bx1 = Math.max(...poly.map((q) => q[0]));
     const by0 = Math.min(...poly.map((q) => q[1])), by1 = Math.max(...poly.map((q) => q[1]));
+    let covered = 0;
     for (const e of index.inBox(bx0, by0, bx1, by1)) {
       const xy = elementXY(m, e);
       const quad: Pt[] = [0, 1, 2, 3].map((k) => [xy[2 * k], xy[2 * k + 1]]);
@@ -370,6 +371,7 @@ function addLoad(F: Float64Array, l: NumPlateLoad, m: PlateMesh, index: ElementI
       if (part.length < 3) continue;
       const area = polyArea(part), full = polyArea(quad);
       if (area <= 1e-12 * full) continue;
+      covered += area;
       if (area >= full * (1 - 1e-9)) {
         const f = pressureLoad(xy, l.q);
         for (let k = 0; k < 4; k++) F[3 * m.quads[4 * e + k]] += f[3 * k];
@@ -382,6 +384,8 @@ function addLoad(F: Float64Array, l: NumPlateLoad, m: PlateMesh, index: ElementI
         for (const [la, lb, lc, w] of TRI7) addAt(e, la * a[0] + lb * b[0] + lc * c[0], la * a[1] + lb * b[1] + lc * c[1], l.q * A * w);
       }
     }
+    // a patch wholly off the plate (or in an opening) is a mistake, not a load of nothing
+    if (!(covered > 0)) throw new PlateError(`The patch load at ${fmtPt(poly[0])} – ${fmtPt(poly[2] ?? poly[1])} is not on the plate`);
     return;
   }
   if (l.type === 'point') {
@@ -404,6 +408,7 @@ function addLoad(F: Float64Array, l: NumPlateLoad, m: PlateMesh, index: ElementI
     const c = clipSegment(a, b, [0, 1, 2, 3].map((k) => [xy[2 * k], xy[2 * k + 1]] as Pt), tol / L);
     if (c && (c[1] - c[0]) * L > tol) pieces.push({ e, s0: c[0], s1: c[1] });
   }
+  if (!pieces.length) throw new PlateError(`The line load ${fmtPt(a)} – ${fmtPt(b)} is not on the plate`);
   pieces.sort((p, q) => p.s0 - q.s0);
   let done = 0;
   for (const pc of pieces) {
@@ -480,7 +485,7 @@ interface SupportData {
   bedK: Float64Array[];
   kinds: NumPlateSupport['kind'][];
   /** Rigid line supports: their nodes along them, shares of the line and its direction at each. */
-  lines: { si: number; nodes: number[]; trib: number[]; s: Pt[] }[];
+  lines: { si: number; nodes: number[]; trib: number[]; s: Pt[]; clamped: boolean }[];
   recovery: Recovery;
 }
 
@@ -528,15 +533,24 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
   // a hard support also holds the twisting couples g along it (the generalized force of
   // β_s): Kelvin–Tait turns them into forces dg/ds along the line and ∓g at its ends, so
   // the reactions per length are Kirchhoff's V_n = q_n + ∂m_ns/∂s with the corner forces.
-  // Their sum along each line is nil.
-  const through = new Map<number, number[]>();
-  s.lines.forEach((l, li) => l.nodes.forEach((q) => through.set(q, [...(through.get(q) ?? []), li])));
+  // Their sum along each line is nil. A clamped line holds both rotations, so its couples
+  // are bending moments too; Kirchhoff's m_ns vanishes along it (V_n = q_n there) and at a
+  // corner where a simple line meets it, so only simple lines convert theirs, and none at
+  // a clamped node (splitting a corner's couple there gave one edge the other's bending
+  // moment: an L's clamped edges took 55, 69 and 32 kN of 187 kN as the mesh was refined).
+  const through = new Map<number, number[]>(), simple = new Map<number, number[]>(), clamped = new Set<number>();
+  s.lines.forEach((l, li) => l.nodes.forEach((q) => {
+    through.set(q, [...(through.get(q) ?? []), li]);
+    if (l.clamped) clamped.add(q);
+    else simple.set(q, [...(simple.get(q) ?? []), li]);
+  }));
   const dirAt = (li: number, q: number) => s.lines[li].s[s.lines[li].nodes.indexOf(q)];
   const couple = (li: number, q: number): number => {
     // the support's couple on the plate, split between the lines through the node: C = Σ λ_j s_j
     // at a corner of two, an equal share each along a smooth (or straight) run
+    if (clamped.has(q)) return 0;
     const cx = -fint[3 * q + 1], cy = -fint[3 * q + 2];
-    const ls = through.get(q)!;
+    const ls = simple.get(q)!;
     const own = dirAt(li, q);
     if (ls.length === 2) {
       const other = dirAt(ls[0] === li ? ls[1] : ls[0], q);
@@ -546,6 +560,7 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
     return (cx * own[0] + cy * own[1]) / ls.length;
   };
   for (const [li, l] of s.lines.entries()) {
+    if (l.clamped) continue;
     const g = l.nodes.map((q, k) => couple(li, q) / l.trib[k]);
     const last = g.length - 1;
     l.nodes.forEach((q, k) => {

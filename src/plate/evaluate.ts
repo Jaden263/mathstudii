@@ -297,7 +297,8 @@ export function solvePlateRegion(r: PlateRegion, evalExpr: Eval): PlateResult {
   }
 
   // loads, each tagged with its case
-  const lc = r.loadCases;
+  // (cases without any case, from a hand-edited file: all loads act together)
+  const lc = r.loadCases?.cases.length ? r.loadCases : undefined;
   const cases = lc ? lc.cases.map((c) => c.id) : ['all'];
   const loads: NumPlateLoad[] = [];
   const softLines: [Pt, Pt][] = [], softPoints: Pt[] = [];
@@ -397,6 +398,8 @@ export function solvePlateRegion(r: PlateRegion, evalExpr: Eval): PlateResult {
     );
   } catch (e) {
     res.error = e instanceof PlateError ? e.message : `Could not solve: ${(e as Error).message}`;
+    // a mesh too fine for the plate shows at the element size as well
+    if (/element size/.test((e as Error).message)) res.errors.mesh = (e as Error).message;
     return res;
   }
   const { mesh, sol } = solved;
@@ -673,7 +676,7 @@ export function plateValue(r: PlateRegion, res: PlateResult): Value {
   };
   const reactsOf = (raw?: PlateFields) => (raw ? caseReactions(res, raw) : undefined);
 
-  if (!r.loadCases || !res.combos) {
+  if (!r.loadCases?.cases.length || !res.combos) {
     const v = solutionValue(res.fields!, res.reactions);
     general(v);
     return v;
