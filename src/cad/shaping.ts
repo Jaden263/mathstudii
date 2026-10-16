@@ -9,7 +9,7 @@
 import earcut from 'earcut';
 import { loopPolygon, type ProfileRegion, type Vec2 } from './profile';
 import {
-  crossSection, frameMatrix, framePoint, m4Mul, m4Translate, regionPolygons, toMat4,
+  crossSection, dot3, frameMatrix, framePoint, len3, m4Mul, m4Translate, norm3, regionPolygons, sub3, toMat4,
   type Arena, type Frame, type Manifold, type ManifoldToplevel, type Vec3,
 } from './solid';
 
@@ -243,6 +243,19 @@ function resample(p: Vec2[], n: number): Vec2[] {
   return out;
 }
 
+/**
+ * Whether the second end of a loft must run the other way round: both loops (normals na,
+ * nb by the right-hand rule, centres ca, cb) have to turn the same way about the loft's
+ * path from ca to cb, which each normal's side of that path tells. Comparing the normals
+ * alone cannot tell for ends at right angles (a floor to a wall on either side). Ends whose
+ * path lies in one of their planes fall back to that.
+ */
+export function loftTurned(na: Vec3, ca: Vec3, nb: Vec3, cb: Vec3): boolean {
+  const a = norm3(na), b = norm3(nb), d = sub3(cb, ca);
+  const sa = dot3(a, d), sb = dot3(b, d), tol = 1e-6 * len3(d);
+  return Math.abs(sa) > tol && Math.abs(sb) > tol ? sa * sb < 0 : dot3(a, b) < 0;
+}
+
 /** A solid joining a profile on one sketch to a profile on another (outer loops). */
 export function loftSolid(K: ManifoldToplevel, arena: Arena, a: { region: ProfileRegion; frame: Frame }, b: { region: ProfileRegion; frame: Frame }): Manifold {
   const loop3 = (s: { region: ProfileRegion; frame: Frame }) => {
@@ -274,8 +287,7 @@ export function loftSolid(K: ManifoldToplevel, arena: Arena, a: { region: Profil
     }
     return s;
   };
-  const na = nrm(PA), nb = nrm(PB);
-  if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < 0) PB = [...PB].reverse();
+  if (loftTurned(nrm(PA), ctr(PA), nrm(PB), ctr(PB))) PB = [...PB].reverse();
   // start where the two loops are closest, so the ruled surface does not twist
   const cA = ctr(PA), cB = ctr(PB);
   let best = 0, bestD = Infinity;

@@ -1,10 +1,13 @@
 // Multi-object 3-D scene for the CAD workspace: several meshes with their own colour and
 // world transform, sketch lines, construction planes, CPU picking and a ViewCube.
+// Bodies come as B-rep display meshes (triangles in one run per face, the exact edges as
+// lines), so single faces and edges can be hovered, picked and highlighted.
 // Same camera as Cad3DView: orthographic, world X right / Y up / Z towards the viewer at
 // yaw 0 / pitch 0, zoom 1 fits the scene bounds, pan in half the shorter canvas side.
 // The view belongs to the caller; a gesture only previews it locally and reports it once it ends.
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import type { Mesh } from '../../cad/mesh';
+import type { DisplayMesh } from '../../cad/display';
 import { clampPitch, clampZoom, panBy, viewRotation as yUpRotation, zoomAt, type Display } from './Cad3DView';
 
 /**
@@ -24,7 +27,8 @@ type Pan = { x: number; y: number };
 
 export interface SceneMesh {
   key: string;
-  mesh: Mesh;
+  /** A plain triangle soup (profiles), or a body's display mesh with faces and edges. */
+  mesh: Mesh | DisplayMesh;
   color: [number, number, number];
   /** column-major 4×4 world transform, default identity */
   matrix?: Float32Array | number[];
@@ -35,7 +39,17 @@ export interface SceneMesh {
   ghost?: boolean;
   /** false: never returned by picking (default true) */
   pickable?: boolean;
+  /** Display meshes: faces and edges drawn in the accent colour (selected) … */
+  selFaces?: number[];
+  selEdges?: number[];
+  /** … and lighter (under the pointer). */
+  hoverFace?: number;
+  hoverEdge?: number;
+  /** Faces painted another colour (the cut faces of a section). */
+  paint?: { faces: number[]; color: [number, number, number] };
 }
+
+export const isDisplayMesh = (m: Mesh | DisplayMesh): m is DisplayMesh => 'indices' in m;
 
 export interface SceneLines {
   key: string;
@@ -69,6 +83,9 @@ export interface PickHit {
   /** world-space face normal (mesh: triangle normal, plane: u×v) */
   normal?: Vec3;
   triangle?: number;
+  /** Display meshes: the face hit, or the edge passed close to (edges win over faces). */
+  face?: number;
+  edge?: number;
 }
 
 export interface SceneView { yaw: number; pitch: number; zoom: number; pan: { x: number; y: number } }
@@ -248,30 +265,42 @@ function slab(o: ArrayLike<number>, d: ArrayLike<number>, b: Mesh['bounds']): [n
   return t1 < 0 ? null : [t0, t1];
 }
 
+/** Corner k (0…2) of triangle t of a mesh, in its model space. */
+function corner(m: Mesh | DisplayMesh, t: number, k: number): Vec3 {
+  const P = m.positions;
+  const i = isDisplayMesh(m) ? 3 * m.indices[3 * t + k] : 9 * t + 3 * k;
+  return [P[i], P[i + 1], P[i + 2]];
+}
+
 /**
  * Nearest hit along a ray among mesh triangles (each with its world matrix) and plane squares.
  * The ray is taken into each mesh's model space instead of transforming its triangles, so
  * nothing needs caching; an affine map keeps the ray parameter, so hits compare directly.
  * A plane only wins when it is nearer than every mesh hit (planes behind meshes are not picked).
+ * With `edgeTol` (world units) the edges of display meshes are picked too when the ray
+ * passes within it, unless they lie behind the face hit; an edge wins over its faces.
  */
-export function pickScene(ray: { origin: Vec3; dir: Vec3 }, meshes: SceneMesh[], planes: ScenePlane[] = []): PickHit {
+export function pickScene(ray: { origin: Vec3; dir: Vec3 }, meshes: SceneMesh[], planes: ScenePlane[] = [], edgeTol = 0): PickHit {
   const { origin: o, dir: d } = ray;
   let best = Infinity, bestMesh: SceneMesh | null = null, bestTri = -1, bestAff: Affine | null = null;
   for (const sm of meshes) {
     if (sm.pickable === false) continue;
-    const P = sm.mesh.positions;
+    const m = sm.mesh, P = m.positions;
     if (!P.length) continue;
     const f = affine(sm.matrix);
     if (!f.det) continue;
     const lo = mul3(f.inv, sub(o, f.t)), ld = mul3(f.inv, d);
-    const span = slab(lo, ld, sm.mesh.bounds);
+    const span = slab(lo, ld, m.bounds);
     if (!span || span[0] > best) continue;
     const [ox, oy, oz] = lo, [dx, dy, dz] = ld;
+    const I = isDisplayMesh(m) ? m.indices : null;
+    const nt = I ? I.length / 3 : Math.floor(P.length / 9);
     let found = -1, tBest = best;
-    for (let i = 0, n = P.length - 8; i < n; i += 9) {
-      const ax = P[i], ay = P[i + 1], az = P[i + 2];
-      const e1x = P[i + 3] - ax, e1y = P[i + 4] - ay, e1z = P[i + 5] - az;
-      const e2x = P[i + 6] - ax, e2y = P[i + 7] - ay, e2z = P[i + 8] - az;
+    for (let t = 0; t < nt; t++) {
+      const ia = I ? 3 * I[3 * t] : 9 * t, ib = I ? 3 * I[3 * t + 1] : 9 * t + 3, ic = I ? 3 * I[3 * t + 2] : 9 * t + 6;
+      const ax = P[ia], ay = P[ia + 1], az = P[ia + 2];
+      const e1x = P[ib] - ax, e1y = P[ib + 1] - ay, e1z = P[ib + 2] - az;
+      const e2x = P[ic] - ax, e2y = P[ic + 1] - ay, e2z = P[ic + 2] - az;
       const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
       const det = e1x * px + e1y * py + e1z * pz;
       if (det === 0) continue; // near-parallel ones fall out of the u, v range
@@ -282,10 +311,33 @@ export function pickScene(ray: { origin: Vec3; dir: Vec3 }, meshes: SceneMesh[],
       const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
       const v = (dx * qx + dy * qy + dz * qz) * inv;
       if (v < 0 || u + v > 1) continue;
-      const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
-      if (t >= 0 && t < tBest) { tBest = t; found = i / 9; }
+      const tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (tt >= 0 && tt < tBest) { tBest = tt; found = t; }
     }
     if (found >= 0) { best = tBest; bestMesh = sm; bestTri = found; bestAff = f; }
+  }
+
+  // edges near the ray, not behind the face it hits
+  let edge: { sm: SceneMesh; e: number; dist: number; t: number } | null = null;
+  if (edgeTol > 0) {
+    const behind = Number.isFinite(best) ? best + 3 * edgeTol : Infinity;
+    for (const sm of meshes) {
+      const m = sm.mesh;
+      if (sm.pickable === false || !isDisplayMesh(m) || !m.lines.length) continue;
+      const f = affine(sm.matrix);
+      if (!f.det) continue;
+      const lo = mul3(f.inv, sub(o, f.t)), ld = mul3(f.inv, d);
+      const span = slab(lo, ld, { min: m.bounds.min.map((x) => x - edgeTol) as Vec3, max: m.bounds.max.map((x) => x + edgeTol) as Vec3 });
+      if (!span) continue;
+      const L = m.lines;
+      for (let e = 0; e + 1 < m.edgeStart.length; e++) {
+        for (let s = m.edgeStart[e]; s < m.edgeStart[e + 1]; s++) {
+          const hit = raySegment(lo, ld, L, 6 * s);
+          if (!hit || hit.dist > edgeTol || hit.t > behind) continue;
+          if (!edge || hit.dist < edge.dist - 1e-12 * edgeTol || (Math.abs(hit.dist - edge.dist) <= 1e-12 * edgeTol && hit.t < edge.t)) edge = { sm, e, dist: hit.dist, t: hit.t };
+        }
+      }
+    }
   }
 
   // a plane exactly on a face (a sketch plane on it) leaves the face picked
@@ -308,15 +360,42 @@ export function pickScene(ray: { origin: Vec3; dir: Vec3 }, meshes: SceneMesh[],
     if (Math.abs(s) * Math.sqrt(guu) <= pl.size && Math.abs(r) * Math.sqrt(gvv) <= pl.size) { plane = pl; pt = t; }
   }
   const at = (t: number): Vec3 => [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]];
-  if (plane) return { kind: 'plane', key: plane.key, point: at(pt), normal: norm(cross(plane.u, plane.v)) };
+  if (plane && !edge) return { kind: 'plane', key: plane.key, point: at(pt), normal: norm(cross(plane.u, plane.v)) };
+  if (edge) {
+    const m = edge.sm.mesh as DisplayMesh;
+    const sameMesh = bestMesh === edge.sm && bestTri >= 0;
+    return { kind: 'mesh', key: edge.sm.key, point: at(edge.t), edge: edge.e, ...(sameMesh ? { face: m.faceOf[bestTri], triangle: bestTri } : {}) };
+  }
   if (bestMesh && bestAff) {
-    const P = bestMesh.mesh.positions, i = bestTri * 9;
-    const a = [P[i], P[i + 1], P[i + 2]];
+    const m = bestMesh.mesh;
+    const a = corner(m, bestTri, 0);
     // counter-clockwise seen from outside, so the side cross product points out; normals take (A⁻¹)ᵀ
-    const local = cross(sub([P[i + 3], P[i + 4], P[i + 5]], a), sub([P[i + 6], P[i + 7], P[i + 8]], a));
-    return { kind: 'mesh', key: bestMesh.key, point: at(best), normal: norm(mul3(bestAff.nrm, local)), triangle: bestTri };
+    const local = cross(sub(corner(m, bestTri, 1), a), sub(corner(m, bestTri, 2), a));
+    const hit: PickHit = { kind: 'mesh', key: bestMesh.key, point: at(best), normal: norm(mul3(bestAff.nrm, local)), triangle: bestTri };
+    if (isDisplayMesh(m)) hit.face = m.faceOf[bestTri];
+    return hit;
   }
   return { kind: 'none' };
+}
+
+/**
+ * Closest approach of a ray (o + t·d, d not necessarily unit) and segment s of a line list:
+ * the distance and the ray parameter there.
+ */
+export function raySegment(o: ArrayLike<number>, d: ArrayLike<number>, L: ArrayLike<number>, at: number): { dist: number; t: number } | null {
+  const ax = L[at], ay = L[at + 1], az = L[at + 2];
+  const ux = L[at + 3] - ax, uy = L[at + 4] - ay, uz = L[at + 5] - az;
+  const wx = o[0] - ax, wy = o[1] - ay, wz = o[2] - az;
+  const a = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], b = d[0] * ux + d[1] * uy + d[2] * uz, c = ux * ux + uy * uy + uz * uz;
+  const dd = d[0] * wx + d[1] * wy + d[2] * wz, e = ux * wx + uy * wy + uz * wz;
+  const den = a * c - b * b;
+  // the segment parameter of the closest point, clamped to the segment
+  let s = den > 1e-12 * a * c ? (a * e - b * dd) / den : 0;
+  s = Math.max(0, Math.min(1, s));
+  const t = (b * s - dd) / a;
+  if (t < 0) return null;
+  const px = o[0] + t * d[0] - (ax + s * ux), py = o[1] + t * d[1] - (ay + s * uy), pz = o[2] + t * d[2] - (az + s * uz);
+  return { dist: Math.hypot(px, py, pz), t };
 }
 
 /** Union of the transformed mesh boxes, line endpoints and plane squares; null when empty. */
@@ -417,7 +496,12 @@ function triangleEdges(p: Float32Array): Float32Array {
   return out;
 }
 
-interface MeshBufs { pos: WebGLBuffer | null; nrm: WebGLBuffer | null; edge: WebGLBuffer | null; wire: WebGLBuffer | null; count: number; edges: number; wires: number }
+interface MeshBufs {
+  pos: WebGLBuffer | null; nrm: WebGLBuffer | null; edge: WebGLBuffer | null; wire: WebGLBuffer | null;
+  /** Display meshes: the triangle indices (null: drawn unindexed, without 32-bit index support). */
+  idx: WebGLBuffer | null;
+  count: number; edges: number; wires: number;
+}
 interface LineBufs { buf: WebGLBuffer | null; count: number }
 
 interface DrawInput {
@@ -443,7 +527,20 @@ interface Renderer {
 const mix = (a: RGB, b: RGB, t: number): RGB => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const scale = (a: RGB, k: number): RGB => [a[0] * k, a[1] * k, a[2] * k];
 
+/** A display mesh without indices: three vertices per triangle, in the same (face-sorted) order. */
+function unindexed(m: DisplayMesh): { positions: Float32Array; normals: Float32Array } {
+  const n = m.indices.length;
+  const positions = new Float32Array(n * 3), normals = new Float32Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    positions.set(m.positions.subarray(3 * m.indices[k], 3 * m.indices[k] + 3), 3 * k);
+    normals.set(m.normals.subarray(3 * m.indices[k], 3 * m.indices[k] + 3), 3 * k);
+  }
+  return { positions, normals };
+}
+
 function createRenderer(gl: WebGLRenderingContext): Renderer {
+  // 32-bit indices: everywhere in practice; without them display meshes are drawn unindexed
+  const uint32 = !!gl.getExtension('OES_element_index_uint');
   const tri = program(gl, TRI_VS, TRI_FS);
   const line = program(gl, LINE_VS, LINE_FS);
   const tPos = gl.getAttribLocation(tri, 'aPos'), tNrm = gl.getAttribLocation(tri, 'aNrm');
@@ -452,8 +549,8 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
     tMvp: gl.getUniformLocation(tri, 'uMvp'), tRot: gl.getUniformLocation(tri, 'uRot'), tColor: gl.getUniformLocation(tri, 'uColor'), tAlpha: gl.getUniformLocation(tri, 'uAlpha'),
     lMvp: gl.getUniformLocation(line, 'uMvp'), lColor: gl.getUniformLocation(line, 'uColor'), lShift: gl.getUniformLocation(line, 'uShift'),
   };
-  // uploaded once per Mesh / segment array object, swept when no longer drawn
-  const meshBufs = new Map<Mesh, MeshBufs>();
+  // uploaded once per mesh / segment array object, swept when no longer drawn
+  const meshBufs = new Map<Mesh | DisplayMesh, MeshBufs>();
   const lineBufs = new Map<Float32Array, LineBufs>();
   const planeFill = gl.createBuffer(), planeEdge = gl.createBuffer();
 
@@ -463,12 +560,22 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     return b;
   };
-  const meshOf = (m: Mesh): MeshBufs => {
+  const meshOf = (m: Mesh | DisplayMesh): MeshBufs => {
     let b = meshBufs.get(m);
-    if (!b) {
-      b = { pos: upload(m.positions), nrm: upload(m.normals), edge: m.edges.length ? upload(m.edges) : null, wire: null, count: m.positions.length / 3, edges: m.edges.length / 3, wires: -1 };
-      meshBufs.set(m, b);
+    if (b) return b;
+    if (isDisplayMesh(m)) {
+      const flat = uint32 ? m : unindexed(m);
+      let idx: WebGLBuffer | null = null;
+      if (uint32) {
+        idx = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idx);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, m.indices, gl.STATIC_DRAW);
+      }
+      b = { pos: upload(flat.positions), nrm: upload(flat.normals), idx, edge: m.lines.length ? upload(m.lines) : null, wire: null, count: m.indices.length, edges: m.lines.length / 3, wires: 0 };
+    } else {
+      b = { pos: upload(m.positions), nrm: upload(m.normals), idx: null, edge: m.edges.length ? upload(m.edges) : null, wire: null, count: m.positions.length / 3, edges: m.edges.length / 3, wires: -1 };
     }
+    meshBufs.set(m, b);
     return b;
   };
   const wiresOf = (m: Mesh, b: MeshBufs) => {
@@ -491,7 +598,7 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
     const keepM = new Set(meshes.map((m) => m.mesh)), keepL = new Set(lines.map((l) => l.segments));
     for (const [m, b] of meshBufs) {
       if (keepM.has(m)) continue;
-      for (const x of [b.pos, b.nrm, b.edge, b.wire]) if (x) gl.deleteBuffer(x);
+      for (const x of [b.pos, b.nrm, b.edge, b.wire, b.idx]) if (x) gl.deleteBuffer(x);
       meshBufs.delete(m);
     }
     for (const [s, b] of lineBufs) {
@@ -560,12 +667,14 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         if (sm.ghost) color = mix(color, theme.dark ? [0.5, 0.52, 0.56] : [0.72, 0.74, 0.78], 0.4);
         items.push({ sm, b, mvp, rot, det: f.det, color, alpha, depth: dot([R[6], R[7], R[8]], centre) });
       }
-      const faces = (it: Item) => {
+      /** Triangles first … first + count − 1 (all of them by default) in a colour. */
+      const faces = (it: Item, color: RGB = it.color, first = 0, count = it.b.count) => {
+        if (!count) return;
         gl.frontFace(it.det < 0 ? gl.CW : gl.CCW); // a mirroring matrix turns the winding over
         gl.useProgram(tri);
         gl.uniformMatrix4fv(u.tMvp, false, it.mvp);
         gl.uniformMatrix3fv(u.tRot, false, it.rot);
-        gl.uniform3fv(u.tColor, it.color);
+        gl.uniform3fv(u.tColor, color);
         gl.uniform1f(u.tAlpha, it.alpha);
         gl.bindBuffer(gl.ARRAY_BUFFER, it.b.pos);
         gl.enableVertexAttribArray(tPos);
@@ -573,16 +682,38 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         gl.bindBuffer(gl.ARRAY_BUFFER, it.b.nrm);
         gl.enableVertexAttribArray(tNrm);
         gl.vertexAttribPointer(tNrm, 3, gl.FLOAT, false, 0, 0);
-        gl.drawArrays(gl.TRIANGLES, 0, it.b.count);
+        if (it.b.idx) {
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, it.b.idx);
+          gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, first * 4);
+        } else gl.drawArrays(gl.TRIANGLES, first, count);
         gl.disableVertexAttribArray(tNrm);
+      };
+      /** One face of a display mesh drawn again on top of itself (same depth) in a colour. */
+      const face = (it: Item, f: number, color: RGB) => {
+        const m = it.sm.mesh;
+        if (!isDisplayMesh(m) || f < 0 || f + 1 >= m.faceStart.length) return;
+        faces(it, color, m.faceStart[f] * 3, (m.faceStart[f + 1] - m.faceStart[f]) * 3);
+      };
+      const marks = (it: Item) => {
+        const { sm } = it;
+        if (sm.paint) for (const f of sm.paint.faces) face(it, f, sm.paint.color);
+        for (const f of sm.selFaces ?? []) face(it, f, mix(it.color, accent, 0.65));
+        if (sm.hoverFace !== undefined && !sm.selFaces?.includes(sm.hoverFace)) face(it, sm.hoverFace, mix(it.color, accent, 0.35));
+      };
+      /** One edge of a display mesh, bold. */
+      const edgeRun = (it: Item, e: number, color: RGB) => {
+        const m = it.sm.mesh;
+        if (!isDisplayMesh(m) || e < 0 || e + 1 >= m.edgeStart.length) return;
+        drawLines(it.mvp, it.b.edge, (m.edgeStart[e + 1] - m.edgeStart[e]) * 2, color, 1, true, gl.LINES, m.edgeStart[e] * 2);
       };
       const featureEdges = (it: Item) => {
         const { sm, b } = it;
         if (!b.edges) return;
-        if (sm.highlight) return drawLines(it.mvp, b.edge, b.edges, accentEdge, 1, true);
-        if (display === 'shaded') return;
-        if (sm.ghost) return drawLines(it.mvp, b.edge, b.edges, edgeInk, 0.15, false);
-        drawLines(it.mvp, b.edge, b.edges, edgeInk, it.alpha, false);
+        if (sm.highlight) drawLines(it.mvp, b.edge, b.edges, accentEdge, 1, true);
+        else if (display === 'shaded') { /* no edges */ } else if (sm.ghost) drawLines(it.mvp, b.edge, b.edges, edgeInk, 0.15, false);
+        else drawLines(it.mvp, b.edge, b.edges, edgeInk, it.alpha, false);
+        for (const e of sm.selEdges ?? []) edgeRun(it, e, accentEdge);
+        if (sm.hoverEdge !== undefined) edgeRun(it, sm.hoverEdge, mix(accentEdge, [1, 1, 1], theme.dark ? 0.3 : 0.25));
       };
       const sceneLines = (overlay: boolean) => {
         for (const l of o.lines) {
@@ -618,11 +749,16 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         gl.disable(gl.DEPTH_TEST);
         blend(true);
         for (const it of items) {
-          wiresOf(it.sm.mesh, it.b);
           const tone = it.sm.highlight ? accentEdge : mix(it.sm.color, ink, 0.55);
           const k = it.sm.ghost ? 0.3 : Math.max(0.15, it.alpha);
-          drawLines(it.mvp, it.b.wire, it.b.wires, ink, 0.18 * k, false);
+          // a B-rep body is its edges; a plain mesh shows its triangles faintly as well
+          if (!isDisplayMesh(it.sm.mesh)) {
+            wiresOf(it.sm.mesh, it.b);
+            drawLines(it.mvp, it.b.wire, it.b.wires, ink, 0.18 * k, false);
+          }
           drawLines(it.mvp, it.b.edge, it.b.edges, tone, k, !!it.sm.highlight);
+          for (const e of it.sm.selEdges ?? []) edgeRun(it, e, accentEdge);
+          if (it.sm.hoverEdge !== undefined) edgeRun(it, it.sm.hoverEdge, accentEdge);
         }
         o.planes.forEach(plane);
         sceneLines(false);
@@ -639,6 +775,8 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
       gl.enable(gl.POLYGON_OFFSET_FILL);
       gl.polygonOffset(1, 1); // faces pushed back a little so coplanar edges win the depth test
       for (const it of opaque) faces(it);
+      // highlighted faces: the same triangles again at the same depth (LEQUAL lets them through)
+      for (const it of opaque) marks(it);
       gl.disable(gl.POLYGON_OFFSET_FILL);
       for (const it of opaque) featureEdges(it);
       sceneLines(false);
@@ -655,6 +793,7 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
             gl.cullFace(gl.BACK);
             gl.enable(gl.POLYGON_OFFSET_FILL);
             faces(it);
+            marks(it);
             gl.disable(gl.POLYGON_OFFSET_FILL);
             gl.disable(gl.CULL_FACE);
             featureEdges(it);
@@ -758,6 +897,7 @@ type Gesture =
 
 const same = (a: SceneView, b: SceneView) => a.yaw === b.yaw && a.pitch === b.pitch && a.zoom === b.zoom && a.pan.x === b.pan.x && a.pan.y === b.pan.y;
 const CLICK_SLOP = 4; // px a click may wander before it becomes a drag
+const EDGE_PX = 5; // px from an edge that still picks it
 
 function toUnits(el: Element, x: number, y: number): Pan {
   const r = el.getBoundingClientRect(), k = Math.min(r.width, r.height) / 2 || 1;
@@ -788,6 +928,8 @@ export function Scene3D(props: {
   onPick?: (hit: PickHit, e: { shiftKey: boolean; button: number; clientX: number; clientY: number }) => void;
   /** throttled to animation frames */
   onHover?: (hit: PickHit) => void;
+  /** Picks and hovers find the edges of display meshes too (within a few pixels). */
+  pickEdges?: boolean;
   /** show the ViewCube (default true in 'full' navigation) */
   viewCube?: boolean;
   showTriad?: boolean;
@@ -824,8 +966,8 @@ export function Scene3D(props: {
   const active = hasContent && gl === 'ok' && !!frame;
 
   // for listeners, timers and frames, which outlive a render
-  const latest = useRef({ view, active, frame, meshes, planes, width, height, onView: props.onView, onHover: props.onHover });
-  useEffect(() => { latest.current = { view, active, frame, meshes, planes, width, height, onView: props.onView, onHover: props.onHover }; });
+  const latest = useRef({ view, active, frame, meshes, planes, width, height, onView: props.onView, onHover: props.onHover, edges: !!props.pickEdges });
+  useEffect(() => { latest.current = { view, active, frame, meshes, planes, width, height, onView: props.onView, onHover: props.onHover, edges: !!props.pickEdges }; });
 
   const flushWheel = (): SceneView | null => {
     const w = wheel.current;
@@ -843,7 +985,9 @@ export function Scene3D(props: {
     if (!c || !L.frame || !L.active) return NONE;
     const r = c.getBoundingClientRect();
     const px = ((clientX - r.left) * L.width) / (r.width || L.width), py = ((clientY - r.top) * L.height) / (r.height || L.height);
-    return pickScene(rayFor(L.view, L.frame, L.width, L.height, px, py), L.meshes, L.planes);
+    // EDGE_PX screen pixels in world units: screen = zoom · (q · 0.92 / r + pan), in half the shorter side
+    const edgeTol = L.edges ? (EDGE_PX * L.frame.r) / (0.92 * clampZoom(L.view.zoom) * (Math.min(L.width, L.height) / 2 || 1)) : 0;
+    return pickScene(rayFor(L.view, L.frame, L.width, L.height, px, py), L.meshes, L.planes, edgeTol);
   };
 
   useEffect(() => {

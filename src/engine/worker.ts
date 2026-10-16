@@ -5,6 +5,13 @@ import { evaluateWorksheet, type RegionResult } from './evaluator';
 import { loadCas } from './symbolic';
 import type { Worksheet } from '../model/types';
 import { loadKernel } from '../cad/kernelBrowser';
+import { loadOcc } from '../cad/occ/browser';
+import { occ } from '../cad/occ/kernel';
+import { displayFor, ensureBrep, ensureMesh, serveKernel, setKernelLoaders } from '../cad/kernel/service';
+import { isKernelPortMessage, type DisplayMessage } from '../cad/kernel/protocol';
+import type { BuildResult } from '../cad/buildResult';
+import { designOf, hasFeatures } from '../cad/design';
+import { designNumbers, type CadResult } from '../cad/evaluate';
 import { initPython, preparePackages, pythonReady } from '../python/runtime';
 import { loadPythonBrowser } from '../python/browser';
 
@@ -43,18 +50,52 @@ async function startPython(): Promise<string | null> {
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
-// CAD parts need the solid kernel (WASM); it loads once, alongside the first evaluation
-const kernelReady = loadKernel().catch((e) => console.warn('3-D kernel failed to load', e));
+// CAD parts need a solid kernel (WASM): the small mesh kernel loads with the first
+// worksheet that has a part with features, and builds it until OpenCascade is in
+const hasParts = (ws: Worksheet) => ws.regions.some((r) => r.kind === 'cad' && hasFeatures(designOf(r)));
+
+// the B-rep kernel is large: it loads for the first worksheet with a CAD part, whose
+// results then follow again with exact values
+setKernelLoaders(loadOcc, loadKernel);
+let latest = 0;
+const needsBrep = (out: ReturnType<typeof evaluateWorksheet>) => [...out.results.values()].some((r) => r.kind === 'cad' && r.needsBrep);
+
+// display data (meshes, faces, edges) follows the results it belongs to, once per design
+// key: a worksheet that recalculates for other reasons sends none
+const sent = new Set<string>();
+let sentBy: unknown = null;
+function sendDisplays(ws: Worksheet, out: ReturnType<typeof evaluateWorksheet>, only?: string[]) {
+  // a renewed B-rep kernel shows every part afresh (the old one may have failed on one)
+  if (occ() !== sentBy) {
+    sent.clear();
+    sentBy = occ();
+  }
+  const display: [string, BuildResult][] = [];
+  for (const r of ws.regions) {
+    if (r.kind !== 'cad' || (only && !only.includes(r.id))) continue;
+    const dr = (out.results.get(r.id) as CadResult | undefined)?.design;
+    if (!dr?.display || sent.has(dr.display)) continue;
+    const b = displayFor(designOf(r), designNumbers(dr));
+    if (!b) continue;
+    sent.add(dr.display);
+    display.push([dr.display, b]);
+  }
+  for (const k of sent) if (sent.size > 256) sent.delete(k);
+  if (display.length) ctx.postMessage({ display } satisfies DisplayMessage);
+}
 
 ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
+  // the UI's kernel requests (section, export …) come on a port of their own
+  if (isKernelPortMessage(e.data)) return serveKernel(e.data.kernelPort);
   const { id, ws, overrides, only } = e.data;
+  latest = id;
   const post = (out: ReturnType<typeof evaluateWorksheet>, partial: boolean) => {
     let results = [...out.results.entries()];
     if (only) results = results.filter(([rid]) => only.includes(rid));
     const msg: EvalResponse = { id, results, errorCount: out.errorCount, millis: out.millis, partial };
     ctx.postMessage(msg);
   };
-  await kernelReady;
+  if (hasParts(ws)) await ensureMesh();
   const code = pythonCode(ws);
   if (code.length && pythonReady()) await preparePackages(code);
   let out = evaluateWorksheet(ws, overrides);
@@ -62,6 +103,8 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
     post(out, true);
     const failed = await startPython();
     if (failed) {
+      // no evaluation follows this one: CAD parts get their exact values now
+      if (needsBrep(out)) await ensureBrep();
       out = evaluateWorksheet(ws, overrides);
       for (const r of out.results.values()) {
         if (r.kind === 'python' && r.loading) {
@@ -71,6 +114,7 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
         }
       }
       post(out, false);
+      sendDisplays(ws, out);
       return;
     }
     await preparePackages(code);
@@ -82,4 +126,13 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
     out = evaluateWorksheet(ws, overrides);
   }
   post(out, false);
+  sendDisplays(ws, out, only);
+  if (!only && needsBrep(out)) {
+    await ensureBrep();
+    if (id !== latest) return;
+    // exact values (or, if OpenCascade could not load, the mesh kernel's with a notice)
+    out = evaluateWorksheet(ws, overrides);
+    post(out, false);
+    sendDisplays(ws, out);
+  }
 };

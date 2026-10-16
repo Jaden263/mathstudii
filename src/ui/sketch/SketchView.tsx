@@ -491,6 +491,7 @@ export function SketchView({ region, result, editing, dispatch, onDone, selected
       worker.postMessage(req);
     };
     worker.onmessage = (ev: MessageEvent<EvalResponse>) => {
+      if (!ev.data.results) return; // CAD display data, not results
       const r = ev.data.results.find(([rid]) => rid === region.id)?.[1] as SketchResult | undefined;
       if (r) setFrame(r);
       if (playRef.current) requestAnimationFrame(request);

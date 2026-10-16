@@ -1,79 +1,17 @@
-// The 3-D side of a CAD part in the UI: the kernel, the built design (cached per part)
-// and the scene a viewport draws (bodies, sketches, profiles, origin planes).
-import { useEffect, useMemo, useState } from 'react';
+// The 3-D side of a CAD part in the UI: the scene a viewport draws (bodies from the
+// display data the kernel worker sends, sketches, profiles, origin planes). Nothing here
+// builds a solid: the main thread never waits for a kernel.
 import earcut from 'earcut';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
-import {
-  activeItems, buildDesign, designOf, isSketch, profileKey, type BuiltDesign, type CadDesign, type DesignNumbers, type DesignSketch,
-} from '../../cad/design';
+import { activeItems, designOf, isSketch, profileKey, type CadDesign, type DesignSketch } from '../../cad/design';
+import type { BuildResult } from '../../cad/buildResult';
+import { displayMesh } from '../../cad/display';
+import type { SectionBody } from '../../cad/kernel/protocol';
 import { findProfiles, loopPolygon, type ProfileRegion, type Vec2 } from '../../cad/profile';
 import type { Mesh } from '../../cad/mesh';
-import { framePoint, kernel, sectionInPlane, solidMesh, toMat4, type Frame, type M4, type Manifold, type ManifoldToplevel } from '../../cad/solid';
-import { loadKernel } from '../../cad/kernelBrowser';
+import { framePoint, type Frame, type M4 } from '../../cad/solid';
 import type { SceneLines, SceneMesh, ScenePlane, Vec3 } from './Scene3D';
-
-/** The solid kernel, once it has loaded. */
-export function useKernel(): ManifoldToplevel | null {
-  const [k, setK] = useState(kernel);
-  useEffect(() => {
-    if (k) return;
-    let live = true;
-    loadKernel().then((m) => live && setK(m)).catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [k]);
-  return k;
-}
-
-interface CacheEntry {
-  design: CadDesign;
-  numbers: DesignNumbers;
-  built: BuiltDesign;
-  meshes: Map<string, Mesh>;
-}
-
-/**
- * One built design per part. A new build replaces (and frees) the previous one; nothing
- * is freed on unmount, so React's double rendering never touches freed WASM objects.
- */
-const cache = new Map<string, CacheEntry>();
-
-export interface Built {
-  built: BuiltDesign;
-  /** Display mesh of a body, in component coordinates. */
-  mesh(componentId: string, bodyId: string): Mesh | null;
-}
-
-export function useBuilt(regionId: string, design: CadDesign, result: CadResult | undefined): Built | null {
-  const K = useKernel();
-  const numbers = result?.design;
-  return useMemo(() => {
-    if (!K || !numbers) return null;
-    let e = cache.get(regionId);
-    if (!e || e.design !== design || e.numbers !== numbers) {
-      e?.built.free();
-      e = { design, numbers, built: buildDesign(K, design, numbers), meshes: new Map() };
-      cache.set(regionId, e);
-    }
-    const entry = e;
-    return {
-      built: entry.built,
-      mesh(cid, bid) {
-        const key = `${cid}/${bid}`;
-        let m = entry.meshes.get(key);
-        if (!m) {
-          const b = entry.built.components.get(cid)?.bodies.find((q) => q.id === bid);
-          if (!b || b.solid.isEmpty()) return null;
-          m = solidMesh(b.solid);
-          entry.meshes.set(key, m);
-        }
-        return m;
-      },
-    };
-  }, [K, regionId, design, numbers]);
-}
 
 // ------------------------------------------------------------ scene pieces
 
@@ -189,64 +127,20 @@ export interface SceneOptions {
   showPlanes: boolean;
   /** Profiles are pickable (an extrude / revolve dialog is open). */
   pickProfiles: boolean;
+  /** Origin planes are pickable (a new sketch picks its plane); otherwise clicks go through them. */
+  pickPlanes?: boolean;
   /** Ghost everything outside the active component. */
   isolate?: boolean;
-  /** Feature id the timeline marker sits after (later sketches are hidden). */
+  /** Size of the model (lifts profiles off their plane, sizes the origin planes). */
   size: number;
-  /** Section view: keep what lies on the normal's side of the plane n·x = offset (world). */
-  section?: { n: Vec3; offset: number };
+  /** Section view: the bodies cut by the plane, as the kernel returned them (they replace the bodies). */
+  section?: SectionBody[] | null;
+  /** Faces and edges to mark on a body (key `b:occ:body`): selected and under the pointer. */
+  marks?: (key: string) => Pick<SceneMesh, 'selFaces' | 'selEdges' | 'hoverFace' | 'hoverEdge'> | undefined;
 }
 
-/** Trimmed bodies and their cut faces, per solid and plane (scenes rebuild on every hover). */
-const sectionCache = new WeakMap<Manifold, Map<string, { mesh: Mesh | null; cap: Mesh | null }>>();
-
-function sectionOf(solid: Manifold, M: M4, sec: { n: Vec3; offset: number }, size: number): { mesh: Mesh | null; cap: Mesh | null } {
-  const key = `${M.join(',')}|${sec.n.join(',')}|${sec.offset}`;
-  let byKey = sectionCache.get(solid);
-  if (!byKey) sectionCache.set(solid, (byKey = new Map()));
-  const hit = byKey.get(key);
-  if (hit) return hit;
-  const world = solid.transform(toMat4(M));
-  const kept = world.trimByPlane(sec.n, sec.offset);
-  const out: { mesh: Mesh | null; cap: Mesh | null } = { mesh: kept.isEmpty() ? null : solidMesh(kept), cap: null };
-  // the cut face, a hair in front of the trimmed solid's own face so it shows in colour
-  const n = sec.n;
-  const u: Vec3 = Math.abs(n[2]) < 0.9 ? normalize(cross(n, [0, 0, 1])) : normalize(cross(n, [1, 0, 0]));
-  const v = cross(n, u);
-  const lift = -size * 2e-4;
-  const f: Frame = { o: [n[0] * (sec.offset + lift), n[1] * (sec.offset + lift), n[2] * (sec.offset + lift)], u, v, n };
-  const polys = sectionInPlane(world, { ...f, o: [n[0] * sec.offset, n[1] * sec.offset, n[2] * sec.offset] });
-  if (polys.length && K_TRI) {
-    const tris = K_TRI(polys.map((p) => p.map((q) => [q.x, q.y] as [number, number])));
-    const flat = polys.flat();
-    const pos: number[] = [], nrm: number[] = [], edges: number[] = [];
-    for (const t of tris) {
-      // facing the side that was cut away
-      for (const i of [t[0], t[2], t[1]]) {
-        const w = framePoint(f, flat[i]);
-        pos.push(...w);
-        nrm.push(-n[0], -n[1], -n[2]);
-      }
-    }
-    for (const p of polys) {
-      for (let i = 0; i < p.length; i++) edges.push(...framePoint(f, p[i]), ...framePoint(f, p[(i + 1) % p.length]));
-    }
-    const min: [number, number, number] = [Infinity, Infinity, Infinity], max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], pos[i + k]); max[k] = Math.max(max[k], pos[i + k]); }
-    out.cap = { positions: new Float32Array(pos), normals: new Float32Array(nrm), edges: new Float32Array(edges), bounds: { min, max } };
-  }
-  world.delete();
-  kept.delete();
-  byKey.set(key, out);
-  return out;
-}
-
-let K_TRI: ((polys: [number, number][][]) => number[][]) | null = null;
-const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const normalize = (a: Vec3): Vec3 => {
-  const l = Math.hypot(a[0], a[1], a[2]) || 1;
-  return [a[0] / l, a[1] / l, a[2] / l];
-};
+/** Colour of the faces a section cuts. */
+const CUT: [number, number, number] = [0.87, 0.42, 0.25];
 
 export interface Scene {
   meshes: SceneMesh[];
@@ -262,36 +156,40 @@ export function sketchRegions(ds: DesignSketch, result?: CadResult): ProfileRegi
     : findProfiles(ds.sketch).regions;
 }
 
-export function buildScene(region: CadRegion, design: CadDesign, result: CadResult | undefined, built: Built | null, o: SceneOptions): Scene {
+export function buildScene(design: CadDesign, result: CadResult | undefined, shown: BuildResult | null, o: SceneOptions): Scene {
   const meshes: SceneMesh[] = [], lines: SceneLines[] = [], planes: ScenePlane[] = [];
   const dr = result?.design;
-  for (const occ of design.occurrences) {
-    if (occ.hidden) continue;
-    const comp = design.components.find((c) => c.id === occ.component);
-    const M = built?.built.placements[occ.id]?.matrix ?? dr?.placements[occ.id]?.matrix;
-    if (!comp || !M || !built) continue;
-    const color = componentColor(design, comp.id);
-    for (const b of built.built.components.get(comp.id)?.bodies ?? []) {
-      if (comp.hiddenBodies?.includes(b.id)) continue;
-      const key = `b:${occ.id}:${b.id}`;
-      const look = { color, highlight: o.highlight.has(key) || o.highlight.has(`o:${occ.id}`), ghost: o.isolate && comp.id !== o.active };
-      if (o.section && !b.solid.isEmpty()) {
-        const K = kernel();
-        if (K && !K_TRI) K_TRI = (polys) => K.triangulate(polys) as unknown as number[][];
-        const sec = sectionOf(b.solid, M, o.section, o.size);
-        if (sec.mesh) meshes.push({ key, mesh: sec.mesh, ...look });
-        if (sec.cap) meshes.push({ key: `${key}:cut`, mesh: sec.cap, color: [0.87, 0.42, 0.25], pickable: false });
-        continue;
+  const placement = (occId: string): M4 | undefined => shown?.placements[occId]?.matrix ?? dr?.placements[occId]?.matrix;
+  const look = (occId: string, cid: string, key: string) => ({
+    color: componentColor(design, cid),
+    highlight: o.highlight.has(key) || o.highlight.has(`o:${occId}`),
+    ghost: o.isolate && cid !== o.active,
+  });
+  if (o.section) {
+    // the cut bodies: not pickable (their faces are not the bodies' faces)
+    for (const sb of o.section) {
+      const occ = design.occurrences.find((q) => q.id === sb.occ), M = placement(sb.occ);
+      if (!occ || occ.hidden || !M) continue;
+      const key = `b:${sb.occ}:${sb.body.id}`;
+      meshes.push({ key, mesh: displayMesh(sb.body), matrix: M, ...look(sb.occ, sb.component, key), pickable: false, paint: { faces: sb.caps, color: CUT } });
+    }
+  } else if (shown) {
+    for (const occ of design.occurrences) {
+      if (occ.hidden) continue;
+      const comp = design.components.find((c) => c.id === occ.component);
+      const M = placement(occ.id);
+      if (!comp || !M) continue;
+      for (const b of shown.components[comp.id]?.bodies ?? []) {
+        if (comp.hiddenBodies?.includes(b.id) || !b.mesh.indices.length) continue;
+        const key = `b:${occ.id}:${b.id}`;
+        meshes.push({ key, mesh: displayMesh(b), matrix: M, ...look(occ.id, comp.id, key), ...o.marks?.(key) });
       }
-      const mesh = built.mesh(comp.id, b.id);
-      if (!mesh) continue;
-      meshes.push({ key, mesh, matrix: M, ...look });
     }
   }
   // sketches and profiles of the active component, in its first occurrence
   const comp = design.components.find((c) => c.id === o.active);
   const occ = comp && editOccurrence(design, comp.id);
-  const M = (occ && (built?.built.placements[occ.id]?.matrix ?? dr?.placements[occ.id]?.matrix)) || null;
+  const M = (occ && placement(occ.id)) || null;
   if (comp && M) {
     const lift = o.size * 2e-4;
     for (const item of activeItems(comp)) {
@@ -320,10 +218,9 @@ export function buildScene(region: CadRegion, design: CadDesign, result: CadResu
     for (const [ref, f] of Object.entries({
       XY: { o: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0] }, XZ: { o: [0, 0, 0], u: [1, 0, 0], v: [0, 0, 1] }, YZ: { o: [0, 0, 0], u: [0, 1, 0], v: [0, 0, 1] },
     } as Record<string, { o: Vec3; u: Vec3; v: Vec3 }>)) {
-      planes.push({ key: `pl:${ref}`, origin: mapPoint(M, f.o), u: mapDir(M, f.u), v: mapDir(M, f.v), size: s, color: tint[ref], opacity: 0.1, label: ref, highlight: o.highlight.has(`pl:${ref}`) });
+      planes.push({ key: `pl:${ref}`, origin: mapPoint(M, f.o), u: mapDir(M, f.u), v: mapDir(M, f.v), size: s, color: tint[ref], opacity: 0.1, label: ref, highlight: o.highlight.has(`pl:${ref}`), pickable: !!o.pickPlanes });
     }
   }
-  void region;
   return { meshes, lines, planes };
 }
 

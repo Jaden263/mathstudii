@@ -10,10 +10,14 @@ import { isDimension, sketchSig, type CadSketch } from './model';
 import { solveSketch, measure } from './solver';
 import { findProfiles, profileProperties, type ProfileRegion, type Vec2 } from './profile';
 import {
-  activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
+  activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, hasFeatures, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
   placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
 } from './design';
 import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
+import { designKey } from './keys';
+import { dimensionValue } from './dimension';
+import { occ, occFailure } from './occ/kernel';
+import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
 export interface CadResult {
   kind: 'cad';
@@ -43,6 +47,8 @@ export interface CadResult {
   design?: DesignResult;
   /** Booleans waited for the 3-D kernel; evaluate again once it has loaded. */
   needsKernel?: boolean;
+  /** Built without the B-rep kernel (not loaded yet); evaluate again once it has, for exact results. */
+  needsBrep?: boolean;
 }
 
 export interface BodyInfo {
@@ -64,24 +70,21 @@ export interface DesignResult extends DesignNumbers {
   box?: { min: Vec3; max: Vec3 };
   /** Solids were built by the kernel (not only exact single-feature bodies). */
   kernel: boolean;
+  /** …by the B-rep kernel: every property is exact. */
+  brep?: boolean;
+  /** Why the B-rep kernel is not there (it could not load): the mesh kernel built the part. */
+  brepError?: string;
+  /** Key of the built design (keys.ts): its display data comes separately, once per key. */
+  display?: string;
+  /** The errors of resolving the numbers, before the build added its own (`errors` has both). */
+  resolveErrors?: Record<string, string>;
 }
+
+export { designNumbers } from './keys';
 
 const isAngle = (t: string) => t === 'angle';
 
-/** A dimension expression → sketch units, or radians for angles (bare numbers are degrees). */
-export function dimensionValue(v: unknown, unit: string, angle: boolean): number {
-  if (typeof v === 'number') return angle ? (v * Math.PI) / 180 : v;
-  if (isUnit(v)) {
-    const u = v as Unit;
-    if (angle) {
-      if (!u.equalBase(math.unit('rad'))) throw new Error('expected an angle');
-      return u.toNumeric('rad') as number;
-    }
-    if (!u.equalBase(math.unit('m'))) throw new Error(`expected a length, got ${u.formatUnits()}`);
-    return u.toNumeric(unit) as number;
-  }
-  throw new Error('expected a number');
-}
+export { dimensionValue };
 
 export interface CadSolved {
   result: CadResult;
@@ -246,11 +249,41 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   result.dof = dof;
   result.ok = Object.values(numbers.sketches).every((s) => s.ok);
 
-  const dr: DesignResult = { ...numbers, bodies: {}, components: {}, placements: {}, kernel: false };
+  const dr: DesignResult = {
+    ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, display: designKey(design, numbers),
+    bodies: {}, components: {}, placements: {}, kernel: false,
+  };
   const density = (cid: string) => numbers.params[cid]?.density;
   const compMass = new Map<string, Mass3[]>();
+  const oc = occ();
   const K = kernel();
-  if (K) {
+  // without the B-rep kernel the values are approximate (or missing): evaluate again once it
+  // is there, unless it could not load
+  const failure = occFailure();
+  if (!oc && !failure) result.needsBrep = hasFeatures(design) || undefined;
+  if (!oc && failure) dr.brepError = failure;
+  let m: MeasuredDesign | null = null;
+  try {
+    m = oc && measureDesignOcc(oc, design, numbers);
+  } catch (e) {
+    // OCCT failing outside a feature (out of memory…): the mesh kernel's values rather than none
+    console.warn('the B-rep kernel failed on this part; using the mesh kernel', e);
+  }
+  if (m) {
+    dr.kernel = dr.brep = true;
+    for (const c of design.components) {
+      const masses: Mass3[] = [];
+      dr.bodies[c.id] = (m.bodies[c.id] ?? []).map((b) => {
+        if (!b.mass) return { id: b.id, name: b.name, feature: b.feature, empty: true };
+        masses.push(b.mass);
+        return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m: b.mass, rho: density(c.id) }]) ?? undefined };
+      });
+      compMass.set(c.id, masses);
+    }
+    Object.assign(dr.errors, m.errors);
+    dr.placements = m.placements;
+    dr.box = m.box;
+  } else if (K) {
     const built = buildDesign(K, design, numbers);
     try {
       dr.kernel = true;

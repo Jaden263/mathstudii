@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Mesh } from '../../cad/mesh';
+import type { DisplayMesh } from '../../cad/display';
 import { STANDARD_VIEWS } from './Cad3DView';
-import { cameraRay, pickScene, rayTriangle, sceneBounds, worldToScreen, type SceneView, type Vec3 } from './Scene3D';
+import { cameraRay, pickScene, raySegment, rayTriangle, sceneBounds, worldToScreen, type SceneView, type Vec3 } from './Scene3D';
 
 const close = (a: number[], b: number[], digits = 9) => a.forEach((x, i) => expect(x).toBeCloseTo(b[i], digits));
 const bounds = { min: [-1, -2, -3] as Vec3, max: [3, 2, 1] as Vec3 }; // centre (1, 0, −1)
@@ -115,5 +116,66 @@ describe('pickScene', () => {
     expect(pickScene({ origin: [0.2, 0.2, 10], dir: [0, 0, -1] }, meshes, planes).key).toBe('front');
     // outside the square: not hit
     expect(pickScene({ origin: [3.5, 0, 10], dir: [0, 0, -1] }, meshes, planes).kind).toBe('none');
+  });
+});
+
+/**
+ * A unit cube as a display mesh: one face per side (triangles in face runs), its twelve
+ * edges as segments, the edge along +X at y = z = 1 being edge 0.
+ */
+function cubeDisplay(): DisplayMesh {
+  const c = (i: number): Vec3 => [i & 1 ? 1 : 0, i & 2 ? 1 : 0, i & 4 ? 1 : 0];
+  const quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+  const positions = new Float32Array(Array.from({ length: 8 }, (_, i) => c(i)).flat());
+  const indices = new Uint32Array(quads.flatMap(([a, b, cc, d]) => [a, b, cc, a, cc, d]));
+  const edges: [number, number][] = [[6, 7], [0, 1], [2, 3], [4, 5], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
+  return {
+    positions, normals: new Float32Array(24), indices,
+    faceStart: new Uint32Array([0, 2, 4, 6, 8, 10, 12]), faceOf: new Uint32Array([0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]),
+    lines: new Float32Array(edges.flatMap(([a, b]) => [...c(a), ...c(b)])), edgeStart: new Uint32Array(edges.map((_, i) => i).concat(12)),
+    bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+  };
+}
+
+describe('picking faces and edges of display meshes', () => {
+  const sm = { key: 'b:o1:f1', mesh: cubeDisplay(), color: [1, 1, 1] as Vec3 };
+  // looking down −Z onto the top face (z = 1, face 1)
+  const down = (x: number, y: number) => ({ origin: [x, y, 5] as Vec3, dir: [0, 0, -1] as Vec3 });
+
+  it('names the face of the triangle hit', () => {
+    const hit = pickScene(down(0.3, 0.4), [sm], [], 0.02);
+    expect(hit.face).toBe(1);
+    expect(hit.edge).toBeUndefined();
+    expect(hit.point![2]).toBeCloseTo(1, 6);
+  });
+
+  it('an edge within the tolerance wins over the face, one further out does not', () => {
+    // 0.01 from the top edge at y = 1 (edge 0), seen from above
+    const near = pickScene(down(0.5, 0.99), [sm], [], 0.02);
+    expect(near.edge).toBe(0);
+    expect(near.face).toBe(1);
+    expect(pickScene(down(0.5, 0.95), [sm], [], 0.02).edge).toBeUndefined();
+    // without a tolerance edges are not picked at all
+    expect(pickScene(down(0.5, 0.99), [sm]).edge).toBeUndefined();
+  });
+
+  it('an edge behind the face hit is not picked', () => {
+    // the bottom edge under y = 1 (edge 2, z = 0) lies right under the ray, behind the top face
+    const hit = pickScene(down(0.5, 1.005), [sm], [], 0.02);
+    // the top edge (z = 1) is the nearer of the two within reach
+    expect(hit.edge).toBe(0);
+    const side = pickScene({ origin: [0.5, 5, 0.995], dir: [0, -1, 0] }, [sm], [], 0.02);
+    // along −Y just under the top: the far edge at y = 0 hides behind the face at y = 1
+    expect(side.face).toBe(3);
+    expect(side.edge).toBe(0);
+  });
+
+  it('closest approach of a ray and a segment', () => {
+    // ray along −Z through (0.5, 0.2); segment along X at y = 0, z = 0: 0.2 apart, 5 along
+    const r = raySegment([0.5, 0.2, 5], [0, 0, -1], [0, 0, 0, 1, 0, 0], 0);
+    expect(r!.dist).toBeCloseTo(0.2, 12);
+    expect(r!.t).toBeCloseTo(5, 12);
+    // past the segment's end: the distance to the end point
+    expect(raySegment([2, 0, 5], [0, 0, -1], [0, 0, 0, 1, 0, 0], 0)!.dist).toBeCloseTo(1, 12);
   });
 });

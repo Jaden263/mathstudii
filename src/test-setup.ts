@@ -1,4 +1,5 @@
-// Tests evaluate worksheets synchronously, as the worker does once the 3-D kernel has loaded.
+// Tests evaluate worksheets synchronously, as the worker does once the 3-D kernels have loaded.
 import { initKernel } from './cad/solid';
+import { initOcc } from './cad/occ/kernel';
 
-await initKernel();
+await Promise.all([initKernel(), initOcc()]);

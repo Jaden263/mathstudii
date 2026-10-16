@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Worksheet } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { EvalRequest, EvalResponse } from '../engine/worker';
+import { isDisplayMessage, type DisplayMessage } from '../cad/kernel/protocol';
+import { kernelHostStopped, receiveDisplay, setKernelHost } from './cad/kernelClient';
 
 export interface EvaluationState {
   results: Map<string, RegionResult>;
@@ -31,7 +33,9 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
   latest.current = ws;
 
   const attach = useCallback((w: Worker) => {
-    w.onmessage = (e: MessageEvent<EvalResponse>) => {
+    w.onmessage = (e: MessageEvent<EvalResponse | DisplayMessage>) => {
+      // CAD display data follows the results it belongs to
+      if (isDisplayMessage(e.data)) return receiveDisplay(e.data);
       const msg = e.data;
       if (msg.id !== reqId.current) return;
       if (!msg.partial) window.clearTimeout(slowTimer.current);
@@ -72,6 +76,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
   const interrupt = useCallback(() => {
     workerRef.current?.terminate();
     workerRef.current = null;
+    kernelHostStopped();
     reqId.current++;
     window.clearTimeout(slowTimer.current);
     setState((s) => ({ ...s, busy: false, slow: false, interrupted: true }));
@@ -84,6 +89,9 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
   }, [ws, auto, calculate]);
 
   useEffect(() => () => workerRef.current?.terminate(), []);
+  // the calculation worker also answers the CAD views' kernel requests (set while rendering:
+  // the views below ask in their effects, which run before this hook's)
+  setKernelHost(getWorker);
 
   return { ...state, calculate, interrupt };
 }
