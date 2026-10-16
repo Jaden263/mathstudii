@@ -79,8 +79,8 @@ export function InfluencePanels({ r, d, res, vp, top, h, width, train }: {
           kept.push({ x: lx, y: ly, t, i: c.i });
         }
         const at = line.xs !== undefined ? X(line.xs) : def.support ? X((d.nodes.find((q) => q.id === r.supports.find((s) => s.id === def.support)?.node)?.x ?? 0) * Lm) : null;
-        // the train on this line: Σ P η, axle by axle
-        const axles = train?.map((a) => {
+        // the train on this line: Σ P η, axle by axle (those off the path count nothing)
+        const axles = train?.filter((a) => a.x >= line.x[0] - 1e-9 && a.x <= line.x[line.x.length - 1] + 1e-9).map((a) => {
           let v = 0;
           for (let i = 0; i + 1 < line.x.length; i++) {
             if (a.x < line.x[i] - 1e-9 || a.x > line.x[i + 1] + 1e-9) continue;
@@ -141,23 +141,22 @@ export function SectionMarks({ r, vp }: { r: BeamRegion; vp: Vp }) {
 /** The axle loads of a train at its position, arrows onto the load path. */
 export function TrainGlyph({ r, d, res, vp, moving, lead, dir }: { r: BeamRegion; d: BeamData; res: BeamResult; vp: Vp; moving: TrafficMoving; lead: number; dir: 1 | -1 }) {
   const u = units(r);
-  const tops: P2[] = [];
-  const arrows = moving.P.map((P, i) => {
+  const on = moving.P.flatMap((P, i) => {
     const p = pathPoint(r, d, res, vp, lead - dir * moving.offsets[i]);
-    if (!p) return null;
-    const from = { x: p.x, y: p.y - 44 };
-    tops.push(from);
-    return (
-      <g key={i}>
-        <Arrow from={from} to={{ x: p.x, y: p.y - 2 }} />
-        {(i === 0 || P !== moving.P[i - 1]) && <text x={p.x + 4} y={from.y - 4} className="bm-label">{u.force(P)}</text>}
-      </g>
-    );
+    return p ? [{ P, p, i }] : [];
   });
+  if (!on.length) return null;
+  // one label beside the axles at mid-height, clear of the strip above the structure
+  const byX = [...on].sort((a, b) => a.p.x - b.p.x), L0 = byX[0].p, R0 = byX[byX.length - 1].p, left = L0.x, right = R0.x;
+  const same = on.every((a) => a.P === on[0].P);
+  const text = same ? `${on.length > 1 ? `${on.length} × ` : ''}${u.force(on[0].P)}` : `${on.map((a) => fmt(a.P / u.forceN)).join(' + ')} ${r.forceUnit}`;
+  const flip = right > vp.width - 90;
+  const yl = Math.min(...on.map((a) => a.p.y)) - 24;
   return (
     <g className="bm-load bm-moving">
-      {tops.length > 1 && <line x1={tops[0].x} y1={tops[0].y} x2={tops[tops.length - 1].x} y2={tops[tops.length - 1].y} className="bm-train-bar" />}
-      {arrows}
+      {on.length > 1 && <line x1={L0.x} y1={L0.y - 44} x2={R0.x} y2={R0.y - 44} className="bm-train-bar" />}
+      {on.map((a) => <Arrow key={a.i} from={{ x: a.p.x, y: a.p.y - 44 }} to={{ x: a.p.x, y: a.p.y - 2 }} />)}
+      <text x={flip ? left - 6 : right + 6} y={yl} className="bm-label" textAnchor={flip ? 'end' : 'start'}>{text}</text>
     </g>
   );
 }

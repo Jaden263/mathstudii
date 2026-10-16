@@ -691,7 +691,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         })}
         {/* loads or reactions */}
         {(stacked || show !== 'reactions') && region.loads.map((l, i) => (
-          <LoadGlyph key={l.id} r={region} d={data} l={l} vp={vp} res={res} sel={sel.has(l.id)} label={!diagramOn} {...loadLook(l)} stack={lineStack(region.loads, i)} />
+          <LoadGlyph key={l.id} r={region} d={data} l={l} vp={vp} res={res} sel={sel.has(l.id)} label={!diagramOn && !trainAt} {...loadLook(l)} stack={lineStack(region.loads, i)} />
         ))}
         {reactionsOn && <Reactions r={region} d={data} vp={vp} res={shown!} />}
         {nIL > 0 && <SectionMarks r={region} vp={vp} />}
@@ -768,7 +768,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           return (
             <div className="bm-tabs bm-train" role="toolbar" aria-label="Moving load position" onPointerDown={(e) => e.stopPropagation()}>
               <button className={!trainAt ? 'on' : ''} title="Upper and lower bound over every position" onClick={() => setTrain(null)}>Envelope</button>
-              <button className={trainAt ? 'on' : ''} title="Place the train and see its diagrams" onClick={() => setTrain(trainAt ?? { ...start() })}>Train</button>
+              <button className={trainAt ? 'on' : ''} title="Place the train and see its diagrams (its axles: a uniform load has no one position)" onClick={() => setTrain(trainAt ?? { ...start() })}>Train</button>
               {trainAt && (
                 <>
                   <input type="range" min={lo} max={hi} step={tr.step || (hi - lo) / 200} value={Math.min(hi, Math.max(lo, trainAt.lead))} aria-label="Position of the first axle"

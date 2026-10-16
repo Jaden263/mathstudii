@@ -370,8 +370,8 @@ settlements are prescribed displacements; both are checked against closed-form r
 - **Moving loads:** a point load; **EN 1991-2 Load Model 1** for one notional lane
   (tandem 2 × α_Q·300 kN at 1.2 m and α_q·9 kN/m² × the lane width, α = 1 by default);
   a crane (two wheels P at a); or any axle train with a uniform load. A train stops with
-  each of its axles on every position, both ways (or one way), and since the lines are
-  straight between positions that finds its extremes without a step to miss them. The
+  each of its axles on every position, both ways (or one way): with the lines straight
+  between positions those stops are where its extremes are, so none falls between them. The
   uniform load goes only where the influence line is adverse (Simpson's rule on each
   smooth stretch, which is exact for the cubic lines of unloaded members). The result
   is an envelope (upper and lower bound, the load may also be absent) of N, V, M, the
@@ -379,8 +379,10 @@ settlements are prescribed displacements; both are checked against closed-form r
   extreme.
 - **In the combinations** each moving load has a factor column next to the load cases;
   a combination then has two bounds: its static solution plus the factored moving
-  extreme at each station (the overall envelope includes both). Several moving loads in
-  one combination add their extremes (on the safe side). Moving loads are linear: with
+  extreme at each station (the overall envelope includes both). A new moving load gets a
+  factor (1.35 for LM1, else 1.5; 1 at SLS) only in the combinations that have no moving
+  load yet; several moving loads in one combination add their extremes (on the safe
+  side, not position by position). Moving loads are linear: with
   second order on, they are added to the second-order static part as first-order
   results, and buckling sees the static loads only.
 - **The strip** picks a moving load's envelope like a combination; **Train** places the
@@ -399,11 +401,13 @@ settlements are prescribed displacements; both are checked against closed-form r
   (and PL/4 for a > 0.586 L), R_A = P + P(L − a)/L, −qL²/8 over the middle support and
   49/512 qL² in a span for a uniform load on the adverse parts, and LM1 on a 20 m span by
   hand (852 x − 43.5 x²).
-- **Limits:** loads act vertically on the path; axle spacings are measured along x; the
-  axles of a train stand on positions together only when Δx divides their spacings
-  (otherwise between two positions the line is taken straight: an error of order Δx²);
-  dynamic factors, multiple lanes and transverse distribution are left to you (scale α
-  or the loads).
+- **Limits:** loads act vertically on the path; axle spacings and uniform loads are per
+  metre along x (plan length on an inclined deck); sections are searched at the load
+  positions, and the axles of a train stand on positions together only when Δx divides
+  their spacings (otherwise between two positions the line is taken straight: an error
+  of order Δx²); dynamic factors, multiple lanes and transverse distribution are left to
+  you (scale α or the loads). The influence-line panels show in the *Under* layout only,
+  and *Train* draws the axles (a uniform load has no one position).
 
 The **Beams and frames** example covers four structures:
 

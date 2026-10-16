@@ -316,19 +316,27 @@ export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX, low }: {
       </g>
     );
   }
-  // both bounds of the deflection too (one scale: they share max.w); a moving load's upper one is often nil
+  // both bounds of the deflection too (one scale: they share max.w); a moving load's upper one is often nil,
+  // so the value goes on the bound that reaches it
   if (low && kind === 'deflection') {
+    const mx = sol.max.w;
+    const at = (so: BeamSolution) => {
+      const mr = mx && so.members.find((q) => q.id === mx.member);
+      const i = mr ? mr.s.findIndex((s) => Math.abs(s - mx.s) < 1e-12) : -1;
+      return mr && i >= 0 ? Math.hypot(mr.dx[i], mr.dy[i]) : 0;
+    };
+    const onLow = at(low) > at(sol);
     return (
       <g className="bm-envelope">
-        <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} />
-        <DiagramOne r={r} d={d} vp={vp} res={{ ...res, solution: low }} kind={kind} px={px} />
+        <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} label={!onLow} />
+        <DiagramOne r={r} d={d} vp={vp} res={{ ...res, solution: low }} kind={kind} px={px} label={onLow} />
       </g>
     );
   }
   return <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} />;
 }
 
-function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number; vmaxOverride?: number }) {
+function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride, label: withLabel = true }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number; vmaxOverride?: number; label?: boolean }) {
   const mode = kind === 'mode' ? modeShown(r, res) : null;
   const sol = mode ? mode.sol : res.solution;
   if (!sol || (kind === 'mode' && !mode)) return null;
@@ -353,7 +361,7 @@ function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride }: { r:
     }
     const mx = sol.max.w;
     let label: JSX.Element | null = null;
-    if (mx && wmax > 0) {
+    if (mx && wmax > 0 && withLabel) {
       const mr = sol.members.find((q) => q.id === mx.member)!;
       const i = mr.s.findIndex((s) => Math.abs(s - mx.s) < 1e-12);
       const m = d.members.find((q) => q.id === mr.id)!;

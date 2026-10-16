@@ -6,7 +6,8 @@ import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import { straightBeam } from '../../beam/evaluate';
 import type { Critical } from '../../beam/influence';
-import { beamId, movingLoad, type BeamInfluenceLine, type BeamMovingLoad, type BeamTraffic, type InfluenceQuantity } from '../../beam/model';
+import { beamId, movingLoad, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad, type BeamTraffic, type InfluenceQuantity } from '../../beam/model';
+import { identifierOf } from '../../beam/traffic';
 import { LazyInput } from '../sketch/SketchProps';
 import { LENGTH_M, fmt, units } from './beamDraw';
 
@@ -98,9 +99,11 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
     const p = PRESETS.find((q) => q.preset === preset)!;
     const ml = movingLoad(preset, freeName(p.name, [...tr.loads.map((l) => l.name), ...(region.loadCases?.cases.map((c) => c.name) ?? [])]));
     const patch: Partial<BeamRegion> = {};
-    // in the combinations as a variable action: γ_Q 1.35 for road traffic (EN 1990 A2), else 1.5; 1 at SLS
+    // in the combinations as a variable action: γ_Q 1.35 for road traffic (EN 1990 A2), else 1.5; 1 at SLS.
+    // Not where another moving load already acts: their extremes would add (alternatives, as a rule)
     const lc = region.loadCases;
-    if (lc) patch.loadCases = { ...lc, combos: lc.combos.map((c) => ({ ...c, factors: { ...c.factors, [ml.id]: c.kind === 'SLS' ? '1' : preset === 'lm1' ? '1.35' : '1.5' } })) };
+    const acting = (c: BeamCombo) => tr.loads.some((l) => c.factors[l.id]?.trim() && Number(c.factors[l.id]) !== 0);
+    if (lc) patch.loadCases = { ...lc, combos: lc.combos.map((c) => (acting(c) ? c : { ...c, factors: { ...c.factors, [ml.id]: c.kind === 'SLS' ? '1' : preset === 'lm1' ? '1.35' : '1.5' } })) };
     onChange({ ...patch, traffic: { ...tr, loads: [...tr.loads, ml] } });
   };
 
@@ -195,7 +198,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
             {peak && (
               <p className="hint">
                 η from {fmt(ordinateValue(region, l.quantity, Math.min(...peak.v)))} to {fmt(ordinateValue(region, l.quantity, Math.max(...peak.v)))}
-                {ordinateUnit(region, l.quantity) === '–' ? ' per unit load' : ` ${ordinateUnit(region, l.quantity)} per ${region.forceUnit}`}; <code>{name}.IL.{l.name}(x)</code>
+                {ordinateUnit(region, l.quantity) === '–' ? ' per unit load' : ` ${ordinateUnit(region, l.quantity)} per ${region.forceUnit}`}; <code>{name}.IL.{identifierOf(l.name)}(x)</code>
               </p>
             )}
           </div>
@@ -327,7 +330,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
           <p className="hint">
             A unit load walks along the path; each axle train stops with every axle on every position, both ways, and a uniform load goes only where the influence line is adverse.
             {region.loadCases ? ' In the combinations each moving load has its own factor column.' : ' Use load cases to combine them with the other loads.'}
-            {' '}Worksheet: <code>{name}.IL.M1(x)</code>, <code>{name}.moving.{tr.loads[0]?.name ?? 'LM1'}.M_max</code> with <code>x_M_max</code> (section) and <code>pos_M_max</code> (first axle), <code>.A.Ry_max</code>, and the envelope as <code>.max.M(x)</code>, <code>.min.M(x)</code>.
+            {' '}Worksheet: <code>{name}.IL.M1(x)</code>, <code>{name}.moving.{identifierOf(tr.loads[0]?.name ?? 'LM1')}.M_max</code> with <code>x_M_max</code> (section) and <code>pos_M_max</code> (first axle), <code>.A.Ry_max</code>, and the envelope as <code>.max.M(x)</code>, <code>.min.M(x)</code>.
             {region.analysis?.secondOrder ? ' Moving loads are added linearly (first order) to the second-order static part.' : ''}
           </p>
         </>
