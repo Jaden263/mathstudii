@@ -258,9 +258,13 @@ function lagrange(px: number[], pf: number[], x: number): number {
  * smooth stretch, so exact between positions too; the right-hand value where it jumps.
  */
 export function ilValue(l: InfluenceLine, x: number): number {
-  const n = l.x.length;
-  let i = 0;
-  while (i + 1 < n - 1 && l.x[i + 1] <= x) i++;
+  // the last position at or before x (of a repeated one, the right-hand side)
+  let i = 0, hi = l.x.length - 2;
+  while (i < hi) {
+    const mid = (i + hi + 1) >> 1;
+    if (l.x[mid] <= x) i = mid;
+    else hi = mid - 1;
+  }
   const h = l.x[i + 1] - l.x[i];
   if (!(h > 0)) return l.v[i + 1];
   const st = l.smooth.find(([a, b]) => a <= i && i + 1 <= b);
