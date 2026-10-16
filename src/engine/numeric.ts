@@ -564,5 +564,6 @@ export const normInv = S.normInv;
 export function invertCdf(cdf: Fn1, p: number, lo: number, hi: number): number {
   while (cdf(lo) > p) lo = lo < 0 ? lo * 2 : lo - 1;
   while (cdf(hi) < p) hi = hi > 0 ? hi * 2 : hi + 1;
-  return brent((x) => cdf(x) - p, lo, hi, 1e-13);
+  // to full relative precision: quantiles in a tail are tiny (qchisq(1e−12, 1) = 1.6e−24)
+  return brent((x) => cdf(x) - p, lo, hi, 1e-300);
 }

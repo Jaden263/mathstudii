@@ -251,3 +251,34 @@ describe('orthogonal polynomials', () => {
     }
   });
 });
+
+describe('hard corners', () => {
+  it('Γ(a, x) and Q(a, x) for small a, where Q = 1 − P is all cancellation', () => {
+    // 40-digit mpmath values (gammainc); Q(1e−8, 1) used to be off by 3e−7
+    close(S.gammaUpper(1e-8, 1), 0.21938393537395226, 1e-14);
+    close(S.gammaPQ(1e-8, 1).q, 2.1938393664027067e-9, 1e-14);
+    close(S.gammaPQ(1e-5, 0.5).q, 5.59776528542266e-6, 1e-14);
+    close(S.gammaUpper(0.001, 1), 0.21948181320730278, 1e-14);
+    // a → 0: Γ(a, x) → E₁(x); Γ(½, x) = √π erfc √x
+    close(S.gammaUpper(1e-300, 0.3), S.expintE1(0.3), 1e-14);
+    for (const x of [1e-6, 0.2, 0.9, 1.4]) close(S.gammaUpper(0.5, x), Math.sqrt(Math.PI) * S.erfc(Math.sqrt(x)), 1e-14);
+  });
+  it('F(φ, k) near φ = π/2 with k → 1: no detour through φ − π', () => {
+    // Math.PI/2 falls δ = 6.12e−17 short of π/2, and 1/√(1 − k²) = 7·10⁵ there:
+    // F(π/2 − δ, k) = K(k) − δ/√(1 − k²) to first order
+    const k = 0.999999999999, kc = Math.sqrt((1 - k) * (1 + k)), delta = 6.123233995736766e-17;
+    close(S.ellipF(Math.PI / 2, k), S.ellipK(k) - delta / kc, 1e-15);
+    // E(φ, 1) = sin φ, F(φ, k) quasi-periodic with the exact π
+    close(S.ellipF(1 + Math.PI, 0.9), S.ellipF(1, 0.9) + 2 * S.ellipK(0.9), 1e-15);
+  });
+  it('I and K of a large order at large x, where e^±x alone overflows', () => {
+    // Wronskian I_ν K_ν+1 + I_ν+1 K_ν = 1/x (DLMF 10.28.2); I₅₀₀(750) = 6.961485689371358e253 (mpmath)
+    for (const [nu, x] of [[500, 750], [1000, 1000], [1000, 500], [800, 900]]) {
+      const w = S.besselI(nu, x) * S.besselK(nu + 1, x) + S.besselI(nu + 1, x) * S.besselK(nu, x);
+      close(w * x, 1, 1e-11);
+    }
+    close(S.besselI(500, 750), 6.961485689371358e253, 1e-12);
+    // a Y of high order at small x overflows to −∞, not NaN
+    expect(S.besselY(50, 1e-8)).toBe(-Infinity);
+  });
+});

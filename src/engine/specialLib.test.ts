@@ -99,6 +99,14 @@ describe('special functions in the worksheet', () => {
     tiny('Psi(1) + 0.5772156649015329', 1e-15);
     tiny('Psi(1, 1) - π^2 / 6', 1e-15);
   });
+  it('quantiles deep in a tail keep their relative precision', () => {
+    // χ²₁: P(X ≤ x) = erf √(x/2) ⇒ x = 2 erfinv(p)² ≈ (π/2) p² for small p; it used to come out 0
+    tiny('qchisq(1e-12, 1) / (π/2 * 1e-24) - 1', 1e-12);
+    tiny('qchisq(1e-9, 2) / (-2 log1p(-1e-9)) - 1', 1e-12); // χ²₂ is exponential with mean 2
+    tiny('qgamma(1e-10, 1) / (-log1p(-1e-10)) - 1', 1e-12); // Γ(1) is exponential
+    tiny('qbeta(1e-10, 1, 3) / -expm1(log1p(-1e-10) / 3) - 1', 1e-12); // I_x(1, b) = 1 − (1 − x)^b
+    tiny('gamma(1e-8, 1) / 0.21938393537395226 - 1', 1e-14); // Mathcad's Γ(a, x), small a (mpmath value)
+  });
   it('work element by element on vectors and matrices', () => {
     const r = run(['J0([1, 2]) =', 'Jn([0, 1], [2, 3]) =', 'Leg(2, [0.5, 1; 0, -1]) =', 'Jn([0, 1], [2, 3, 4]) =']);
     expect(r[0].tex).toMatch(/= \\begin\{bmatrix\} 0\.7652 & 0\.2239 \\end\{bmatrix\}$/); // J₀(1), J₀(2)

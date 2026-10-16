@@ -113,7 +113,7 @@ const pbeta = (x: unknown, a: unknown, b: unknown) => {
 const qbeta = (p: unknown, a: unknown, b: unknown) => {
   const pv = prob(p), s1 = pos(a, 's1'), s2 = pos(b, 's2');
   if (pv === 0 || pv === 1) return pv;
-  return N.brent((x) => S.betaInc(x, s1, s2) - pv, 0, 1, 1e-15);
+  return N.brent((x) => S.betaInc(x, s1, s2) - pv, 0, 1, 1e-300);
 };
 
 // ---------------------------------------------------------------- more of Mathcad's distributions

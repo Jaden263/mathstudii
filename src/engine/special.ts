@@ -158,6 +158,25 @@ function lowerGammaSeries(a: number, x: number): number {
   return sum;
 }
 
+/**
+ * Γ(a, x) for 0 < a ≤ ½ and x < 1.5, where Q = 1 − P is nearly all cancellation:
+ * (Γ(1+a) − x^a)/a − x^a Σₖ≥₁ (−x)^k / (k! (a+k)) (DLMF 8.7.3), with Γ(1+a) − 1 and
+ * x^a − 1 kept apart.
+ */
+function upperGammaSmall(a: number, x: number): number {
+  const r = rgamma1pm1(a);
+  const g1pm1 = -r / (1 + r);
+  const xam1 = Math.expm1(a * Math.log(x));
+  let term = 1, sum = 0;
+  for (let k = 1; k < 1000; k++) {
+    term *= -x / k;
+    const d = term / (a + k);
+    sum += d;
+    if (Math.abs(d) < EPS * Math.abs(sum)) break;
+  }
+  return (g1pm1 - xam1) / a - (1 + xam1) * sum;
+}
+
 /** Regularised incomplete gamma P(a, x) and Q(a, x) = 1 − P, each accurate where it is small. */
 export function gammaPQ(a: number, x: number): { p: number; q: number } {
   if (!(a > 0)) fail('incomplete gamma: a must be positive');
@@ -167,6 +186,10 @@ export function gammaPQ(a: number, x: number): { p: number; q: number } {
   const pre = gammaPrefix(a, x);
   if (x < a + 1) {
     const p = lowerGammaSeries(a, x) * pre;
+    if (a <= 0.5 && p > 0.5) {
+      const q = upperGammaSmall(a, x) * rgamma1p(a) * a; // 1/Γ(a) = a/Γ(1+a)
+      return { p: 1 - q, q };
+    }
     return { p, q: 1 - p };
   }
   const q = pre * upperGammaCF(a, x);
@@ -182,6 +205,7 @@ export function gammaUpper(a: number, x: number): number {
   }
   // the continued fraction needs no Γ(a) and works for negative a too
   if (x >= Math.max(1.5, a + 1)) return powExp(a, x) * upperGammaCF(a, x);
+  if (a > 0 && a <= 0.5) return upperGammaSmall(a, x);
   if (a > 0) {
     const pq = gammaPQ(a, x);
     return a < 170 ? pq.q * gamma(a) : Math.exp(Math.log(pq.q) + lgamma(a));
@@ -591,6 +615,11 @@ function besseljy(nu: number, x: number): { j: number; y: number; jp: number; yp
     const rytemp = (xmu + i) * xi2 * ry1 - rymu;
     rymu = ry1;
     ry1 = rytemp;
+    // Y of a high order at small x overflows to −∞; ∞ − ∞ further on would be NaN
+    if (!Number.isFinite(ry1)) {
+      if (i < nl) rymu = ry1;
+      break;
+    }
   }
   return { j, y: rymu, jp, yp: nu * xi * rymu - ry1 };
 }
@@ -627,8 +656,21 @@ function besselAsymptotic(nu: number, x: number): { j: number; y: number; jp: nu
   return { j: s * (P * cosChi - Q * sinChi), y: s * (P * sinChi + Q * cosChi), jp: NaN, yp: NaN };
 }
 
-/** I_ν, K_ν for ν ≥ 0, x > 0 (NR §6.6, Temme's series and Steed's CF2). */
+/**
+ * I_ν, K_ν for ν ≥ 0, x > 0. Past x ≈ 700 e^∓x alone over/underflows where I_ν, K_ν of
+ * a large order still fit (I₅₀₀(750) = 7·10²⁵³), so the work is done on e^−x I and e^x K
+ * there; a large order at smaller x is the other way round (I₁₀₀₀(500) = 5·10⁻¹⁴⁴).
+ */
 function besselik(nu: number, x: number): { i: number; k: number } {
+  const fits = (v: number) => v > 0 && v < Infinity;
+  const r = besselikRun(nu, x, x > 700);
+  if (x < 2 || (fits(r.i) && fits(r.k))) return r;
+  const o = besselikRun(nu, x, x <= 700);
+  return { i: fits(r.i) ? r.i : o.i, k: fits(r.k) ? r.k : o.k };
+}
+
+/** I_ν, K_ν for ν ≥ 0, x > 0 (NR §6.6, Temme's series and Steed's CF2); scaled (x ≥ 2): by e^∓x until the end. */
+function besselikRun(nu: number, x: number, scaled: boolean): { i: number; k: number } {
   const MAXIT = 2e6;
   const XMIN = 2;
   const nl = Math.floor(nu + 0.5);
@@ -713,7 +755,7 @@ function besselik(nu: number, x: number): { i: number; k: number } {
     }
     if (i >= MAXIT) fail('Bessel I/K: CF2 did not converge');
     hh = a1 * hh;
-    rkmu = (Math.sqrt(Math.PI / (2 * x)) * Math.exp(-x)) / s;
+    rkmu = (Math.sqrt(Math.PI / (2 * x)) * (scaled ? 1 : Math.exp(-x))) / s;
     rk1 = rkmu * (xmu + x + 0.5 - hh) * xi;
   }
   const rkmup = xmu * xi * rkmu - rk1;
@@ -724,7 +766,9 @@ function besselik(nu: number, x: number): { i: number; k: number } {
     rkmu = rk1;
     rk1 = rktemp;
   }
-  return { i: iv, k: rkmu };
+  if (!scaled) return { i: iv, k: rkmu };
+  const unscale = (v: number, e: number) => (Math.abs(e) < 700 ? v * Math.exp(e) : v > 0 ? Math.exp(Math.log(v) + e) : v);
+  return { i: unscale(iv, x), k: unscale(rkmu, -x) };
 }
 
 /** Bessel function of the first kind J_ν(x) for real order ν. */
@@ -1228,6 +1272,8 @@ function checkModulus(k: number, fn: string) {
 
 /** 1 − k² (the complementary parameter) without cancellation near |k| = 1. */
 const comp = (k: number) => (1 - k) * (1 + k);
+/** 1 − k² sin²φ as (1 − k²) + k² cos²φ: two terms ≥ 0, no cancellation near k sin φ = 1. */
+const delta2 = (k: number, c: number) => comp(k) + k * k * c * c;
 
 /** Complete elliptic integral of the first kind K(k) (modulus k; parameter m = k²). */
 export function ellipK(k: number): number {
@@ -1252,10 +1298,18 @@ export function ellipPi(n: number, k: number): number {
   return carlsonRF(0, q, 1) + (n / 3) * carlsonRJ(0, q, 1, 1 - n);
 }
 
-/** Split φ = jπ + r with |r| ≤ π/2 (the incomplete integrals are quasi-periodic). */
+/** π − Math.PI, for reducing amplitudes without the rounding of Math.PI (Cody–Waite). */
+const PI_LO = 1.2246467991473532e-16;
+
+/**
+ * Split φ = jπ + r with |r| ≤ π/2 (the incomplete integrals are quasi-periodic). |φ| ≤ π/2
+ * is kept as it is: near π/2 with k → 1 the integrand is huge, and φ − π + π would
+ * move φ by the rounding of π.
+ */
 function reduceAmplitude(phi: number): { j: number; r: number } {
+  if (Math.abs(phi) <= Math.PI / 2) return { j: 0, r: phi };
   const j = Math.round(phi / Math.PI);
-  return { j, r: phi - j * Math.PI };
+  return { j, r: phi - j * Math.PI - j * PI_LO };
 }
 
 /** Incomplete elliptic integral of the first kind F(φ, k) = ∫₀^φ dθ / √(1 − k² sin²θ). */
@@ -1263,7 +1317,7 @@ export function ellipF(phi: number, k: number): number {
   checkModulus(k, 'ellipF');
   const { j, r } = reduceAmplitude(phi);
   const s = Math.sin(r), c = Math.cos(r);
-  const part = s * carlsonRF(c * c, comp(k * s), 1);
+  const part = s * carlsonRF(c * c, delta2(k, c), 1);
   return j === 0 ? part : part + 2 * j * ellipK(k);
 }
 
@@ -1271,7 +1325,7 @@ export function ellipF(phi: number, k: number): number {
 export function ellipEinc(phi: number, k: number): number {
   checkModulus(k, 'ellipE');
   const { j, r } = reduceAmplitude(phi);
-  const s = Math.sin(r), c = Math.cos(r), q = comp(k * s);
+  const s = Math.sin(r), c = Math.cos(r), q = delta2(k, c);
   const part = s * carlsonRF(c * c, q, 1) - ((k * k * s * s * s) / 3) * carlsonRD(c * c, q, 1);
   return j === 0 ? part : part + 2 * j * ellipE(k);
 }
@@ -1280,7 +1334,7 @@ export function ellipEinc(phi: number, k: number): number {
 export function ellipPiInc(n: number, phi: number, k: number): number {
   checkModulus(k, 'ellipPi');
   const { j, r } = reduceAmplitude(phi);
-  const s = Math.sin(r), c = Math.cos(r), q = comp(k * s);
+  const s = Math.sin(r), c = Math.cos(r), q = delta2(k, c);
   const part = s * carlsonRF(c * c, q, 1) + ((n * s * s * s) / 3) * carlsonRJ(c * c, q, 1, 1 - n * s * s);
   return j === 0 ? part : part + 2 * j * ellipPi(n, k);
 }
