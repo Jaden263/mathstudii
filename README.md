@@ -563,7 +563,8 @@ or envelope, and the model with its loads, the deformed shape (with its scale fa
 N, V_y, V_z, T, M_y or M_z in each member's own plane (largest values labelled), the
 buckling mode, and the reactions. Hover a member for the forces at that point, a node
 for its displacements and reactions. The **Results** tab lists reactions, member
-extremes and node displacements (copy them to Excel; also from the right-click menu).
+extremes and node displacements (copy them to Excel; also from the right-click menu); for
+the envelope the minima come from its lower side, with a max and a min row per node.
 
 **In the worksheet** (name the region `f`):
 - per node: `f.N1.ux`, `.uy`, `.uz`, `.u`, `.φx` … and at a support `f.N1.Rx` … `.Rz`,
@@ -584,7 +585,11 @@ Releases are condensed out of the member and recovered afterwards. Each member i
 substructure, so only the nodes go into the banded system (reverse Cuthill–McKee, skyline
 Cholesky): a 10 × 10 bay, 6-storey frame (2046 members, 4356 unknowns) solves in about
 0.5 s. Node rotations nothing holds (pin-jointed trusses) are found and fixed, and a
-mechanism is reported with the node and direction it moves in.
+mechanism is reported with the node and direction it moves in. A node that no member uses
+yet (just added to the table) is left out of the analysis; a load on it is flagged. A
+second set of tests checks random frames (β, inclined and vertical members, releases,
+springs, Timoshenko, loads along members) and α_cr against the textbook 12 × 12 member
+matrices assembled densely.
 - **Second order** (side panel → Analysis): P-Δ and P-δ, members cut into 4–8 elements
   with the consistent geometric stiffness of their axial force in both bending planes,
   iterated on the axial forces; the moments are statics on the deformed member.

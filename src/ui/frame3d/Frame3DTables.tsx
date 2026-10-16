@@ -6,7 +6,7 @@ import { Copy, Trash2 } from 'lucide-react';
 import type { Frame3DRegion } from '../../model/types';
 import type { Frame3DResult } from '../../frame3d/evaluate';
 import { materialValues, profileValues } from '../../frame3d/evaluate';
-import { memberExtremes, type ForceKey } from '../../frame3d/solve';
+import { boundExtremes, type ForceKey, type Reaction3 } from '../../frame3d/solve';
 import {
   DIRS, RELEASES, RELEASE_PRESETS, SUPPORT_PRESETS, frameId, nextName, removeFrameItems,
   type F3Dir, type F3Load, type F3Member, type F3Node, type F3Section, type F3Support, type Frame3DData, type Frame3DTab, type ReleaseName,
@@ -107,7 +107,8 @@ export function Frame3DTables({ region, result, dispatch, height }: { region: Fr
   };
   const addNode = () => {
     const last = region.nodes[region.nodes.length - 1];
-    const n: F3Node = { id: frameId('n'), name: nextName('N', region.nodes), x: last?.x ?? '0', y: last?.y ?? '0', z: last ? bump(last.z, 3 / (LENGTH_M[Lu] ?? 1)) : '0' };
+    const k = LENGTH_M[Lu] ?? 1, at = last && result?.pos[last.id];
+    const n: F3Node = { id: frameId('n'), name: nextName('N', region.nodes), x: last?.x ?? '0', y: last?.y ?? '0', z: last ? bump(last.z, at ? at[2] / k : undefined, 3 / k) : '0' };
     commit({ nodes: [...region.nodes, n] });
     pick(n.id);
   };
@@ -229,15 +230,23 @@ export function Frame3DTables({ region, result, dispatch, height }: { region: Fr
     if (!sol) return <p className="hint f3-pad">{result?.error ?? 'No results yet.'}</p>;
     const kN = FORCE_N[F] ?? 1e3, Lm = LENGTH_M[Lu] ?? 1, metric = Lu === 'm' || Lu === 'cm' || Lu === 'mm';
     const f = (v: number) => fmt(v / kN), mo = (v: number) => fmt(v / (kN * Lm)), d = (v: number) => fmt(metric ? v * 1000 : v / 0.0254);
-    const reactions = sol.reactions.map((r) => [nodeName.get(r.node) ?? '?', ...r.F.map(f), ...r.M.map(mo)]);
+    // the envelope: maxima from its upper side, minima from its lower one (a row each)
+    const low = result?.lower;
+    const reactions = sol.reactions.flatMap((r) => {
+      const row = (q: Reaction3, tag: string) => [`${nodeName.get(q.node) ?? '?'}${tag}`, ...q.F.map(f), ...q.M.map(mo)];
+      const lo = low?.reactions.find((q) => q.id === r.id);
+      return lo ? [row(r, ' max'), row(lo, ' min')] : [row(r, '')];
+    });
     const keys: ForceKey[] = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'];
     const extremes = sol.members.map((mr) => {
-      const ex = memberExtremes(mr), m = region.members.find((q) => q.id === mr.id);
+      const ex = boundExtremes(mr, low?.members.find((q) => q.id === mr.id)), m = region.members.find((q) => q.id === mr.id);
       return [m?.name ?? '?', ...keys.flatMap((k) => (k === 'N' || k === 'Vy' || k === 'Vz' ? [f(ex[k].max), f(ex[k].min)] : [mo(ex[k].max), mo(ex[k].min)]))];
     });
-    const displacements = region.nodes.map((n) => {
-      const u = sol.nodes[n.id] ?? [0, 0, 0, 0, 0, 0];
-      return [n.name, ...u.slice(0, 3).map(d), ...u.slice(3).map((x) => fmt(x * 1000))];
+    // (a node no member uses is not part of the structure: no row)
+    const displacements = region.nodes.filter((n) => sol.nodes[n.id]).flatMap((n) => {
+      const row = (u: number[], tag: string) => [`${n.name}${tag}`, ...u.slice(0, 3).map(d), ...u.slice(3).map((x) => fmt(x * 1000))];
+      const lo = low?.nodes[n.id];
+      return lo ? [row(sol.nodes[n.id], ' max'), row(lo, ' min')] : [row(sol.nodes[n.id], '')];
     });
     const block = (title: string, head: string[], rows: string[][], key: string): ReactNode => (
       <div className="f3-result" key={key}>
@@ -505,8 +514,12 @@ export function Frame3DTables({ region, result, dispatch, height }: { region: Fr
   );
 }
 
-/** A storey (3 m, `step` in the region's unit) above a coordinate: "4.5" → "7.5", an expression gets "+ 3". */
-function bump(z: string, step: number): string {
+/**
+ * A storey (3 m, `step` in the region's unit) above a coordinate: "4.5" → "7.5". An
+ * expression ("h", which may carry units) goes by its evaluated value, else stays as it is.
+ */
+function bump(z: string, value: number | undefined, step: number): string {
   const n = Number(z), d = +step.toPrecision(10);
-  return Number.isFinite(n) ? String(+(n + d).toPrecision(10)) : `${z} + ${d}`;
+  if (Number.isFinite(n)) return String(+(n + d).toPrecision(10));
+  return value !== undefined && Number.isFinite(value) ? String(+(value + d).toPrecision(10)) : z;
 }

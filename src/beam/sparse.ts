@@ -53,12 +53,8 @@ export function bandOrder(adj: number[][]): number[] {
 /**
  * Cholesky factor within the envelope, or null when K is not positive definite (a
  * mechanism); `fail.row` then receives the unknown (original numbering) where it broke down.
- * With `locks`, a pivot that is zero to round-off is held instead (its own diagonal put
- * back, as a spring on that unknown) and its unknown listed: for zero-energy modes known
- * to carry no load, like the twist of a chain of elements released at one end. Only a
- * negative pivot then fails.
  */
-export function skylineCholesky(K: SparseSym, fail?: { row: number }, locks?: number[]): Skyline | null {
+export function skylineCholesky(K: SparseSym, fail?: { row: number }): Skyline | null {
   const n = K.n;
   const adj = K.rows.map((r, i) => [...r.keys()].filter((j) => j !== i));
   const order = Int32Array.from(bandOrder(adj));
@@ -86,15 +82,9 @@ export function skylineCholesky(K: SparseSym, fail?: { row: number }, locks?: nu
       for (let k = Math.max(fi, fj); k < j; k++) s -= Li[k - fi] * Lj[k - fj];
       if (j < i) Li[j - fi] = s / Lj[j - fj];
       else {
-        const d = row.get(order[i]) ?? 0;
-        if (!(s > 1e-12 * d)) {
-          if (locks && d > 0 && Math.abs(s) <= 1e-12 * d) {
-            locks.push(order[i]);
-            s = d;
-          } else {
-            if (fail) fail.row = order[i];
-            return null;
-          }
+        if (!(s > 1e-12 * (row.get(order[i]) ?? 0))) {
+          if (fail) fail.row = order[i];
+          return null;
         }
         Li[i - fi] = Math.sqrt(s);
       }

@@ -197,6 +197,16 @@ describe('3-D frame region in a worksheet', () => {
     expect(names.errors.names).toMatch(/named N1/);
   });
 
+  it('a node added to the table before its members leaves the frame solved', () => {
+    const d = cantilever([{ id: 'P', type: 'node', node: 'b', Fz: '-P' }, { id: 'Q', type: 'node', node: 'c', Fx: '5' }]);
+    d.nodes.push({ id: 'c', name: 'N3', x: 'L', y: '0', z: '3' });
+    const { res, num } = run(d, ['f.N2.uz = mm']);
+    expect(res.error).toBeUndefined();
+    // the load on the loose node is flagged on its row, the rest solves: δ = P L³ / 3EI_y
+    expect(res.errors.Q).toMatch(/No member is connected/);
+    expect(num(0)).toBeCloseTo((-10e3 * 27) / (3 * E * ipe300.I_y * 1e-12) * 1000, 3);
+  });
+
   it('the example: governing extremes, α_cr and stresses taken per combination', () => {
     const ws = frame3dExample();
     ws.settings.precision = 12;

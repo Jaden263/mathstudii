@@ -49,6 +49,8 @@ export const END_FORCES = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'] as const;
 
 export interface NumMember3 {
   id: string;
+  /** Name for messages (the id otherwise). */
+  name?: string;
   a: string;
   b: string;
   E: number;
@@ -448,6 +450,8 @@ export interface FrameMesh3 {
   nodeIndex: Map<string, number>;
   pos: Vec3[];
   chains: Chain[];
+  /** Per node: some member ends there (a node in the table that no member uses yet is not part of the structure). */
+  connected: boolean[];
 }
 
 const clampT = (t: number) => Math.min(1, Math.max(0, t));
@@ -475,10 +479,10 @@ export function frameMesh3(st: NumFrame, n = 1): FrameMesh3 {
   const loadsOn = st.members.map((): ElemLoad[] => []);
   const axes = st.members.map((m) => {
     const i = nodeIndex.get(m.a), j = nodeIndex.get(m.b);
-    if (i === undefined || j === undefined) throw new StructureError(`Member ${m.id} is missing a node`);
-    if (!(m.E > 0 && m.G > 0 && m.A > 0 && m.Iy > 0 && m.Iz > 0 && m.It > 0)) throw new StructureError(`Member ${m.id}: E, G, A, I_y, I_z and I_t must be positive`);
+    if (i === undefined || j === undefined) throw new StructureError(`Member ${m.name ?? m.id} is missing a node`);
+    if (!(m.E > 0 && m.G > 0 && m.A > 0 && m.Iy > 0 && m.Iz > 0 && m.It > 0)) throw new StructureError(`Member ${m.name ?? m.id}: E, G, A, I_y, I_z and I_t must be positive`);
     const ax = memberAxes(pos[i], pos[j], m.beta, m.ref);
-    if (!(ax.L > 0)) throw new StructureError(`Member ${m.id} has zero length`);
+    if (!(ax.L > 0)) throw new StructureError(`Member ${m.name ?? m.id} has zero length`);
     return ax;
   });
   const byId = new Map(st.members.map((m, k) => [m.id, k]));
@@ -522,7 +526,16 @@ export function frameMesh3(st: NumFrame, n = 1): FrameMesh3 {
       size: inner + 6 * (n - 1) + relB.length, released: [...relA, ...relB.map((c) => 6 + c)],
     };
   });
-  return { nodeIndex, pos, chains };
+  // a node no member uses (one just added to the table) stays out of the system, else it
+  // would be a mechanism; a load on it has nothing to act on
+  const connected = pos.map(() => false);
+  for (const c of chains) connected[c.i] = connected[c.j] = true;
+  for (const l of st.loads) {
+    if (l.type !== 'node' || connected[nodeIndex.get(l.node)!]) continue;
+    const q = st.nodes.find((p) => p.id === l.node);
+    throw new StructureError(`A load acts on node ${q?.name ?? l.node}, which no member connects`);
+  }
+  return { nodeIndex, pos, chains, connected };
 }
 
 /** The loads between x0 and x1 of a member, measured from x0 (a point load on a cut goes to the element after it). */
@@ -550,11 +563,11 @@ function freeOfLoads(m: NumMember3, relA: number[], relB: number[], loads: ElemL
   for (const c of [0, 1, 2, 3]) {
     if (!both(c)) continue;
     const loaded = loads.some((l) => (c === 3 ? l.kind === 'point' && l.M[0] !== 0 : l.kind === 'point' ? l.F[c] !== 0 : l.qa[c] !== 0 || l.qb[c] !== 0));
-    if (loaded) throw new StructureError(`Member ${m.id} is released in ${END_FORCES[c]} at both ends, but a load on it needs that force`);
+    if (loaded) throw new StructureError(`Member ${m.name ?? m.id} is released in ${END_FORCES[c]} at both ends, but a load on it needs that force`);
   }
   // shear and moment both released at both ends: the member turns freely in that plane
   for (const [v, mo, c] of [[1, 5, 2], [2, 4, 1]] as const) {
-    if (both(v) && both(mo) && loads.some((l) => l.kind === 'point' && l.M[c] !== 0)) throw new StructureError(`Member ${m.id} turns freely about its ${c === 2 ? 'z' : 'y'} axis, but a moment acts on it`);
+    if (both(v) && both(mo) && loads.some((l) => l.kind === 'point' && l.M[c] !== 0)) throw new StructureError(`Member ${m.name ?? m.id} turns freely about its ${c === 2 ? 'z' : 'y'} axis, but a moment acts on it`);
   }
 }
 
@@ -562,6 +575,8 @@ function freeOfLoads(m: NumMember3, relA: number[], relB: number[], loads: ElemL
 interface OwnFactor {
   L: number[][];
   first: number[];
+  /** Pivots held by their own diagonal: the member's free motions (rigid spin or shift). */
+  locked: number;
 }
 
 /**
@@ -569,7 +584,7 @@ interface OwnFactor {
  * (a member free to spin, see freeOfLoads) is held by its own diagonal; a negative one
  * (second order) means the member buckles between its nodes.
  */
-function ownCholesky(A: number[][], id: string): OwnFactor {
+function ownCholesky(A: number[][], name: string): OwnFactor {
   const n = A.length;
   const first = A.map((row, i) => {
     let j = 0;
@@ -577,6 +592,7 @@ function ownCholesky(A: number[][], id: string): OwnFactor {
     return j;
   });
   const L = Array.from({ length: n }, () => new Array<number>(n).fill(0));
+  let locked = 0;
   for (let i = 0; i < n; i++) {
     const Li = L[i];
     for (let j = first[i]; j <= i; j++) {
@@ -587,14 +603,15 @@ function ownCholesky(A: number[][], id: string): OwnFactor {
       else {
         const d = A[i][i];
         if (!(s > 1e-12 * d)) {
-          if (!(Math.abs(s) <= 1e-12 * Math.abs(d)) || !(d > 0)) throw new InstabilityError(`Second order: member ${id} buckles between its nodes (the loads are above its critical load)`);
+          if (!(Math.abs(s) <= 1e-12 * Math.abs(d)) || !(d > 0)) throw new InstabilityError(`Second order: member ${name} buckles between its nodes (the loads are above its critical load)`);
           s = d;
+          locked++;
         }
         Li[i] = Math.sqrt(s);
       }
     }
   }
-  return { L, first };
+  return { L, first, locked };
 }
 
 function ownForward({ L, first }: OwnFactor, b: ArrayLike<number>): number[] {
@@ -658,7 +675,7 @@ export function chainSystem(c: Chain, Ne?: [number, number][]): ChainSystem {
   const F = new Array<number>(c.size).fill(0);
   c.elems.forEach((e, q) => e.dofs.forEach((d, a) => (F[d] += f[q][a])));
   const ni = c.size - 12;
-  const own = ownCholesky(Array.from({ length: ni }, (_, a) => K[12 + a].slice(12)), m.id);
+  const own = ownCholesky(Array.from({ length: ni }, (_, a) => K[12 + a].slice(12)), m.name ?? m.id);
   // Z column by column: L⁻¹ times the own × end block
   const cols = Array.from({ length: 12 }, (_, e) => ownForward(own, Array.from({ length: ni }, (__, a) => K[12 + a][e])));
   const Z = Array.from({ length: ni }, (_, a) => cols.map((col) => col[a]));
@@ -685,9 +702,9 @@ export { ownForward, ownBackward };
 
 // ---------------------------------------------------------------- the system
 
-/** Unknowns of the structure: six per node, less what supports hold. */
+/** Unknowns of the structure: six per connected node, less what supports hold. */
 export interface Dofs {
-  /** Equation of each node unknown (6 per node), −1 where a support holds it. */
+  /** Equation of each node unknown (6 per node), −1 where a support holds it or no member ends there. */
   nodeEq: Int32Array;
   count: number;
   /** Springs on node unknowns: equation → stiffness. */
@@ -701,7 +718,7 @@ export function nodeDofs(st: NumFrame, mesh: FrameMesh3): Dofs {
   const springAt: [number, number][] = [];
   for (const sp of st.supports) {
     const k = mesh.nodeIndex.get(sp.node);
-    if (k === undefined) continue;
+    if (k === undefined || !mesh.connected[k]) continue;
     sp.dofs.forEach((d, c) => {
       if (d === true) held[6 * k + c] = 1;
       else if (typeof d === 'number' && d > 0) springAt.push([6 * k + c, d]);
@@ -709,7 +726,7 @@ export function nodeDofs(st: NumFrame, mesh: FrameMesh3): Dofs {
   }
   const nodeEq = new Int32Array(6 * nn).fill(-1);
   let count = 0;
-  for (let q = 0; q < 6 * nn; q++) if (!held[q]) nodeEq[q] = count++;
+  for (let q = 0; q < 6 * nn; q++) if (!held[q] && mesh.connected[Math.floor(q / 6)]) nodeEq[q] = count++;
   for (const [q, kq] of springAt) if (nodeEq[q] >= 0) springs.set(nodeEq[q], (springs.get(nodeEq[q]) ?? 0) + kq);
   return { nodeEq, count, springs };
 }
@@ -916,7 +933,7 @@ export function solveFrame3(st: NumFrame, opts: Solve3Options = {}): FrameSoluti
   // reactions: what the members put on a held node, less the loads on it
   const reactions: Reaction3[] = st.supports.flatMap((sp) => {
     const k = mesh.nodeIndex.get(sp.node);
-    if (k === undefined) return [];
+    if (k === undefined || !mesh.connected[k]) return [];
     const R = [0, 1, 2, 3, 4, 5].map((c) => {
       const q = 6 * k + c, d = sp.dofs[c];
       if (d === true) return nodeForce[q] - nodal[q];
@@ -930,15 +947,21 @@ export function solveFrame3(st: NumFrame, opts: Solve3Options = {}): FrameSoluti
   const nodes: FrameSolution['nodes'] = {};
   for (const q of st.nodes) {
     const k = mesh.nodeIndex.get(q.id)!;
+    if (!mesh.connected[k]) continue;
     nodes[q.id] = [0, 1, 2, 3, 4, 5].map((c) => {
       const eq = dofs.nodeEq[6 * k + c];
       return eq >= 0 ? D[eq] : 0;
     });
   }
-  // degree of indeterminacy: 6m + r − 6j − c (c = released end forces), plus the locked rotations
-  const restraints = st.supports.reduce((acc, sp) => acc + sp.dofs.filter((d) => d === true || (typeof d === 'number' && d > 0)).length, 0);
+  // degree of indeterminacy: 6m + r − 6j − c (c = released end forces), plus the locked
+  // rotations of pinned joints and the free spin (or shift) of members released at both ends
+  const restraints = st.supports.reduce((acc, sp) => {
+    const k = mesh.nodeIndex.get(sp.node);
+    return k === undefined || !mesh.connected[k] ? acc : acc + sp.dofs.filter((d) => d === true || (typeof d === 'number' && d > 0)).length;
+  }, 0);
   const releases = mesh.chains.reduce((acc, c) => acc + c.released.length, 0);
-  const indeterminacy = 6 * st.members.length + restraints - 6 * mesh.nodeIndex.size - releases + locks.count;
+  const joints = mesh.connected.filter(Boolean).length, spins = sys.chains.reduce((acc, c) => acc + c.own.locked, 0);
+  const indeterminacy = 6 * st.members.length + restraints - 6 * joints - releases + locks.count + spins;
   return { members: results, reactions, nodes, indeterminacy, unknowns: n, ...(second ? { secondOrder: { iterations } } : {}) };
 }
 
@@ -1003,6 +1026,15 @@ export function memberAt3(r: Member3Result, s: number): Record<ForceKey, number>
     N: polyAt(p.N, x), Vy: polyAt(p.Vy, x), Vz: polyAt(p.Vz, x), T: polyAt(p.T, x), My: polyAt(p.My, x), Mz: polyAt(p.Mz, x),
     ux: g[0], uy: g[1], uz: g[2], phi: polyAt(p.phi, x),
   };
+}
+
+/** The same over an envelope: the largest from its upper side, the smallest from its lower one. */
+export function boundExtremes(hi: Member3Result, lo?: Member3Result): ReturnType<typeof memberExtremes> {
+  const out = memberExtremes(hi);
+  if (!lo) return out;
+  const low = memberExtremes(lo);
+  for (const key of FORCES) out[key] = { ...out[key], min: low[key].min, sMin: low[key].sMin };
+  return out;
 }
 
 /** Largest and smallest of each internal force along a member, with where they are. */

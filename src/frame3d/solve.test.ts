@@ -304,6 +304,40 @@ describe('space frame: closed forms', () => {
     // held about X at one end it is a simple beam
     expect(solveFrame3({ ...st, supports: [sup('a', [true, true, true, true, false, false]), sup('b', PINNED)] }).reactions[1].F[2]).toBeCloseTo(1e3, 6);
   });
+
+  it('a node no member uses is not part of the structure', () => {
+    // a cantilever, and a node just added to the table (with a partial support on it):
+    // without the rule it was a mechanism at that node
+    const L = 3, P = 4e3;
+    const base: NumFrame = { nodes: [node('a', 0, 0, 0), node('b', L, 0, 0)], members: [mem('m', 'a', 'b')], supports: [sup('a')], loads: [atNode('P', 'b', [0, 0, -P])] };
+    const st: NumFrame = { ...base, nodes: [...base.nodes, node('c', L, 0, 3)], supports: [...base.supports, sup('c', [true, false, false, false, false, false])] };
+    const sol = solveFrame3(st);
+    expect(sol.nodes.b[2]).toBeCloseTo((-P * L ** 3) / (3 * E * Iy), 12);
+    expect(sol.nodes.c).toBeUndefined();
+    expect(sol.reactions.map((r) => r.node)).toEqual(['a']);
+    // the cantilever is statically determinate: 6 + 6 − 12 = 0 (the loose node and its support do not count)
+    expect(sol.indeterminacy).toBe(0);
+    expect(sol.unknowns).toBe(solveFrame3(base).unknowns);
+    // a load on it has nothing to act on
+    expect(() => solveFrame3({ ...st, loads: [atNode('Q', 'c', [1e3, 0, 0])] })).toThrow(/node c, which no member connects/);
+  });
+
+  it('bars with ball joints at both ends: the free spin of each bar is no redundancy', () => {
+    // the tripod again, every bar released in T, My and Mz at both ends: still determinate
+    // (6m + r − 6j − c + locked node rotations + bar spins = 18 + 9 − 24 − 18 + 12 + 3 = 0)
+    const a = 3, h = 4, P = 60e3;
+    const feet: Vec3[] = [[a, 0, 0], [-a / 2, (a * Math.sqrt(3)) / 2, 0], [-a / 2, (-a * Math.sqrt(3)) / 2, 0]];
+    const BALL = [false, false, false, true, true, true];
+    const sol = solveFrame3({
+      nodes: [...feet.map((p, i) => node(`f${i}`, ...p)), node('t', 0, 0, h)],
+      members: feet.map((_, i) => mem(`m${i}`, `f${i}`, 't', { relA: BALL, relB: BALL })),
+      supports: feet.map((_, i) => sup(`f${i}`, PINNED)),
+      loads: [atNode('P', 't', [0, 0, -P])],
+    });
+    expect(sol.indeterminacy).toBe(0);
+    // by symmetry each leg: N = −P ℓ / 3h, ℓ = √(a² + h²)
+    for (const m of sol.members) expect(memberAt3(m, 1).N).toBeCloseTo((-P * Math.hypot(a, h)) / (3 * h), 4);
+  });
 });
 
 describe('space frame: size', () => {

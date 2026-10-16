@@ -205,7 +205,7 @@ export function solveFrame3D(r: Frame3DRegion, evalExpr: Eval): Frame3DResult {
       res.geometry[m.id] = { L: geo.L, axes: geo.R };
       const rel = (list?: string[]) => (list?.length ? RELEASES.map((q) => list.includes(q)) : undefined);
       members.push({
-        id: m.id, a: m.a, b: m.b, E: sec.E, G: sec.G, A: sec.A, Iy: sec.Iy, Iz: sec.Iz, It: sec.It, Wy: sec.Wy, Wz: sec.Wz,
+        id: m.id, name: m.name, a: m.a, b: m.b, E: sec.E, G: sec.G, A: sec.A, Iy: sec.Iy, Iz: sec.Iz, It: sec.It, Wy: sec.Wy, Wz: sec.Wz,
         // shear deformation: the section's shear areas, 5/6 A without them
         ...(withShear ? { Avy: sec.Avy ?? SHEAR_FACTOR.rect * sec.A, Avz: sec.Avz ?? SHEAR_FACTOR.rect * sec.A } : {}),
         beta, ref, relA: rel(m.relA), relB: rel(m.relB),
@@ -241,6 +241,8 @@ export function solveFrame3D(r: Frame3DRegion, evalExpr: Eval): Frame3DResult {
   // loads, each tagged with its case
   const cases = r.loadCases;
   const memberById = new Map(members.map((m) => [m.id, m]));
+  // a node no member uses yet is not part of the structure
+  const connected = new Set(r.members.flatMap((m) => [m.a, m.b]));
   const loads: (NumLoad3 & { case?: string })[] = [];
   for (const l of r.loads) {
     const tag = cases ? { case: loadCase(l, cases) } : {};
@@ -249,6 +251,7 @@ export function solveFrame3D(r: Frame3DRegion, evalExpr: Eval): Frame3DResult {
       const moment = (src: string | undefined, what: string) => (src?.trim() ? quantity(evalExpr, src, 'N m', `${F} ${Lu}`, what) : 0);
       if (l.type === 'node') {
         if (!res.pos[l.node]) throw new Error('Its node is missing');
+        if (!connected.has(l.node)) throw new Error('No member is connected to its node');
         const Fv: Vec3 = [force(l.Fx, 'F_x'), force(l.Fy, 'F_y'), force(l.Fz, 'F_z')], Mv: Vec3 = [moment(l.Mx, 'M_x'), moment(l.My, 'M_y'), moment(l.Mz, 'M_z')];
         loads.push({ id: l.id, type: 'node', node: l.node, F: Fv, M: Mv, ...tag });
         res.loads.push({ id: l.id, kind: 'node', node: l.node, F: Fv, M: Mv, ...tag });
@@ -618,6 +621,10 @@ export function frame3dValue(r: Frame3DRegion, res: Frame3DResult): Value {
     if (!best) continue;
     const o = (gov[n.name.trim()] ??= {}) as Value;
     Object.assign(o, { ux: defl(best[0]), uy: defl(best[1]), uz: defl(best[2]), u: defl(Math.hypot(best[0], best[1], best[2])) });
+    // the rotations of that same combination (not the envelope's mixed sides)
+    o.φx = o.phi_x = best[3];
+    o.φy = o.phi_y = best[4];
+    o.φz = o.phi_z = best[5];
   }
   let umax = 0;
   for (const sol of deflSet) for (const mr of sol.members) mr.ux.forEach((ux, i) => (umax = Math.max(umax, Math.hypot(ux, mr.uy[i], mr.uz[i]))));
