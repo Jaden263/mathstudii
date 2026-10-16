@@ -472,7 +472,7 @@ export function stackLayout(height: number, width: number, n: number, straight: 
   return { modelH, panelH: Math.max(40, (avail - modelH) / rows), cols, rows, required: want + STRIP_H };
 }
 
-const PANEL_TITLE: Record<BeamPanel, string> = { N: 'N', V: 'V', M: 'M', deflection: 'δ' };
+const PANEL_TITLE: Record<BeamPanel, string> = { N: 'N', V: 'V', M: 'M', deflection: 'δ', mode: 'Buckling mode' };
 
 function panelUnit(r: BeamRegion, k: BeamPanel): string {
   const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';

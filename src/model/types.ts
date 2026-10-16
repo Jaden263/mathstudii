@@ -3,7 +3,7 @@
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
-import { DEFAULT_SECTION, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
+import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 
 export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing';
 
@@ -179,6 +179,8 @@ export interface BeamRegion extends RegionBase, BeamData {
   reactions?: boolean;
   /** Load cases and combinations (absent: all loads act together). */
   loadCases?: BeamCases;
+  /** Shear deformation, second order, buckling (absent: first order, Euler–Bernoulli). */
+  analysis?: BeamAnalysis;
 }
 
 /** Python code that reads the worksheet variables above it and exports what it assigns. */

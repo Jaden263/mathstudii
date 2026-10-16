@@ -25,6 +25,14 @@ export interface BeamSection {
   I: string;
   /** Elastic section modulus, for bending stress (optional). */
   W?: string;
+  /** Material family, for the shear modulus (ν = 0.3 steel, 0.2 concrete; timber: G_mean). Absent = steel. */
+  material?: BeamMaterial;
+  /** Concrete or timber class E (and G) came from ("C30/37", "C24", "GL24h"). */
+  grade?: string;
+  /** Shear modulus (expression, bare number GPa); empty = from E and the material. */
+  G?: string;
+  /** How the shear area A_v follows from the section; absent = the profile's, else 5/6 A. */
+  shear?: BeamShearArea;
 }
 
 export interface BeamMember {
@@ -95,9 +103,9 @@ export type BeamLoad =
    */
   | { id: string; type: 'line'; member: string; q1: string; q2?: string; t1?: number; t2?: number; dir: 'global' | 'local'; case?: string };
 
-export type BeamDiagram = 'model' | 'reactions' | 'N' | 'V' | 'M' | 'deflection';
-/** A result diagram drawn under the structure. */
-export type BeamPanel = 'N' | 'V' | 'M' | 'deflection';
+export type BeamDiagram = 'model' | 'reactions' | 'N' | 'V' | 'M' | 'deflection' | 'mode';
+/** A result diagram drawn under the structure ('mode': the buckling mode). */
+export type BeamPanel = 'N' | 'V' | 'M' | 'deflection' | 'mode';
 /** Diagrams stacked under the structure (the default), or one at a time drawn on it. */
 export type BeamLayout = 'stack' | 'overlay';
 
@@ -237,4 +245,29 @@ export function splitMember(d: BeamData, memberId: string, t: number): { data: B
     data: { nodes: [...d.nodes, node], members: d.members.flatMap((q) => (q.id === m.id ? [m1, m2] : [q])), supports: d.supports, loads },
     node: node.id,
   };
+}
+
+export type BeamMaterial = 'steel' | 'concrete' | 'timber';
+
+/** The shear area A_v of a section, for shear deformation (EN 1993-1-1 6.2.6(3) for steel). */
+export type BeamShearArea =
+  /** From A: solid rectangle 5/6 A, solid circle 0.9 A, circular hollow section 2A/π. */
+  | { kind: 'rect' | 'circle' | 'chs' }
+  /** Rectangular hollow section, load along the depth h: A h / (b + h). Bare numbers mm. */
+  | { kind: 'rhs'; h: string; b: string }
+  /** Welded I or box: the webs, h_w t_w. Bare numbers mm. */
+  | { kind: 'welded'; hw: string; tw: string }
+  /** A value (expression, bare number cm²). */
+  | { kind: 'value'; Av: string };
+
+/** How a beam region is analysed. Absent: first order, Euler–Bernoulli members, no buckling. */
+export interface BeamAnalysis {
+  /** Timoshenko members: shear deformation from G and the shear area A_v. */
+  shear?: boolean;
+  /** Second order: equilibrium on the deformed structure (P-Δ and P-δ). */
+  secondOrder?: boolean;
+  /** Linear buckling: α_cr and the buckling modes of each combination. */
+  buckling?: boolean;
+  /** Buckling mode drawn (0 = the lowest). */
+  mode?: number;
 }
