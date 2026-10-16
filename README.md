@@ -824,6 +824,8 @@ What it is not, honestly:
   - Sketches on faces made before this version keep their fixed plane.
   - The mesh kernel (only while OpenCascade loads, or if it cannot) has no names. It
     finds a referenced face or edge only where it has not moved, and the timeline says so.
+    A sketch or joint picked while it draws the part gets no name either, so it follows
+    its face only by place.
 - **Joints:** no joint limits, motion studies or contact.
 - **Drawings:** only the overall sizes are dimensioned automatically. There are no section
   views on the sheet and no GD&T.

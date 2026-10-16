@@ -31,6 +31,8 @@ export interface TopoHint {
   type: SurfaceKind | CurveKind | 'vertex';
   /** Radius of a cylinder, sphere or circle. */
   r?: number;
+  /** Area of a face, length of an edge. */
+  size?: number;
 }
 
 /** A face, edge or vertex of a body of the component the reference is used in. */
@@ -164,6 +166,8 @@ export function refTo(kind: TopoKind, body: string, e: Entity): TopoRef {
   const d = entityDir(e), r = entityRadius(e);
   if (d) hint.d = d;
   if (r !== undefined) hint.r = r;
+  if (isFace(e)) hint.size = e.area;
+  else if (isEdge(e)) hint.size = e.length;
   return { kind, body, key: e.key, hint };
 }
 
@@ -235,8 +239,11 @@ function resolveIn(ref: TopoRef, bodies: BodyTopology[], o: ResolveOptions): Res
     const family = all.filter((c) => sameFamily(ref.kind, ref.key, c.e.key));
     if (family.length) return found(best(family), 'family');
   }
-  const still = all.filter((c) => matchesHint(c.e, ref.hint, ref.kind, 1e-6 * topologySize(c.body)));
-  if (still.length) return found(best(still), 'geometry');
+  // should several be in its place, the one of the size it had
+  const size = (e: Entity) => (isFace(e) ? e.area : isEdge(e) ? e.length : 0);
+  const still = all.filter((c) => matchesHint(c.e, ref.hint, ref.kind, 1e-6 * topologySize(c.body)))
+    .sort((a, b) => (ref.hint.size === undefined ? 0 : Math.abs(size(a.e) - ref.hint.size) - Math.abs(size(b.e) - ref.hint.size)));
+  if (still.length) return found(still[0], 'geometry');
   if (o.near) {
     const close = all.filter((c) => (ref.kind === 'vertex' || (c.e as FaceInfo | EdgeFacts).type === ref.hint.type) && c.d <= o.near! * topologySize(c.body));
     if (close.length) return found(best(close), 'geometry');

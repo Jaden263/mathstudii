@@ -4,7 +4,8 @@
 import { useEffect, useState } from 'react';
 import { Ruler, X } from 'lucide-react';
 import type { BuildResult, EdgeInfo, FaceInfo } from '../../cad/buildResult';
-import type { CadDesign } from '../../cad/design';
+import { itemName, type CadDesign } from '../../cad/design';
+import { faceWords } from '../../cad/topology';
 import type { CadResult } from '../../cad/evaluate';
 import { designNumbers } from '../../cad/keys';
 import type { Distance, EntityRef } from '../../cad/kernel/protocol';
@@ -25,10 +26,15 @@ export function pickLabel(p: Pick): string {
 }
 
 /** Rows describing a face or edge (directions turned into assembly coordinates by M). */
-function facts(info: FaceInfo | EdgeInfo, M: number[], u: string): [string, string][] {
+function facts(info: FaceInfo | EdgeInfo, M: number[], u: string, design: CadDesign): [string, string][] {
   const dir = (d: Vec3) => vec(norm3(m4Dir(M, d)));
   const rows: [string, string][] = [];
   if ('area' in info) {
+    // what its persistent name says made it
+    if (info.key) {
+      const w = faceWords(info.key, (id) => itemName(design, id)).replace(/^the /, '');
+      rows.push(['Made by', w[0].toUpperCase() + w.slice(1)]);
+    }
     rows.push(['Area', `${num(info.area)} ${u}²`]);
     if (info.frame) rows.push(['Normal', dir(info.frame.n)]);
     if (info.radius !== undefined) rows.push([info.type === 'torus' ? 'Major radius' : 'Radius', `${num(info.radius)} ${u}`]);
@@ -93,7 +99,7 @@ export function SelectionPanel({ picks, build, design, result, unit, onBody, onC
             <li key={pickId(p)}>
               <div className="cadw-sel-title">{pickLabel(p)} <em>on <button className="link" onClick={() => onBody(p.occ, p.body)}>{b.name}</button>{occ && ` · ${occ}`}</em></div>
               <table className="props-table"><tbody>
-                {facts(info, M, u).map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}
+                {facts(info, M, u, design).map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}
               </tbody></table>
             </li>
           );

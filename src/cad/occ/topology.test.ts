@@ -9,7 +9,7 @@ import { buildDesignOcc } from './build';
 import { buildResultOcc } from './result';
 import { topologyOcc } from './topology';
 import { meshBuildResult, type BodyResult, type BuildResult } from '../buildResult';
-import { facePlane, planeFrame, type CadDesign, type DesignItem, type DesignSketch } from '../design';
+import { buildInputs, exactComponent, facePlane, planeFrame, type CadDesign, type DesignItem, type DesignSketch } from '../design';
 import { resolveRef, refTo } from '../topology';
 import { snapsOn } from '../snaps';
 import { kernel, m4Point, type Vec3 } from '../solid';
@@ -44,7 +44,7 @@ function planeOn(items: DesignItem[], key: string, pre: string[] = []): DesignSk
 
 describe('names on the B-rep kernel', () => {
   it('every face, edge and vertex has a unique name after every feature', () => {
-    // every kind of feature, two holes that overlap, a pattern of a cut, a thin wall, a revolve
+    // every kind of feature, two holes that overlap, a pattern of a cut, a loft, a thin wall, a revolve
     const items: DesignItem[] = [
       { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: poly('a', [[0, 0], [80, 0], [80, 30], [40, 50], [0, 30]]) },
       { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '20' }, op: 'new', edgeEnd: { type: 'fillet', r: '2' }, edgeStart: { type: 'chamfer', r: '1' } },
@@ -52,6 +52,7 @@ describe('names on the B-rep kernel', () => {
       { kind: 'hole', id: 'f2', name: 'H', sketch: 's2', d: '6', depth: '', through: true, style: 'countersink', csD: '12', csAngle: '90 deg' },
       { kind: 'pattern', id: 'f3', name: 'P', of: 'bodies', refs: ['f1'], type: 'rect', axis: 'Y', count: '2', spacing: '60', join: true },
       { kind: 'sketch', id: 's3', name: 'L', plane: { ref: 'XY', offset: '40' }, sketch: circles('l', [[40, 20, 8]]) },
+      { kind: 'loft', id: 'f4', name: 'Loft', sketch: 's1', sketch2: 's3', op: 'new' },
       { kind: 'extrude', id: 'f5', name: 'Thin', sketch: 's3', extent: { type: 'one', d: '10' }, op: 'new', thin: { t: '1', side: 'center', cap: 'end' } },
       { kind: 'sketch', id: 's4', name: 'R', plane: { ref: 'XZ' }, sketch: rect('r', 100, 0, 110, 20) },
       { kind: 'revolve', id: 'f6', name: 'Rev', sketch: 's4', axis: 'y', angle: '270 deg', op: 'new' },
@@ -218,6 +219,44 @@ describe('sketches on faces', () => {
     const { res } = solve(d, ['h := 20 mm']);
     close(res.design!.frames.s2.o, [0, 0, 25]);
     near(res.design!.bodies.c1[1].mass!.zg, 26);
+  });
+
+  it('features that take the sketch’s plane follow it too: a mirror about it', () => {
+    // the base mirrored about a (geometry-less) sketch on its own top, joined: twice as tall
+    const d = single([...base('h'),
+      { kind: 'sketch', id: 's2', name: 'Top', plane: planeOn(base('10'), 'f1/end'), sketch: { points: [], entities: [], constraints: [] } },
+      { kind: 'mirror', id: 'f2', name: 'Mirror1', of: 'bodies', refs: ['f1'], plane: 's2', join: true },
+    ]);
+    for (const h of [10, 18]) {
+      const { res } = solve(d, [`h := ${h} mm`]);
+      near(res.design!.box!.max[2], 2 * h);
+      near(volumes(res)[0], 2 * 6000 * h);
+    }
+  });
+
+  it('a joint on a point of such a sketch goes with it', () => {
+    const d = single([...base('h'),
+      { kind: 'sketch', id: 's2', name: 'Top', plane: planeOn(base('10'), 'f1/end'), sketch: points('p', [[30, 20]]) },
+    ]);
+    const pin: DesignItem[] = [
+      { kind: 'sketch', id: 's9', name: 'Pin', plane: { ref: 'XY' }, sketch: circles('k', [[0, 0, 4]]) },
+      { kind: 'extrude', id: 'f9', name: 'Pin', sketch: 's9', extent: { type: 'one', d: '30' }, op: 'new' },
+    ];
+    const asm: CadDesign = {
+      ...d,
+      components: [...d.components, { id: 'c2', name: 'Pin', items: pin }],
+      occurrences: [...d.occurrences, { id: 'o2', component: 'c2' }],
+      joints: [{ id: 'j1', name: 'J', type: 'rigid', a: { occ: 'o1', origin: { kind: 'point', sketch: 's2', point: 'pq0' } }, b: { occ: 'o2', origin: { kind: 'origin' } }, angle: '0', offset: '0' }],
+    };
+    const { res } = solve(asm, ['h := 22 mm']);
+    close(m4Point(res.design!.placements.o2.matrix, [0, 0, 0]), [30, 20, 22]);
+  });
+
+  it('without a kernel, a part with a sketch on a face waits for one', () => {
+    const d = holeOnTop('10');
+    const { numbers } = solve(d);
+    expect(exactComponent(d, d.components[0], buildInputs(d, numbers))).toBeNull();
+    expect(exactComponent(single(base('10')), single(base('10')).components[0], buildInputs(single(base('10')), solve(single(base('10'))).numbers))).not.toBeNull();
   });
 
   it('the face gone: "reference lost", the sketch stays where the face was, nothing else is picked', () => {
