@@ -47,8 +47,9 @@ export interface BeamResult {
   analysis?: { shear: boolean; secondOrder: boolean; buckling: boolean };
   /** Influence lines and moving loads. */
   traffic?: TrafficResult;
-  /** The loads' own solution while `solution` shows a moving load's envelope. */
+  /** The loads' own solution and buckling while `solution` shows a moving load's envelope. */
   staticSolution?: BeamSolution;
+  staticBuckling?: BucklingResult;
   error?: string;
 }
 
@@ -274,6 +275,7 @@ function showMoving(res: BeamResult, r: BeamRegion): void {
   if (!m?.env) return;
   if (res.solution) m.env.max.indeterminacy = m.env.min.indeterminacy = res.solution.indeterminacy;
   res.staticSolution = res.solution;
+  res.staticBuckling = res.buckling;
   res.solution = m.env.max;
   res.view = m.id;
   res.buckling = undefined;
@@ -409,11 +411,13 @@ export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknow
 
 function loadsValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
   if (!r.loadCases || !res.combos) {
-    const sol = res.staticSolution ?? res.solution;
-    if (sol) return solutionValue(r, sol, res.buckling);
+    // a moving load shown: the loads' own results (there may be none, above the critical load)
+    const shown = !!res.traffic?.moving.some((m) => m.id === res.view);
+    const sol = shown ? res.staticSolution : res.solution, buckling = shown ? res.staticBuckling : res.buckling;
+    if (sol) return solutionValue(r, sol, buckling);
     // above the critical load in second order: α_cr is all there is
     const value: Record<string, unknown> = {};
-    if (res.buckling) stabilityValue(r, res.buckling, value);
+    if (buckling) stabilityValue(r, buckling, value);
     return value;
   }
   // with load cases: b.cases.G, b.combos.ULS, and at the top the governing values:

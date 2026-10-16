@@ -215,6 +215,19 @@ describe('moving loads', () => {
     expect(s.max.M!.value).toBeCloseTo(e.value, 5);
   });
 
+  it('a train placed a millimetre from a joint still solves directly', () => {
+    // the axle goes onto the joint (a 1 mm sliver of a 25 m member is too ill-conditioned);
+    // R_B then differs from Σ P η by about P·η′·1 mm only
+    const st = beam([0, 25, 50], [0, 1, 2]);
+    const R = run(st, 0.5, [{ id: 'RB', kind: 'Ry', support: 'B' }]).lines[0];
+    const P = 300e3, lead = 24.999;
+    const s = solveStructure({ ...st, loads: trainLoads(loadPath(st), st, { P: [P, P], offsets: [0, 1.2] }, lead, 1) });
+    // η_RB = u(3L² − u²)/(2L³): 1 at B, and at 23.799 m
+    const eta = (u: number) => (u * (3 * 625 - u * u)) / (2 * 25 ** 3);
+    expect(s.reactions[1].Ry / (P * (eta(lead) + eta(lead - 1.2)))).toBeCloseTo(1, 5);
+    expect(at(R, 24.5)).toBeCloseTo(eta(24.5), 11);
+  });
+
   it('a wide spacing a > (2 − √2) L: one axle at midspan governs, M = PL/4', () => {
     const L = 10, a = 7, P = 50e3;
     const r = run(beam([0, L], [0, 1]), 0.1, [], [{ id: 'T', P: [P, P], offsets: [0, a], q: 0, dir: 'both' }]);

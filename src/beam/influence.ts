@@ -671,7 +671,12 @@ export function trainLoads(path: PathSeg[], st: NumStructure, spec: Pick<TrainSp
     const m = seg && members.get(seg.member);
     if (!m) return;
     const a = N.get(m.a)!, b = N.get(m.b)!;
-    out.push({ id: `axle${i}`, type: 'force', at: { member: m.id, t: clamp01((x - a.x) / (b.x - a.x)) }, Fx: 0, Fy: -P });
+    // an axle a hair from a joint goes onto it: the direct solver splits the member there,
+    // and a sliver of member (under about 1e-4 of its length) leaves it ill-conditioned
+    let t = clamp01((x - a.x) / (b.x - a.x));
+    if (t < 2e-4) t = 0;
+    else if (t > 1 - 2e-4) t = 1;
+    out.push({ id: `axle${i}`, type: 'force', at: { member: m.id, t }, Fx: 0, Fy: -P });
   });
   return out;
 }

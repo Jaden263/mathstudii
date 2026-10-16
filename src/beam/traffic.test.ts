@@ -110,6 +110,27 @@ describe('moving loads in a beam region', () => {
     expect(Math.abs(num('moving.LM1.M_min', 'kN m'))).toBeLessThan(1e-6);
   });
 
+  it('showing a moving load keeps α_cr in the worksheet, and lends nothing when the loads fail', () => {
+    // a 10 m strut on a pin and a roller, pushed at the roller: P_cr = π²EI/L² = 1732 kN
+    const strut = (P: string): BeamData => ({ ...span(10), loads: [{ id: 'P', type: 'force', at: { node: 'b' }, value: P, angle: 180 }] });
+    const Pcr = (Math.PI ** 2 * 210e9 * 8356e-8) / 100;
+    const tr = (view?: string): BeamTraffic => ({ lines: [], loads: [{ id: 'p', name: 'P', preset: 'point', P: '10' }], view });
+    for (const view of [undefined, 'p']) {
+      const { res, num } = run(strut('100'), tr(view), [], { analysis: { buckling: true } });
+      expect(res.view).toBe(view);
+      expect(num('alpha_cr')).toBeCloseTo(Pcr / 100e3, 2);
+      expect(num('M_max', 'kN m')).toBeCloseTo(0, 9);
+    }
+    // above the critical load in second order the loads have no solution: α_cr only, not
+    // the moving load's envelope in its place
+    const { res, num } = run(strut('2000'), tr('p'), [], { analysis: { secondOrder: true } });
+    expect(res.solution).toBe(res.traffic!.moving[0].env!.max);
+    expect(num('alpha_cr')).toBeCloseTo(Pcr / 2000e3, 2);
+    expect(num('M_max')).toBeUndefined();
+    // the moving load itself still reports: PL/4
+    expect(num('moving.P.M_max', 'kN m')).toBeCloseTo(25, 6);
+  });
+
   it('exports influence lines as functions with units', () => {
     const traffic: BeamTraffic = {
       lines: [
@@ -155,8 +176,15 @@ describe('moving loads in a beam region', () => {
     const direct = solveStructure({ ...res.traffic!.structure, loads: [{ id: 'P', type: 'force', at: { node: 'c1' }, Fx: 0, Fy: -100e3 }] });
     expect(num('moving.P.A.Ry_max', 'kN')).toBeCloseTo(direct.reactions[0].Ry / 1e3, 9);
     expect(num('moving.P.A.Ry_max', 'kN')).toBeGreaterThan(99.9);
-    // and the far column is lifted a little when the load is at the other end (frame action)
-    expect(num('moving.P.A.Ry_min', 'kN')).toBeLessThanOrEqual(0);
+    // A is never lifted (each load position solved directly): its lower bound is the load away
+    let least = Infinity;
+    for (const x of res.traffic!.xs) {
+      const s = solveStructure({ ...res.traffic!.structure, loads: [{ id: 'P', type: 'force', at: { member: 'd', t: x / 8 }, Fx: 0, Fy: -100e3 }] });
+      least = Math.min(least, s.reactions[0].Ry);
+    }
+    expect(least).toBeGreaterThan(0);
+    expect(least).toBeLessThan(0.001 * 100e3);
+    expect(num('moving.P.A.Ry_min', 'kN')).toBe(0);
     // horizontal thrust line: zero with the load over a column
     const H = res.traffic!.lines[0];
     expect(H.v[0]).toBeCloseTo(0, 9);
