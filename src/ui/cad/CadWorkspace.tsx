@@ -192,6 +192,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const u = region.unit;
   // the kernel loads as soon as the workspace opens
   useEffect(() => warmKernel(), []);
+  // the second click of the double-click that opened the workspace over the page picks nothing
+  const openedAt = useRef(performance.now());
 
   const [tab, setTab] = useState<Tab>('solid');
   const [active, setActive] = useState(design.components[0]?.id ?? '');
@@ -539,6 +541,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
 
   const onPick = (hit: PickHit, shift = false) => {
+    if (performance.now() - openedAt.current < 500) return;
     const key = hit.key ?? '';
     if (dialog?.kind === 'feature') {
       const c = design.components.find((q) => q.id === dialog.cid);

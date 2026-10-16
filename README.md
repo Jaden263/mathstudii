@@ -492,7 +492,8 @@ countersink is a true cone, and volume, centroid and inertia are surface integra
 the exact faces. The tests check them against closed forms to 10⁻⁹ (a fillet round a
 box, a torus by Pappus, a countersunk hole, a pyramid frustum loft). The kernel is big
 (7 MB compressed), so it loads in the background the first time a worksheet has a CAD
-part (or a CAD window opens), only in a worker, and is cached after that (offline too).
+part with a feature (or a CAD window opens), only in a worker, and is cached after that
+(offline too).
 
 Until it has loaded, or where it cannot, [Manifold](https://github.com/elalish/manifold)
 (WASM, Apache-2.0) builds the parts. It keeps every solid a closed 2-manifold, so
@@ -512,8 +513,9 @@ bevels them, and a few borderline roundings one kernel accepts the other refuses
   nothing.
 - **Incremental rebuilds:** every step of a timeline keeps what it built. Changing a
   feature rebuilds it and the features after it. Rolling the timeline marker back and
-  forth, renaming, recolouring or panning a sketch rebuilds nothing. For example, a new
-  body on a plate with 60 counterbored holes rebuilds in 25 ms instead of 2.1 s.
+  forth, renaming, recolouring, panning a sketch or moving a dimension's label rebuilds
+  nothing. For example, a new body on a plate with 60 counterbored holes rebuilds in
+  25 ms instead of 2.1 s.
 - Typing in the worksheet stays smooth while a heavy part rebuilds. With a 40-hole flange
   rebuilding, the page's longest task was 57 ms, against 2.8 s when the page built parts
   itself.
