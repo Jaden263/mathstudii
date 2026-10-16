@@ -501,6 +501,11 @@ export function triangulateDomain(input: DomainInput): TriMesh {
   // recover the pieces: a missing one is split at its middle until its halves are edges
   const isInputVertex = new Set<number>();
   for (const p of [...all, ...input.points, ...input.lines.flat()]) isInputVertex.add(tr.insert(p[0], p[1]));
+  // so are the points where segments cross or meet: a wall crossing an edge at a shallow
+  // angle makes a sharp corner there, which refining would chase into slivers for ever
+  segs.forEach((s, i) => {
+    for (const t of cuts[i]) if (t > 0 && t < 1) isInputVertex.add(tr.insert(s.a[0] + (s.b[0] - s.a[0]) * t, s.a[1] + (s.b[1] - s.a[1]) * t));
+  });
   const constrained: { a: number; b: number }[] = [];
   const queue = [...pieces];
   for (let guard = 0; queue.length && guard < 1e6; guard++) {
@@ -575,6 +580,18 @@ function refine(tr: Triangulation, size: number, minAngle: number, maxVertices: 
     const mx = (px[a] + px[b]) / 2, my = (py[a] + py[b]) / 2;
     return (x - mx) ** 2 + (y - my) ** 2 < ((px[b] - px[a]) ** 2 + (py[b] - py[a]) ** 2) / 4 * (1 - 1e-9);
   };
+  /** p and q lie on two different segments out of one sharp corner, as far from it. */
+  const sameShell = (p: number, q: number) => {
+    if (!onSeg.has(p) || !onSeg.has(q)) return false;
+    for (const [s, dirs] of sharp) {
+      const dp = Math.hypot(px[p] - px[s], py[p] - py[s]), dq = Math.hypot(px[q] - px[s], py[q] - py[s]);
+      if (!(dp > 0 && dq > 0) || Math.abs(dp - dq) > 1e-3 * dp) continue;
+      const along = (r: number, d: number) => dirs.findIndex(([ux, uy]) => Math.abs(ux * (py[r] - py[s]) - uy * (px[r] - px[s])) <= 1e-6 * d && ux * (px[r] - px[s]) + uy * (py[r] - py[s]) > 0);
+      const ip = along(p, dp), iq = along(q, dq);
+      if (ip >= 0 && iq >= 0 && ip !== iq) return true;
+    }
+    return false;
+  };
   const queue: number[] = [];
   const segQueue: [number, number][] = [];
   const checkEncroach = (ts: number[]) => {
@@ -634,6 +651,9 @@ function refine(tr: Triangulation, size: number, minAngle: number, maxVertices: 
       // the smallest angle sits opposite the shortest edge: at a sharp input corner, between its two segments, it has to stay
       const apex = lmin === la ? a : lmin === lb ? b : c;
       if (sharp.has(apex) && [a, b, c].every((q) => onSeg.has(q))) bad = false;
+      // nor one whose shortest edge joins the two segments of a sharp corner on the same
+      // shell (Shewchuk's rule): splitting it only drives new points towards the corner
+      else if (lmin === la ? sameShell(b, c) : lmin === lb ? sameShell(c, a) : sameShell(a, b)) bad = false;
     }
     if (!bad && !tooBig) continue;
     const [cx, cy] = circumcenter(px[a], py[a], px[b], py[b], px[c], py[c]);
@@ -664,9 +684,9 @@ function refine(tr: Triangulation, size: number, minAngle: number, maxVertices: 
   }
 }
 
-/** Input vertices where two constraint edges meet at less than 60° inside the domain. */
-function sharpVertices(tr: Triangulation, inputVertex: Set<number>): Set<number> {
-  const out = new Set<number>();
+/** Input vertices where two constraint edges meet at less than 60°, with the directions (unit vectors) of the edges out of each. */
+function sharpVertices(tr: Triangulation, inputVertex: Set<number>): Map<number, Pt[]> {
+  const out = new Map<number, Pt[]>();
   const { px, py, v, con } = tr;
   const dirs = new Map<number, number[]>();
   for (let t = 0; t < tr.triangles; t++) {
@@ -685,7 +705,7 @@ function sharpVertices(tr: Triangulation, inputVertex: Set<number>): Set<number>
     const s = [...new Set(angles.map((x) => +x.toFixed(9)))].sort((x, y) => x - y);
     for (let i = 0; i < s.length; i++) {
       const gap = i + 1 < s.length ? s[i + 1] - s[i] : s[0] + 2 * Math.PI - s[i];
-      if (s.length > 1 && gap < Math.PI / 3 - 1e-9) out.add(p);
+      if (s.length > 1 && gap < Math.PI / 3 - 1e-9) out.set(p, s.map((a) => [Math.cos(a), Math.sin(a)] as Pt));
     }
   }
   return out;

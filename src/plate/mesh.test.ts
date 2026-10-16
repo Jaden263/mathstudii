@@ -64,6 +64,30 @@ describe('constrained Delaunay triangulation', () => {
     expect(A).toBeCloseTo(polygonArea(wedge), 9);
   });
 
+  it('a wall crossing an edge at a shallow angle (3°) leaves a sharp corner, not a cloud of slivers', () => {
+    // the crossing points are corners of the domain like the input ones: without the
+    // concentric shells and Shewchuk's rule there, refinement piled ~70 points within 1e-6 m
+    for (const [openings, wall] of [
+      [[hole], [[2.95, 1.0], [3.05, 3.0]]],
+      [[], [[5.95, 1.0], [6.05, 3.0]]],
+    ] as [Pt[][], [Pt, Pt]][]) {
+      const m = triangulateDomain({ outline, openings, lines: [wall], points: [], size: 0.4 });
+      // ~450 points without the wall; the graded wedge adds about a hundred (1150 before)
+      expect(m.x.length).toBeLessThan(650);
+      let A = 0, smallest = Infinity;
+      for (let t = 0; t < m.tris.length; t += 3) {
+        const a = polygonArea([0, 1, 2].map((k) => [m.x[m.tris[t + k]], m.y[m.tris[t + k]]] as Pt));
+        A += a;
+        smallest = Math.min(smallest, a);
+      }
+      expect(A).toBeCloseTo(27 - (openings.length ? 1 : 0), 9);
+      // the smallest is the corner's own thin triangle (4e-5 m²), not a 1e-13 m² sliver
+      expect(smallest).toBeGreaterThan(1e-5);
+      const quads = meshPlate({ outline, openings, lines: [wall], points: [], softLines: [], softPoints: [], size: 0.25 });
+      expect(area(quads)).toBeCloseTo(27 - (openings.length ? 1 : 0), 9);
+    }
+  });
+
   it('meets crossing and touching constraints where they meet', () => {
     const m = triangulateDomain({ outline, openings: [], lines: [[[1, 1], [5, 3]], [[1, 3], [5, 1]], [[3, 0], [3, 2]]], points: [], size: 0.6 });
     // the two diagonals cross at (3, 2), where the third line ends
