@@ -167,7 +167,12 @@ export interface StlOptions {
   /** Largest angle between neighbouring facets on a curved face, radians (default 0.1). */
   angle?: number;
   name?: string;
+  /** Factor from part units to the file's (millimetres: mmPerUnit). Default 1. */
+  scale?: number;
 }
+
+/** Millimetres in one part unit: STL has no units, and slicers read it as millimetres. */
+export const mmPerUnit = (unit: CadUnit) => ({ mm: 1, cm: 10, m: 1000, in: 25.4 })[unit];
 
 /** A binary STL of the scope (an assembly in its placed coordinates), facets from the exact surfaces. */
 export function stlFile(oc: OC, built: OccBuiltDesign, design: CadDesign, scope: ExportScope, o: StlOptions = {}): Uint8Array {
@@ -180,7 +185,7 @@ export function stlFile(oc: OC, built: OccBuiltDesign, design: CadDesign, scope:
   if (!items.length) throw new Error('there is no solid to export');
   return scratch((t) => {
     const size = boxSize(oc, t, items.map((i) => i.shape));
-    const tol = o.tolerance ?? Math.max(size * 1e-4, 1e-9);
+    const tol = o.tolerance ?? Math.max(size * 1e-4, 1e-9), scale = o.scale ?? 1;
     const parts: Float32Array[] = [];
     for (const { shape, M } of items) {
       const raw = t.add(oc.ReplicadMeshExtractor.extract(shape, tol, o.angle ?? 0.1, true));
@@ -191,7 +196,8 @@ export function stlFile(oc: OC, built: OccBuiltDesign, design: CadDesign, scope:
       const out = new Float32Array(tri.length * 3);
       for (let k = 0; k < tri.length; k++) {
         const i = tri[k] * 3;
-        out.set(m4Point(M, [v[i], v[i + 1], v[i + 2]]), 3 * k);
+        const q = m4Point(M, [v[i], v[i + 1], v[i + 2]]);
+        out.set([q[0] * scale, q[1] * scale, q[2] * scale], 3 * k);
       }
       parts.push(out);
     }

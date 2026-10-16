@@ -2,7 +2,7 @@
 // exports, answered by the B-rep kernel (and the mesh kernel's fallback), checked against
 // closed-form volumes, areas and distances.
 import { describe, expect, it, vi } from 'vitest';
-import { circles, rect, single, solve, withCircles } from '../occ/fixtures';
+import { circles, rect, single, solve, watchHandles, withCircles } from '../occ/fixtures';
 import type { CadDesign } from '../design';
 import { buildDesign } from '../design';
 import { planeToLocal } from '../inspect';
@@ -11,7 +11,7 @@ import { kernel, m4Pose, m4Translate } from '../solid';
 import { occ, renewOcc } from '../occ/kernel';
 import { designNumbers } from '../keys';
 import { answer, displayFor } from './service';
-import { sectionMesh } from './meshFallback';
+import { sectionMesh, stlMesh } from './meshFallback';
 import type { KernelRequest, KernelValues, SectionBody } from './protocol';
 
 const { PI } = Math;
@@ -123,6 +123,65 @@ describe('kernel requests', () => {
     const n = new DataView(stl.buffer, stl.byteOffset).getUint32(80, true);
     expect(n).toBe(24);
     expect(stl.byteLength).toBe(84 + 50 * n);
+  });
+
+  it('export: STL in millimetres whatever the part unit', async () => {
+    // one cube of 10 part units: a side of 10 × (mm per unit) in the file, its cube in volume
+    // (divergence theorem over the facets)
+    const d = cubes(20);
+    const design = { ...d, occurrences: d.occurrences.slice(0, 1) };
+    const { numbers } = solve(design);
+    const facets = (stl: Uint8Array) => {
+      const dv = new DataView(stl.buffer, stl.byteOffset);
+      return Array.from({ length: dv.getUint32(80, true) }, (_, t) => Array.from({ length: 9 }, (_, k) => dv.getFloat32(84 + 50 * t + 12 + 4 * k, true)));
+    };
+    const volume = (f: number[][]) => f.reduce((V, p) => V + (p[0] * (p[4] * p[8] - p[5] * p[7]) - p[1] * (p[3] * p[8] - p[5] * p[6]) + p[2] * (p[3] * p[7] - p[4] * p[6])) / 6, 0);
+    const span = (f: number[][]) => Math.max(...f.flat()) - Math.min(...f.flat());
+    for (const [unit, mm] of [['cm', 10], ['in', 25.4], ['m', 1000], ['mm', 1]] as const) {
+      const f = facets(await ask({ op: 'export', design, numbers, format: 'stl', scope: { kind: 'assembly' }, unit, name: 'Cube' }));
+      near(span(f), 10 * mm, 1e-7);
+      near(volume(f), (10 * mm) ** 3, 1e-6);
+    }
+    // the mesh kernel's STL alike: a 10 cm cube holds 10⁶ mm³
+    const built = buildDesign(kernel()!, design, numbers);
+    try {
+      near(volume(facets(stlMesh(built, design, { kind: 'assembly' }, 'Cube', 10))), 1e6, 1e-6);
+    } finally {
+      built.free();
+    }
+  });
+
+  it('requests about a built design leave no OCCT objects behind', async () => {
+    const oc = occ()!;
+    // a filleted plate and a pin, the part placed twice (overlapping: interference has work)
+    const d = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: withCircles(rect('a', 0, 0, 100, 60), 'h', [[50, 30, 10]]) },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new', edgeEnd: { type: 'fillet', r: '2' } },
+      { kind: 'sketch', id: 's2', name: 'B', plane: { ref: 'XY' }, sketch: circles('b', [[80, 30, 4]]) },
+      { kind: 'extrude', id: 'f2', name: 'Pin', sketch: 's2', extent: { type: 'one', d: '30' }, op: 'new' },
+    ]);
+    const design: CadDesign = { ...d, occurrences: [...d.occurrences, { id: 'o2', component: 'c1', grounded: true, pos: [50, 0, 5] }] };
+    const { numbers } = solve(design);
+    const B = { design, numbers };
+    const requests: KernelRequest[] = [
+      { op: 'display', ...B },
+      { op: 'section', ...B, plane: { n: [1, 0, 0], offset: 50 } },
+      { op: 'outline', ...B, component: 'c1', frame: { o: [0, 0, 10], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] } },
+      { op: 'distance', ...B, a: { kind: 'face', occ: 'o1', body: 'f1', index: 0 }, b: { kind: 'edge', occ: 'o2', body: 'f2', index: 1 } },
+      { op: 'interference', ...B },
+      { op: 'views', ...B, specs: [{ key: 'f', view: 'front', hidden: true }] },
+      { op: 'export', ...B, format: 'step', scope: { kind: 'assembly' }, unit: 'mm', name: 'P' },
+      { op: 'export', ...B, format: 'stl', scope: { kind: 'assembly' }, unit: 'mm', name: 'P' },
+    ];
+    // the first round builds and caches the design; later rounds must only borrow from it
+    for (const r of requests) await answer(r);
+    const watch = watchHandles(oc);
+    try {
+      for (let k = 0; k < 2; k++) for (const r of requests) await answer(r);
+      expect(watch.undeleted()).toEqual([]);
+    } finally {
+      watch.stop();
+    }
   });
 
   it('drawing views: lines from the display mesh, dimensions from the exact box', async () => {

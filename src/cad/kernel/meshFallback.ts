@@ -77,17 +77,17 @@ export function interferenceMesh(built: BuiltDesign, design: CadDesign): Interfe
   }
 }
 
-/** A binary STL of the scope from the mesh kernel's triangles. */
-export function stlMesh(built: BuiltDesign, design: CadDesign, scope: ExportScope, name: string): Uint8Array {
+/** A binary STL of the scope from the mesh kernel's triangles, part units times `scale`. */
+export function stlMesh(built: BuiltDesign, design: CadDesign, scope: ExportScope, name: string, scale = 1): Uint8Array {
   const arena = new Arena();
   try {
-    return stlOf(arena, built, design, scope, name);
+    return stlOf(arena, built, design, scope, name, scale);
   } finally {
     arena.free();
   }
 }
 
-function stlOf(arena: Arena, built: BuiltDesign, design: CadDesign, scope: ExportScope, name: string): Uint8Array {
+function stlOf(arena: Arena, built: BuiltDesign, design: CadDesign, scope: ExportScope, name: string, scale: number): Uint8Array {
   const solids = scope.kind === 'assembly'
     ? placed(built, design).map((p) => transformSolid(arena, p.body.solid, p.M))
     : (built.components.get(scope.component)?.bodies ?? []).filter((b) => !b.solid.isEmpty() && (scope.kind !== 'body' || b.id === scope.body)).map((b) => b.solid);
@@ -96,7 +96,7 @@ function stlOf(arena: Arena, built: BuiltDesign, design: CadDesign, scope: Expor
   for (const s of solids) {
     const m = s.getMesh();
     const p = new Float32Array(m.triVerts.length * 3);
-    for (let k = 0; k < m.triVerts.length; k++) for (let d = 0; d < 3; d++) p[3 * k + d] = m.vertProperties[m.triVerts[k] * m.numProp + d];
+    for (let k = 0; k < m.triVerts.length; k++) for (let d = 0; d < 3; d++) p[3 * k + d] = m.vertProperties[m.triVerts[k] * m.numProp + d] * scale;
     parts.push(p);
   }
   const all = new Float32Array(parts.reduce((s, p) => s + p.length, 0));

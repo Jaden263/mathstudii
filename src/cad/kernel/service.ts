@@ -13,8 +13,8 @@ import { approxDistance } from '../inspect';
 import { designKey } from '../keys';
 import { cross3, dot3, initKernel, kernel, norm3, type Vec3 } from '../solid';
 import { buildDesignCached } from '../occ/build';
-import { stepFile, stlFile } from '../occ/exchange';
-import { initOcc, occ, occFailure, type OC } from '../occ/kernel';
+import { mmPerUnit, stepFile, stlFile } from '../occ/exchange';
+import { initOcc, occ, occFailure, renewOcc, type OC } from '../occ/kernel';
 import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc, visibleBoxOcc } from '../occ/query';
 import { cachedResultOcc } from '../occ/result';
 import { interferenceMesh, meshBuilt, outlineMesh, sectionMesh, stlMesh } from './meshFallback';
@@ -156,7 +156,9 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
         if (!oc) throw new Error('STEP export needs the B-rep kernel (OpenCascade did not load)');
         data = new TextEncoder().encode(stepFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { unit: req.unit, name: req.name }));
       } else {
-        data = oc ? stlFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { name: req.name }) : stlMesh(meshBuilt(K!, design, numbers), design, req.scope, req.name);
+        // STL has no units: written in millimetres, which slicers assume
+        const scale = mmPerUnit(req.unit);
+        data = oc ? stlFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { name: req.name, scale }) : stlMesh(meshBuilt(K!, design, numbers), design, req.scope, req.name, scale);
       }
       return { value: data, kernel: which, transfer: [data.buffer as ArrayBuffer] };
     }
@@ -176,6 +178,10 @@ export function serveKernel(port: { postMessage(m: unknown, transfer: Transferab
         transfer = a.transfer;
       } catch (err) {
         reply = { rid, ok: false, error: err instanceof Error ? err.message : String(err) };
+      } finally {
+        // between requests: a CAD window's own worker never measures a worksheet, where the
+        // calculation worker renews the heap OCCT's own leaks fill, so it is renewed here too
+        renewOcc()?.catch((err) => console.warn('renewing the B-rep kernel failed', err));
       }
       port.postMessage(reply, transfer);
     });
