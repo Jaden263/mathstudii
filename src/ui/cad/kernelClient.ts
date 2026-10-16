@@ -182,6 +182,7 @@ const dropped = new Set<string>();
 function put(key: string, b: BuildResult) {
   shown.delete(key);
   dropped.delete(key);
+  failures.delete(key);
   shown.set(key, b);
   while (shown.size > SHOWN) {
     const old = shown.keys().next().value!;

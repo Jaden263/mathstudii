@@ -738,7 +738,8 @@ bevels them, and a few borderline roundings one kernel accepts the other refuses
   requests to the worker. In a separate CAD window, a kernel worker of its own answers.
   The views show *Loading the 3-D kernel…* or *Rebuilding…* meanwhile.
 - If that worker fails (an error escapes it), whatever it was asked fails with a message,
-  and the next request starts a fresh one. If neither kernel can load, the worksheet and
+  and the next request starts a fresh one. A view whose part was being built asks once
+  more; if the kernel stops on it again, the view says why instead of waiting. If neither kernel can load, the worksheet and
   the CAD window both say *No 3-D kernel*.
 
 **Exact display and selection.** The 3-D views draw the B-rep: curved faces are smoothly
