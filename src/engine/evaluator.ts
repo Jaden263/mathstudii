@@ -1,7 +1,7 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
 import type { Unit } from 'mathjs';
-import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
+import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, PlateRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { readingOrder } from '../model/types';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
@@ -18,13 +18,14 @@ import { evaluateSketch, type SketchResult } from './sketchEval';
 import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
 import { solveBeam, beamValue, type BeamResult } from '../beam/evaluate';
 import { solveFrame3D, frame3dValue, slimFrame3D, type Frame3DResult } from '../frame3d/evaluate';
+import { solvePlateRegion, plateValue, slimPlate, type PlateResult } from '../plate/evaluate';
 import { pythonReady, runPython, resetPython, pyParams } from '../python/runtime';
 import { odesolveArgs, odesolveNames, solveOdeBlock, type OdeLine } from './odesolve';
 import './materialsLib';
 import './specialLib';
 import './odeLib';
 
-export type { SketchResult, CadResult, BeamResult, Frame3DResult };
+export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult };
 
 export interface MathResult {
   kind: 'math';
@@ -99,7 +100,7 @@ export interface PythonResult {
   loading?: boolean;
 }
 
-export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult | Frame3DResult | PythonResult;
+export type RegionResult = MathResult | PlotResult | SolveResult | TableResult | TextResult | SketchResult | CadResult | BeamResult | Frame3DResult | PlateResult | PythonResult;
 
 export interface EvaluationOutput {
   results: Map<string, RegionResult>;
@@ -183,6 +184,7 @@ class Evaluator {
         case 'cad': this.results.set(r.id, this.evaluateCadRegion(r)); break;
         case 'beam': this.results.set(r.id, this.evaluateBeamRegion(r)); break;
         case 'frame3d': this.results.set(r.id, this.evaluateFrame3DRegion(r)); break;
+        case 'plate': this.results.set(r.id, this.evaluatePlateRegion(r)); break;
         case 'python': this.results.set(r.id, this.evaluatePythonRegion(r)); break;
         case 'text': this.results.set(r.id, this.evaluateText(r)); break;
         default: break;
@@ -922,6 +924,28 @@ class Evaluator {
     }
     // the page gets the solution it shows; every case and combination stays in the worksheet value
     return slimFrame3D(res);
+  }
+
+  // ------------------------------------------------------------ plates
+
+  evaluatePlateRegion(r: PlateRegion): PlateResult {
+    let res: PlateResult;
+    try {
+      res = solvePlateRegion(r, (src) => compileExpr(src).evaluate(this.global));
+    } catch (e) {
+      return { kind: 'plate', outline: [], openings: [], walls: [], columns: [], loads: [], errors: {}, error: friendlyError(e) };
+    }
+    const name = r.name.trim();
+    if (name && res.fields) {
+      if (!isIdentifier(name)) res.error = `"${name}" is not a valid variable name`;
+      else {
+        this.global.set(name, plateValue(r, res));
+        this.ranges.delete(name);
+        this.updateDefined();
+      }
+    }
+    // the page gets the mesh and the fields it shows
+    return slimPlate(res);
   }
 
   // ------------------------------------------------------------ python

@@ -282,7 +282,7 @@ export function solvePlate(p: NumPlate): PlateSolution {
       u[3 * i + 1] = tr ? tr[0] * r1 + tr[1] * r2 : r1;
       u[3 * i + 2] = tr ? tr[2] * r1 + tr[3] * r2 : r2;
     }
-    return fields(mesh, rig, elemK, elemS, u, F, { wFixed, owner, springs, bedded, bedK, lines, recovery }, p.supports.length);
+    return fields(mesh, rig, elemK, elemS, u, F, { wFixed, owner, springs, bedded, bedK, lines, recovery, kinds: p.supports.map((q) => q.kind) }, p.supports.length);
   });
   return { mesh, rig, supports: supportNodes, cases, unknowns: n, millis: performance.now() - t0 };
 }
@@ -478,6 +478,7 @@ interface SupportData {
   springs: { nodes: number[]; K: Float64Array; s: number }[];
   bedded: { e: number; c: number; s: number }[];
   bedK: Float64Array[];
+  kinds: NumPlateSupport['kind'][];
   /** Rigid line supports: their nodes along them, shares of the line and its direction at each. */
   lines: { si: number; nodes: number[]; trib: number[]; s: Pt[] }[];
   recovery: Recovery;
@@ -523,12 +524,11 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
   for (let i = 0; i < nn; i++) {
     if (!s.wFixed[i]) continue;
     R[i] = F[3 * i] - fint[3 * i];
-    if (s.owner[i] >= 0) support[s.owner[i]] += R[i];
   }
   // a hard support also holds the twisting couples g along it (the generalized force of
   // β_s): Kelvin–Tait turns them into forces dg/ds along the line and ∓g at its ends, so
   // the reactions per length are Kirchhoff's V_n = q_n + ∂m_ns/∂s with the corner forces.
-  // Their sum along each line is nil, so the support totals stay as they are.
+  // Their sum along each line is nil.
   const through = new Map<number, number[]>();
   s.lines.forEach((l, li) => l.nodes.forEach((q) => through.set(q, [...(through.get(q) ?? []), li])));
   const dirAt = (li: number, q: number) => s.lines[li].s[s.lines[li].nodes.indexOf(q)];
@@ -553,6 +553,10 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
       R[q] += k === 0 ? (g[1] + g[0]) / 2 : k === last ? -(g[last] + g[last - 1]) / 2 : (g[k + 1] - g[k - 1]) / 2;
     });
   }
+  // the totals: a corner of two lines gives each half; a column standing on a line takes its node
+  const column = (q: number) => s.owner[q] >= 0 && s.kinds[s.owner[q]] === 'point';
+  for (let i = 0; i < nn; i++) if (s.wFixed[i] && column(i)) support[s.owner[i]] += R[i];
+  for (const l of s.lines) for (const q of l.nodes) if (!column(q)) support[l.si] += R[q] / through.get(q)!.length;
   // a spring's force on its w DOFs (rotational springs give moments, not reactions)
   for (const sp of s.springs) {
     const m3 = 3 * sp.nodes.length;

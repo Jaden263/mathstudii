@@ -5,8 +5,9 @@ import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/
 import type { CadDesign } from '../cad/design';
 import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
+import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate';
 
 interface RegionBase {
   id: string;
@@ -244,7 +245,41 @@ export interface Frame3DRegion extends RegionBase, Frame3DData {
   analysis?: Frame3DAnalysis;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion;
+/** Plate or slab: an outline with openings, supports and loads, solved by finite elements. */
+export interface PlateRegion extends RegionBase, PlateData {
+  kind: 'plate';
+  /** Variable that receives deflections, moments, reactions, reinforcement and the fields as functions of (x, y). */
+  name: string;
+  width: number;
+  height: number;
+  lengthUnit: BeamLengthUnit;
+  forceUnit: BeamForceUnit;
+  /** Thickness (bare number mm). */
+  thickness: string;
+  /** Concrete class (C30/37 …), steel grade (S355 …), or 'custom' with E, ν and ρ. */
+  material: string;
+  E?: string;
+  nu?: string;
+  rho?: string;
+  /** Element size (bare number in the length unit); empty: automatic. */
+  mesh?: string;
+  /** Reinforcement of a concrete slab to design (absent: moments only). */
+  rebar?: PlateRebar;
+  /** What the plan shows. */
+  show: PlateShow;
+  /** The element mesh over the plan. */
+  showMesh?: boolean;
+  /** The deflected shape in an oblique view instead of the plan. */
+  deformed?: boolean;
+  /** A section cut (length unit), its values plotted under the plan. */
+  cut?: { x1: number; y1: number; x2: number; y2: number };
+  view?: PlateView;
+  tab?: PlateTab;
+  /** Load cases and combinations (absent: all loads act together). */
+  loadCases?: BeamCases;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion | PlateRegion;
 
 /** Page header and footer for printed calculation sheets. */
 export interface ReportSettings {
@@ -366,6 +401,11 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       return {
         ...base, kind, name: '', width: 600, height: 420, lengthUnit: 'm', forceUnit: 'kN', camera: { ...DEFAULT_CAMERA }, show: 'model',
         ...newFrame(), ...(init as Partial<Frame3DRegion>),
+      };
+    case 'plate':
+      return {
+        ...base, kind, name: '', width: 560, height: 420, lengthUnit: 'm', forceUnit: 'kN', thickness: '200', material: 'C30/37', show: 'model',
+        ...newPlate(), ...(init as Partial<PlateRegion>),
       };
   }
 }
