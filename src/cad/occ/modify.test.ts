@@ -595,6 +595,47 @@ describe('press-pull', () => {
     }
   });
 
+  it('the faces around a moved face that stay are extended up to it (a chamfer, a drafted side)', () => {
+    // a 100 × 60 × 10 box with both long top edges chamfered 4: the top is 52 wide, and s above it the
+    // chamfer planes are 52 − 2s apart, so pulled up by d: ΔV = 100 ∫₀ᵈ (52 − 2s) ds = 100 (52d − d²);
+    // pushed in by d (≤ 4) they are 52 + 2s apart: ΔV = −100 (52d + d²)
+    const chamfered: DesignItem[] = [...items, { kind: 'chamfer', id: 'f2', name: 'Chamfer1', edges: edgesAt(items, [TOP_FRONT, [50, 60, 10]]), type: 'equal', d: '4' }];
+    const lid = facesAt(chamfered, [[50, 30, 10]]);
+    const keys = (all: DesignItem[]) => bodiesOf(built(single(all)))[0].faces.map((q) => q.key).sort();
+    const V0 = 60000 - 2 * 8 * 100;
+    for (const [d, dV] of [[5, 100 * (52 * 5 - 25)], [-3, -100 * (52 * 3 + 9)]]) {
+      const all: DesignItem[] = [...chamfered, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: lid, d: String(d) }];
+      const r = run(all);
+      expect(r.errors).toEqual({});
+      near(r.V[0], V0 + dV);
+      // the chamfers are the same faces, larger or smaller
+      expect(keys(all)).toEqual(keys(chamfered));
+    }
+    // pulled 30 the chamfers would cross (they meet 26 above the top)
+    expect(run([...chamfered, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: lid, d: '30' }]).errors.f3).toBe('the faces next to it close in before that distance');
+    // the front of a 100 × 60 × 40 box drafted 5° (y = z tan θ), the top pulled up 5: the draft goes on,
+    // ΔV = 100 ∫₄₀⁴⁵ (60 − z tan θ) dz = 100 (300 − 212.5 tan θ)
+    const tall = box(100, 60, 40);
+    const k = tan((5 * PI) / 180);
+    const drafted: DesignItem[] = [...tall, { kind: 'draft', id: 'f2', name: 'Draft1', faces: facesAt(tall, [[50, 0, 20]]), plane: 'XY', angle: '5 deg' }];
+    const r = run([...drafted, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: facesAt(tall, [[50, 30, 40]]), d: '5' }]);
+    expect(r.errors).toEqual({});
+    near(r.V[0], 240000 - (100 * 1600 * k) / 2 + 100 * (300 - 212.5 * k));
+    // the top and the right side of a 100 × 60 × 40 box with its top front edge chamfered 4 (plane
+    // z − y = 36), both moved by d: the box 0 ≤ x ≤ 100 + d, 0 ≤ z ≤ 40 + d cut by the chamfer plane
+    // carried on, V = (100 + d)(60 (40 + d) − (4 + d)²/2)
+    const rimmed: DesignItem[] = [...tall, { kind: 'chamfer', id: 'f2', name: 'Chamfer1', edges: edgesAt(tall, [[50, 0, 40]]), type: 'equal', d: '4' }];
+    const b = bodiesOf(built(single(rimmed)))[0];
+    const two = [b.faces.find((q) => Math.abs(q.c[2] - 40) < 1e-9)!, b.faces.find((q) => Math.abs(q.c[0] - 100) < 1e-9)!].map((f) => refTo('face', 'f1', f));
+    for (const d of [3, -3]) {
+      const all: DesignItem[] = [...rimmed, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: two, d: String(d) }];
+      const rr = run(all);
+      expect(rr.errors).toEqual({});
+      near(rr.V[0], (100 + d) * (60 * (40 + d) - (4 + d) ** 2 / 2));
+      expect(keys(all)).toEqual(keys(rimmed));
+    }
+  });
+
   it('pushed through the whole body is refused', () => {
     const { errors } = run([...items, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: top, d: '-12' }]);
     expect(errors.f2).toBe('the faces are pushed through the whole body');
@@ -783,6 +824,7 @@ describe('modify features together', () => {
     const oc = occ()!;
     for (const list of [
       [...items, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: [right, lid, front], d: '5' }],
+      [...items, { kind: 'chamfer', id: 'f2', name: 'Chamfer1', edges: [rim], type: 'equal', d: '4' }, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: [lid, right], d: '-3' }],
       [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [vert], r: '2' }] }, { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: '3', side: 'inside' }],
       [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [rim], r: '2' }] }, { kind: 'shell', id: 'f3', name: 'Shell1', faces: [], body: 'f1', t: '2', side: 'inside' }],
       [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [rim], r: '45' }] }],

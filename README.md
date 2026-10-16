@@ -621,9 +621,10 @@ base made longer keeps its rounded edge rounded. Every size is a worksheet expre
   part towards the pull direction.
 - **Press pull (Q):** flat faces moved along their normal (out adds material, a negative
   distance removes it), cylinders grown or shrunk (a hole's wall pulled out makes the hole
-  smaller). The face keeps its name, so a sketch on it follows. Flat faces that meet move
-  as an offset: pulling the top and a side of a box gives the larger box, the corner
-  between them filled up to where the moved planes meet.
+  smaller). The face keeps its name, so a sketch on it follows. Flat faces move as an
+  offset, as in Fusion: the flat faces around one that stay are extended up to it (a
+  chamfer or a drafted side goes on), and faces moved together meet where their moved
+  planes meet (pulling the top and a side of a box gives the larger box).
 - **Split body:** by an origin plane with an offset, a sketch plane or a flat face. The piece
   behind the plane stays the body; the others become new bodies.
 - **Move/Copy:** bodies turned about an axis (origin axis, sketch line, a picked edge or
@@ -849,11 +850,11 @@ What it is not, honestly:
 - **Modify features, the limits:**
   - OpenCascade always rounds and chamfers along the whole tangent chain of a picked edge.
     With Tangent chain off, an edge whose chain goes on is refused rather than rounded alone.
-  - Press-pull moves a flat face straight along its normal: neighbours that are not moved
-    and not square to it get a step instead of being extended (Fusion extends them). Moved
-    faces that meet are joined where their planes meet (at a corner only where three square
-    faces meet). Cylinders grow or shrink between their two ends; other curved faces cannot
-    be press-pulled.
+  - Press-pull extends the neighbours of a flat face bounded by straight edges with flat
+    faces around it. A face with a hole, a curved edge or a curved neighbour (next to a
+    rounding) moves as a straight prism: a neighbour not square to it gets a step instead
+    of being extended. Cylinders grow or shrink between their two ends; other curved faces
+    cannot be press-pulled.
   - A shell whose opening is tangent to a face it keeps (the top of a box with a rounded
     rim) is made as the body less its offset inside and the opening pushed through: the
     rounding stays as a lip curving in. Outside shells with such an opening are refused.

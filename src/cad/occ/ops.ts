@@ -481,12 +481,120 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     throw new Error('press-pull moves flat and cylindrical faces only');
   };
 
-  /** The prism of a flat polygon along v. */
-  const polygonPrism = (t: Arena, pts: Vec3[], v: Vec3, what: string): TopoDS_Shape => {
+  /** A wire through the points, closed. */
+  const polygonWire = (t: Arena, pts: Vec3[]) => {
     const mw = t.add(new oc.BRepBuilderAPI_MakeWire());
     const vs = pts.map((q) => t.add(t.add(new oc.BRepBuilderAPI_MakeVertex(pnt(oc, t, q))).Vertex()));
     vs.forEach((a, i) => mw.Add(t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(a, vs[(i + 1) % vs.length])).Edge())));
-    const f = t.add(t.add(new oc.BRepBuilderAPI_MakeFace(t.add(mw.Wire()), true)).Face());
+    return t.add(mw.Wire());
+  };
+
+  /** Where three planes meet (null when two of them are parallel). */
+  const meet = (a: { o: Vec3; n: Vec3 }, b: { o: Vec3; n: Vec3 }, c: { o: Vec3; n: Vec3 }): Vec3 | null => {
+    const bc = cross3(b.n, c.n), ca = cross3(c.n, a.n), ab = cross3(a.n, b.n);
+    const det = dot3(a.n, bc);
+    if (Math.abs(det) < 1e-9) return null;
+    return scale(add3(add3(scale(bc, dot3(a.n, a.o)), scale(ca, dot3(b.n, b.o))), scale(ab, dot3(c.n, c.o))), 1 / det);
+  };
+
+  /**
+   * A flat face bounded by straight edges, each with one flat face across it: its corners in order
+   * round its wire, and for the edge from each corner to the next the face across it (and which
+   * picked face that is, if it moves too). Null for anything else (a hole, a curved edge or
+   * neighbour, a neighbour in the face's plane or parallel to it): such a face moves as a prism.
+   */
+  const ringOf = (t: Arena, s: OccSolid, face: TopoDS_Shape, picked: TopoDS_Shape[]) => {
+    const f = t.add(oc.TopoDS.Face(face));
+    const n = faceInfo(oc, t, f, 0).frame?.n;
+    if (!n || subShapes(oc, t, f, oc.TopAbs_ShapeEnum.TopAbs_WIRE).length !== 1) return null;
+    const lines = subShapes(oc, t, f, EDGE).map((e) => ({ e, line: edgeInfo(oc, t, t.add(oc.TopoDS.Edge(e)), 0).line }));
+    if (lines.some((q) => !q.line)) return null;
+    const bb = occBox(oc, [face]);
+    const tol = 1e-7 * (1 + (bb ? Math.hypot(...sub3(bb.max, bb.min)) : 1));
+    const near = (p: Vec3, q: Vec3) => Math.hypot(...sub3(p, q)) < tol;
+    // the edges chained head to tail
+    const order = [{ ...lines[0], p: lines[0].line!.a, q: lines[0].line!.b }];
+    const used = new Set([0]);
+    while (order.length < lines.length) {
+      const end = order[order.length - 1].q;
+      const k = lines.findIndex((x, i) => !used.has(i) && (near(x.line!.a, end) || near(x.line!.b, end)));
+      if (k < 0) return null;
+      used.add(k);
+      const fwd = near(lines[k].line!.a, end);
+      order.push({ ...lines[k], p: fwd ? lines[k].line!.a : lines[k].line!.b, q: fwd ? lines[k].line!.b : lines[k].line!.a });
+    }
+    if (!near(order[order.length - 1].q, order[0].p)) return null;
+    const all = subShapes(oc, t, s.shape, FACE);
+    const edgesOf = all.map((g) => shapeIndex(oc, t, g, EDGE));
+    const edges = [];
+    for (const { e, p, q } of order) {
+      const nb = all.filter((g, i) => !g.IsSame(face) && edgesOf[i].has(e));
+      if (nb.length !== 1) return null;
+      const fr = faceInfo(oc, t, t.add(oc.TopoDS.Face(nb[0])), 0).frame;
+      if (!fr || Math.abs(dot3(fr.n, n)) > 1 - 1e-6) return null;
+      edges.push({ p, u: norm3(sub3(q, p)), plane: { o: fr.o, n: fr.n }, tags: faceTags(s, nb[0]), moved: picked.findIndex((g) => g.IsSame(nb[0])) });
+    }
+    return { n, edges, tol };
+  };
+
+  /**
+   * A flat face moved d along its normal as an offset face moves (Fusion's press-pull): the faces
+   * around it that stay are extended up to it, and where it meets another moved face the two end
+   * on the plane halfway between them. The tool is ruled from the face's corners to where the
+   * planes bounding it meet the moved plane. Null when every side is square (the prism does).
+   */
+  const offsetTool = (t: Arena, s: OccSolid, face: TopoDS_Shape, rings: ReturnType<typeof ringOf>[], i: number, d: number): OccSolid | null => {
+    const ring = rings[i];
+    if (!ring) return null;
+    const { n, edges, tol } = ring;
+    const own = faceTags(s, face);
+    const sides = edges.map((e) => {
+      if (e.moved < 0) return { ...e.plane, tags: e.tags };
+      const m = rings[e.moved]?.n;
+      // a moved neighbour that goes as a prism meets this one on a square side, the gap between filled
+      return m ? { o: e.p, n: norm3(sub3(n, m)), tags: own } : { o: e.p, n: norm3(cross3(n, e.u)), tags: e.tags };
+    });
+    if (sides.every((q) => Math.abs(dot3(q.n, n)) < 1e-9)) return null;
+    const k0 = edges.length;
+    const top = edges.map((e, k) => {
+      const moved = { o: add3(e.p, scale(n, d)), n };
+      // two sides in one plane (an edge split in two): the corner moves square to the edge
+      return meet(sides[(k + k0 - 1) % k0], sides[k], moved) ?? meet(sides[k], { o: e.p, n: e.u }, moved)!;
+    });
+    edges.forEach((e, k) => {
+      const next = edges[(k + 1) % k0].p;
+      if (!(dot3(sub3(top[(k + 1) % k0], top[k]), sub3(next, e.p)) > tol * Math.hypot(...sub3(next, e.p)))) {
+        throw new Error('the faces next to it close in before that distance');
+      }
+    });
+    // the tool from flat faces (a ruled loft would make its sides spline surfaces), each named after
+    // the plane it lies in: the face itself at both ends, the face it extends or meets on the sides
+    const what = 'the face cannot be moved';
+    const sew = t.add(new oc.BRepBuilderAPI_Sewing(tol, true, true, true, false));
+    const flatFace = (pts: Vec3[]) => t.add(t.add(new oc.BRepBuilderAPI_MakeFace(polygonWire(t, pts), true)).Face());
+    const named = [{ face: flatFace(edges.map((e) => e.p)), tags: own }, { face: flatFace(top), tags: own },
+      ...edges.map((e, k) => ({ face: flatFace([e.p, edges[(k + 1) % k0].p, top[(k + 1) % k0], top[k]]), tags: sides[k].tags }))];
+    for (const q of named) sew.Add(q.face);
+    guard(oc, what, () => sew.Perform(progress(t)));
+    const shells = subShapes(oc, t, t.add(sew.SewedShape()), oc.TopAbs_ShapeEnum.TopAbs_SHELL);
+    if (shells.length !== 1) throw new Error(what);
+    const fix = t.add(new oc.ShapeFix_Solid());
+    const shape = arena.add(guard(oc, what, () => fix.SolidFromShell(t.add(oc.TopoDS.Shell(shells[0])))));
+    sound(t, shape, what);
+    // the sewn faces are the tool's (in place, or modified by the sewing)
+    const tags = subShapes(oc, t, shape, FACE).flatMap((g) => {
+      const at = keep(t, g);
+      const fr = faceInfo(oc, t, t.add(oc.TopoDS.Face(at)), 0).frame;
+      const plane = fr && [{ o: add3(edges[0].p, scale(n, d)), n, tags: own }, { o: edges[0].p, n, tags: own }, ...sides]
+        .find((q) => Math.abs(dot3(q.n, fr.n)) > 1 - 1e-9 && Math.abs(dot3(sub3(fr.o, q.o), q.n)) < tol);
+      return (plane?.tags ?? own).map((x) => ({ face: at, key: x.key, feature: x.feature }));
+    });
+    return { shape, tags };
+  };
+
+  /** The prism of a flat polygon along v. */
+  const polygonPrism = (t: Arena, pts: Vec3[], v: Vec3, what: string): TopoDS_Shape => {
+    const f = t.add(t.add(new oc.BRepBuilderAPI_MakeFace(polygonWire(t, pts), true)).Face());
     const mk = t.add(new oc.BRepPrimAPI_MakePrism(f, vec(oc, t, v), false, true));
     return arena.add(guard(oc, what, () => mk.Shape()));
   };
@@ -499,8 +607,8 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
    * does. Each face of a filler is named after the plane it lies in (a moved face, or a face at
    * the edge's end), so it merges into that face.
    */
-  const gapFillers = (t: Arena, s: OccSolid, picked: TopoDS_Shape[], d: number): OccSolid[] => {
-    const flat = picked.map((g) => ({ g, n: faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0).frame?.n, E: shapeIndex(oc, t, g, EDGE) }))
+  const gapFillers = (t: Arena, s: OccSolid, picked: TopoDS_Shape[], d: number, meetHalfway: (a: number, b: number) => boolean): OccSolid[] => {
+    const flat = picked.map((g, at) => ({ g, at, n: faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0).frame?.n, E: shapeIndex(oc, t, g, EDGE) }))
       .filter((q): q is typeof q & { n: Vec3 } => !!q.n);
     if (flat.length < 2) return [];
     const bb = occBox(oc, [s.shape]);
@@ -529,6 +637,7 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
         const j = flat.findIndex((o, k) => k > i && o.E.has(e));
         if (j < 0) continue;
         const o = flat[j];
+        if (meetHalfway(q.at, o.at)) continue;
         const line = edgeInfo(oc, t, t.add(oc.TopoDS.Edge(e)), 0);
         if (!line.line) continue;
         const c = dot3(q.n, o.n);
@@ -851,8 +960,10 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       if (!d) return s;
       return scratch((t) => {
         const F = shapeIndex(oc, t, s.shape, FACE);
-        const tools = faces.map((i) => faceMover(t, s, F.shapes[i], d));
-        tools.push(...gapFillers(t, s, faces.map((i) => F.shapes[i]), d));
+        const picked = faces.map((i) => F.shapes[i]);
+        const rings = picked.map((g) => ringOf(t, s, g, picked));
+        const tools = picked.map((g, i) => offsetTool(t, s, g, rings, i, d) ?? faceMover(t, s, g, d));
+        tools.push(...gapFillers(t, s, picked, d, (a, b) => !!rings[a] && !!rings[b]));
         const r = boolean(d > 0 ? 'fuse' : 'cut', s, tools, d > 0 ? 'the faces cannot be pulled' : 'the faces cannot be pushed');
         if (!hasSolid(oc, r.shape) || !(shapeVolume(oc, r.shape) > 0)) throw new Error('the faces are pushed through the whole body');
         return r;
