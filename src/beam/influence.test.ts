@@ -139,6 +139,34 @@ describe('influence lines by unit-load traversal', () => {
     }
   });
 
+  it('with shear deformation: fixed-end forces of a point load on a Timoshenko member', () => {
+    // a deep propped cantilever (L = 4 m, h ≈ 0.6 m): shear deformation counts here
+    const L = 4, G = 81e9, Av = 30e-4;
+    const st: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }],
+      members: [mem('m', 'a', 'b', { I: 9e-4, G, Av })],
+      supports: [sup('A', 'a', 'fixed'), sup('B', 'b', 'roller')],
+      loads: [],
+    };
+    const r = influenceAnalysis(st, loadPath(st), 0.25, [
+      { id: 'MA', kind: 'Mr', support: 'A' }, { id: 'w', kind: 'w', member: 'm', t: 0.5 }, { id: 'V', kind: 'V', member: 'm', t: 0.25 },
+    ], []);
+    for (const xi of [0.75, 1.5, 2.25, 3.5]) {
+      // the direct solver splits the member at the load: an independent route to the same numbers
+      const s = solveStructure({ ...st, loads: [{ id: 'P', type: 'force', at: { member: 'm', t: xi / L }, Fx: 0, Fy: -1 }] });
+      expect(at(r.lines[0], xi)).toBeCloseTo(s.reactions[0].M, 10);
+      expect(at(r.lines[1], xi)).toBeCloseTo(memberAt(s.members[0], 2).dy, 15);
+      expect(at(r.lines[2], xi)).toBeCloseTo(memberAt(s.members[0], 1).V, 10);
+    }
+    // R_B for a load at midspan, from compatibility at the prop with δ = PL³/3EI + PL/GA_v terms:
+    // R_B = (5/48 + ψ/2)/(1/3 + ψ), ψ = EI/(G A_v L²); 5/16 without shear
+    const eb = influenceAnalysis({ ...st, members: [mem('m', 'a', 'b', { I: 9e-4 })] }, loadPath(st), 0.25, [{ id: 'RB', kind: 'Ry', support: 'B' }], []);
+    expect(at(eb.lines[0], 2)).toBeCloseTo(5 / 16, 12);
+    const tim = influenceAnalysis(st, loadPath(st), 0.25, [{ id: 'RB', kind: 'Ry', support: 'B' }], []);
+    const psi = (E * 9e-4) / (G * Av * L * L);
+    expect(at(tim.lines[0], 2)).toBeCloseTo((5 / 48 + psi / 2) / (1 / 3 + psi), 12);
+  });
+
   it('refuses a path that is not one chain', () => {
     const st = beam([0, 5, 10], [0, 2]);
     st.nodes.push({ id: 'x', x: 20, y: 0 }, { id: 'y', x: 25, y: 0 });
