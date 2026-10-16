@@ -485,13 +485,21 @@ visible lines disappear.
   back. Undo in the CAD window applies to the part only. The worksheet window must stay
   open, since it owns the document. The page shows the 3-D model, the first sketch, or both.
 
-**The kernel and its accuracy.** Solids come from [Manifold](https://github.com/elalish/manifold)
-(WASM, Apache-2.0). It keeps every solid a closed 2-manifold, so booleans never leave
-cracks. Curves become polygons with a vertex every 2°, and mass properties of booleaned
-bodies come from exact integrals over that mesh. Volumes are therefore within about
-2·10⁻⁴ of the true curved solid: a cylinder comes out ~0.02 % small. A body made by one
-extrude or revolve keeps exact properties from the profile integrals (Green's theorem with
-Gauss–Legendre quadrature, closed-form revolve integrals).
+**The kernels and their accuracy.** The worksheet's values come from a B-rep kernel,
+[OpenCascade](https://dev.opencascade.org/) (the WASM build made for replicad, LGPL-2.1):
+arcs and circles stay true circles, cap fillets are real rolling-ball fillets, a
+countersink is a true cone, and volume, centroid and inertia are surface integrals over
+the exact faces. The tests check them against closed forms to 10⁻⁹ (a fillet round a
+box, a torus by Pappus, a countersunk hole, a pyramid frustum loft). The kernel is big
+(7 MB compressed), so it loads in the background the first time a worksheet has a CAD
+part, only in the calculation worker, and is cached after that (offline too).
+
+Until it has loaded, or where it cannot, [Manifold](https://github.com/elalish/manifold)
+(WASM, Apache-2.0) builds the parts. It keeps every solid a closed 2-manifold, so
+booleans never leave cracks. Curves become polygons with a vertex every 2°, so volumes of
+booleaned bodies are within about 2·10⁻⁴ of the true solid (a cylinder comes out ~0.02 %
+small). The values refresh by themselves once OpenCascade is ready. The CAD window's 3-D
+view, section view, drawings and STL button still use the Manifold mesh for now.
 
 **Exchange:** DXF import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
 POLYLINE with bulges), and binary STL export of the assembly for 3-D printing.
@@ -511,12 +519,13 @@ What it is not, honestly:
 
 - **Edge rounding only on extrusions:** fillets and chamfers work on the start and end
   edges of an extrusion (plus sketch fillets for the side edges). You cannot pick any
-  3-D edge to round, and there are no drafts. That needs a B-rep kernel: Manifold's
-  Minkowski rounding is exact but took 15–50 s per rebuild in tests, too slow for a
-  parametric model.
-- **Faceted geometry:** no sweeps along paths and no splines. Lofts are ruled (straight
-  between the two profiles). Solids are meshes, not exact B-rep surfaces, and drawings
-  show circles as fine polylines.
+  3-D edge to round yet, and there are no drafts. The B-rep kernel can do both; the
+  features and picking are still to come.
+- **Display still faceted:** the 3-D view and the drawings show the mesh kernel's
+  solids, so drawings show circles as fine polylines. No sweeps along paths and no
+  splines; lofts are ruled (straight between the two profiles).
+- **STEP:** the B-rep kernel writes STEP AP214 files (bodies, components, assemblies with
+  their placements) and STL from the exact surfaces, but there is no button for them yet.
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
 - **Face sketches:** a sketch on a face keeps that face's position from when it was made;
   it does not follow later edits.
@@ -614,7 +623,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (mesh kernel: no free 3-D edge fillets, drafts or sweeps) |
+| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (exact B-rep values; no free 3-D edge fillets, drafts or sweeps yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
@@ -651,7 +660,8 @@ src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
 src/beam/     Beam and frame analysis (no UI): model, stiffness solver, worksheet evaluation
 src/ui/beam/  Beam region: editor, diagrams, properties panel
 src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
-              joints), solid kernel (Manifold), mass properties, DXF, STL
+              joints), solid kernels (OpenCascade B-rep in occ/, Manifold mesh), mass
+              properties, DXF, STL, STEP
 src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
               window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering

@@ -67,13 +67,19 @@ export default defineConfig({
         workbox: {
           globPatterns: ['**/*.{js,css,html,svg,png,woff2,wasm}'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          globIgnores: ['**/pyodide/**'],
+          globIgnores: ['**/pyodide/**', '**/replicad_single*.wasm'],
           // Python is large (~13 MB) and only needed by worksheets with code: cache it on first use
           runtimeCaching: [
             {
               urlPattern: ({ url }) => url.pathname.includes('/pyodide/') || url.hostname === 'cdn.jsdelivr.net',
               handler: 'CacheFirst',
               options: { cacheName: 'python', expiration: { maxEntries: 200 }, cacheableResponse: { statuses: [0, 200] } },
+            },
+            // the B-rep CAD kernel (23 MB) is too big to precache: cache it on first use
+            {
+              urlPattern: ({ url }) => /replicad_single[\w-]*\.wasm$/.test(url.pathname),
+              handler: 'CacheFirst',
+              options: { cacheName: 'cad-kernel', expiration: { maxEntries: 2 }, cacheableResponse: { statuses: [0, 200] } },
             },
           ],
         },

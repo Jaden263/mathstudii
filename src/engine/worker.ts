@@ -5,6 +5,8 @@ import { evaluateWorksheet, type RegionResult } from './evaluator';
 import { loadCas } from './symbolic';
 import type { Worksheet } from '../model/types';
 import { loadKernel } from '../cad/kernelBrowser';
+import { loadOcc } from '../cad/occ/browser';
+import { occ } from '../cad/occ/kernel';
 import { initPython, preparePackages, pythonReady } from '../python/runtime';
 import { loadPythonBrowser } from '../python/browser';
 
@@ -46,8 +48,15 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 // CAD parts need the solid kernel (WASM); it loads once, alongside the first evaluation
 const kernelReady = loadKernel().catch((e) => console.warn('3-D kernel failed to load', e));
 
+// the B-rep kernel is large: it loads for the first worksheet with a CAD part, whose
+// results then follow again with exact values
+let brep: Promise<unknown> | null = null;
+let latest = 0;
+const needsBrep = (out: ReturnType<typeof evaluateWorksheet>) => [...out.results.values()].some((r) => r.kind === 'cad' && r.needsBrep);
+
 ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
   const { id, ws, overrides, only } = e.data;
+  latest = id;
   const post = (out: ReturnType<typeof evaluateWorksheet>, partial: boolean) => {
     let results = [...out.results.entries()];
     if (only) results = results.filter(([rid]) => only.includes(rid));
@@ -82,4 +91,9 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
     out = evaluateWorksheet(ws, overrides);
   }
   post(out, false);
+  if (!only && needsBrep(out)) {
+    brep ??= loadOcc().catch((err) => console.warn('the B-rep kernel failed to load', err));
+    await brep;
+    if (id === latest && occ()) post(evaluateWorksheet(ws, overrides), false);
+  }
 };
