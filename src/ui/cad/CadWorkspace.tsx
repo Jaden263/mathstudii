@@ -17,11 +17,12 @@ import type { CadResult } from '../../cad/evaluate';
 import { MATERIALS, cadId, reserveDimNames, type CadSketch, type ConstraintType } from '../../cad/model';
 import { CONSTRAINT_TOOLS } from '../../cad/edit';
 import {
-  FEATURE_LABEL, activeItems, designOf, facePlane, findSketch, isSketch, itemName, nextName, profileKey, sketchFace,
-  type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type DesignFeature, type DesignItem, type DesignSketch, type JointOrigin, type PlaneRef,
+  FEATURE_LABEL, MODIFY_KINDS, activeItems, designOf, facePlane, findSketch, isModify, isSketch, itemName, nextName, profileKey, sketchFace,
+  type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type DesignFeature, type DesignItem, type DesignSketch, type JointOrigin,
+  type ModifyFeature, type PlaneRef,
 } from '../../cad/design';
 import { m4Dir, m4Inv, m4Point, norm3, sub3, type Vec3 } from '../../cad/solid';
-import { faceWords } from '../../cad/topology';
+import { baseName, faceWords, keyFeature, refTo, refToken, resolveRef, type TopoRef } from '../../cad/topology';
 import type { Vec2 } from '../../cad/profile';
 import { designNumbers } from '../../cad/keys';
 import type { BodyResult } from '../../cad/buildResult';
@@ -40,6 +41,7 @@ import { exportPart, type PartFormat } from './exportPart';
 import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
 import { Dialog, Expr, FeatureFields, JointFields, featureTitle } from './FeatureDialogs';
+import { ModifyFields, type PickTarget } from './ModifyDialogs';
 import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate } from './jointPick';
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
@@ -56,7 +58,12 @@ interface Props {
 type Tab = 'solid' | 'assemble' | 'inspect' | 'file' | 'sketch' | 'constrain';
 
 type Dlg =
-  | { kind: 'feature'; cid: string; id: string; mark: number; isNew: boolean }
+  /**
+   * A feature being edited. Modify features: `target` is the plane or axis field waiting for a
+   * click, `set` the fillet set clicked edges go into, and `rollback` the timeline marker to
+   * put back afterwards (a feature edited from the timeline is shown as it was built).
+   */
+  | { kind: 'feature'; cid: string; id: string; mark: number; isNew: boolean; target?: PickTarget; set?: number; rollback?: { marker: number | undefined } }
   | { kind: 'sketch'; ref: PlaneRef; offset: string }
   | { kind: 'joint'; id: string; mark: number; isNew: boolean; picking: 'a' | 'b' | null; snap?: string }
   | { kind: 'measure'; picks: Measured[]; result?: Distance | null; error?: string }
@@ -157,7 +164,16 @@ function usePartHistory(region: CadRegion, dispatch: (a: Action) => void) {
     const top = undoStack.current[undoStack.current.length - 1];
     if (top) top.key = undefined;
   }, []);
-  return { tracked, undo, redo, mark, revertTo, seal, canUndo: undoStack.current.length > 0, canRedo: redoStack.current.length > 0 };
+  /** Make everything since undo depth `m` one step (a dialog's edits and the rollback around them). */
+  const squash = useCallback((m: number) => {
+    const steps = undoStack.current.slice(m);
+    if (steps.length < 2) return;
+    const before: Record<string, unknown> = {};
+    for (const e of steps) for (const [k, v] of Object.entries(e.before)) if (!(k in before)) before[k] = v;
+    undoStack.current.length = m;
+    undoStack.current.push({ before: before as Snapshot });
+  }, []);
+  return { tracked, undo, redo, mark, revertTo, seal, squash, canUndo: undoStack.current.length > 0, canRedo: redoStack.current.length > 0 };
 }
 
 const fmtLen = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3));
@@ -188,7 +204,7 @@ const parseProfile = (key: string) => {
 };
 
 export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, connected = true }: Props) {
-  const { tracked: dispatch, undo: onUndo, redo: onRedo, mark, revertTo, seal, canUndo, canRedo } = usePartHistory(region, rawDispatch);
+  const { tracked: dispatch, undo: onUndo, redo: onRedo, mark, revertTo, seal, squash, canUndo, canRedo } = usePartHistory(region, rawDispatch);
   const { ui, setUi } = useSketchUI();
   const design = useMemo(() => designOf(region), [region]);
   const designRef = useRef(design);
@@ -344,9 +360,53 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const selProfile = sel?.startsWith('p:') ? parseProfile(sel) : null;
   const selSketch = sel?.startsWith('item:') ? (items.find((i) => i.id === sel.slice(5) && isSketch(i)) as DesignSketch | undefined) : undefined;
 
+  /**
+   * A new modify feature, with what is picked in the view (edges for a fillet, faces for a
+   * shell …) or the selected body to start from.
+   */
+  const startModify = (kind: ModifyFeature['kind'], id: string, name: string): ModifyFeature | null => {
+    if (!comp) return null;
+    if (!bodiesNow.length) {
+      setMsg(`There is no body to ${kind === 'presspull' ? 'press-pull' : kind} yet`);
+      return null;
+    }
+    const occ = editOccurrence(design, comp.id);
+    const mine = picks.filter((p) => p.occ === occ?.id);
+    const refsOf = (k: 'face' | 'edge'): TopoRef[] => mine.filter((p) => p.kind === k).flatMap((p) => {
+      const b = build && bodyOf(build, design, p.occ, p.body);
+      const e = b && (k === 'face' ? b.faces[p.index] : b.edges[p.index]);
+      return e ? [refTo(k, p.body, e)] : [];
+    });
+    const chosen = sel?.startsWith('body:') ? parseBody(`b:${sel.slice(5)}`).body : undefined;
+    const body = chosen && bodiesNow.some((b) => b.id === chosen) ? chosen : bodiesNow[bodiesNow.length - 1].id;
+    if (mine.length) setPicks([]);
+    switch (kind) {
+      case 'fillet': return { kind, id, name, sets: [{ edges: refsOf('edge'), r: '2' }] };
+      case 'chamfer': return { kind, id, name, edges: refsOf('edge'), type: 'equal', d: '1' };
+      case 'shell': {
+        const faces = refsOf('face');
+        return { kind, id, name, faces, t: '2', side: 'inside', ...(faces.length ? {} : { body }) };
+      }
+      case 'draft': return { kind, id, name, faces: refsOf('face'), plane: 'XY', angle: '3 deg' };
+      case 'presspull': return { kind, id, name, faces: refsOf('face'), d: '5' };
+      case 'split': {
+        // through the middle of the body, across its longest side
+        const bb = build?.components[comp.id]?.bodies.find((b) => b.id === body)?.box;
+        const ext = bb ? [0, 1, 2].map((i) => bb.max[i] - bb.min[i]) : [0, 0, 1];
+        const axis = ext.indexOf(Math.max(...ext));
+        const plane = (['YZ', 'XZ', 'XY'] as const)[axis];
+        // the XZ plane's normal is −Y
+        const mid = bb ? ((bb.min[axis] + bb.max[axis]) / 2) * (axis === 1 ? -1 : 1) : 0;
+        return { kind, id, name, body, plane, ...(mid ? { offset: String(+mid.toPrecision(6)) } : {}) };
+      }
+      case 'move': return { kind, id, name, bodies: [body] };
+    }
+  };
+
   const startFeature = (kind: DesignFeature['kind']) => {
     if (!comp) return;
-    const name = nextName(cur(), FEATURE_LABEL[kind]);
+    // "Press pull" names its features PressPull1 …
+    const name = nextName(cur(), FEATURE_LABEL[kind].replace(/ (\w)/g, (_, c: string) => c.toUpperCase()));
     const id = cadId('f');
     const op = bodiesNow.length ? ('join' as const) : ('new' as const);
     let f: DesignFeature;
@@ -376,6 +436,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     } else if (kind === 'mirror') {
       if (!bodiesNow.length) return setMsg('Make a body to mirror first');
       f = { kind, id, name, of: 'bodies', refs: bodiesNow.map((b) => b.id), plane: 'YZ', join: true };
+    } else if (MODIFY_KINDS.has(kind)) {
+      const m = startModify(kind as ModifyFeature['kind'], id, name);
+      if (!m) return;
+      f = m;
     } else {
       if (bodiesNow.length < 2) return setMsg('Combine needs two bodies in this component');
       f = { kind: 'combine', id, name, target: bodiesNow[0].id, tools: bodiesNow.slice(1).map((b) => b.id), op: 'join' };
@@ -391,7 +455,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     setActive(cid);
     if (isSketch(item)) return enterSketch(item.id);
     seal();
-    setDialog({ kind: 'feature', cid, id: item.id, mark: mark(), isNew: false });
+    const m = mark();
+    // a modify feature picks on the bodies as it found them: the features after it roll back meanwhile
+    const c = cur().components.find((q) => q.id === cid);
+    const idx = c ? c.items.indexOf(item) : -1;
+    const rollback = c && isModify(item) && idx + 1 < (c.marker ?? c.items.length) ? { marker: c.marker } : undefined;
+    if (rollback) patchComp(cid, { marker: idx + 1 });
+    setDialog({ kind: 'feature', cid, id: item.id, mark: m, isNew: false, rollback });
   };
 
   const newSketchOn = (plane: DesignSketch['plane'], cid = comp?.id) => {
@@ -443,6 +513,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const closeDialog = (ok: boolean) => {
     if (!dialog) return;
     if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint')) revertTo(dialog.mark);
+    // the timeline rolled forward again, and the edit with it one undo step
+    if (ok && dialog.kind === 'feature' && dialog.rollback) {
+      patchComp(dialog.cid, { marker: dialog.rollback.marker });
+      squash(dialog.mark);
+    }
     seal();
     setDialog(null);
   };
@@ -519,6 +594,69 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     );
   };
 
+  /**
+   * A click while a modify feature's dialog is open: the plane or axis its field waits for,
+   * or an edge, face or body taken in or out of what it works on. A rounding (or chamfer) the
+   * feature made stands for the edge it was made from, so clicking it takes that edge out.
+   */
+  const pickForModify = (c: CadComponent, f: ModifyFeature, hit: PickHit) => {
+    if (dialog?.kind !== 'feature') return;
+    const on = hitBody(hit);
+    if (on && occOf(on.occ)?.component !== c.id) return setMsg('That body belongs to another component');
+    const patch = (p: Partial<ModifyFeature>) => patchItem(c.id, f.id, p as Partial<DesignItem>);
+    const face = on && hit.face !== undefined && hit.edge === undefined ? on.b.faces[hit.face] : undefined;
+    const edge = on && hit.edge !== undefined ? on.b.edges[hit.edge] : undefined;
+    // what this feature made itself cannot be what it works on
+    const madeHere = (key: string) => baseName(key).split('+').some((k) => keyFeature(k) === f.id);
+    const edgeFaces = (e: NonNullable<typeof edge>) => e.faces.map((i) => on!.b.faces[i]?.key ?? '');
+    if (dialog.target) {
+      if (!on) return;
+      if ((face && madeHere(face.key)) || (edge && edgeFaces(edge).some(madeHere))) return setMsg(`${f.name} made that itself: pick something it starts from`);
+      if (dialog.target === 'plane') {
+        if (!face?.frame) return setMsg('Pick a flat face for the plane');
+        patch({ plane: refTo('face', on.body, face) });
+      } else {
+        const ok = edge ? !!(edge.line || edge.circle) : !!face && (!!face.frame || (!!face.axis && face.type !== 'sphere'));
+        if (!ok) return setMsg('Pick a straight edge, a circle, a cylinder or a flat face for the axis');
+        const ref = edge ? refTo('edge', on.body, edge) : refTo('face', on.body, face!);
+        patch(f.kind === 'draft' ? { pull: ref } : { axis: ref });
+      }
+      setDialog({ ...dialog, target: undefined });
+      return;
+    }
+    if (f.kind === 'split') return on && patch({ body: on.body });
+    if (f.kind === 'move') return on && patch({ bodies: f.bodies.includes(on.body) ? f.bodies.filter((x) => x !== on.body) : [...f.bodies, on.body] });
+    if (!on) return;
+    // the references this feature holds, found on the bodies as shown (index per body)
+    const shown = build?.components[c.id]?.bodies ?? [];
+    const at = (ref: TopoRef) => {
+      const r = resolveRef(ref, shown);
+      return r.ok && r.body === on.body ? r.index : -1;
+    };
+    if (f.kind === 'fillet' || f.kind === 'chamfer') {
+      const role = `${f.id}/${f.kind === 'fillet' ? 'round' : 'chamfer'}:`;
+      const token = (key: string) => baseName(key).split('+').find((k) => k.startsWith(role))?.slice(role.length);
+      const made = (face ? [face.key] : edge ? edgeFaces(edge) : []).map(token).filter((x): x is string => !!x);
+      const lists = f.kind === 'fillet' ? f.sets.map((st) => st.edges) : [f.edges];
+      const write = (next: TopoRef[][]) => patch(f.kind === 'fillet' ? { sets: f.sets.map((st, i) => ({ ...st, edges: next[i] })) } : { edges: next[0] });
+      if (made.length) return write(lists.map((l) => l.filter((r) => !made.includes(refToken(r)))));
+      // an edge, or every edge of a face (not its seams)
+      const want = edge ? [edge] : on.b.edges.filter((e) => face && e.faces.includes(face.index) && e.faces[0] !== e.faces[1]);
+      if (want.some((e) => edgeFaces(e).some(madeHere))) return setMsg(`${f.name} made that edge: click its rounding to take the edge out`);
+      const held = new Set(lists.flat().map(at));
+      if (want.every((e) => held.has(e.index))) return write(lists.map((l) => l.filter((r) => !want.some((e) => e.index === at(r)))));
+      const add = want.filter((e) => !held.has(e.index)).map((e) => refTo('edge', on.body, e));
+      const into = f.kind === 'fillet' ? Math.min(dialog.set ?? 0, f.sets.length - 1) : 0;
+      return write(lists.map((l, i) => (i === into ? [...l, ...add] : l)));
+    }
+    if (!face) return;
+    if (madeHere(face.key)) return setMsg(`${f.name} made that face: pick one of the faces it starts from`);
+    const i = f.faces.findIndex((r) => at(r) === face.index);
+    const faces = i >= 0 ? f.faces.filter((_, k) => k !== i) : [...f.faces, refTo('face', on.body, face)];
+    // a shell with no face left open hollows out the body it was on
+    patch({ faces, ...(f.kind === 'shell' ? { body: faces.length ? undefined : on.body } : {}) } as Partial<ModifyFeature>);
+  };
+
   const onPick = (hit: PickHit, shift = false) => {
     if (performance.now() - openedAt.current < 500) return;
     const key = hit.key ?? '';
@@ -526,6 +664,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const c = design.components.find((q) => q.id === dialog.cid);
       const f = c?.items.find((i) => i.id === dialog.id) as DesignFeature | undefined;
       if (!c || !f) return;
+      if (isModify(f)) return pickForModify(c, f, hit);
       if (key.startsWith('p:') && (f.kind === 'extrude' || f.kind === 'revolve')) {
         const p = parseProfile(key);
         if (p.sketch !== f.sketch) return patchItem(c.id, f.id, { sketch: p.sketch, profiles: [p.key] } as Partial<DesignItem>);
@@ -671,12 +810,15 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) onRedo(); else onUndo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); onRedo(); }
+    else if (e.key === 'Escape' && dialog?.kind === 'feature' && dialog.target) setDialog({ ...dialog, target: undefined });
     else if (e.key === 'Escape' && dialog) closeDialog(false);
     else if (e.key === 'Escape' && !sketchId && picks.length) setPicks([]);
     else if (!sketchId && !dialog && !mod && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 'e') startFeature('extrude');
       else if (k === 'h') startFeature('hole');
+      else if (k === 'f') startFeature('fillet');
+      else if (k === 'q') startFeature('presspull');
       else if (k === 'j') startJoint();
       else if (k === 'm') setDialog({ kind: 'measure', picks: [] });
     }
@@ -710,7 +852,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         const keys = f.profiles?.length ? f.profiles : s ? sketchRegions(s, result).map(profileKey) : [];
         for (const k of keys) h.add(`p:${f.sketch}:${k}`);
       }
-      const bodies = 'targets' in f ? f.targets : (f.kind === 'pattern' || f.kind === 'mirror') && f.of === 'bodies' ? f.refs : f.kind === 'combine' ? [f.target, ...f.tools] : undefined;
+      const bodies = 'targets' in f ? f.targets : (f.kind === 'pattern' || f.kind === 'mirror') && f.of === 'bodies' ? f.refs : f.kind === 'combine' ? [f.target, ...f.tools]
+        : f.kind === 'split' ? [f.body] : f.kind === 'move' ? f.bodies : f.kind === 'shell' && !f.faces.length && f.body ? [f.body] : undefined;
       for (const b of bodies ?? []) h.add(`b:${occ.id}:${b}`);
     }
     if (activeJoint) {
@@ -755,13 +898,39 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   /** Faces and edges to mark on each body: the selection (or what is being measured) and what is under the pointer. */
   const measurePicks = dialog?.kind === 'measure' ? dialog.picks : null;
   const marked = useMemo(() => (measurePicks ? measurePicks.flatMap((m) => (m.ref.kind === 'point' ? [] : [m.ref])) : picks), [measurePicks, picks]);
+  // what a modify feature works on, as shown: the faces and edges it holds (found by their
+  // references), its plane or axis if picked, and the roundings or chamfers it made
+  const modified = activeFeature && isModify(activeFeature) ? activeFeature : null;
+  const modMarks = useMemo(() => {
+    const out = new Map<string, { faces: number[]; edges: number[] }>();
+    const occ = modified && dialog?.kind === 'feature' ? editOccurrence(design, dialog.cid) : undefined;
+    const shown = (occ && build?.components[occ.component]?.bodies) || [];
+    if (!modified || !occ) return out;
+    const f = modified;
+    const mark = (body: string, kind: 'face' | 'edge', i: number) => {
+      const m = out.get(`b:${occ.id}:${body}`) ?? { faces: [], edges: [] };
+      (kind === 'face' ? m.faces : m.edges).push(i);
+      out.set(`b:${occ.id}:${body}`, m);
+    };
+    const refs: TopoRef[] = f.kind === 'fillet' ? f.sets.flatMap((st) => st.edges) : f.kind === 'chamfer' ? f.edges : 'faces' in f ? [...f.faces] : [];
+    for (const pk of [f.kind === 'draft' || f.kind === 'split' ? f.plane : undefined, f.kind === 'draft' ? f.pull : f.kind === 'move' ? f.axis : undefined]) if (pk && typeof pk !== 'string') refs.push(pk);
+    for (const ref of refs) {
+      const r = resolveRef(ref, shown);
+      if (r.ok) mark(r.body, ref.kind === 'face' ? 'face' : 'edge', r.index);
+    }
+    if (f.kind === 'fillet' || f.kind === 'chamfer') {
+      const role = `${f.id}/${f.kind === 'fillet' ? 'round' : 'chamfer'}:`;
+      for (const b of shown) for (const face of b.faces) if (baseName(face.key).split('+').some((k) => k.startsWith(role))) mark(b.id, 'face', face.index);
+    }
+    return out;
+  }, [modified, dialog, design, build]);
   const marks = useCallback((key: string) => {
-    const selFaces: number[] = [], selEdges: number[] = [];
-    for (const p of marked) if (`b:${p.occ}:${p.body}` === key) (p.kind === 'face' ? selFaces : selEdges).push(p.index);
+    const selFaces: number[] = [...(modMarks.get(key)?.faces ?? [])], selEdges: number[] = [...(modMarks.get(key)?.edges ?? [])];
+    for (const p of modified ? [] : marked) if (`b:${p.occ}:${p.body}` === key) (p.kind === 'face' ? selFaces : selEdges).push(p.index);
     const hv = hoverPick?.key === key ? hoverPick : null;
     if (!selFaces.length && !selEdges.length && !hv) return undefined;
     return { selFaces, selEdges, hoverFace: hv && hv.edge === undefined ? hv.face : undefined, hoverEdge: hv?.edge };
-  }, [marked, hoverPick]);
+  }, [marked, hoverPick, modMarks, modified]);
   const baseScene = useMemo(() => buildScene(design, result, build, {
     active: comp?.id ?? '', highlight, showPlanes: (showPlanes || dialog?.kind === 'sketch') && !section, pickProfiles, isolate, size: sceneSize,
     pickPlanes: dialog?.kind === 'sketch', section: section ? cut : undefined, marks,
@@ -786,7 +955,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   }, [baseScene, measuring, snapping, snapM, sceneSize]);
 
   // faces and edges are picked one by one, except while a feature dialog picks bodies
-  const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint';
+  // a modify dialog picks edges (fillet, chamfer, an axis), faces (shell, draft, press-pull, a plane) or bodies
+  const modPick = modified && dialog?.kind === 'feature'
+    ? (dialog.target === 'plane' ? 'faces' : dialog.target === 'axis' ? 'edges' : modified.kind === 'fillet' || modified.kind === 'chamfer' ? 'edges' : modified.kind === 'split' || modified.kind === 'move' ? 'bodies' : 'faces')
+    : null;
+  const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint' || modPick === 'edges' || modPick === 'faces';
   const onHover = (h: PickHit) => {
     const key = h.kind !== 'none' ? h.key : undefined;
     const onBody = !!key?.startsWith('b:') && facePicking;
@@ -849,8 +1022,21 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       return at ? `Click: the ${at.label} · move over faces and edges for their snap points` : `Hover a face or edge of the ${dialog.picking === 'b' ? 'part that moves' : 'part it goes onto'}: its snap points show (centres, axes, midpoints, vertices)`;
     }
     if (dialog?.kind === 'measure') return 'Click two faces, edges or corners: the smallest distance between them';
+    if (dialog?.kind === 'feature' && modified) {
+      if (dialog.target) return dialog.target === 'plane' ? 'Click a flat face for the plane · Esc stops picking' : 'Click a straight edge, a circle, a cylinder or a flat face (its normal) for the axis · Esc stops picking';
+      const what: Record<ModifyFeature['kind'], string> = {
+        fillet: `Click edges to round them${modified.kind === 'fillet' && modified.sets.length > 1 ? ` (set ${(dialog.set ?? 0) + 1})` : ''} · click a rounding to take its edge out · a face adds its edges`,
+        chamfer: 'Click edges to chamfer them · click a chamfer to take its edge out · a face adds its edges',
+        shell: 'Click the faces to open · with none, the body is hollowed out',
+        draft: 'Click the faces to draft',
+        presspull: 'Click flat or cylindrical faces to move them',
+        split: 'Click the body to split',
+        move: 'Click bodies to move them (click again to leave one out)',
+      };
+      return `${what[modified.kind]} · Esc cancels`;
+    }
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';
-    return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · J joint · M measure';
+    return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · F fillet · Q press pull · J joint · M measure';
   })();
 
   // ------------------------------------------------------------ panels
@@ -859,6 +1045,19 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   const dialogPanel = (() => {
     if (!dialog) return null;
+    if (dialog.kind === 'feature' && activeFeature && isModify(activeFeature)) {
+      const c = design.components.find((q) => q.id === dialog.cid)!;
+      const f = activeFeature;
+      return (
+        <Dialog title={featureTitle(f)} error={dr?.errors[f.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <ModifyFields design={design} comp={c} feature={f} result={result} target={dialog.target} onTarget={(target) => setDialog({ ...dialog, target })}
+            set={dialog.set ?? 0} onSet={(set) => setDialog({ ...dialog, set })}
+            onChange={(p, k) => patchItem(c.id, f.id, p as Partial<DesignItem>, k ? `${f.id}:${k}` : undefined)} />
+          {dr?.warnings?.[f.id] && <div className="region-warn">{dr.warnings[f.id]}</div>}
+          {dialog.rollback && <p className="hint">The timeline is rolled back to {f.name} while you edit it.</p>}
+        </Dialog>
+      );
+    }
     if (dialog.kind === 'feature' && activeFeature) {
       const c = design.components.find((q) => q.id === dialog.cid)!;
       return (
@@ -1209,6 +1408,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<FlipHorizontal2 size={20} />} label="Mirror" title="Mirror features or bodies about a plane" onClick={() => startFeature('mirror')} />
             </Group>
             <Group label="Modify">
+              <RibbonButton icon={<ArrowUpDown size={20} />} label="Press pull" title="Move flat faces along their normal, grow or shrink cylinders (Q)" on={activeFeature?.kind === 'presspull'} onClick={() => startFeature('presspull')} />
+              <RibbonButton icon={<Radius size={20} />} label="Fillet" title="Round edges picked in the view, one radius per set or a varying one (F)" on={activeFeature?.kind === 'fillet'} onClick={() => startFeature('fillet')} />
+              <RibbonButton icon={<Octagon size={20} />} label="Chamfer" title="Chamfer edges: equal distance, two distances, or distance and angle" on={activeFeature?.kind === 'chamfer'} onClick={() => startFeature('chamfer')} />
+              <RibbonButton icon={<PackageOpen size={20} />} label="Shell" title="Hollow a body: walls of a thickness, the picked faces open" on={activeFeature?.kind === 'shell'} onClick={() => startFeature('shell')} />
+              <RibbonButton icon={<Pyramid size={20} />} label="Draft" title="Tilt faces about a neutral plane (mould release)" on={activeFeature?.kind === 'draft'} onClick={() => startFeature('draft')} />
+              <RibbonButton icon={<Slice size={20} />} label="Split body" title="Split a body by a plane or a flat face into bodies" on={activeFeature?.kind === 'split'} onClick={() => startFeature('split')} />
+              <RibbonButton icon={<Move size={20} />} label="Move/Copy" title="Move, turn or copy bodies" on={activeFeature?.kind === 'move'} onClick={() => startFeature('move')} />
               <RibbonButton icon={<Combine size={20} />} label="Combine" title="Join, cut or intersect bodies" onClick={() => startFeature('combine')} />
             </Group>
             <Group label="Inspect">
@@ -1327,7 +1533,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           ) : (
             <Scene3D
               width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d}
-              navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch'}
+              navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch' && modPick !== 'faces'}
               onHover={onHover}
               message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.state === 'none' && shown.notice && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
             />

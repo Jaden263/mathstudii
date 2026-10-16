@@ -273,6 +273,22 @@ describe('shell', () => {
     near(draft.V[0] - a * b * c, (-a * c * c * tan((5 * PI) / 180)) / 2);
   });
 
+  it('an opening tangent to a rounding it keeps: the body less its offset and the opening pushed through', () => {
+    // OCCT's thick solid leaves the body as it was when the top is tangent to the rounded top front
+    // edge (r = 4). The shell is the rounded body (abc − (1 − π/4) r² a) less its offset inside (the
+    // inner box with its edge rounded to r − t) less the top's offset pushed out, (a − 2t)(b − t − r) t:
+    // the rounding stays as a lip curving in at the top
+    const r = 4;
+    const [edge] = edgesAt(items, [[50, 0, 40]]);
+    const { V, errors } = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [edge], r: String(r) }] },
+      { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: String(t), side: 'inside' }]);
+    expect(errors).toEqual({});
+    const k = 1 - PI / 4;
+    const body = a * b * c - k * r * r * a;
+    const inner = (a - 2 * t) * (b - 2 * t) * (c - 2 * t) - k * (r - t) ** 2 * (a - 2 * t);
+    near(V[0], body - inner - (a - 2 * t) * (b - t - r) * t);
+  });
+
   it('a wall thicker than the body allows is refused', () => {
     const { errors, V } = run([...items, { kind: 'shell', id: 'f2', name: 'Shell1', faces: top, t: '35', side: 'inside' }]);
     expect(errors.f2).toBe('a wall of 35 mm does not fit this body — try a thinner one');
@@ -523,6 +539,26 @@ describe('modify features together', () => {
       { kind: 'chamfer', id: 'f5', name: 'Chamfer1', edges: [back], type: 'angle', d: '2', angle: '30 deg' },
       { kind: 'move', id: 'f6', name: 'Copy1', bodies: ['f1'], dx: '150', copy: true },
       { kind: 'shell', id: 'f7', name: 'Shell1', faces: [], body: 'f6.1.f1', t: '1.5', side: 'inside' },
+    ]);
+    const { res, numbers } = solve(design);
+    expect(res.design!.errors).toEqual({});
+    const oc = occ()!;
+    const watch = watchHandles(oc);
+    try {
+      const b = buildDesignOcc(oc, design, numbers);
+      builtResultOcc(oc, b);
+      b.free();
+      expect(watch.undeleted()).toEqual([]);
+    } finally {
+      watch.stop();
+    }
+  });
+
+  it('deletes every OCCT object of a shell next to a rounding (and of the arc joins round three fillets)', () => {
+    const [front, right, back] = edgesAt(items, [[50, 0, 40], [100, 30, 40], [50, 60, 40]]);
+    const design = single([...items,
+      { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [front, right, back], r: '4' }] },
+      { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: '3', side: 'inside' },
     ]);
     const { res, numbers } = solve(design);
     expect(res.design!.errors).toEqual({});

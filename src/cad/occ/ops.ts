@@ -642,22 +642,63 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
         // the offset walls are named after the faces they offset
         const walls = (mk: { Generated(s: TopoDS_Shape): NCollection_List_TopoDS_Shape }) => F.shapes.flatMap((g) =>
           listShapes(arena, mk.Generated(g)).map((face) => ({ face, key: `${tag}/${side}:${faceToken(s, g)}`, feature })));
-        if (faces.length) {
-          const mk = t.add(new oc.BRepOffsetAPI_MakeThickSolid());
-          const open = t.add(new oc.NCollection_List_TopoDS_Shape());
-          for (const i of faces) t.add(open.Append(F.shapes[i]));
-          // sharp corners (offset faces made to meet), not rounded ones
-          guard(oc, what, () => mk.MakeThickSolidByJoin(body, open, off, 1e-7, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, oc.GeomAbs_JoinType.GeomAbs_Intersection, false, progress(t)));
+        // offset faces made to meet (sharp corners); where they cannot (a rounded corner of three
+        // fillets), the gaps filled with rounds, which is the same where nothing is concave
+        const JOINS = [oc.GeomAbs_JoinType.GeomAbs_Intersection, oc.GeomAbs_JoinType.GeomAbs_Arc];
+        const firstOf = <T>(make: (join: (typeof JOINS)[number]) => T): T => {
+          try {
+            return make(JOINS[0]);
+          } catch {
+            return make(JOINS[1]);
+          }
+        };
+        /** The body offset by `off` as a solid (an offset sometimes comes back as its closed shell only). */
+        const offset = () => firstOf((join) => {
+          const mk = t.add(new oc.BRepOffsetAPI_MakeOffsetShape());
+          guard(oc, what, () => mk.PerformByJoin(body, off, 1e-7, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, join, false, progress(t)));
           if (!mk.IsDone()) throw new Error(what);
-          const shape = arena.add(mk.Shape());
-          changed(shape);
-          return { shape, tags: within([...carry(mk, s.tags, shape), ...walls(mk)], shape) };
+          const made = t.add(mk.Shape());
+          if (hasSolid(oc, made)) return { mk, skin: { shape: keep(t, made), tags: walls(mk) } };
+          const shells = subShapes(oc, t, made, oc.TopAbs_ShapeEnum.TopAbs_SHELL);
+          if (shells.length !== 1) throw new Error(what);
+          const fix = t.add(new oc.ShapeFix_Solid());
+          const shape = arena.add(guard(oc, what, () => fix.SolidFromShell(t.add(oc.TopoDS.Shell(shells[0])))));
+          return { mk, skin: { shape, tags: walls(mk) } };
+        });
+        if (faces.length) {
+          try {
+            return firstOf((join) => {
+              const mk = t.add(new oc.BRepOffsetAPI_MakeThickSolid());
+              const open = t.add(new oc.NCollection_List_TopoDS_Shape());
+              for (const i of faces) t.add(open.Append(F.shapes[i]));
+              guard(oc, what, () => mk.MakeThickSolidByJoin(body, open, off, 1e-7, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, join, false, progress(t)));
+              if (!mk.IsDone()) throw new Error(what);
+              const shape = arena.add(mk.Shape());
+              changed(shape);
+              return { shape, tags: within([...carry(mk, s.tags, shape), ...walls(mk)], shape) };
+            });
+          } catch (e) {
+            // OCCT leaves the body as it was when an opening is tangent to a face it keeps (the top
+            // of a box with a rounded edge); inside, flat openings are cut instead: the body less
+            // its offset inside and less each opening's offset image pushed out through the wall
+            if (outside || !faces.every((i) => faceInfo(oc, t, t.add(oc.TopoDS.Face(F.shapes[i])), i).frame)) throw e;
+          }
+          const { mk, skin } = offset();
+          sound(t, skin.shape, what);
+          const tools = [skin];
+          for (const i of faces) {
+            const n = faceInfo(oc, t, t.add(oc.TopoDS.Face(F.shapes[i])), i).frame!.n;
+            for (const img of listShapes(t, mk.Generated(F.shapes[i]))) {
+              const pr = t.add(new oc.BRepPrimAPI_MakePrism(img, vec(oc, t, scale(n, 2 * th)), false, true));
+              tools.push({ shape: arena.add(guard(oc, what, () => pr.Shape())), tags: [] });
+            }
+          }
+          const r = boolean('cut', s, tools, what);
+          changed(r.shape);
+          return r;
         }
         // no opening: the body less its offset inside (or the offset outside less the body)
-        const mk = t.add(new oc.BRepOffsetAPI_MakeOffsetShape());
-        guard(oc, what, () => mk.PerformByJoin(body, off, 1e-7, oc.BRepOffset_Mode.BRepOffset_Skin, false, false, oc.GeomAbs_JoinType.GeomAbs_Intersection, false, progress(t)));
-        if (!mk.IsDone()) throw new Error(what);
-        const skin = { shape: arena.add(mk.Shape()), tags: walls(mk) };
+        const { skin } = offset();
         sound(t, skin.shape, what);
         const r = outside ? boolean('cut', skin, [s], what) : boolean('cut', s, [skin], what);
         changed(r.shape);

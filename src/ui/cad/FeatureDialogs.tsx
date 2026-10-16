@@ -82,7 +82,7 @@ interface FeatureProps {
 }
 
 /** Bodies of the component before this feature (by the latest result). */
-function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string, string][] {
+export function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string, string][] {
   return (result?.design?.bodies[comp.id] ?? []).map((b) => [b.id, b.name]);
 }
 

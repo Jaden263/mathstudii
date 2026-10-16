@@ -599,6 +599,33 @@ workspace opens full screen in the page. Its layout follows Fusion:
 - **Combine:** join, cut or intersect bodies, optionally keeping the tools.
 - A dialog edits the real feature, so the model previews every change; Cancel rolls it back.
 
+**Modify** (Solid tab, as in Fusion; they need the B-rep kernel). Edges, faces and bodies
+are clicked in the view while the dialog is open (click again to take one out); what is
+picked before pressing the button is used. They store references to what they picked, so a
+base made longer keeps its rounded edge rounded. Every size is a worksheet expression.
+
+- **Fillet (F):** sets of edges, each with a radius, or with an end radius for a radius that
+  changes linearly along the chain (from its end with the smaller x, then y, z). A face adds
+  all its edges; clicking a rounding takes its edge out. A radius too large says so:
+  *radius 12 mm is too large for the edge between the end face and the side face of
+  Extrude1 (max ≈ 10 mm)* (the estimate is for straight edges between flat faces).
+- **Chamfer:** equal distances, two distances, or a distance and an angle. The first
+  distance (and the angle) is measured on the face of each edge that comes first by name;
+  Flip takes the other one.
+- **Shell:** walls of a thickness inside or outside, with the picked faces open, or with
+  none picked a closed void inside the body.
+- **Draft:** faces tilted about where they meet a neutral plane (origin plane, sketch plane
+  or a picked face), pulled along its normal or along an axis; a positive angle narrows the
+  part towards the pull direction.
+- **Press pull (Q):** flat faces moved along their normal (out adds material, a negative
+  distance removes it), cylinders grown or shrunk (a hole's wall pulled out makes the hole
+  smaller). The face keeps its name, so a sketch on it follows.
+- **Split body:** by an origin plane with an offset, a sketch plane or a flat face. The piece
+  behind the plane stays the body; the others become new bodies.
+- **Move/Copy:** bodies turned about an axis (origin axis, sketch line, a picked edge or
+  cylinder), then moved by ΔX, ΔY, ΔZ; Copy keeps the original.
+- Editing one from the timeline rolls the timeline back to it while the dialog is open.
+
 **Assemblies** (Assemble tab):
 
 - **New component** adds a component and makes it active. **Insert copy** adds another
@@ -758,12 +785,13 @@ shaded, and edges are the true edges as crisp lines (no seams). In the CAD windo
   - **Measure** (M) works on faces, edges and snapped corners, on the exact geometry.
   - **Sketch on a face** takes the face's exact plane, and follows it.
   - **Joints** snap to face centres, axes, circle centres, edge midpoints and vertices.
+  - **Fillet, chamfer, shell, draft, press-pull** start from the picked edges or faces.
 - **Drawings:** the hidden-line views come from the worker and are dimensioned from the
   exact box.
 
 **References that survive edits.** Every face, edge and vertex has a name from the feature
-history, the same after every rebuild. Sketches on faces, joints on geometry and the
-selection store these names:
+history, the same after every rebuild. Sketches on faces, joints on geometry, the modify
+features and the selection store these names:
 
 - **Faces** are named after the feature and the sketch line or cap that made them
   (`f1/side:l3`, `f1/end`, `f2/hole0:wall`). Pattern and mirror copies carry a prefix
@@ -773,6 +801,9 @@ selection store these names:
     join merges keep both names (`f1/end+f2/end`).
   - The walls of a thin extrusion are named after the line they offset (`side:l0:out`,
     `side:l0:in`).
+  - Faces a modify feature makes are named after what they came from: a rounding
+    `f5/round:…` after its edge, a shell's inner wall `f6/in:…` after the face it offsets,
+    the cut of a split `f7/split`. Drafted, press-pulled and moved faces keep their names.
 - **Edges** are named after their two faces. **Vertices** are named after the faces that
   meet there.
 - **Finding a reference again:** first by its name. A split face or edge gives the piece
@@ -809,16 +840,22 @@ chamfered bottom and a rounded top, and a duct lofted from a rectangle to a circ
 
 What it is not, honestly:
 
-- **Edge rounding only on extrusions:** fillets and chamfers work on the start and end
-  edges of an extrusion (plus sketch fillets for the side edges). You cannot pick any
-  3-D edge to round yet, and there are no drafts. The B-rep kernel can do both; the
-  features and picking are still to come.
+- **Modify features, the limits:**
+  - OpenCascade always rounds and chamfers along the whole tangent chain of a picked edge.
+    With Tangent chain off, an edge whose chain goes on is refused rather than rounded alone.
+  - Press-pull moves a flat face straight along its normal: neighbours that are not square
+    to it get a step instead of being extended (Fusion extends them). Cylinders grow or
+    shrink between their two ends; other curved faces cannot be press-pulled.
+  - A shell whose opening is tangent to a face it keeps (the top of a box with a rounded
+    rim) is made as the body less its offset inside and the opening pushed through: the
+    rounding stays as a lip curving in. Outside shells with such an opening are refused.
+  - There is no Delete face: this OpenCascade build has no defeaturing algorithm.
+  - The mesh kernel (only while OpenCascade loads, or if it cannot) makes no fillets,
+    chamfers, shells, drafts or press-pulls; it splits and moves bodies.
 - **Faceted where it matters little:** drawings are hidden-line views of the display
   mesh, so circles in them are fine polylines (their dimensions are exact). The section
   view's cut bodies cannot be picked. No sweeps along paths and no splines; lofts are
   ruled (straight between the two profiles).
-- **Selection is not used by features yet:** picked faces and edges feed the inspector
-  and Measure; fillet, chamfer, shell and draft on them are still to come.
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
 - **References:**
   - Names come from history. An edit that rebuilds a face from another sketch line (a
@@ -928,7 +965,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
