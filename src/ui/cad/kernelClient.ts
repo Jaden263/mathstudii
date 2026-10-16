@@ -5,7 +5,7 @@
 // after the results it belongs to, once per design key, and is kept here for the views.
 import { useEffect, useSyncExternalStore } from 'react';
 import type { BuildResult } from '../../cad/buildResult';
-import { hasFeatures, type CadDesign } from '../../cad/design';
+import { hasFeatures, type CadDesign, type DesignNumbers } from '../../cad/design';
 import type { CadResult } from '../../cad/evaluate';
 import { designKey, designNumbers } from '../../cad/keys';
 import { NO_KERNEL, NO_KERNEL_NOTICE, type DisplayMessage, type KernelCall, type KernelOp, type KernelReply, type KernelRequest, type KernelValues } from '../../cad/kernel/protocol';
@@ -168,6 +168,8 @@ const shown = new Map<string, BuildResult>();
 const SHOWN = 24;
 /** Designs the kernel answered without display data (nothing could build them): nobody waits for it. */
 const missing = new Set<string>();
+/** Display requests that failed (the kernel stopped while building them), by design key, and how often. */
+const failures = new Map<string, { tries: number; why: string }>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -207,6 +209,33 @@ function changed() {
 export function receiveDisplay(m: DisplayMessage) {
   for (const [k, b] of m.display) put(k, b);
   changed();
+}
+
+/**
+ * Ask the kernel for the display data of a design. A request that fails (the worker
+ * stopped) is asked once more by the view, on a fresh worker; when that fails too the
+ * view says why (`displayGaveUp`) instead of waiting for a build that is not coming.
+ */
+export function requestDisplay(regionId: string, key: string, design: CadDesign, numbers: DesignNumbers): Promise<void> {
+  return kernelRequest({ op: 'display', design, numbers }, `display:${regionId}`).then((b) => {
+    if (b) put(key, b);
+    else missing.add(key);
+    // every view of the part follows, also when the one that asked has gone (an open
+    // workspace over the page shares the part's lane with the page's view)
+    changed();
+  }, (e: unknown) => {
+    if (isSuperseded(e)) return;
+    failures.set(key, { tries: (failures.get(key)?.tries ?? 0) + 1, why: e instanceof Error ? e.message : String(e) });
+    changed();
+  });
+}
+
+/** How often the display request of a design failed. */
+const displayTries = (key: string | undefined) => (key ? failures.get(key)?.tries ?? 0 : 0);
+
+/** Why the display data of a design is not coming: its request failed twice. */
+export function displayGaveUp(key: string | undefined): string | undefined {
+  return displayTries(key) > 1 ? failures.get(key!)!.why : undefined;
 }
 
 const subscribe = (f: () => void) => {
@@ -253,8 +282,9 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
   const solid = hasFeatures(design);
   const key = solid ? dr?.display : undefined;
   const build = key ? shown.get(key) ?? null : null;
+  const tries = displayTries(key);
   useEffect(() => {
-    if (!key || !dr || build || result?.needsBrep || missing.has(key)) return;
+    if (!key || !dr || build || result?.needsBrep || missing.has(key) || tries > 1) return;
     // the calculation worker sends display data right after the results: ask only when it
     // did not come (or in a CAD window of its own, or when it came and was dropped)
     const t = window.setTimeout(() => {
@@ -262,22 +292,19 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
       // a part edited since this result was made waits for its own result (a build of the
       // newer design must not be filed under this one's key)
       if (designKey(design, numbers) !== key) return;
-      kernelRequest({ op: 'display', design, numbers }, `display:${regionId}`).then((b) => {
-        if (b) put(key, b);
-        else missing.add(key);
-        // every view of the part follows, also when the one that asked has gone (an open
-        // workspace over the page shares the part's lane with the page's view)
-        changed();
-      }, () => {});
-    }, displayDelay(key));
+      void requestDisplay(regionId, key, design, numbers);
+    }, tries ? 0 : displayDelay(key));
     return () => window.clearTimeout(t);
-  }, [key, build, regionId, !!result?.needsBrep]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, build, regionId, !!result?.needsBrep, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!solid) return { build: null, state: 'none' };
   if (build) lastShown.set(regionId, build);
   const notice = kernelNotice(dr, build, !host && ownDown);
   if (build) return { build, state: 'ready', ...notice };
   // nothing can build it: no kernel loaded, here or in the worksheet
   if (dr?.kernelError || (!host && ownDown)) return { build: null, state: 'none', ...notice };
+  // the kernel stopped on it twice: say so rather than wait (an edit asks again)
+  const gaveUp = displayGaveUp(key);
+  if (gaveUp) return { build: lastShown.get(regionId) ?? null, state: 'none', notice: gaveUp, noticeShort: 'Not built' };
   // a CAD window's own kernel worker is loading OpenCascade until it first answers
   const state = waitingFor(result, key, { missing: !!key && missing.has(key), kernelUp: !!host || ownUp });
   return { build: lastShown.get(regionId) ?? null, state, ...notice };

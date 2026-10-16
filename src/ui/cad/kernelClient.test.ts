@@ -5,7 +5,7 @@ import { NO_KERNEL_NOTICE, type KernelCall, type KernelReply } from '../../cad/k
 import type { CadResult } from '../../cad/evaluate';
 import type { BuildResult } from '../../cad/buildResult';
 import {
-  displayDelay, isSuperseded, kernelHostStopped, kernelNotice, kernelRequest, receiveDisplay, setKernelHost, setKernelWorkerFactory, waitingFor,
+  displayDelay, displayGaveUp, isSuperseded, kernelHostStopped, kernelNotice, kernelRequest, receiveDisplay, requestDisplay, setKernelHost, setKernelWorkerFactory, waitingFor,
 } from './kernelClient';
 
 /** A stand-in worker that answers section requests with their offset after `ms`. */
@@ -36,6 +36,7 @@ class OwnWorker extends EventTarget {
     port.onmessage = (e: MessageEvent<KernelCall>) => {
       const { rid, req } = e.data;
       if (this.answers && req.op === 'section') port.postMessage({ rid, ok: true, value: req.plane.offset, kernel: 'brep' } satisfies KernelReply);
+      if (this.answers && req.op === 'display') port.postMessage({ rid, ok: true, value: { kernel: 'brep', components: {}, placements: {}, errors: {} }, kernel: 'brep' } satisfies KernelReply);
     };
   }
   terminate() {
@@ -90,6 +91,40 @@ describe('kernel requests from the UI', () => {
     expect(await next).toBe(2);
     expect(b.asked).toEqual([2]);
     setKernelHost(null);
+  });
+
+  it('a part the kernel stopped on is asked once more on a fresh worker; failing again, the view says why', async () => {
+    const made: OwnWorker[] = [];
+    let answering = true;
+    setKernelWorkerFactory(() => {
+      const w = new OwnWorker(answering && made.length > 0);
+      made.push(w);
+      return w as unknown as Worker;
+    });
+    const design = { version: 2 as const, components: [], occurrences: [], joints: [] }, numbers = { sketches: {}, frames: {}, params: {}, errors: {} };
+    try {
+      // the first worker stops while building: one failure, so the view asks again …
+      const first = requestDisplay('r1', 'k1', design, numbers);
+      made[0].crash('out of memory');
+      await first;
+      expect(displayGaveUp('k1')).toBeUndefined();
+      // … on a fresh worker, which answers
+      await requestDisplay('r1', 'k1', design, numbers);
+      expect(made).toHaveLength(2);
+      expect(displayGaveUp('k1')).toBeUndefined();
+      // another part on which every worker stops: after the second failure the view gives the reason
+      answering = false;
+      made[1].crash('a test');
+      for (let i = 0; i < 2; i++) {
+        const p = requestDisplay('r2', 'k2', design, numbers);
+        await new Promise((r) => setTimeout(r, 0));
+        made[made.length - 1].crash('out of memory');
+        await p;
+      }
+      expect(displayGaveUp('k2')).toBe('the 3-D kernel stopped (out of memory) — it starts again with the next request');
+    } finally {
+      setKernelWorkerFactory(null);
+    }
   });
 
   it('a worker of our own that crashes fails what it was asked; the next request starts a new one', async () => {

@@ -1003,7 +1003,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         <div className="props">
           <h3 className="sub">{FEATURE_LABEL[it.kind]}</h3>
           <label className="field"><span>Name</span><LazyInput label="Name" mono={false} value={it.name} onCommit={(v) => v.trim() && patchItem(c.id, it.id, { name: v.trim() })} /></label>
-          {isSketch(it) && <p className="hint">On {planeWords(it)}{it.plane.offset ? `, offset ${it.plane.offset}` : ''}{'frame' in it.plane ? (sketchFace(it) ? ': it follows the face through edits' : ', where the face was when the sketch was made') : ''}.</p>}
+          {isSketch(it) && <p className="hint">On {planeWords(it)}{it.plane.offset ? `, offset ${it.plane.offset}` : ''}{'frame' in it.plane ? (sketchFace(it) ? (dr?.warnings?.[it.id] ? '' : ': it follows the face through edits') : ', where the face was when the sketch was made') : ''}.</p>}
           {isSketch(it) && dr?.sketches[it.id] && <p className="hint">{dr.sketches[it.id].dof === 0 ? 'Fully defined' : `${dr.sketches[it.id].dof} DOF free`}{dr.sketches[it.id].section ? ` · A = ${num(dr.sketches[it.id].section!.A)} ${u}²` : ''}</p>}
           {isSketch(it) && <Expr label="Plane offset" value={it.plane.offset ?? ''} placeholder="0" onChange={(v) => patchItem(c.id, it.id, { plane: { ...it.plane, offset: v || undefined } } as Partial<DesignItem>)} />}
           {dr?.errors[it.id] && <div className="region-error">{dr.errors[it.id]}</div>}
@@ -1326,7 +1326,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d}
               navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch'}
               onHover={onHover}
-              message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.noticeShort === 'No 3-D kernel' && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
+              message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.state === 'none' && shown.notice && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
             />
           )}
           {!inSketch && (shown.notice || (shown.state !== 'ready' && shown.state !== 'none' && scene.meshes.length > 0)) && (
