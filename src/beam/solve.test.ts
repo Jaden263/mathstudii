@@ -122,11 +122,59 @@ describe('beam and frame solver', () => {
     expect(inc.reactions[0].Ry + B.Ry).toBeCloseTo(10e3, 6);
   });
 
+  it('a point load right next to a support acts there', () => {
+    // two spans of 25 m, a stiff girder, 300 kN at d from the middle support
+    const P = 300e3, L = 25;
+    for (const d of [1e-3, 1e-9]) {
+      const st = beam([0, L, 2 * L], [sup('A', 'n0', 'pin'), sup('B', 'n1', 'roller'), sup('C', 'n2', 'roller')],
+        [{ id: 'P', type: 'force', at: { member: 'm0', t: 1 - d / L }, Fx: 0, Fy: -P }], () => ({ E: 210e9, A: 0.06, I: 0.08 }));
+      const [RA, RB, RC] = solveStructure(st).reactions.map((q) => q.Ry);
+      // as if it stood on B, to within P·d/L
+      expect(Math.abs(RA)).toBeLessThan((P * d) / L);
+      expect(Math.abs(RB - P)).toBeLessThan((P * d) / L);
+      expect(Math.abs(RC)).toBeLessThan((P * d) / L);
+      // and exactly: three-moment equation with the load at a = L − d
+      const a = L - d, MB = (-P * a * d * (2 * L - d)) / (4 * L * L);
+      expect(RC).toBeCloseTo(MB / L, 6);
+      expect(RA).toBeCloseTo((MB + P * d) / L, 6);
+    }
+  });
+
+  it('loads close to each other or to a node need no sliver piece', () => {
+    const P = 10e3, L = 10, q = 5e3;
+    // two forces 1 µm apart at midspan
+    const r = solveStructure(beam([0, L], [sup('A', 'n0', 'pin'), sup('B', 'n1', 'roller')], [
+      { id: 'P1', type: 'force', at: { member: 'm0', t: 0.5 }, Fx: 0, Fy: -P },
+      { id: 'P2', type: 'force', at: { member: 'm0', t: 0.5 + 1e-7 }, Fx: 0, Fy: -P },
+    ]));
+    expect(r.reactions[0].Ry).toBeCloseTo(P * (1 - 1e-7), 6);
+    expect(r.max.M!.value).toBeCloseTo(P * (1 - 1e-7) * L / 2, 6);
+    const rotA = (b: number) => (-P * b * (L * L - b * b)) / (6 * E * I * L); // end rotation for P at b from B
+    expect(r.nodes.n0.rz).toBeCloseTo(rotA(L / 2) + rotA(L / 2 - 1e-6), 12);
+    // a uniform load stopping 1 µm short of the support
+    const u = solveStructure(beam([0, L], [sup('A', 'n0', 'pin'), sup('B', 'n1', 'roller')], [{ id: 'q', type: 'line', member: 'm0', t1: 0, t2: 1 - 1e-7, q1: q, q2: q, dir: 'global' }]));
+    expect(u.reactions[0].Ry + u.reactions[1].Ry).toBeCloseTo(q * L * (1 - 1e-7), 6);
+    expect(u.max.M!.value).toBeCloseTo((q * L * L) / 8, 6);
+  });
+
+  it('a moment next to a hinge stays on its member', () => {
+    // Gerber beam: A fixed, hinge at 3 m, roller at 6 m; the moment sits on the cantilever side
+    const M0 = 20e3;
+    const r = solveStructure(beam([0, 3, 6], [sup('A', 'n0', 'fixed'), sup('C', 'n2', 'roller')],
+      [{ id: 'M', type: 'moment', at: { member: 'm0', t: 1 - 1e-9 }, M: M0 }], (_, i) => (i === 0 ? { hingeB: true } : {})));
+    expect(r.reactions[0].M).toBeCloseTo(-M0, 6);
+    expect(r.reactions[1].Ry).toBeCloseTo(0, 6);
+  });
+
   it('reports mechanisms and missing supports', () => {
     expect(() => solveStructure(beam([0, 4], [sup('A', 'n0', 'roller'), sup('B', 'n1', 'roller')], []))).toThrow(/mechanism/);
     expect(() => solveStructure(beam([0, 4], [], []))).toThrow(/supports/);
     // a hinge with a simple support on each side: the beam folds
-    expect(() => solveStructure(beam([0, 2, 4], [sup('A', 'n0', 'pin'), sup('B', 'n2', 'roller')], [], (_, i) => (i === 0 ? { hingeB: true } : {})))).toThrow(/mechanism/);
+    const fold = (loads: NumLoad[]) => beam([0, 2, 4], [sup('A', 'n0', 'pin'), sup('B', 'n2', 'roller')], loads, (_, i) => (i === 0 ? { hingeB: true } : {}));
+    expect(() => solveStructure(fold([]))).toThrow(/mechanism/);
+    // still so with loads right next to the nodes
+    expect(() => solveStructure(fold([{ id: 'P', type: 'force', at: { member: 'm0', t: 1 - 1e-9 }, Fx: 0, Fy: -1e3 }]))).toThrow(/mechanism/);
+    expect(() => solveStructure(beam([0, 4], [sup('A', 'n0', 'roller'), sup('B', 'n1', 'roller')], [{ id: 'P', type: 'force', at: { member: 'm0', t: 1e-9 }, Fx: 0, Fy: -1e3 }]))).toThrow(/mechanism/);
   });
 });
 

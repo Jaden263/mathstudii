@@ -1,10 +1,11 @@
 // Plane frame analysis by the direct stiffness method (Euler–Bernoulli members,
 // small displacements, linear elastic). Works in SI units (N, m, Pa).
 //
-// Members are split where loads sit, so every piece carries a linear line load at
-// most. For those pieces the nodal results are exact, and internal forces follow
-// exactly from statics: N, V and M are polynomials of degree ≤ 1, 2 and 3. The deflection
-// comes from integrating M/EI twice between the exact end displacements, which is
+// Each member enters the stiffness matrix whole, and the loads on it as their fixed-end
+// forces, so the nodal results are exact wherever the loads sit. The member is then split
+// where loads sit, so every piece carries a linear line load at most, and internal forces
+// follow exactly from statics: N, V and M are polynomials of degree ≤ 1, 2 and 3. The
+// deflection comes from integrating M/EI twice between the exact end displacements, which is
 // exact too. Supports enter as constraints (Lagrange multipliers), so the multipliers
 // are the support reactions and inclined rollers need no special treatment.
 
@@ -119,22 +120,31 @@ export interface BeamSolution {
 
 export class StructureError extends Error {}
 
-/** One straight piece of a member between split points, with its linear line load (local axes). */
+/** One straight piece of a member between load points, with its linear line load (local axes). */
 interface Piece {
-  member: NumMember;
   t0: number;
   t1: number;
+  L: number;
+  qxa: number; qxb: number; qya: number; qyb: number;
+  /** Point force and moment on the member at the start of the piece (local axes). */
+  px: number; py: number; pm: number;
+}
+
+/** A member, as it enters the stiffness matrix: whole, between its two nodes. */
+interface Element {
+  member: NumMember;
   i: number; // node index at the start
   j: number; // node index at the end
-  hingeI: boolean;
-  hingeJ: boolean;
   L: number;
   c: number;
   s: number;
-  qxa: number; qxb: number; qya: number; qyb: number;
+  pieces: Piece[];
+  k: number[][];
+  f: number[];
 }
 
 const STATIONS = 24;
+const GAUSS = [[-Math.sqrt(0.6), 5 / 9], [0, 8 / 9], [Math.sqrt(0.6), 5 / 9]];
 
 /** Local stiffness of a frame member (u1 v1 θ1 u2 v2 θ2). */
 function localK(E: number, A: number, I: number, L: number): number[][] {
@@ -194,6 +204,23 @@ function solveDense(A: number[][], b: number[]): number[] {
   return x;
 }
 
+/**
+ * Equivalent nodal loads (u1 v1 θ1 u2 v2 θ2) of a point force (px, py) and a moment m at x
+ * along a member of length L, local axes: the shape functions there, their slopes for m.
+ * For Euler–Bernoulli members these are exactly the fixed-end forces, reversed.
+ */
+function pointLoadVector(L: number, x: number, px: number, py: number, m: number): number[] {
+  const e = x / L, e2 = e * e, e3 = e2 * e;
+  return [
+    px * (1 - e),
+    py * (1 - 3 * e2 + 2 * e3) + (6 * m * (e2 - e)) / L,
+    py * L * (e - 2 * e2 + e3) + m * (1 - 4 * e + 3 * e2),
+    px * e,
+    py * (3 * e2 - 2 * e3) + (6 * m * (e - e2)) / L,
+    py * L * (e3 - e2) + m * (3 * e2 - 2 * e),
+  ];
+}
+
 export function solveStructure(st: NumStructure): BeamSolution {
   if (!st.members.length) throw new StructureError('Draw at least one member');
   if (!st.supports.length) throw new StructureError('Add supports: the structure needs to be held in place');
@@ -210,45 +237,56 @@ export function solveStructure(st: NumStructure): BeamSolution {
     if (!(Math.hypot(b.x - a.x, b.y - a.y) > 0)) throw new StructureError('A member has zero length');
   }
 
-  // split points per member: point loads, moments and the ends of partial line loads
-  const splits = new Map<string, Set<number>>(st.members.map((m) => [m.id, new Set([0, 1])]));
+  // Loads on a member enter as fixed-end forces, not as nodes of their own: a node close to a
+  // member end or to another load would make a sliver piece, so much stiffer (12EI/d³) than the
+  // rest that the solve loses its precision and reads as a mechanism. A load on a member end
+  // acts on the node.
   const clampT = (t: number) => Math.min(1, Math.max(0, t));
+  const nn = pos.length, ndof = 3 * nn;
+  const F = new Array<number>(ndof).fill(0);
+  const onMember = new Map<string, { t: number; Fx: number; Fy: number; M: number }[]>(st.members.map((m) => [m.id, []]));
   for (const l of st.loads) {
-    if (l.type === 'line') {
-      splits.get(l.member)?.add(clampT(l.t1)).add(clampT(l.t2));
-    } else if ('member' in l.at) splits.get(l.at.member)?.add(clampT(l.at.t));
-  }
-  const inner = new Map<string, number>(); // `${member}@${t}` → node index
-  const pointOn = (m: NumMember, t: number): number => {
-    if (t <= 1e-12) return nodeIndex.get(m.a)!;
-    if (t >= 1 - 1e-12) return nodeIndex.get(m.b)!;
-    const key = `${m.id}@${t}`;
-    let k = inner.get(key);
-    if (k === undefined) {
-      const a = pos[nodeIndex.get(m.a)!], b = pos[nodeIndex.get(m.b)!];
-      k = pos.length;
-      pos.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-      inner.set(key, k);
+    if (l.type === 'line') continue;
+    const [Fx, Fy, M] = l.type === 'force' ? [l.Fx, l.Fy, 0] : [0, 0, l.M];
+    const at = l.at;
+    let k: number | undefined;
+    if ('node' in at) {
+      k = nodeIndex.get(at.node);
+      if (k === undefined) throw new StructureError('A load sits on a missing node');
+    } else {
+      const m = st.members.find((q) => q.id === at.member);
+      if (!m) throw new StructureError('A load sits on a missing member');
+      const t = clampT(at.t);
+      if (t <= 1e-12) k = nodeIndex.get(m.a)!;
+      else if (t >= 1 - 1e-12) k = nodeIndex.get(m.b)!;
+      else onMember.get(m.id)!.push({ t, Fx, Fy, M });
     }
-    return k;
-  };
+    if (k === undefined) continue;
+    F[3 * k] += Fx;
+    F[3 * k + 1] += Fy;
+    F[3 * k + 2] += M;
+  }
 
-  const pieces: Piece[] = [];
+  const elements: Element[] = [];
   for (const m of st.members) {
-    const ts = [...splits.get(m.id)!].sort((p, q) => p - q).filter((t, i, arr) => i === 0 || t - arr[i - 1] > 1e-9);
     const a = pos[nodeIndex.get(m.a)!], b = pos[nodeIndex.get(m.b)!];
     const Lm = Math.hypot(b.x - a.x, b.y - a.y);
     const c = (b.x - a.x) / Lm, s = (b.y - a.y) / Lm;
+    const points = onMember.get(m.id)!;
+    const lines = st.loads.filter((l): l is Extract<NumLoad, { type: 'line' }> => l.type === 'line' && l.member === m.id);
+    // split points: point loads, moments and the ends of partial line loads
+    const ts = [0];
+    for (const t of [...points.map((p) => p.t), ...lines.flatMap((l) => [clampT(l.t1), clampT(l.t2)])].sort((p, q) => p - q)) {
+      if (t - ts[ts.length - 1] > 1e-9 && 1 - t > 1e-9) ts.push(t);
+    }
+    ts.push(1);
+    const pieces: Piece[] = [];
     for (let k = 0; k + 1 < ts.length; k++) {
-      const t0 = ts[k], t1 = ts[k + 1];
-      const p: Piece = {
-        member: m, t0, t1, i: pointOn(m, t0), j: pointOn(m, t1), hingeI: !!m.hingeA && t0 === 0, hingeJ: !!m.hingeB && t1 === 1,
-        L: Lm * (t1 - t0), c, s, qxa: 0, qxb: 0, qya: 0, qyb: 0,
-      };
-      for (const l of st.loads) {
-        if (l.type !== 'line' || l.member !== m.id) continue;
+      const t0 = ts[k], t1 = ts[k + 1], tm = (t0 + t1) / 2;
+      const p: Piece = { t0, t1, L: Lm * (t1 - t0), qxa: 0, qxb: 0, qya: 0, qyb: 0, px: 0, py: 0, pm: 0 };
+      for (const l of lines) {
         const la = Math.min(l.t1, l.t2), lb = Math.max(l.t1, l.t2);
-        if (t0 < la - 1e-12 || t1 > lb + 1e-12 || lb - la <= 0) continue;
+        if (tm < la || tm > lb || lb - la <= 0) continue;
         const qAt = (t: number) => l.q1 + ((l.q2 - l.q1) * (t - l.t1)) / (l.t2 - l.t1);
         const qa = qAt(t0), qb = qAt(t1);
         if (l.dir === 'local') {
@@ -262,27 +300,40 @@ export function solveStructure(st: NumStructure): BeamSolution {
       }
       pieces.push(p);
     }
+    // fixed-end forces: point loads where they sit, line loads by Gauss quadrature (exact: the
+    // shape functions are cubic, the loads linear)
+    const f = [0, 0, 0, 0, 0, 0];
+    const add = (v: number[]) => v.forEach((x, q) => (f[q] += x));
+    for (const p of points) {
+      const px = c * p.Fx + s * p.Fy, py = -s * p.Fx + c * p.Fy;
+      add(pointLoadVector(Lm, p.t * Lm, px, py, p.M));
+      // its jump in the diagrams is at the nearest split (at the member's end: past the last piece)
+      const at = ts.reduce((best, t, q) => (Math.abs(t - p.t) < Math.abs(ts[best] - p.t) ? q : best), 0);
+      if (at < pieces.length) {
+        pieces[at].px += px;
+        pieces[at].py += py;
+        pieces[at].pm += p.M;
+      }
+    }
+    for (const p of pieces) {
+      if (!(p.qxa || p.qxb || p.qya || p.qyb)) continue;
+      for (const [g, w] of GAUSS) {
+        const r = (1 + g) / 2, W = (w * p.L) / 2;
+        add(pointLoadVector(Lm, p.t0 * Lm + r * p.L, W * (p.qxa + (p.qxb - p.qxa) * r), W * (p.qya + (p.qyb - p.qya) * r), 0));
+      }
+    }
+    const k = localK(m.E, m.A, m.I, Lm);
+    condense(k, f, [...(m.hingeA ? [2] : []), ...(m.hingeB ? [5] : [])]);
+    elements.push({ member: m, i: nodeIndex.get(m.a)!, j: nodeIndex.get(m.b)!, L: Lm, c, s, pieces, k, f });
   }
 
-  const nn = pos.length, ndof = 3 * nn;
   const K = Array.from({ length: ndof }, () => new Array<number>(ndof).fill(0));
-  const F = new Array<number>(ndof).fill(0);
-  const pieceK: number[][][] = [];
-  const pieceF: number[][] = [];
-  for (const p of pieces) {
-    const k = localK(p.member.E, p.member.A, p.member.I, p.L);
-    const L = p.L;
-    const f = [
-      (L * (2 * p.qxa + p.qxb)) / 6, (L * (7 * p.qya + 3 * p.qyb)) / 20, (L * L * (3 * p.qya + 2 * p.qyb)) / 60,
-      (L * (p.qxa + 2 * p.qxb)) / 6, (L * (3 * p.qya + 7 * p.qyb)) / 20, (-L * L * (2 * p.qya + 3 * p.qyb)) / 60,
-    ];
-    condense(k, f, [...(p.hingeI ? [2] : []), ...(p.hingeJ ? [5] : [])]);
-    pieceK.push(k);
-    pieceF.push(f);
+  for (const el of elements) {
+    const { k, f } = el;
     // global: k_g = Tᵀ k T, f_g = Tᵀ f with T = blockdiag(R, R), R = [[c, s, 0], [−s, c, 0], [0, 0, 1]]
-    const T = (v: number[]) => [p.c * v[0] - p.s * v[1], p.s * v[0] + p.c * v[1], v[2]];
-    const dofs = [3 * p.i, 3 * p.i + 1, 3 * p.i + 2, 3 * p.j, 3 * p.j + 1, 3 * p.j + 2];
-    const R = [[p.c, p.s, 0, 0, 0, 0], [-p.s, p.c, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0], [0, 0, 0, p.c, p.s, 0], [0, 0, 0, -p.s, p.c, 0], [0, 0, 0, 0, 0, 1]];
+    const T = (v: number[]) => [el.c * v[0] - el.s * v[1], el.s * v[0] + el.c * v[1], v[2]];
+    const dofs = [3 * el.i, 3 * el.i + 1, 3 * el.i + 2, 3 * el.j, 3 * el.j + 1, 3 * el.j + 2];
+    const R = [[el.c, el.s, 0, 0, 0, 0], [-el.s, el.c, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0], [0, 0, 0, el.c, el.s, 0], [0, 0, 0, -el.s, el.c, 0], [0, 0, 0, 0, 0, 1]];
     const kR = k.map((row) => R[0].map((_, j) => row.reduce((acc, v, q) => acc + v * R[q][j], 0)));
     for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) {
       let v = 0;
@@ -291,23 +342,6 @@ export function solveStructure(st: NumStructure): BeamSolution {
     }
     const fg = [...T(f.slice(0, 3)), ...T(f.slice(3))];
     dofs.forEach((d, a) => (F[d] += fg[a]));
-  }
-  const nodeOf = (at: NumAt): number => {
-    if ('node' in at) {
-      const k = nodeIndex.get(at.node);
-      if (k === undefined) throw new StructureError('A load sits on a missing node');
-      return k;
-    }
-    const m = st.members.find((q) => q.id === at.member);
-    if (!m) throw new StructureError('A load sits on a missing member');
-    return pointOn(m, clampT(at.t));
-  };
-  for (const l of st.loads) {
-    if (l.type === 'force') {
-      const k = nodeOf(l.at);
-      F[3 * k] += l.Fx;
-      F[3 * k + 1] += l.Fy;
-    } else if (l.type === 'moment') F[3 * nodeOf(l.at) + 2] += l.M;
   }
 
   // constraints: supports, plus rotations nothing holds (every member end hinged there)
@@ -343,10 +377,17 @@ export function solveStructure(st: NumStructure): BeamSolution {
     }
   });
   const kmax = Math.max(...K.map((row, i) => Math.abs(row[i])), 1e-300);
-  const heldRot = new Set(rows.filter((r) => r.dir[2]).map((r) => r.dof[0]));
+  // held: by a member end without a hinge, a fixed support or a rotational spring (judged from the
+  // structure: K[d][d] has other units than the translations, so its size says little)
+  const heldRot = new Set(rows.filter((r) => r.dir[2]).map((r) => (r.dof[0] - 2) / 3));
+  for (const m of st.members) {
+    if (!m.hingeA) heldRot.add(nodeIndex.get(m.a)!);
+    if (!m.hingeB) heldRot.add(nodeIndex.get(m.b)!);
+  }
+  for (const sp of rotSprings) heldRot.add(sp.node);
   for (let k = 0; k < nn; k++) {
     const d = 3 * k + 2;
-    if (Math.abs(K[d][d]) > 1e-12 * kmax || heldRot.has(d)) continue;
+    if (heldRot.has(k)) continue;
     if (Math.abs(F[d]) > 0) throw new StructureError('A moment acts on a hinge, where nothing can carry it');
     rows.push({ dof: [d], w: [1], dir: [0, 0, 0] });
   }
@@ -380,71 +421,78 @@ export function solveStructure(st: NumStructure): BeamSolution {
   }
   for (const sp of rotSprings) reactions[sp.support].M += -sp.kr * D[3 * sp.node + 2];
 
-  // internal forces along each piece
-  const byMember = new Map<string, MemberResult>();
+  // internal forces along each member, piece by piece from its end forces and loads
   const max: BeamSolution['max'] = {};
   const consider = (key: keyof BeamSolution['max'], value: number, member: string, s: number, x: number, y: number) => {
     const cur = max[key];
     if (!cur || Math.abs(value) > Math.abs(cur.value) * (1 + 1e-9)) max[key] = { value, member, s, x, y };
   };
-  pieces.forEach((p, pi) => {
-    const m = p.member;
-    let r = byMember.get(m.id);
-    if (!r) {
-      const a = pos[nodeIndex.get(m.a)!], b = pos[nodeIndex.get(m.b)!];
-      r = { id: m.id, L: Math.hypot(b.x - a.x, b.y - a.y), s: [], N: [], V: [], M: [], dx: [], dy: [], pieces: [], ...(m.W ? { sigma: [] } : {}) };
-      byMember.set(m.id, r);
-    }
-    const g = [3 * p.i, 3 * p.i + 1, 3 * p.i + 2, 3 * p.j, 3 * p.j + 1, 3 * p.j + 2].map((d) => D[d]);
-    const loc = (u: number, v: number) => [p.c * u + p.s * v, -p.s * u + p.c * v];
+  const members = elements.map((el): MemberResult => {
+    const m = el.member, Lm = el.L, EI = m.E * m.I, EA = m.E * m.A;
+    const r: MemberResult = { id: m.id, L: Lm, s: [], N: [], V: [], M: [], dx: [], dy: [], pieces: [], ...(m.W ? { sigma: [] } : {}) };
+    const g = [3 * el.i, 3 * el.i + 1, 3 * el.i + 2, 3 * el.j, 3 * el.j + 1, 3 * el.j + 2].map((d) => D[d]);
+    const loc = (u: number, v: number) => [el.c * u + el.s * v, -el.s * u + el.c * v];
     const [u1, v1] = loc(g[0], g[1]), [u2, v2] = loc(g[3], g[4]);
     const dl = [u1, v1, g[2], u2, v2, g[5]];
-    const k = pieceK[pi], f = pieceF[pi];
-    const pe = k.map((row, i) => row.reduce((acc, v, j) => acc + v * dl[j], 0) - f[i]);
-    const L = p.L, EI = m.E * m.I, EA = m.E * m.A;
-    const bx = (p.qxb - p.qxa) / L, by = (p.qyb - p.qya) / L;
-    const Nf = (x: number) => -pe[0] - (p.qxa * x + (bx * x * x) / 2);
-    const Vf = (x: number) => pe[1] + p.qya * x + (by * x * x) / 2;
-    const Mf = (x: number) => -pe[2] + pe[1] * x + (p.qya * x * x) / 2 + (by * x ** 3) / 6;
-    const Wf = (x: number) => ((-pe[2] * x * x) / 2 + (pe[1] * x ** 3) / 6 + (p.qya * x ** 4) / 24 + (by * x ** 5) / 120) / EI;
-    const Uf = (x: number) => (-pe[0] * x - (p.qxa * x * x) / 2 - (bx * x ** 3) / 6) / EA;
-    const WL = Wf(L), UL = Uf(L);
-    const vLin = (v2 - v1 - WL) / L, uLin = (u2 - u1 - UL) / L;
-    r.pieces.push({
-      s0: p.t0 * r.L, L, c: p.c, s: p.s,
-      N: [-pe[0], -p.qxa, -bx / 2], V: [pe[1], p.qya, by / 2], M: [-pe[2], pe[1], p.qya / 2, by / 6],
-      u: [u1, -pe[0] / EA + uLin, -p.qxa / (2 * EA), -bx / (6 * EA)],
-      v: [v1, vLin, -pe[2] / (2 * EI), pe[1] / (6 * EI), p.qya / (24 * EI), by / (120 * EI)],
+    const pe = el.k.map((row, i) => row.reduce((acc, v, j) => acc + v * dl[j], 0) - el.f[i]);
+    // statics from the start, piece by piece, and the displacements that the curvature and the
+    // strain alone give (start held: v = v' = u = 0); the member's own start rotation and
+    // stretch then follow from its end displacements
+    let act = pe.slice(0, 3); // forces on the start of the piece, local axes
+    let v0 = 0, th0 = 0, u0 = 0; // at the start of the piece
+    const parts = el.pieces.map((p) => {
+      const L = p.L;
+      const pa = [act[0] + p.px, act[1] + p.py, act[2] + p.pm];
+      const bx = (p.qxb - p.qxa) / L, by = (p.qyb - p.qya) / L;
+      const part = { p, pa, bx, by, v0, th0, u0 };
+      v0 += th0 * L + ((-pa[2] * L * L) / 2 + (pa[1] * L ** 3) / 6 + (p.qya * L ** 4) / 24 + (by * L ** 5) / 120) / EI;
+      th0 += (-pa[2] * L + (pa[1] * L * L) / 2 + (p.qya * L ** 3) / 6 + (by * L ** 4) / 24) / EI;
+      u0 += (-pa[0] * L - (p.qxa * L * L) / 2 - (bx * L ** 3) / 6) / EA;
+      // the next piece's start takes the internal forces here
+      const N = -pa[0] - (p.qxa * L + (bx * L * L) / 2), V = pa[1] + p.qya * L + (by * L * L) / 2;
+      const M = -pa[2] + pa[1] * L + (p.qya * L * L) / 2 + (by * L ** 3) / 6;
+      act = [-N, V, -M];
+      return part;
     });
-    const xs = new Set<number>();
-    for (let q = 0; q <= STATIONS; q++) xs.add((L * q) / STATIONS);
-    // where V = 0, M peaks: pe1 + qya x + by x²/2 = 0
-    const roots = Math.abs(by) > 1e-14 * (Math.abs(p.qya) + 1e-300)
-      ? (() => {
-        const disc = p.qya * p.qya - 2 * by * pe[1];
-        return disc < 0 ? [] : [(-p.qya + Math.sqrt(disc)) / by, (-p.qya - Math.sqrt(disc)) / by];
-      })()
-      : Math.abs(p.qya) > 0 ? [-pe[1] / p.qya] : [];
-    for (const x of roots) if (x > 0 && x < L) xs.add(x);
-    const base = (p.t0 * r.L);
-    for (const x of [...xs].sort((a, b) => a - b)) {
-      const uL = u1 + Uf(x) - (x / L) * (UL - (u2 - u1));
-      const vL = v1 + ((v2 - v1) * x) / L + Wf(x) - (x / L) * WL;
-      const dxg = p.c * uL - p.s * vL, dyg = p.s * uL + p.c * vL;
-      const N = Nf(x), V = Vf(x), M = Mf(x);
-      const sx = base + x;
-      const gx = pos[p.i].x + p.c * x, gy = pos[p.i].y + p.s * x;
-      r.s.push(sx); r.N.push(N); r.V.push(V); r.M.push(M); r.dx.push(dxg); r.dy.push(dyg);
-      consider('N', N, m.id, sx, gx, gy);
-      consider('V', V, m.id, sx, gx, gy);
-      consider('M', M, m.id, sx, gx, gy);
-      consider('w', Math.hypot(dxg, dyg), m.id, sx, gx, gy);
-      if (r.sigma && m.W) {
-        const sg = Math.abs(N) / m.A + Math.abs(M) / m.W;
-        r.sigma.push(sg);
-        consider('sigma', sg, m.id, sx, gx, gy);
+    const rot = (v2 - v1 - v0) / Lm, str = (u2 - u1 - u0) / Lm;
+    for (const { p, pa, bx, by, ...at } of parts) {
+      const L = p.L, s0 = p.t0 * Lm;
+      const piece: PiecePoly = {
+        s0, L, c: el.c, s: el.s,
+        N: [-pa[0], -p.qxa, -bx / 2], V: [pa[1], p.qya, by / 2], M: [-pa[2], pa[1], p.qya / 2, by / 6],
+        u: [u1 + str * s0 + at.u0, -pa[0] / EA + str, -p.qxa / (2 * EA), -bx / (6 * EA)],
+        v: [v1 + rot * s0 + at.v0, rot + at.th0, -pa[2] / (2 * EI), pa[1] / (6 * EI), p.qya / (24 * EI), by / (120 * EI)],
+      };
+      r.pieces.push(piece);
+      const xs = new Set<number>();
+      for (let q = 0; q <= STATIONS; q++) xs.add((L * q) / STATIONS);
+      // where V = 0, M peaks: pa1 + qya x + by x²/2 = 0
+      const roots = Math.abs(by) > 1e-14 * (Math.abs(p.qya) + 1e-300)
+        ? (() => {
+          const disc = p.qya * p.qya - 2 * by * pa[1];
+          return disc < 0 ? [] : [(-p.qya + Math.sqrt(disc)) / by, (-p.qya - Math.sqrt(disc)) / by];
+        })()
+        : Math.abs(p.qya) > 0 ? [-pa[1] / p.qya] : [];
+      for (const x of roots) if (x > 0 && x < L) xs.add(x);
+      for (const x of [...xs].sort((a, b) => a - b)) {
+        const uL = polyAt(piece.u, x), vL = polyAt(piece.v, x);
+        const dxg = el.c * uL - el.s * vL, dyg = el.s * uL + el.c * vL;
+        const N = polyAt(piece.N, x), V = polyAt(piece.V, x), M = polyAt(piece.M, x);
+        const sx = s0 + x;
+        const gx = pos[el.i].x + el.c * sx, gy = pos[el.i].y + el.s * sx;
+        r.s.push(sx); r.N.push(N); r.V.push(V); r.M.push(M); r.dx.push(dxg); r.dy.push(dyg);
+        consider('N', N, m.id, sx, gx, gy);
+        consider('V', V, m.id, sx, gx, gy);
+        consider('M', M, m.id, sx, gx, gy);
+        consider('w', Math.hypot(dxg, dyg), m.id, sx, gx, gy);
+        if (r.sigma && m.W) {
+          const sg = Math.abs(N) / m.A + Math.abs(M) / m.W;
+          r.sigma.push(sg);
+          consider('sigma', sg, m.id, sx, gx, gy);
+        }
       }
     }
+    return r;
   });
 
   const nodes: BeamSolution['nodes'] = {};
@@ -457,5 +505,5 @@ export function solveStructure(st: NumStructure): BeamSolution {
   const restraints = rows.filter((r) => r.support !== undefined).length;
   const orphan = rows.length - restraints;
   const indeterminacy = 3 * st.members.length + restraints - 3 * st.nodes.length - releases + orphan;
-  return { members: st.members.map((m) => byMember.get(m.id)!), reactions, nodes, max, indeterminacy };
+  return { members, reactions, nodes, max, indeterminacy };
 }
