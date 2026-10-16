@@ -90,6 +90,15 @@ describe('EN 1992-1-1 slab reinforcement', () => {
     expect(minimumSteel(0.214, low)).toBeCloseTo(0.0013 * 0.214, 12);
   });
 
+  it('another grade, another f_yk (B450C)', () => {
+    // f_yd = 450 / 1.15 = 391.30 MPa: 50 kN·m/m needs 50e3 / (0.1926 · 391.30e6) = 6.634 cm²/m;
+    // a_s,min = 0.26 · 2.8965 / 450 · 214 mm = 3.581 cm²/m
+    const b450 = rebarProps({ concrete: 'C30/37', steel: 'B450C', t: 0.25, cover: 0.03, bar: 0.012 });
+    expect(b450.fyd / 1e6).toBeCloseTo(391.304, 3);
+    expect(steelArea(50e3, b450.dx, b450).as * 1e4).toBeCloseTo(6.634, 3);
+    expect(minimumSteel(b450.dx, b450) * 1e4).toBeCloseTo(3.581, 3);
+  });
+
   it('the y bars outside instead', () => {
     const q = rebarProps({ concrete: 'C30/37', steel: 'B500B', t: 0.25, cover: 0.03, bar: 0.012, outer: 'y' });
     expect([q.dx, q.dy]).toEqual([0.202, 0.214].map((v) => expect.closeTo(v, 12)));

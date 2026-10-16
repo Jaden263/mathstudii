@@ -21,7 +21,8 @@ const PRESETS: { id: PlatePreset; label: string; title: string }[] = [
   { id: 'steel', label: 'Steel plate', title: '1.2 m × 0.8 m, 20 mm S355, clamped all round, 50 kN/m²' },
 ];
 
-const REBAR = ['B500A', 'B500B', 'B500C'];
+/** Reinforcement grades by f_yk and ductility class (EN 1992-1-1 Annex C): B500B, or B450C as in some national annexes. */
+const REBAR = ['B400B', 'B450A', 'B450C', 'B500A', 'B500B', 'B500C', 'B550B'];
 
 export function PlateProps({ region, result, dispatch }: { region: PlateRegion; result?: PlateResult; dispatch: Dispatch<Action> }) {
   const set = (patch: Partial<PlateRegion>, key = 'plate') => dispatch({ type: 'update', id: region.id, patch, coalesce: `${key}:${region.id}` });
@@ -131,7 +132,10 @@ export function PlateProps({ region, result, dispatch }: { region: PlateRegion; 
             <>
               <div className="row2">
                 <label className="field"><span>Steel</span>
-                  <select value={rebar.steel} onChange={(e) => setRebar({ steel: e.target.value })}>{REBAR.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+                  <select value={rebar.steel} onChange={(e) => setRebar({ steel: e.target.value })}>
+                    {!REBAR.includes(rebar.steel) && <option value={rebar.steel}>{rebar.steel}</option>}
+                    {REBAR.map((g) => <option key={g} value={g}>{g} (f_yk {g.slice(1, 4)} MPa)</option>)}
+                  </select>
                 </label>
                 <label className="field"><span>Outer layer</span>
                   <select value={rebar.outer ?? 'x'} onChange={(e) => setRebar({ outer: e.target.value === 'y' ? 'y' : undefined })}>
