@@ -515,8 +515,9 @@ bevels them, and a few borderline roundings one kernel accepts the other refuses
 - **Incremental rebuilds:** every step of a timeline keeps what it built. Changing a
   feature rebuilds it and the features after it. Rolling the timeline marker back and
   forth, renaming, recolouring, panning a sketch or moving a dimension's label rebuilds
-  nothing. For example, a new body on a plate with 60 counterbored holes rebuilds in
-  25 ms instead of 2.1 s.
+  nothing, and a value changed and changed back finds its earlier build again. For
+  example, a new body on a plate with 60 counterbored holes rebuilds in 25 ms instead of
+  2.1 s.
 - Typing in the worksheet stays smooth while a heavy part rebuilds. With a 40-hole flange
   rebuilding, the page's longest task was 57 ms, against 2.8 s when the page built parts
   itself.

@@ -83,10 +83,40 @@ describe('timeline step keys', () => {
     expect(stepKey('root', off, numbers(), find)).not.toBe(stepKey('root', sketch('s1'), numbers(), find));
   });
 
-  it('a sketch step ignores whether the sketch is hidden', () => {
+  it('a sketch step ignores whether the sketch is hidden, not its curves', () => {
     const s = sketch('s1');
     expect(stepKey('root', { ...s, hidden: true }, numbers(), find)).toBe(stepKey('root', s, numbers(), find));
-    expect(stepKey('root', sketch('s1', 20), numbers(), find)).not.toBe(stepKey('root', s, numbers(), find));
+    const more: DesignSketch = { ...s, sketch: { ...s.sketch, points: [...s.sketch.points, { id: 'p2', x: 5, y: 5 }], entities: [...s.sketch.entities, { id: 'l1', type: 'line', p1: 'p1', p2: 'p2' }] } };
+    expect(stepKey('root', more, numbers(), find)).not.toBe(stepKey('root', s, numbers(), find));
+  });
+
+  it('ignore the positions a sketch stores: the solved geometry in the numbers counts', () => {
+    // the page writes the solution back into the stored sketch: same numbers, same solid
+    const circ = (x: number, r: number): DesignSketch => ({
+      ...sketch('s1', x), sketch: { ...sketch('s1', x).sketch, points: [...sketch('s1', x).sketch.points, { id: 'c', x: 0, y: 0 }], entities: [...sketch('s1', x).sketch.entities, { id: 'k', type: 'circle', c: 'c', r }] },
+    });
+    const at = (s: DesignSketch) => (id: string) => (id === 's1' ? s : undefined);
+    const f = extrude('f1', 's1');
+    expect(stepKey('root', circ(20, 7), numbers(), find)).toBe(stepKey('root', circ(10, 3), numbers(), find));
+    expect(stepKey('root', f, numbers(), at(circ(20, 7)))).toBe(stepKey('root', f, numbers(), at(circ(10, 3))));
+    expect(designKey(design([circ(20, 7), f]), numbers())).toBe(designKey(design([circ(10, 3), f]), numbers()));
+  });
+
+  it('read solved geometry to 1e-9: solver noise keeps the key, a real change does not', () => {
+    const f = extrude('f1', 's1');
+    const k = designKey(design([sketch('s1'), f]), numbers(10));
+    const s = stepKey('root', f, numbers(10), find);
+    // a solve started elsewhere lands an ulp or a few away (1.3e-15 for a zero in the example)
+    for (const x of [10 + 1.8e-15, 10 - 3.6e-15, 10 + 2e-12]) {
+      expect(designKey(design([sketch('s1'), f]), numbers(x))).toBe(k);
+      expect(stepKey('root', f, numbers(x), find)).toBe(s);
+    }
+    const n = numbers();
+    n.sketches.s1.points.p0 = [1.29e-15, -0];
+    expect(designKey(design([sketch('s1'), f]), n)).toBe(k);
+    // a micrometre in a millimetre sketch is geometry
+    expect(designKey(design([sketch('s1'), f]), numbers(10.001))).not.toBe(k);
+    expect(stepKey('root', f, numbers(10 + 1e-6), find)).not.toBe(s);
   });
 
   it('knows which sketches an item reads', () => {

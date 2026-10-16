@@ -4,6 +4,8 @@ import { evaluateWorksheet, type CadResult, type MathResult } from '../engine/ev
 import { cadExample } from '../model/examples';
 import { designOf } from './design';
 import { designKey, designNumbers } from './keys';
+import { withSolution } from './edit';
+import { timelineCache } from './occ/cache';
 import type { CadRegion, Worksheet } from '../model/types';
 
 beforeAll(async () => {
@@ -57,5 +59,38 @@ describe('CAD example worksheet', () => {
     expect(keys(edit('ω', 'ω := 2*π*1500/(60 s)'))).toEqual(k);
     const nb = keys(edit('n_b', 'n_b := 8'));
     expect(nb.filter((x, i) => x !== k[i])).toHaveLength(1);
+  });
+
+  it('the page writing solutions back, and a length there and back, rebuild nothing', () => {
+    let ws = cadExample();
+    const parts = (w: Worksheet) => w.regions.filter((r): r is CadRegion => r.kind === 'cad');
+    const run = (w: Worksheet) => {
+      const out = evaluateWorksheet(w);
+      return parts(w).map((r) => out.results.get(r.id) as CadResult);
+    };
+    // what the page preview does with a single-sketch part: store the solved geometry
+    const writeBack = (w: Worksheet, res: CadResult[]): Worksheet => ({
+      ...w, regions: w.regions.map((r) => {
+        const i = parts(w).indexOf(r as CadRegion);
+        return i >= 0 && !(r as CadRegion).design ? { ...r, sketch: withSolution((r as CadRegion).sketch, res[i].points, res[i].radii) } : r;
+      }),
+    });
+    const setL = (w: Worksheet, v: string): Worksheet => ({ ...w, regions: w.regions.map((r) => (r.kind === 'math' && r.source.startsWith('L :=') ? { ...r, source: `L := ${v}` } : r)) });
+    const first = run(ws);
+    const k0 = first.map((r) => r.design!.display);
+    ws = writeBack(ws, first);
+    expect(run(ws).map((r) => r.design!.display)).toEqual(k0);
+    ws = setL(ws, '200 mm');
+    const longer = run(ws);
+    // the shaft and the assembly (its shaft is L long) change, the plate does not
+    expect(longer.map((r, i) => r.design!.display !== k0[i])).toEqual([true, false, true]);
+    // back to 180 mm from the stored 200 mm solution: the solver lands ulps away (1e-15)
+    ws = setL(writeBack(ws, longer), '180 mm');
+    const ran = timelineCache.ran;
+    const back = run(ws);
+    expect(back.map((r) => r.design!.display)).toEqual(k0);
+    expect(timelineCache.ran).toBe(ran);
+    // V of the stepped shaft by Pappus: Ø40 × 60 and Ø50 × 120
+    expect(Math.abs(back[0].mass!.V / (Math.PI * (20 ** 2 * 60 + 25 ** 2 * 120)) - 1)).toBeLessThan(1e-9);
   });
 });
