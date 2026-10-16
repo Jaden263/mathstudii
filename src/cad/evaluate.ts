@@ -294,6 +294,10 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
             if (item.offset?.trim()) p.offset = value(item.offset, '0', 'L', 'thread offset');
             break;
           }
+          case 'rib':
+            p.thickness = positive(value(item.thickness, '2', 'L', 'thickness'), 'thickness');
+            if (item.depth?.trim()) p.depth = positive(value(item.depth, '10', 'L', 'depth'), 'depth');
+            break;
           case 'plane': {
             const def = item.def;
             if (def.type === 'offset') p.d = value(def.d, '10', 'L', 'offset');

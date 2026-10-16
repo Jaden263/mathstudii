@@ -32,6 +32,7 @@ import {
   type Helix, type PathGeom, type SweepOptions, type ThreadGeom,
 } from './sweep';
 import { parseThread, threadIn } from './threads';
+import { ribCurve, ribRegion, type RibCurve } from './rib';
 import { loopPolygon } from './profile';
 
 export type { Helix };
@@ -357,6 +358,26 @@ export interface ThreadFeature extends FeatureBase {
   hand?: 'right' | 'left';
 }
 
+/**
+ * Fusion's rib: an open sketch curve grown in its sketch plane until it meets the body (or
+ * to a depth), as thick as `thickness` across the plane — a gusset in the corner of a bracket.
+ */
+export interface RibFeature extends FeatureBase {
+  kind: 'rib';
+  sketch: string;
+  /** Lines and arcs joined end to end; missing = every curve of the sketch that is not construction geometry. */
+  curves?: string[];
+  thickness: string;
+  /** Across the sketch plane: both sides, its normal's side or the other. */
+  side?: 'symmetric' | 'one' | 'other';
+  /** Empty = to the next faces of the body. */
+  depth?: string;
+  /** Grow to the other side of the curve than the one found. */
+  flip?: boolean;
+  op: 'join' | 'new';
+  targets?: string[];
+}
+
 // ------------------------------------------------------------ construction geometry
 //
 // Planes, axes and points made from origin geometry, sketches and what is picked on the
@@ -420,7 +441,7 @@ export type Datum =
   | { kind: 'helix'; helix: Helix };
 
 export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature
-  | SweepFeature | CoilFeature | ThreadFeature | ConstructItem;
+  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -489,7 +510,7 @@ export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch
 export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
   sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine', loft: 'Loft',
   fillet: 'Fillet', chamfer: 'Chamfer', shell: 'Shell', draft: 'Draft', presspull: 'Press pull', split: 'Split', move: 'Move',
-  sweep: 'Sweep', coil: 'Coil', thread: 'Thread', plane: 'Plane', axis: 'Axis', point: 'Point',
+  sweep: 'Sweep', coil: 'Coil', thread: 'Thread', rib: 'Rib', plane: 'Plane', axis: 'Axis', point: 'Point',
 };
 
 /** Features that work on what is picked on the bodies: they are edited with the timeline rolled back to them. */
@@ -816,6 +837,8 @@ export interface SolidOps<S> {
   pressPull(s: S, faces: number[], d: number, tag: string): S;
   /** The pieces on either side of a plane, those behind it first. */
   split(s: S, plane: PlaneAt, tag: string): S[];
+  /** The separate solids of a shape (a boolean's result can fall apart). */
+  pieces(s: S): S[];
   /** A profile region swept along a path (component coordinates); its holes are swept too and cut out. */
   sweep(region: ProfileRegion, f: Frame, path: PathGeom<S>, o: SweepOptions, tag: string): S;
   /** The groove of a screw thread, a tool to cut. */
@@ -1141,6 +1164,70 @@ function coilOf<S>(cx: ReturnType<typeof picksIn<S>>, item: CoilFeature, p: Reco
   const c0 = item.centre !== undefined ? cx.point(item.centre, 'centre point') : pl.o;
   const c = sub3(c0, scale3(n, dot3(sub3(c0, pl.o), n)));
   return coilGeometry({ c, axis: n, x: pl.u }, p.d, p.pitch, p.revs, p.size, item.section, item.position ?? 'center', item.hand === 'left', unit);
+}
+
+/**
+ * The solid of a rib: the strip its curve sweeps in the sketch plane (as thick as the rib
+ * across it) less the bodies, and of that the pieces that start at the curve. To the next
+ * faces, both sides of the curve are tried: the side where the bodies close the strip off
+ * (both do: the shallower one; `flip` the other). A depth goes to the side whose strip
+ * runs into the bodies. `on` is the body it stands on, for a join (−1: none).
+ */
+function ribOf<S>(ops: SolidOps<S>, f: Frame, c: RibCurve, solids: S[], p: Record<string, number>, item: RibFeature): { tool: S; on: number } {
+  if (!solids.length) throw new Error('a rib stands on a body: there is none yet');
+  const t = p.thickness;
+  const [z0, z1] = item.side === 'one' ? [0, t] : item.side === 'other' ? [-t, 0] : [-t / 2, t / 2];
+  const all = ops.group(solids);
+  // how far it could reach: the bodies and the curve together
+  const bb = ops.box(solids)!;
+  const pts = [bb.min, bb.max, framePoint(f, c.a), framePoint(f, c.b), framePoint(f, c.mid)];
+  const diag = Math.hypot(...[0, 1, 2].map((k) => Math.max(...pts.map((q) => q[k])) - Math.min(...pts.map((q) => q[k])))) + t;
+  const strip = (side: 1 | -1, depth: number) => ops.extrude([ribRegion(c, side, depth)], f, z0, z1, item.id);
+  const n3 = frameDir(f, c.n), a3 = framePoint(f, c.a);
+  /** How far pieces reach from the curve's chord on a side (by their box: at most what it is). */
+  const reachOf = (qs: S[], side: 1 | -1) => {
+    const b = ops.box(qs);
+    if (!b) return 0;
+    let r = -Infinity;
+    for (let k = 0; k < 8; k++) r = Math.max(r, side * dot3(sub3([k & 1 ? b.max[0] : b.min[0], k & 2 ? b.max[1] : b.min[1], k & 4 ? b.max[2] : b.min[2]], a3), n3));
+    return r;
+  };
+  const tiny = 1e-9 * diag * diag * t;
+  /** The pieces of a strip, the bodies cut out of it, that start at the curve. */
+  const piecesOf = (side: 1 | -1, depth: number) => {
+    const near = strip(side, 1e-3 * diag);
+    return ops.pieces(ops.cut(strip(side, depth), all)).filter((q) => ops.shared(q, near) > tiny);
+  };
+  let side: 1 | -1, qs: S[];
+  if (p.depth) {
+    const meets = ([1, -1] as const).map((sd) => ops.shared(strip(sd, p.depth), all));
+    const auto = meets[1] > meets[0] ? -1 : 1;
+    side = item.flip ? (-auto as 1 | -1) : auto;
+    qs = piecesOf(side, p.depth);
+    if (!qs.length) throw new Error('the rib’s curve lies inside the body: draw it where the rib should end');
+  } else {
+    const D = 3 * diag;
+    const tries = ([1, -1] as const).map((sd) => {
+      const got = piecesOf(sd, D);
+      const reach = reachOf(got, sd);
+      return { side: sd, qs: got, reach, ok: got.length > 0 && reach < 1.5 * diag };
+    });
+    if (!tries.some((q) => q.qs.length)) throw new Error('the rib’s curve lies inside the body: draw it where the rib should end');
+    const good = tries.filter((q) => q.ok).sort((x, y) => x.reach - y.reach);
+    if (!good.length) throw new Error('the rib meets no face on either side of its curve: draw the curve so the body closes the rib off (its ends on faces), or give it a depth');
+    const pick = item.flip ? tries.find((q) => q.side !== good[0].side)! : good[0];
+    if (!pick.ok) throw new Error('flipped, the rib meets no face on that side of its curve');
+    side = pick.side;
+    qs = pick.qs;
+  }
+  // the body it stands on: the one its strip runs into most, just past the rib
+  const touch = strip(side, (p.depth ?? reachOf(qs, side)) + 1e-3 * diag);
+  let on = -1, most = tiny;
+  solids.forEach((b, i) => {
+    const v = ops.shared(b, touch);
+    if (v > most) [on, most] = [i, v];
+  });
+  return { tool: qs.length === 1 ? qs[0] : ops.group(qs), on };
 }
 
 // ------------------------------------------------------------ modify features
@@ -1484,6 +1571,17 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         const path = sweepPath(design, inp, bodies, built, datums, cx, item, centre);
         const o: SweepOptions = { orientation: item.orientation ?? 'perpendicular', twist: p.twist ?? 0, scale: p.scale ?? 1, unit: inp.numbers.unit };
         const rec = { tool: ops.sweep(region, f, path, o, item.id), op: item.op, targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
+      }
+      case 'rib': {
+        const f = frameOf(item.sketch);
+        const sk = findSketch(design, item.sketch)!;
+        const c = ribCurve(sk.sketch, inp.numbers.sketches[item.sketch], item.curves);
+        const { tool, on } = ribOf(ops, f, c, bodies.map((b) => b.solid), p, item);
+        if (item.op === 'join' && !item.targets?.length && on < 0) throw new Error('the rib does not reach a body: give it a depth that does, or make it a new body');
+        const rec: TimelineTool<S> = { tool, op: item.op, targets: item.targets?.length ? item.targets : on >= 0 ? [bodies[on].id] : undefined };
         tools.set(item.id, rec);
         apply(item.id, rec);
         break;

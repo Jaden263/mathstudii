@@ -84,7 +84,7 @@ const P3 = (f: Frame, x: number, y: number): Vec3 => [f.o[0] + f.u[0] * x + f.v[
  * end into a chain, open or closed, or one circle. Throws when they branch or fall apart.
  * `curves` missing: every line, arc and circle that is not construction geometry.
  */
-export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number, number]>; radii: Record<string, number> }, f: Frame, curves?: string[]): { segs: PathSeg[]; closed: boolean } {
+export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number, number]>; radii: Record<string, number> }, f: Frame, curves?: string[]): { segs: PathSeg[]; closed: boolean; ids: string[] } {
   const ents = sk.entities.filter((e) => e.type !== 'point' && (curves?.length ? curves.includes(e.id) : !e.construction));
   if (!ents.length) throw new Error('the path sketch has no curves');
   const at = (id: string) => sol.points[id];
@@ -92,7 +92,7 @@ export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number,
   if (circle?.type === 'circle') {
     if (ents.length > 1) throw new Error('a circle is a path of its own: pick it alone, or the lines and arcs of one chain');
     const [cx, cy] = at(circle.c);
-    return { segs: [{ kind: 'circle', c: P3(f, cx, cy), n: f.n, x: f.u, r: sol.radii[circle.id] ?? circle.r }], closed: true };
+    return { segs: [{ kind: 'circle', c: P3(f, cx, cy), n: f.n, x: f.u, r: sol.radii[circle.id] ?? circle.r }], closed: true, ids: [circle.id] };
   }
   // ends of every curve; points are the same where their ids or their places are
   type Piece = { id: string; ends: [string, string]; seg: (fwd: boolean) => PathSeg };
@@ -129,16 +129,17 @@ export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number,
   // walk the chain from an open end (or anywhere when it is closed)
   let node = open[0] ?? nodeOf.get(pieces[0].ends[0])!;
   const left = new Set(pieces);
-  const segs: PathSeg[] = [];
+  const segs: PathSeg[] = [], ids: string[] = [];
   while (left.size) {
     const next = [...left].find((p) => p.ends.some((id) => nodeOf.get(id) === node));
     if (!next) throw new Error('the path curves are not joined end to end: they fall into separate pieces');
     left.delete(next);
     const fwd = nodeOf.get(next.ends[0]) === node;
     segs.push(next.seg(fwd));
+    ids.push(next.id);
     node = nodeOf.get(next.ends[fwd ? 1 : 0])!;
   }
-  return { segs, closed: open.length === 0 };
+  return { segs, closed: open.length === 0, ids };
 }
 
 const segStart = (s: PathSeg): Vec3 => (s.kind === 'circle' ? add3(s.c, scale3(s.x, s.r)) : s.a);

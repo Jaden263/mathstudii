@@ -609,6 +609,10 @@ workspace opens full screen in the page. Its layout follows Fusion:
   on picked cylinders: external on a shaft, internal in a hole, the size suggested from
   the diameter. Cosmetic threads are listed in the inspector and drawn as rings; modeled
   ones cut the real groove (it takes a few seconds).
+- **Rib:** an open line or arc drawn on a plane through the middle of the rib grows in that
+  plane until the body closes it off (or to a depth), as thick as asked across the plane
+  (both sides, one or the other) — the gusset in the corner of a bracket. Both sides of the
+  curve are tried and the one the body closes off is taken; Flip takes the other.
 - **Pattern:** rectangular (one or two directions) or circular, of features (the copies
   repeat the boolean) or of bodies.
 - **Mirror:** features or bodies, about an origin plane, a sketch plane or a construction plane.
@@ -904,15 +908,19 @@ What it is not, honestly:
   mesh, so circles in them are fine polylines (their dimensions are exact). The section
   view's cut bodies cannot be picked. No splines; lofts are ruled (straight between the
   two profiles).
-- **Sweeps, coils, threads, the limits:**
+- **Sweeps, coils, threads, ribs, the limits:**
   - A sweep takes a twist or a taper, not both, and neither on a closed path. Coils have
-    no taper angle and no flat spiral. There is no Rib.
+    no taper angle and no flat spiral.
+  - A rib's ends go straight towards the body along the curve's normal (its curve is not
+    extended to meet faces), and a curve that turns back on itself is refused. There is no
+    Web.
   - Threads are the basic ISO profile: no tolerance classes, no runout, only metric. A
     modeled thread on a mesh-kernel build waits for OpenCascade (a tapped hole is drilled
     to its tap drill until then). Cosmetic threads are not in drawings yet.
   - The tangent plane is for cylinders only. A vertex is picked as the corner nearest the
     click on a face or edge; sketch points and curves are chosen from the dialog's lists.
-  - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix.
+  - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix
+    (ribs it makes too).
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
 - **References:**
   - Names come from history. An edit that rebuilds a face from another sketch line (a

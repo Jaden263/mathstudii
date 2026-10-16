@@ -1018,6 +1018,17 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       });
     },
 
+    pieces(s) {
+      return scratch((t) => {
+        const solids = subShapes(oc, t, s.shape, oc.TopAbs_ShapeEnum.TopAbs_SOLID);
+        if (solids.length <= 1) return solids.length ? [s] : [];
+        return solids.map((q) => {
+          const shape = keep(t, q);
+          return { shape, tags: within(s.tags, shape) };
+        });
+      });
+    },
+
     sweep: swept.sweep,
     thread: swept.thread,
     edgeAt: swept.edgeAt,

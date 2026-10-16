@@ -224,9 +224,32 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
         </>
       );
     }
+    case 'rib': {
+      // sketches with open curves: lines and arcs
+      const open = sketches.filter((s) => s.sketch.entities.some((e) => e.type === 'line' || e.type === 'arc'));
+      const ds = sketches.find((s) => s.id === f.sketch);
+      const curves = ds?.sketch.entities.filter((e) => e.type === 'line' || e.type === 'arc') ?? [];
+      return (
+        <>
+          <Pick label="Sketch" value={f.sketch} options={open.map((s) => [s.id, s.name])} onChange={(sketch) => onChange({ sketch, curves: undefined })} />
+          <Checks label="Curves" items={curves.map((e) => [e.id, `${e.type} ${ds!.sketch.entities.indexOf(e) + 1}${e.construction ? ' (construction)' : ''}`])} value={f.curves}
+            onChange={(c) => onChange({ curves: c })} empty="The sketch has no lines or arcs" allLabel="All of the sketch (not construction)" />
+          <div className="row2">
+            <Expr label="Thickness" value={f.thickness} onChange={(thickness) => onChange({ thickness }, 'thickness')} />
+            <Pick label="Thickness to" value={f.side ?? 'symmetric'} options={[['symmetric', 'Both sides'], ['one', 'Side of the normal'], ['other', 'Other side']]} onChange={(side) => onChange({ side: side === 'symmetric' ? undefined : side })} />
+          </div>
+          <Pick label="Depth" value={f.depth === undefined ? 'next' : 'depth'} options={[['next', 'To the next faces'], ['depth', 'A depth']]} onChange={(k) => onChange({ depth: k === 'next' ? undefined : '10' })} />
+          {f.depth !== undefined && <Expr label="Depth from the curve" value={f.depth} onChange={(depth) => onChange({ depth }, 'depth')} />}
+          <label className="check"><input type="checkbox" checked={!!f.flip} onChange={(e) => onChange({ flip: e.target.checked || undefined })} /> Flip direction</label>
+          <Pick label="Operation" value={f.op} options={[['join', 'Join'], ['new', 'New body']]} onChange={(op) => onChange({ op })} />
+          {f.op === 'join' && targets(f.targets)}
+          <p className="hint">Draw an open line or arc on a plane through the middle of the rib, its ends on the faces it closes against: it grows in that plane to the body.</p>
+        </>
+      );
+    }
     case 'pattern':
     case 'mirror': {
-      const feats = before.filter((i): i is DesignFeature => !isSketch(i) && (i.kind === 'extrude' || i.kind === 'revolve' || i.kind === 'hole' || i.kind === 'sweep' || i.kind === 'coil'));
+      const feats = before.filter((i): i is DesignFeature => !isSketch(i) && (i.kind === 'extrude' || i.kind === 'revolve' || i.kind === 'hole' || i.kind === 'sweep' || i.kind === 'coil' || i.kind === 'rib'));
       const axes = axisOptions(sketches, constructBefore(comp, f));
       return (
         <>

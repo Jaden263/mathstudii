@@ -10,7 +10,7 @@ import {
   ArrowUpFromLine, RotateCw, ChevronRight, ChevronDown, ListTree, PanelRight, CircleDot, Grid3x3, FlipHorizontal2, Combine,
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
   Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash, FileBox,
-  Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate,
+  Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate, TriangleRight,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -188,7 +188,7 @@ const ICON: Record<DesignItem['kind'], ReactNode> = {
   pattern: <Grid3x3 size={14} />, mirror: <FlipHorizontal2 size={14} />, combine: <Combine size={14} />, loft: <Cone size={14} />,
   fillet: <Radius size={14} />, chamfer: <Octagon size={14} />, shell: <PackageOpen size={14} />, draft: <Pyramid size={14} />,
   presspull: <ArrowUpDown size={14} />, split: <Slice size={14} />, move: <Move size={14} />,
-  sweep: <Route size={14} />, coil: <Tornado size={14} />, thread: <Screw size={14} />,
+  sweep: <Route size={14} />, coil: <Tornado size={14} />, thread: <Screw size={14} />, rib: <TriangleRight size={14} />,
   plane: <Diamond size={14} />, axis: <MoveDiagonal size={14} />, point: <Locate size={14} />,
 };
 
@@ -516,6 +516,12 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     } else if (kind === 'mirror') {
       if (!bodiesNow.length) return setMsg('Make a body to mirror first');
       f = { kind, id, name, of: 'bodies', refs: bodiesNow.map((b) => b.id), plane: 'YZ', join: true };
+    } else if (kind === 'rib') {
+      const open = (s: DesignSketch) => s.sketch.entities.some((e) => (e.type === 'line' || e.type === 'arc') && !e.construction);
+      const sk = selSketch && open(selSketch) ? selSketch : lastSketch(open);
+      if (!sk) return setMsg('Draw the rib’s line on a plane through its middle first (Solid → Sketch)');
+      if (!bodiesNow.length) return setMsg('A rib stands on a body: make one first');
+      f = { kind, id, name, sketch: sk.id, thickness: '2', op: 'join' };
     } else if (kind === 'sweep' || kind === 'coil' || kind === 'thread' || kind === 'plane' || kind === 'axis' || kind === 'point') {
       const m = startBuild(kind, id, name, op);
       if (!m) return;
@@ -877,7 +883,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           const l = list ?? [];
           return l.includes(body) ? l.filter((x) => x !== body) : [...l, body];
         };
-        if (f.kind === 'extrude' || f.kind === 'revolve' || f.kind === 'hole') {
+        if (f.kind === 'extrude' || f.kind === 'revolve' || f.kind === 'hole' || f.kind === 'rib') {
           if (f.kind !== 'hole' && f.op === 'new') return;
           const next = toggle(f.targets);
           return patchItem(c.id, f.id, { targets: next.length ? next : undefined } as Partial<DesignItem>);
@@ -1260,6 +1266,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     }
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'thread') return 'Click cylindrical faces to thread them (a shaft outside, a hole inside) · click one again to take it out · Esc cancels';
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'sweep') return activeFeature.path.kind === 'edges' ? 'Click edges of the path, end to end · click a profile to sweep it · Esc cancels' : 'Click a profile to sweep it · Esc cancels';
+    if (dialog?.kind === 'feature' && activeFeature?.kind === 'rib') return 'Pick the sketch and its curves in the dialog · click a body to join the rib to it · Esc cancels';
     if (dialog?.kind === 'feature' && held) return 'Pick fills a field from the view (a face, an edge, a corner or a plane) · Esc cancels';
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';
     return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · F fillet · Q press pull · J joint · M measure';
@@ -1646,6 +1653,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<Route size={20} />} label="Sweep" title="Sweep a profile along a path: sketch curves, edges or a coil's helix; twist and taper" on={activeFeature?.kind === 'sweep'} onClick={() => startFeature('sweep')} />
               <RibbonButton icon={<Tornado size={20} />} label="Coil" title="A coil (spring): a section along a helix on a plane or face" on={activeFeature?.kind === 'coil'} onClick={() => startFeature('coil')} />
               <RibbonButton icon={<Screw size={20} />} label="Thread" title="ISO metric threads on shafts and in holes, cosmetic or modeled" on={activeFeature?.kind === 'thread'} onClick={() => startFeature('thread')} />
+              <RibbonButton icon={<TriangleRight size={20} />} label="Rib" title="A rib (gusset) from an open sketch curve, grown in its plane to the body" on={activeFeature?.kind === 'rib'} onClick={() => startFeature('rib')} />
             </Group>
             <Group label="Construct">
               <RibbonButton icon={<Diamond size={20} />} label="Plane" title="Construction plane: offset, at an angle, midplane, through three points, tangent, along a path" on={activeFeature?.kind === 'plane'} onClick={() => startFeature('plane')} />

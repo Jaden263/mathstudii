@@ -72,6 +72,7 @@ export function meshOps(K: ManifoldToplevel, arena: Arena): SolidOps<MeshSolid> 
       const R = m4Rotate(c, axis, total * t);
       return { p: m4Point(R, p0), d: norm3(scale3(cross3(norm3(axis), sub3(m4Point(R, p0), c)), Math.sign(total))) };
     },
+    pieces: (s) => s.m.decompose().map((q) => ({ m: arena.add(q) })),
     split(s, pl) {
       const [front, back] = s.m.splitByPlane(pl.n, pl.o[0] * pl.n[0] + pl.o[1] * pl.n[1] + pl.o[2] * pl.n[2]);
       arena.add(front);
