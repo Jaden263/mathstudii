@@ -34,7 +34,9 @@
     "nerdamer-prime": "^1.5.0",
     "pyodide": "^314.0.7",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "replicad": "^1.1.0",
+    "replicad-opencascadejs": "^1.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2",
