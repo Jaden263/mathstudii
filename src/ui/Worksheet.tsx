@@ -4,7 +4,7 @@ import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
 import type { RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import type { EditorHandle } from './editing';
-import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, SketchRegionView, CadRegionView, BeamRegionView, PythonRegionView, DrawingRegionView, type RegionViewProps } from './regions';
+import { MathView, TextView, SolveView, TableView, ImageView, PlotRegionView, SketchRegionView, CadRegionView, BeamRegionView, Frame3DRegionView, PythonRegionView, DrawingRegionView, type RegionViewProps } from './regions';
 
 export interface Cursor {
   x: number;
@@ -49,7 +49,7 @@ function regionLook(r: Region, f: WorksheetFormat | undefined): React.CSSPropert
   return out as React.CSSProperties;
 }
 
-const EDITABLE = new Set(['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python']);
+const EDITABLE = new Set(['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python', 'frame3d']);
 
 function hasError(res: RegionResult | undefined): boolean {
   if (!res) return false;
@@ -234,6 +234,7 @@ export function Worksheet(p: Props) {
       case 'sketch': return <SketchRegionView {...(props as RegionViewProps<typeof r>)} />;
       case 'cad': return <CadRegionView {...(props as RegionViewProps<typeof r>)} />;
       case 'beam': return <BeamRegionView {...(props as RegionViewProps<typeof r>)} />;
+      case 'frame3d': return <Frame3DRegionView {...(props as RegionViewProps<typeof r>)} />;
       case 'python': return <PythonRegionView {...(props as RegionViewProps<typeof r>)} />;
       case 'drawing': {
         const cad = p.ws.regions.find((q) => q.id === r.cad);

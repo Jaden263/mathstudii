@@ -275,6 +275,25 @@ describe('space frame: closed forms', () => {
     eq.F.concat(eq.M).forEach((v) => expect(Math.abs(v)).toBeLessThan(1e-5));
   });
 
+  it('an axial release: the member takes no axial force, the other one all of it', () => {
+    // A–B–C along X, clamped at A and C, P along X at B; B–C released in N at B
+    const P = 50e3;
+    const st = (relA?: boolean[]): NumFrame => ({
+      nodes: [node('A', 0, 0, 0), node('B', 3, 0, 0), node('C', 5, 0, 0)],
+      members: [mem('AB', 'A', 'B'), mem('BC', 'B', 'C', { relA })],
+      supports: [sup('A'), sup('C')],
+      loads: [atNode('P', 'B', [P, 0, 0])],
+    });
+    const free = solveFrame3(st([true, false, false, false, false, false]));
+    // (P pulls B along +X: A–B is stretched, B–C pushed)
+    expect(memberAt3(free.members[0], 1).N).toBeCloseTo(P, 6);
+    expect(memberAt3(free.members[1], 1).N).toBeCloseTo(0, 6);
+    // without it the two share P as their axial stiffnesses EA/L: 1/3 : 1/2
+    const both = solveFrame3(st());
+    expect(memberAt3(both.members[0], 1).N).toBeCloseTo((P * 2) / 5, 6);
+    expect(memberAt3(both.members[1], 1).N).toBeCloseTo((-P * 3) / 5, 6);
+  });
+
   it('reports a mechanism and where it is', () => {
     // a beam on two pins can spin about its own axis
     const st: NumFrame = {

@@ -482,8 +482,11 @@ export function frame3dValue(r: Frame3DRegion, res: Frame3DResult): Value {
       });
     }
   };
-  /** Extremes per member and overall, displacements per node. */
-  const extremesValue = (sol: FrameSolution, value: Value, defls: FrameSolution) => {
+  /**
+   * Extremes per member and overall, displacements per node; the stress is the largest
+   * over `stressFrom` (each solution on its own: an envelope's sides mix their forces).
+   */
+  const extremesValue = (sol: FrameSolution, value: Value, defls: FrameSolution, stressFrom: FrameSolution[] = [sol]) => {
     const overall: Partial<Record<ForceKey, { max: number; min: number }>> = {};
     sol.members.forEach((mr) => {
       const m = r.members.find((q) => q.id === mr.id);
@@ -502,7 +505,10 @@ export function frame3dValue(r: Frame3DRegion, res: Frame3DResult): Value {
       const sec = res.sections[m.section];
       if (sec?.Wy && sec.Wz) {
         let sig = 0;
-        mr.s.forEach((_, i) => (sig = Math.max(sig, Math.abs(mr.N[i]) / sec.A + Math.abs(mr.My[i]) / sec.Wy! + Math.abs(mr.Mz[i]) / sec.Wz!)));
+        for (const s of stressFrom) {
+          const q = s.members.find((x) => x.id === mr.id);
+          q?.s.forEach((_, i) => (sig = Math.max(sig, Math.abs(q.N[i]) / sec.A + Math.abs(q.My[i]) / sec.Wy! + Math.abs(q.Mz[i]) / sec.Wz!)));
+        }
         o.σ_max = o.sigma_max = math.unit(sig, 'Pa').to('MPa');
       }
     });
@@ -574,20 +580,25 @@ export function frame3dValue(r: Frame3DRegion, res: Frame3DResult): Value {
   }
   const named = (list: Case3Result[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(c.solution!, c.buckling)]));
   const value: Value = { cases: named(res.cases), combos: named(res.combos) };
-  stability(governing(res.combos)?.buckling, value);
   // a combination without second-order equilibrium leaves no governing values
-  if (res.combos.some((c) => c.error)) return value;
+  if (res.combos.some((c) => c.error)) {
+    stability(governing(res.combos)?.buckling, value);
+    return value;
+  }
   const uls = res.combos.filter((c) => c.kind === 'ULS' && c.solution).map((c) => c.solution!);
   const sls = res.combos.filter((c) => c.kind === 'SLS' && c.solution).map((c) => c.solution!);
   const forceSet = uls.length ? uls : res.combos.filter((c) => c.solution).map((c) => c.solution!);
-  if (!forceSet.length) return value;
+  if (!forceSet.length) {
+    stability(governing(res.combos)?.buckling, value);
+    return value;
+  }
   const deflSet = sls.length ? sls : forceSet;
   // governing: forces and reactions over the ULS combinations, displacements over the SLS ones
   const env = envelope3(forceSet, deflSet);
   const gov: Value = {};
   // the functions along the members are those of the first ULS combination
   functionsValue(forceSet[0], gov);
-  extremesValue(env.max, gov, env.max);
+  extremesValue(env.max, gov, env.max, forceSet);
   const low: Value = {};
   extremesValue(env.min, low, env.min);
   for (const [key, v] of Object.entries(low)) {
@@ -614,5 +625,7 @@ export function frame3dValue(r: Frame3DRegion, res: Frame3DResult): Value {
   // reactions: per support the ULS combination with the largest resultant
   const reactions = forceSet[0].reactions.map((q0, i) => forceSet.map((s) => s.reactions[i]).reduce((a, b) => (Math.hypot(...b.F) > Math.hypot(...a.F) ? b : a), q0));
   reactionsValue({ ...forceSet[0], reactions }, gov);
+  // α_cr and the buckling lengths: the lowest over the ULS combinations
+  stability(governing(res.combos)?.buckling, gov);
   return { ...gov, ...value };
 }

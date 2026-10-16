@@ -372,12 +372,15 @@ statically determinate and indeterminate structures are handled alike.
 - Supports are constraints with Lagrange multipliers, so the multipliers are the
   reactions themselves.
 - Hinges are moment releases by static condensation.
-- Members are split where loads sit, so each piece carries at most a linear line load.
-  For such pieces the stiffness method is exact at the nodes. N, V and M along a member
-  come from statics as exact polynomials, and the deflection is the exact double integral
-  of M/EI. The answers therefore match the handbook formulas, not just approximate them:
-  the tests check simply supported, cantilever, propped, continuous and Gerber beams
-  and a truss against closed-form results, and a portal frame for equilibrium.
+- Members stay whole: a point load, moment or (partial, trapezoidal) line load anywhere
+  along a member enters through its exact fixed-end forces, so the stiffness method is
+  exact at the nodes, also for a load a millimetre from a node (splitting the member
+  there used to make a piece 10¹² times stiffer than its neighbour, reported as a
+  mechanism). N, V and M along a member come from statics as exact polynomials between
+  the loads, and the deflection is the exact double integral of M/EI. The answers
+  therefore match the handbook formulas, not just approximate them: the tests check
+  simply supported, cantilever, propped, continuous and Gerber beams and a truss against
+  closed-form results, and a portal frame for equilibrium.
 - **Not included:** plasticity, imperfections (add equivalent sway forces as loads),
   lateral-torsional and out-of-plane buckling, and self-weight. Add self-weight as a
   line load.
@@ -518,6 +521,92 @@ The **Beams and frames** example covers four structures:
 The **Bridge girder** example is a two-span girder (2 × 25 m) under G and LM1: three
 influence lines, the LM1 extremes with where they act, the ULS envelope 1.35 G + 1.35 LM1,
 and a hand check of the hogging moment over the middle support.
+
+### 3-D frames
+
+Press **3-D frame** for a space frame region: buildings, trusses, grillages. The
+structure lives in tables (double-click the region to edit; the tables open under the
+3-D view), every value a worksheet expression with units, so `x = 2*a` or `q = -g_k`
+follow the calculation around them. The side panel starts you from a **preset** (a 3-D
+portal frame of 2 × 1 bays with G, Q and wind, a pin-jointed lattice tower, a floor
+grillage).
+
+- **Nodes:** name and X, Y, Z (Z up). **Members:** start and end node, a section, the
+  rotation β of the section about its axis, and the end forces released at either end
+  (`My Mz` is a hinge; `T My Mz` a ball joint; N, Vy, Vz can be released too). Paste
+  rows straight from Excel into a cell; Enter and ↑ ↓ move along a column.
+- **Sections:** a profile from the library (IPE, HEA, HEB, HEM, CHS, SHS, RHS: A, I_y,
+  I_z, I_t, shear areas and section moduli from the profile), or your own A, I_y, I_z,
+  I_t, A_vy, A_vz. Materials: steel S235 … S460, concrete classes (E_cm, ν = 0.2,
+  25 kN/m³), timber classes (E_0,mean, G_mean, ρ_mean), or your own E, G, ρ.
+- **Supports:** each of u_x, u_y, u_z, φ_x, φ_y, φ_z fixed, free or a spring
+  (`5000 kN/m`, `2e4 kN*m/rad`), with presets (fixed, pinned, rollers).
+- **Loads:** forces and moments on nodes; point forces or moments on members at a
+  distance from the start; linear line loads over the whole or part of a member; all in
+  global X, Y, Z or member x, y, z, line loads also per projected length (snow on a
+  slope); self-weight ρ g A of every member. Load cases and combinations work as in the
+  beam region (default G, Q, W with ULS 1.35 G + 1.5 Q + 0.9 W, 1.35 G + 1.05 Q + 1.5 W
+  and SLS), with the envelope.
+
+**Member axes.** x runs from the start to the end. In a member that is not vertical, z
+lies in its vertical plane and points **down**, and y = z × x is horizontal, so an
+I-profile carries vertical loads about its strong axis I_y; in a vertical member y is
+global Y and z = x × y (a column bends about its strong axis in the X-Z plane). β turns
+y and z about x; a reference direction ("0, 1, 0") can set z instead. Internal forces
+are the vector components on the face whose normal is +x: N tension positive, V_y, V_z,
+T, M_y, M_z, with σ = N/A + M_y z/I_y − M_z y/I_z, so **sagging M_y is positive** in a
+beam. The view draws moments on the tension side.
+
+**The view.** Drag to orbit, Shift-drag or the right button to pan, the wheel to zoom
+(while editing); Iso, Front, Side and Top views. The strip picks the case, combination
+or envelope, and the model with its loads, the deformed shape (with its scale factor),
+N, V_y, V_z, T, M_y or M_z in each member's own plane (largest values labelled), the
+buckling mode, and the reactions. Hover a member for the forces at that point, a node
+for its displacements and reactions. The **Results** tab lists reactions, member
+extremes and node displacements (copy them to Excel; also from the right-click menu).
+
+**In the worksheet** (name the region `f`):
+- per node: `f.N1.ux`, `.uy`, `.uz`, `.u`, `.φx` … and at a support `f.N1.Rx` … `.Rz`,
+  `.Mx` … `.Mz`, `.R`;
+- per member: `f.M1.N_max`, `f.M1.My_min` (… for N, Vy, Vz, T, My, Mz), `f.M1.L`,
+  `f.M1.σ_max` (with section moduli), the forces along it `f.M1.My(x)` (x from its
+  start) and `f.M1.uz(x)`;
+- overall: `f.My_max`, `f.N_min` …, `f.u_max`; with buckling `f.α_cr`, `f.alpha_cr_modes`
+  and `f.M1.L_cr_y`, `f.M1.L_cr_z`;
+- with load cases the governing values (forces and reactions over the ULS combinations,
+  displacements over SLS) plus each one: `f.combos.ULS1.N1.Rz`, `f.cases.W.M1.My_max`.
+
+**How it is solved.** Direct stiffness method with 12 unknowns per member, Euler–Bernoulli
+or Timoshenko (φ = 12EI/(G A_v L²) in each plane). Members stay whole: loads along them
+enter through exact fixed-end forces, N, V, T, M follow from statics between the loads,
+and the displacements from the exact curvatures, so the results match handbook formulas.
+Releases are condensed out of the member and recovered afterwards. Each member is a
+substructure, so only the nodes go into the banded system (reverse Cuthill–McKee, skyline
+Cholesky): a 10 × 10 bay, 6-storey frame (2046 members, 4356 unknowns) solves in about
+0.5 s. Node rotations nothing holds (pin-jointed trusses) are found and fixed, and a
+mechanism is reported with the node and direction it moves in.
+- **Second order** (side panel → Analysis): P-Δ and P-δ, members cut into 4–8 elements
+  with the consistent geometric stiffness of their axial force in both bending planes,
+  iterated on the axial forces; the moments are statics on the deformed member.
+- **Buckling:** the lowest three α_cr from (K + α K_G) φ = 0 with the first-order axial
+  forces (dense below 300 unknowns, Lanczos above), with the EN 1993-1-1 5.2.1(3) verdict
+  per combination and the buckling lengths of each compressed member about y and z.
+- **Checked against closed forms:** cantilever tip loads (F L³/3EI about each axis and
+  the clamp's moments), torsion θ = T L/G I_t, an L-shaped grillage δ = P a³/3EI +
+  P b³/3EI + P a² b/G I_t (the leg at the clamp twists), β = 90° swapping the axes, a
+  planar portal against the plane-frame solver, a pin-jointed tripod against the
+  equilibrium of its apex, a Gerber hinge, Timoshenko cantilevers, Euler columns about
+  the weak axis (cantilever, pinned, a pin-jointed bar), the second-order cantilever
+  column H (tan kL − kL)/(P k) and its M(x), and equilibrium of a mixed frame.
+- **Not included:** lateral-torsional and torsional buckling (no Wagner or warping
+  terms; St Venant torsion only), plates and shells, offsets and rigid links,
+  eccentric or curved members, settlements, distributed torque, dynamics, and checks to
+  the codes beyond the stress and α_cr (use the values in the worksheet).
+
+The **3-D steel frame** example is that hall frame with its geometry and loads from the
+worksheet: α_cr against 10, the governing moments and reactions, the stresses of the main
+beam and a column against f_y, the sway against h/300, and M_y(x) of the main beams
+plotted.
 
 ### Python code
 
@@ -873,6 +962,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
+| 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
@@ -911,6 +1001,8 @@ src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
 src/beam/     Beam and frame analysis (no UI): model, stiffness solver, worksheet evaluation
 src/ui/beam/  Beam region: editor, diagrams, properties panel
+src/frame3d/  3-D frame analysis (no UI): model, substructured stiffness solver, buckling, evaluation
+src/ui/frame3d/ 3-D frame region: orbit view (SVG), tables, properties panel
 src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
               joints), solid kernels (OpenCascade B-rep in occ/, Manifold mesh), mass
               properties, DXF, STL, STEP

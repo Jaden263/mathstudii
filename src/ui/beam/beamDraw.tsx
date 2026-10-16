@@ -59,7 +59,7 @@ export function fmt(v: number): string {
 }
 
 /** Display conversions from SI. */
-export function units(r: BeamRegion) {
+export function units(r: Pick<BeamRegion, 'forceUnit' | 'lengthUnit'>) {
   const F = FORCE_N[r.forceUnit] ?? 1e3, L = LENGTH_M[r.lengthUnit] ?? 1;
   const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
   return {

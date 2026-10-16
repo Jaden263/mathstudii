@@ -1,7 +1,8 @@
-import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
+import { createRegion, emptyWorksheet, PX_PER_MM, type Frame3DRegion, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
 import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
+import { windCases, type F3Load, type F3Member, type F3Node } from '../frame3d/model';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -702,6 +703,66 @@ export function odeExample(): Worksheet {
   ]);
 }
 
+/** A one-storey steel frame in 3-D, its geometry and loads from the worksheet. */
+function steelFrame3D(): Partial<Frame3DRegion> {
+  const nodes: F3Node[] = [], members: F3Member[] = [];
+  const xs = ['0', 'a', '2*a'], ys = ['0', 'b'];
+  ys.forEach((y, j) => xs.forEach((x, i) => {
+    const k = j * 3 + i + 1;
+    nodes.push({ id: `f${k}`, name: `F${k}`, x, y, z: '0' }, { id: `t${k}`, name: `T${k}`, x, y, z: 'h' });
+    members.push({ id: `c${k}`, name: `C${k}`, a: `f${k}`, b: `t${k}`, section: 'col' });
+  }));
+  for (const j of [0, 1]) for (const i of [1, 2]) members.push({ id: `x${j}${i}`, name: `BX${j * 2 + i}`, a: `t${j * 3 + i}`, b: `t${j * 3 + i + 1}`, section: 'bx' });
+  for (const i of [1, 2, 3]) members.push({ id: `y${i}`, name: `BY${i}`, a: `t${i}`, b: `t${i + 3}`, section: 'by' });
+  const roof = members.filter((m) => m.id[0] === 'x');
+  const loads: F3Load[] = [
+    ...roof.map((m): F3Load => ({ id: `g${m.id}`, type: 'line', member: m.id, dir: 'Z', q1: '-g_k', case: 'G' })),
+    ...roof.map((m): F3Load => ({ id: `q${m.id}`, type: 'line', member: m.id, dir: 'Z', q1: '-q_k', case: 'Q' })),
+    { id: 'sw', type: 'self', case: 'G' },
+    // wind on the wall at x = 0: its two columns take half a bay each
+    ...['c1', 'c4'].map((c): F3Load => ({ id: `w${c}`, type: 'line', member: c, dir: 'X', q1: 'w_k * b / 2', case: 'W' })),
+  ];
+  return {
+    nodes, members, loads,
+    sections: [
+      { id: 'col', name: 'Column', profile: 'HEB 200', material: 'S355' },
+      { id: 'bx', name: 'Beam X', profile: 'IPE 300', material: 'S355' },
+      { id: 'by', name: 'Beam Y', profile: 'IPE 240', material: 'S355' },
+    ],
+    supports: nodes.filter((n) => n.z === '0').map((n) => ({ id: `s${n.id}`, node: n.id, dofs: ['fixed', 'fixed', 'fixed', 'fixed', 'fixed', 'fixed'] })),
+    loadCases: windCases(),
+    analysis: { buckling: true },
+  };
+}
+
+export function frame3dExample(): Worksheet {
+  return build('3-D steel frame', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# 3-D steel frame\nPress **3-D frame** in the toolbar for a space frame: nodes, members, sections, supports and loads in tables, every value a worksheet expression. This hall frame of 2 × 1 bays has fixed feet, roof loads G and Q on the main beams, its own weight and wind W on the gable at x = 0, in three EN 1990 combinations. Double-click it to orbit and edit the tables; the strip switches the diagrams (hover for values).' }],
+    ['math', L, mm(54), { source: 'a := 6 m' }],
+    ['math', mm(55), mm(54), { source: 'b := 5 m' }],
+    ['math', mm(90), mm(54), { source: 'h := 4.5 m' }],
+    ['math', L, mm(64), { source: 'g_k := 6 kN/m' }],
+    ['math', mm(55), mm(64), { source: 'q_k := 7.5 kN/m' }],
+    ['math', mm(100), mm(64), { source: 'w_k := 0.8 kN/m^2' }],
+    ['frame3d', L, mm(80), { name: 'f', width: mm(170), height: mm(112), show: 'My', camera: { yaw: 35, pitch: 22, zoom: 1.05, panX: 0, panY: 0.04 }, ...steelFrame3D() }],
+    ['text', L, mm(198), { width: mm(170), markdown: '## Results in the worksheet\nForces and reactions are the governing ones over the ULS combinations, displacements over the SLS one; each case and combination is there on its own too. Member z points down in a beam, so sagging M_y is positive.' }],
+    ['math', L, mm(226), { source: 'f.α_cr =' }],
+    ['math', mm(60), mm(226), { source: 'f.α_cr ≥ 10' }],
+    ['math', L, mm(238), { source: 'f.BX1.My_max = kN*m' }],
+    ['math', mm(95), mm(238), { source: 'f.BX1.My_min = kN*m' }],
+    ['math', L, mm(250), { source: 'f.C1.N_min = kN' }],
+    ['math', mm(95), mm(250), { source: 'f.F1.Rz = kN' }],
+    ['math', L, mm(262), { source: 'f.combos.ULS2.F1.Rx = kN' }],
+    ['math', mm(105), mm(262), { source: 'f.cases.W.F1.My = kN*m' }],
+    ['text', L, mm(304), { width: mm(170), markdown: '## Checks\nExtreme fibre stress |N|/A + |M_y|/W_y + |M_z|/W_z of the main beam and a column against f_y (S355), and the sway of the frame top under SLS against h/300.' }],
+    ['math', L, mm(326), { source: 'f.BX1.σ_max ≤ 355 MPa' }],
+    ['math', L, mm(338), { source: 'f.C2.σ_max ≤ 355 MPa' }],
+    ['math', L, mm(350), { source: 'f.T1.ux ≤ h / 300' }],
+    ['math', L, mm(366), { source: 'f.u_max = mm' }],
+    ['plot', L, mm(380), { xExpr: 'x', traces: [{ y: 'f.BX1.My(x)', style: 'line' }, { y: 'f.BX2.My(x)', style: 'line' }], xmin: '0 m', xmax: 'a', xUnit: 'm', yUnit: 'kN*m', title: 'M_y along BX1 and BX2 (ULS1)', width: mm(110), height: mm(56) }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -716,5 +777,6 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'CAD part design (parametric)', make: cadExample },
   { name: 'CAD: shells, roundings, lofts', make: shapingExample },
   { name: 'Bridge girder: influence lines, LM1', make: bridgeExample },
+  { name: '3-D steel frame', make: frame3dExample },
   { name: 'Differential equations (odesolve)', make: odeExample },
 ];

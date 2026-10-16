@@ -3,6 +3,8 @@ import { evaluateWorksheet, type Frame3DResult, type MathResult } from '../engin
 import { createRegion, emptyWorksheet, type Frame3DRegion } from '../model/types';
 import { sectionProps } from '../engine/sections';
 import { framePreset, type Frame3DData, type F3Load } from './model';
+import { frame3dExample } from '../model/examples';
+import { materialValues } from './evaluate';
 
 const ipe300 = sectionProps('IPE 300'), heb200 = sectionProps('HEB 200');
 const E = 210e9;
@@ -162,6 +164,27 @@ describe('3-D frame region in a worksheet', () => {
     expect(r2.solution!.reactions.reduce((s, r) => s + r.F[2], 0)).toBeCloseTo(24 * 4 * (10e3 + w), 3);
   }, 30000);
 
+  it('springs on supports and the material classes', () => {
+    // a cantilever whose tip rests on a spring: δ = P / (k + 3EI/L³), the spring takes k δ
+    const k = 5000e3, EI = E * ipe300.I_y * 1e-12, delta = 10e3 / (k + (3 * EI) / 27);
+    const d = cantilever([{ id: 'P', type: 'node', node: 'b', Fz: '-P' }], {
+      supports: [
+        { id: 'p', node: 'a', dofs: ['fixed', 'fixed', 'fixed', 'fixed', 'fixed', 'fixed'] },
+        { id: 'k', node: 'b', dofs: ['free', 'free', '5000 kN/m', 'free', 'free', 'free'] },
+      ],
+    });
+    const { num } = run(d, ['f.N2.uz = mm', 'f.N2.Rz = kN']);
+    expect(num(0)).toBeCloseTo(-delta * 1000, 6);
+    expect(num(1)).toBeCloseTo((k * delta) / 1000, 6);
+    // EN 1992-1-1 Table 3.1: E_cm = 22 (f_cm/10)^0.3 GPa, ν = 0.2; 25 kN/m³; EN 338 C24: 11 GPa, G 0.69 GPa
+    const c = materialValues('C30/37');
+    expect(c.E / 1e9).toBeCloseTo(22 * 3.8 ** 0.3, 9);
+    expect(c.G).toBeCloseTo(c.E / 2.4, 3);
+    expect(c.rho * 9.80665).toBeCloseTo(25e3, 6);
+    expect(materialValues('C24')).toEqual({ E: 11e9, G: 0.69e9, rho: 420 });
+    expect(materialValues('S355').G / 1e9).toBeCloseTo(210 / 2.6, 9);
+  });
+
   it('reports problems with the item they belong to', () => {
     const bad = run(cantilever([{ id: 'P', type: 'node', node: 'b', Fz: '5 m' }]), []).res;
     expect(bad.errors.P).toMatch(/units like kN/);
@@ -173,4 +196,26 @@ describe('3-D frame region in a worksheet', () => {
     const names = run(cantilever([]), [], { nodes: [{ id: 'a', name: 'N1', x: '0', y: '0', z: '0' }, { id: 'b', name: 'N1', x: '3', y: '0', z: '0' }] }).res;
     expect(names.errors.names).toMatch(/named N1/);
   });
+
+  it('the example: governing extremes, α_cr and stresses taken per combination', () => {
+    const ws = frame3dExample();
+    ws.settings.precision = 12;
+    const extra = ['f.BX1.My_min = kN*m', 'f.BX1.σ_max = MPa', 'f.BX1.L_cr_z = m', 'f.combos.ULS1.BX1.My_min = kN*m', 'f.combos.ULS2.BX1.My_min = kN*m'];
+    const maths = extra.map((src, i) => createRegion('math', 20, 2000 + 20 * i, { source: src }));
+    ws.regions.push(...maths);
+    const out = evaluateWorksheet(ws);
+    for (const r of ws.regions) {
+      const res = out.results.get(r.id) as MathResult & { error?: string };
+      expect(res?.error, r.kind === 'math' ? r.source : r.kind).toBeUndefined();
+    }
+    const val = (i: number) => Number(/(-?[\d.]+)/.exec((out.results.get(maths[i].id) as MathResult).text!)![1]);
+    // the governing minimum is the lower of the two ULS combinations', with α_cr's lengths alongside
+    expect(val(0)).toBeCloseTo(Math.min(val(3), val(4)), 9);
+    expect(val(2)).toBeGreaterThan(0);
+    // the stress of one combination: at least |M_y| / W_y of the governing moment (not the envelope's sides mixed)
+    // (kN·m / m³ = kPa; / 1000 → MPa)
+    const sigM = Math.abs(val(0)) / (ipe300.W_el_y * 1e-9) / 1000;
+    expect(val(1)).toBeGreaterThanOrEqual(sigM - 1e-9);
+    expect(val(1)).toBeLessThan(sigM * 1.2);
+  }, 30000);
 });

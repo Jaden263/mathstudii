@@ -52,11 +52,15 @@ function SectionFields({ s, onChange, shear = false, si }: {
 }
 
 /** Load cases and combinations: add, rename, factors (moving loads too), ULS / SLS. */
-function LoadCases({ lc, onChange, loads, moving = [] }: { lc?: BeamCases; onChange: (lc: BeamCases | undefined) => void; loads: BeamLoad[]; moving?: BeamMovingLoad[] }) {
+export function LoadCases({ lc, onChange, loads, moving = [], start }: {
+  lc?: BeamCases; onChange: (lc: BeamCases | undefined) => void; loads: { case?: string }[]; moving?: BeamMovingLoad[];
+  /** The cases and combinations a region starts with (default: G, Q, ULS, SLS). */
+  start?: () => BeamCases;
+}) {
   if (!lc) {
     return (
       <>
-        <button className="btn" onClick={() => onChange(defaultCases())}>Use load cases &amp; combinations</button>
+        <button className="btn" onClick={() => onChange((start ?? defaultCases)())}>Use load cases &amp; combinations</button>
         <p className="hint">Split the loads into cases (G permanent, Q imposed, wind …) and combine them with factors: ULS 1.35 G + 1.5 Q, SLS G + Q, and the envelope.</p>
       </>
     );

@@ -233,6 +233,10 @@ export interface Frame3DRegion extends RegionBase, Frame3DData {
   scale?: number;
   /** Node and member names in the view. */
   labels?: boolean;
+  /** The members' local axes in the view. */
+  axes?: boolean;
+  /** Support reactions in the view. */
+  reactions?: boolean;
   /** Table shown while editing. */
   tab?: Frame3DTab;
   /** Load cases and combinations (absent: all loads act together). */
