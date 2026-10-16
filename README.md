@@ -292,8 +292,8 @@ statically determinate and indeterminate structures are handled alike.
   the tests check simply supported, cantilever, propped, continuous and Gerber beams
   and a truss against closed-form results, and a portal frame for equilibrium.
 - **Not included:** plasticity, imperfections (add equivalent sway forces as loads),
-  lateral-torsional and out-of-plane buckling, moving loads and self-weight. Add
-  self-weight as a line load.
+  lateral-torsional and out-of-plane buckling, and self-weight. Add self-weight as a
+  line load.
 
 **Shear deformation, second order and buckling** (side panel → *Analysis*; all off by
 default, so older worksheets give the same numbers):
@@ -354,6 +354,57 @@ a coil), settle by a given amount (into the support, e.g. 10 mm down), and a fix
 can have a rotational spring (a semi-rigid foot). Springs go into the stiffness matrix,
 settlements are prescribed displacements; both are checked against closed-form results.
 
+**Influence lines and moving loads** (side panel → *Influence lines* and *Moving loads*):
+
+- **Influence lines** of a support reaction (R_y, R_x or the moment of a fixed support),
+  or of M, V, N or the deflection at a section, drawn in panels under the diagrams
+  (positive up, ordinates labelled at the peaks, at supports and on both sides of the
+  shear jump; M in m per kN, deflection in mm per kN). A unit load walks along the
+  **load path**: a straight beam, or the members marked *Load path (deck)* (with none
+  marked, the horizontal ones), which must form one chain from left to right. The
+  stiffness is factorised once and every position is one more right-hand side: the
+  fixed-end forces of the load on its member, so members stay whole and the ordinates
+  are exact at every position (the forces along members come from statics). Positions
+  are every Δx along x (automatic: a round step near 1/200 of the path that the axle
+  spacings divide), plus member ends and the sections asked for.
+- **Moving loads:** a point load; **EN 1991-2 Load Model 1** for one notional lane
+  (tandem 2 × α_Q·300 kN at 1.2 m and α_q·9 kN/m² × the lane width, α = 1 by default);
+  a crane (two wheels P at a); or any axle train with a uniform load. A train stops with
+  each of its axles on every position, both ways (or one way), and since the lines are
+  straight between positions that finds its extremes without a step to miss them. The
+  uniform load goes only where the influence line is adverse (Simpson's rule on each
+  smooth stretch, which is exact for the cubic lines of unloaded members). The result
+  is an envelope (upper and lower bound, the load may also be absent) of N, V, M, the
+  deflection and the reactions, with the section and the train position of each
+  extreme.
+- **In the combinations** each moving load has a factor column next to the load cases;
+  a combination then has two bounds: its static solution plus the factored moving
+  extreme at each station (the overall envelope includes both). Several moving loads in
+  one combination add their extremes (on the safe side). Moving loads are linear: with
+  second order on, they are added to the second-order static part as first-order
+  results, and buckling sees the static loads only.
+- **The strip** picks a moving load's envelope like a combination; **Train** places the
+  train on the structure with a slider (and a direction button): the diagrams become
+  those of the train at that position, and the influence-line panels mark each axle
+  with Σ P η.
+- **In the worksheet:** `b.IL.M1(x)` (with `b.IL.M1_max`, `_min`), and per moving load
+  `b.moving.LM1.M_max`, `M_min`, `V_max`, `V_min`, `w_max`, each with `x_M_max` (the
+  section) and `pos_M_max` (the first axle), the reactions `b.moving.LM1.B.Ry_max`,
+  `.Ry_min`, and the envelope as functions `b.moving.LM1.max.M(x)`, `.min.M(x)`; a
+  combination's lower bound is `b.combos.ULS.min`.
+- **Checked against closed forms:** influence lines of M (peak L/4), R_A and V (jump of
+  1) on a simple span, Maxwell's deflection line, R_B of two spans against
+  Müller-Breslau ξ(3L² − ξ²)/2L³, and a frame with a hinge, a spring and an inclined
+  roller against the direct solver; PL/4 for a single load, P(2L − a)²/8L for two axles
+  (and PL/4 for a > 0.586 L), R_A = P + P(L − a)/L, −qL²/8 over the middle support and
+  49/512 qL² in a span for a uniform load on the adverse parts, and LM1 on a 20 m span by
+  hand (852 x − 43.5 x²).
+- **Limits:** loads act vertically on the path; axle spacings are measured along x; the
+  axles of a train stand on positions together only when Δx divides their spacings
+  (otherwise between two positions the line is taken straight: an error of order Δx²);
+  dynamic factors, multiple lanes and transverse distribution are left to you (scale α
+  or the loads).
+
 The **Beams and frames** example covers four structures:
 
 - A two-span beam with factored loads, its reactions, a stress and deflection check, and
@@ -362,6 +413,10 @@ The **Beams and frames** example covers four structures:
 - Pattern loading: G on both spans, Q on either, three ULS combinations and the envelope.
 - A sway portal on pinned feet in second order with shear deformation: α_cr, the buckling
   mode, the column's buckling length and the amplified corner moment.
+
+The **Bridge girder** example is a two-span girder (2 × 25 m) under G and LM1: three
+influence lines, the LM1 extremes with where they act, the ULS envelope 1.35 G + 1.35 LM1,
+and a hand check of the hogging moment over the middle support.
 
 ### Python code
 
@@ -655,7 +710,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
-| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr) |
+| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (mesh kernel: no free 3-D edge fillets, drafts or sweeps) |

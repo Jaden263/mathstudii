@@ -69,6 +69,8 @@ export function units(r: BeamRegion) {
     defl: (v: number) => (metric ? `${fmt(v * 1000)} mm` : `${fmt(v / 0.0254)} in`),
     stress: (v: number) => `${fmt(v / 1e6)} MPa`,
     length: (v: number) => `${fmt(v)} ${r.lengthUnit}`,
+    /** Newtons per force unit. */
+    forceN: F,
   };
 }
 
@@ -314,6 +316,15 @@ export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX, low }: {
       </g>
     );
   }
+  // both bounds of the deflection too (one scale: they share max.w); a moving load's upper one is often nil
+  if (low && kind === 'deflection') {
+    return (
+      <g className="bm-envelope">
+        <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} />
+        <DiagramOne r={r} d={d} vp={vp} res={{ ...res, solution: low }} kind={kind} px={px} />
+      </g>
+    );
+  }
   return <DiagramOne r={r} d={d} vp={vp} res={res} kind={kind} px={px} />;
 }
 
@@ -479,6 +490,8 @@ export interface StackLayout {
   modelH: number;
   /** Height of one diagram panel (one cell for frames). */
   panelH: number;
+  /** Height of one full-width panel below them (influence lines). */
+  extraH: number;
   cols: number;
   rows: number;
   /** Region height that gives every panel its comfortable size. */
@@ -490,15 +503,17 @@ export interface StackLayout {
  * full-width panel per diagram, aligned with the beam; frames get one small copy of the
  * frame per diagram, in a grid.
  */
-export function stackLayout(height: number, width: number, n: number, straight: boolean): StackLayout {
+export function stackLayout(height: number, width: number, n: number, straight: boolean, extra = 0): StackLayout {
   const avail = height - STRIP_H;
-  if (!n) return { modelH: avail, panelH: 0, cols: 1, rows: 0, required: 0 };
+  if (!n && !extra) return { modelH: avail, panelH: 0, extraH: 0, cols: 1, rows: 0, required: 0 };
   const cols = straight ? 1 : width >= 520 ? 2 : 1;
   const rows = Math.ceil(n / cols);
-  const modelWant = straight ? 180 : 280, panelWant = straight ? 108 : 210;
-  const want = modelWant + rows * panelWant;
+  // influence lines: full-width panels like a straight beam's
+  const modelWant = straight ? 180 : 280, panelWant = straight ? 108 : 210, extraWant = 108;
+  const want = modelWant + rows * panelWant + extra * extraWant;
   const modelH = Math.round(Math.max(90, Math.min(straight ? 300 : 420, (avail * modelWant) / want)));
-  return { modelH, panelH: Math.max(40, (avail - modelH) / rows), cols, rows, required: want + STRIP_H };
+  const k = (avail - modelH) / (rows * panelWant + extra * extraWant);
+  return { modelH, panelH: Math.max(40, panelWant * k), extraH: Math.max(40, extraWant * k), cols, rows, required: want + STRIP_H };
 }
 
 const PANEL_TITLE: Record<BeamPanel, string> = { N: 'N', V: 'V', M: 'M', deflection: 'δ', mode: 'Buckling mode' };

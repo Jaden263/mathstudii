@@ -272,6 +272,7 @@ function showMoving(res: BeamResult, r: BeamRegion): void {
   const id = r.traffic?.view;
   const m = id ? res.traffic?.moving.find((q) => q.id === id) : undefined;
   if (!m?.env) return;
+  if (res.solution) m.env.max.indeterminacy = m.env.min.indeterminacy = res.solution.indeterminacy;
   res.staticSolution = res.solution;
   res.solution = m.env.max;
   res.view = m.id;

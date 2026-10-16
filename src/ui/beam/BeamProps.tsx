@@ -7,13 +7,14 @@ import type { BeamResult } from '../../beam/evaluate';
 import { straightBeam } from '../../beam/evaluate';
 import {
   BEAM_FORCE_UNITS, BEAM_LENGTH_UNITS, PROFILES, beamId, defaultCases, loadCase, profileSection, removeItems,
-  type BeamCases, type BeamData, type BeamLoad, type BeamMember, type BeamSection, type BeamSupport,
+  type BeamCases, type BeamData, type BeamLoad, type BeamMember, type BeamMovingLoad, type BeamSection, type BeamSupport,
 } from '../../beam/model';
 import type { Action } from '../store';
 import { useSketchUI } from '../sketch/context';
 import { LazyInput } from '../sketch/SketchProps';
 import { LENGTH_M, fmt, units } from './beamDraw';
 import { AnalysisOptions, MaterialField, ShearFields, StabilityResults } from './BeamAnalysis';
+import { TrafficProps } from './BeamTraffic';
 
 function SectionFields({ s, onChange, shear = false, si }: {
   s: BeamSection; onChange: (s: BeamSection) => void;
@@ -50,8 +51,8 @@ function SectionFields({ s, onChange, shear = false, si }: {
   );
 }
 
-/** Load cases and combinations: add, rename, factors, ULS / SLS. */
-function LoadCases({ lc, onChange, loads }: { lc?: BeamCases; onChange: (lc: BeamCases | undefined) => void; loads: BeamLoad[] }) {
+/** Load cases and combinations: add, rename, factors (moving loads too), ULS / SLS. */
+function LoadCases({ lc, onChange, loads, moving = [] }: { lc?: BeamCases; onChange: (lc: BeamCases | undefined) => void; loads: BeamLoad[]; moving?: BeamMovingLoad[] }) {
   if (!lc) {
     return (
       <>
@@ -90,7 +91,7 @@ function LoadCases({ lc, onChange, loads }: { lc?: BeamCases; onChange: (lc: Bea
       </table>
       <button className="btn" onClick={addCase}>+ Load case</button>
       <table className="props-table bm-combos">
-        <thead><tr><th>Combination</th><th />{lc.cases.map((c) => <th key={c.id}>γ {c.name}</th>)}<th /></tr></thead>
+        <thead><tr><th>Combination</th><th />{[...lc.cases, ...moving].map((c) => <th key={c.id}>γ {c.name}</th>)}<th /></tr></thead>
         <tbody>
           {lc.combos.map((k) => (
             <tr key={k.id}>
@@ -100,7 +101,7 @@ function LoadCases({ lc, onChange, loads }: { lc?: BeamCases; onChange: (lc: Bea
                   <option value="ULS">ULS</option><option value="SLS">SLS</option>
                 </select>
               </td>
-              {lc.cases.map((c) => (
+              {[...lc.cases, ...moving].map((c) => (
                 <td key={c.id}><LazyInput label={`Factor for ${c.name}`} value={k.factors[c.id] ?? ''} placeholder="0" onCommit={(v) => setCombo(k.id, { factors: { ...k.factors, [c.id]: v.trim() } })} /></td>
               ))}
               <td>{lc.combos.length > 1 && <button className="icon-btn" aria-label={`Remove ${k.name}`} onClick={() => onChange({ ...lc, combos: lc.combos.filter((q) => q.id !== k.id), view: lc.view === k.id ? undefined : lc.view })}><Trash2 size={12} /></button>}</td>
@@ -112,7 +113,7 @@ function LoadCases({ lc, onChange, loads }: { lc?: BeamCases; onChange: (lc: Bea
         <button className="btn" onClick={addCombo}>+ Combination</button>
         <button className="btn" onClick={() => onChange(undefined)} title="All loads act together again">Stop using cases</button>
       </div>
-      <p className="hint">Factors are numbers or worksheet expressions (γ_G, ψ_0 …). The envelope takes N, V and M over the ULS combinations and the deflection over the SLS ones; the worksheet gets the governing values, plus <code>.combos.ULS</code> and <code>.cases.G</code> for each one.</p>
+      <p className="hint">Factors are numbers or worksheet expressions (γ_G, ψ_0 …). The envelope takes N, V and M over the ULS combinations and the deflection over the SLS ones; the worksheet gets the governing values, plus <code>.combos.ULS</code> and <code>.cases.G</code> for each one.{moving.length ? <> A moving load adds its factored extremes to the combination, which then has two bounds (<code>.combos.ULS.min</code> the lower).</> : null}</p>
     </>
   );
 }
@@ -185,6 +186,7 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
           <label className="check"><input type="checkbox" checked={!!member.hingeA} onChange={(e) => updMember({ hingeA: e.target.checked || undefined })} /> Hinge at the start</label>
           <label className="check"><input type="checkbox" checked={!!member.hingeB} onChange={(e) => updMember({ hingeB: e.target.checked || undefined })} /> Hinge at the end</label>
           <p className="hint">Both ends hinged: a truss bar (axial force only).</p>
+          <label className="check" title="Moving loads travel along the members marked (with none marked: the horizontal ones)"><input type="checkbox" checked={!!member.deck} onChange={(e) => updMember({ deck: e.target.checked || undefined })} /> Load path (deck) for moving loads</label>
           <label className="check"><input type="checkbox" checked={!!member.section} onChange={(e) => updMember({ section: e.target.checked ? { ...region.section } : undefined })} /> Own section</label>
           {member.section && <SectionFields s={member.section} shear={!!region.analysis?.shear} onChange={(s) => updMember({ section: s })} />}
           {result?.buckling?.Lcr[member.id] !== undefined && (
@@ -319,16 +321,17 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
           {err('section')}
           <SectionFields s={region.section} shear={!!region.analysis?.shear} si={result?.section} onChange={(s) => set({ section: s }, 'section')} />
           <h3 className="sub">Load cases</h3>
-          <LoadCases lc={region.loadCases} loads={region.loads} onChange={(lc) => set({ loadCases: lc }, 'cases')} />
+          <LoadCases lc={region.loadCases} loads={region.loads} moving={region.traffic?.loads} onChange={(lc) => set({ loadCases: lc }, 'cases')} />
           <h3 className="sub">Analysis</h3>
           <AnalysisOptions region={region} onChange={(patch) => set(patch, 'analysis')} />
+          <TrafficProps region={region} result={result} onChange={(patch) => set(patch, 'traffic')} />
         </>
       )}
 
       {result?.error && <div className="region-error">{result.error}</div>}
       {sol && (
         <>
-          <h3 className="sub">Results{result?.view ? ` · ${result.view === 'envelope' ? 'envelope (max of |min|, |max|)' : [...(result.combos ?? []), ...(result.cases ?? [])].find((c) => c.id === result.view)?.name ?? ''}` : ''}</h3>
+          <h3 className="sub">Results{result?.view ? ` · ${result.view === 'envelope' ? 'envelope (max of |min|, |max|)' : [...(result.combos ?? []), ...(result.cases ?? []), ...(result.traffic?.moving ?? [])].find((c) => c.id === result.view)?.name ?? ''}` : ''}</h3>
           <p className="hint">{sol.indeterminacy === 0 ? 'Statically determinate.' : sol.indeterminacy > 0 ? `Statically indeterminate, degree ${sol.indeterminacy} (solved by stiffness).` : 'Solved.'}</p>
           <table className="props-table">
             <tbody>

@@ -582,6 +582,68 @@ export function beamExample(): Worksheet {
   ]);
 }
 
+export function bridgeExample(): Worksheet {
+  // a two-span bridge girder carrying one notional lane: permanent load G, and EN 1991-2 LM1 moving
+  const girder: BeamData & { loadCases: BeamCases; panels: BeamPanel[]; traffic: import('../beam/model').BeamTraffic } = {
+    nodes: [{ id: 'gA', x: 0, y: 0 }, { id: 'gB', x: 25, y: 0 }, { id: 'gC', x: 50, y: 0 }],
+    members: [{ id: 'gm1', a: 'gA', b: 'gB' }, { id: 'gm2', a: 'gB', b: 'gC' }],
+    supports: [
+      { id: 'gsA', node: 'gA', type: 'pin', angle: 0, label: 'A' },
+      { id: 'gsB', node: 'gB', type: 'roller', angle: 0, label: 'B' },
+      { id: 'gsC', node: 'gC', type: 'roller', angle: 0, label: 'C' },
+    ],
+    loads: [
+      { id: 'gg1', type: 'line', member: 'gm1', q1: 'g_k', dir: 'global', case: 'G' },
+      { id: 'gg2', type: 'line', member: 'gm2', q1: 'g_k', dir: 'global', case: 'G' },
+    ],
+    loadCases: {
+      cases: [{ id: 'G', name: 'G', label: 'Permanent' }],
+      combos: [
+        { id: 'gu', name: 'ULS', kind: 'ULS', factors: { G: '1.35', glm: '1.35' } },
+        { id: 'gs', name: 'SLS', kind: 'SLS', factors: { G: '1', glm: '1' } },
+      ],
+      view: 'gu',
+    },
+    panels: ['V', 'M'],
+    traffic: {
+      lines: [
+        { id: 'gRB', name: 'RB', quantity: 'Ry', support: 'gsB' },
+        { id: 'gMB', name: 'MB', quantity: 'M', at: { x: 25, y: 0 } },
+        { id: 'gM1', name: 'M1', quantity: 'M', at: { x: 10, y: 0 } },
+      ],
+      loads: [{ id: 'glm', name: 'LM1', preset: 'lm1', alphaQ: '1', alphaq: '1', w: '3' }],
+    },
+  };
+  return build('Bridge girder: influence lines and LM1', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Bridge girder: influence lines and Load Model 1\nTwo spans of 25 m carry one notional lane. The permanent load G is an ordinary load case; EN 1991-2 Load Model 1 is a **moving load** (side panel → Moving loads): the tandem system 2 × α_Q·300 kN at 1.2 m stops with each axle on every load position, both ways, and the lane load α_q·9 kN/m² × 3 m goes only where the influence line is adverse. The combinations add 1.35 × the LM1 extremes to 1.35 G.' }],
+    ['math', L, mm(52), { source: 'g_k := 60 kN/m' }],
+    ['beam', L, mm(62), {
+      name: 'gb', width: mm(170), height: mm(236), section: { E: '210 GPa', A: '600 cm^2', I: '8000000 cm^4', W: '88900 cm^3' }, ...girder,
+    }],
+    ['text', L, mm(304), { width: mm(170), markdown: '## Influence lines\nThe panels under the diagrams are the influence lines asked for: the reaction at B (1 over B, a cubic each side), the moment over B (negative on both spans) and the moment at 10 m. They come back as functions of x.' }],
+    ['math', L, mm(332), { source: 'gb.IL.RB(10 m) =' }],
+    ['math', mm(80), mm(332), { source: 'gb.IL.MB_min = m' }],
+    ['math', mm(135), mm(332), { source: 'gb.IL.M1_max = m' }],
+    ['plot', L, mm(344), { xExpr: 'x', traces: [{ y: 'gb.IL.MB(x)', style: 'line' }, { y: 'gb.IL.M1(x)', style: 'line' }], xmin: '0 m', xmax: '50 m', xUnit: 'm', yUnit: 'm', title: 'Influence lines of M over B and at 10 m', width: mm(82), height: mm(52) }],
+    ['plot', mm(108), mm(344), { xExpr: 'x', traces: [{ y: 'gb.combos.ULS.M(x)', style: 'line' }, { y: 'gb.combos.ULS.min.M(x)', style: 'line' }], xmin: '0 m', xmax: '50 m', xUnit: 'm', yUnit: 'kN*m', title: 'ULS envelope: 1.35 G + 1.35 LM1', width: mm(82), height: mm(52) }],
+    ['text', L, mm(404), { width: mm(170), markdown: '## LM1 extremes and where they act\n`x_M_max` is the section, `pos_M_max` the first axle of the tandem when it happens. Pick **LM1 (envelope)** in the strip under the girder and press **Train** to drag the tandem along and watch the diagrams.' }],
+    ['math', L, mm(434), { source: 'gb.moving.LM1.M_max = kN*m' }],
+    ['math', mm(105), mm(434), { source: 'gb.moving.LM1.x_M_max = m' }],
+    ['math', L, mm(446), { source: 'gb.moving.LM1.pos_M_max = m' }],
+    ['math', mm(105), mm(446), { source: 'gb.moving.LM1.M_min = kN*m' }],
+    ['math', L, mm(458), { source: 'gb.moving.LM1.B.Ry_max = kN' }],
+    ['math', mm(105), mm(458), { source: 'gb.moving.LM1.w_max = mm' }],
+    ['text', L, mm(472), { width: mm(170), markdown: 'A hand check on the hogging moment: the lane load alone on both spans gives −q L²/8 over B, and the tandem adds about 2 × 300 kN × the lowest ordinate of the influence line (−L/(6√3) = −2.41 m at L/√3).' }],
+    ['math', L, mm(494), { source: 'q_lane := 9 kN/m^2 * 3 m = kN/m' }],
+    ['math', L, mm(512), { source: '-q_lane * (25 m)^2 / 8 = kN*m' }],
+    ['math', mm(100), mm(512), { source: '2 * 300 kN * gb.IL.MB_min = kN*m' }],
+    ['text', L, mm(530), { width: mm(170), markdown: '## Design values\nULS governing moment and bending stress, and the SLS deflection under G + LM1 (characteristic).' }],
+    ['math', L, mm(550), { source: 'gb.M_max = kN*m' }],
+    ['math', mm(88), mm(550), { source: 'gb.σ_max = MPa' }],
+    ['math', mm(140), mm(550), { source: 'gb.w_max = mm' }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -595,4 +657,5 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Python code', make: pythonExample },
   { name: 'CAD part design (parametric)', make: cadExample },
   { name: 'CAD: shells, roundings, lofts', make: shapingExample },
+  { name: 'Bridge girder: influence lines, LM1', make: bridgeExample },
 ];

@@ -13,10 +13,13 @@ import {
 import type { Action } from '../store';
 import { useSketchUI, type BeamTool } from '../sketch/context';
 import {
-  Diagram, FrameMultiples, LoadGlyph, Reactions, STRIP_H, StackedDiagrams, SupportGlyph, autoPanels, fitView, fmt, fmtAlpha, modeShown, stackLayout, toS, toW, units,
+  Diagram, FrameMultiples, LENGTH_M, LoadGlyph, Reactions, STRIP_H, StackedDiagrams, SupportGlyph, autoPanels, fitView, fmt, fmtAlpha, modeShown, stackLayout, toS, toW, units,
   type P2, type Vp,
 } from './beamDraw';
-import { straightBeam } from '../../beam/evaluate';
+import { lowerBound, straightBeam } from '../../beam/evaluate';
+import { trainLoads } from '../../beam/influence';
+import { solveStructure } from '../../beam/solve';
+import { InfluencePanels, SectionMarks, TrainGlyph } from './beamInfluence';
 
 interface Props {
   region: BeamRegion;
@@ -96,9 +99,26 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   // load cases: what is shown, the lower envelope bound, the case new loads go into
   const lc = region.loadCases;
   const lcView = res?.view;
-  const low = lcView === 'envelope' ? res?.envelope?.min : undefined;
+  // a moving load shown: its envelope, or with the train placed, the response to the train there
+  const traffic = region.traffic;
+  const movings = traffic?.loads ?? [];
+  const moving = traffic?.view && lcView === traffic.view ? res?.traffic?.moving.find((m) => m.id === traffic.view) : undefined;
+  const [train, setTrain] = useState<{ id: string; lead: number; dir: 1 | -1 } | null>(null);
+  const trainAt = moving?.P.length && train?.id === moving.id ? train : null;
+  const instant = useMemo(() => {
+    const tr = res?.traffic;
+    if (!trainAt || !tr || !moving) return undefined;
+    try {
+      return solveStructure({ ...tr.structure, loads: trainLoads(tr.path, tr.structure, moving, trainAt.lead, trainAt.dir) });
+    } catch {
+      return undefined;
+    }
+  }, [trainAt, res?.traffic, moving]);
+  const shown = res && instant ? { ...res, solution: instant } : res;
+  const low = instant ? undefined : lowerBound(res);
   const newCase = lc ? (lc.cases.find((c) => c.id === lc.view)?.id ?? lc.cases[0]?.id) : undefined;
   const loadLook = (l: BeamLoad): { faded: boolean; tag?: string } => {
+    if (moving) return { faded: true };
     if (!lc) return { faded: false };
     const cid = loadCase(l, lc);
     const tag = lc.cases.find((c) => c.id === cid)?.name;
@@ -112,17 +132,19 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const stacked = (region.layout ?? 'stack') === 'stack';
   const segs = useMemo(() => straightBeam(region), [region.nodes, region.members]); // eslint-disable-line react-hooks/exhaustive-deps
   const kinds = region.panels ?? autoPanels(res);
-  const hasPanels = stacked && region.members.length > 0 && kinds.length > 0;
+  // influence lines get full-width panels below the diagrams
+  const nIL = stacked && region.members.length > 0 && !traffic?.hideLines ? traffic?.lines.length ?? 0 : 0;
+  const hasPanels = stacked && region.members.length > 0 && (kinds.length > 0 || nIL > 0);
   // The drawing scales with its region like a picture: it is laid out at a logical size
   // (560 px wide at scale 1) and the SVG viewBox maps that onto the region, so text,
   // lines, symbols and diagrams all grow and shrink together with the frame.
   const stripH = stacked && region.members.length > 0 ? STRIP_H : 0; // logical height of the diagram strip
   const nPanels = hasPanels ? kinds.length : 0;
-  const naturalH = nPanels ? stackLayout(0, BASE_W, nPanels, !!segs).required - STRIP_H : 300 - stripH;
+  const naturalH = nPanels || nIL ? stackLayout(0, BASE_W, nPanels, !!segs, nIL).required - STRIP_H : 300 - stripH;
   const kW = region.width / BASE_W;
   const k = Math.min(3, Math.max(0.5, Math.min(kW, region.height / (naturalH + stripH))));
   const W = region.width / k, svgH = region.height / k - stripH;
-  const lay = stackLayout(svgH + STRIP_H, W, nPanels, !!segs);
+  const lay = stackLayout(svgH + STRIP_H, W, nPanels, !!segs, nIL);
   const modelH = stacked && region.members.length > 0 ? lay.modelH : svgH;
 
   // the page shows the structure framed; while editing the view stays put
@@ -134,7 +156,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const vp: Vp = { view, width: W, height: modelH };
 
   // a new set of diagrams makes the region tall enough for them (pushing what is below down)
-  const growKey = hasPanels ? `${kinds.join(',')}|${segs ? 'beam' : 'frame'}` : '';
+  const growKey = hasPanels ? `${kinds.join(',')}|${segs ? 'beam' : 'frame'}|${nIL}` : '';
   const grown = useRef('');
   useEffect(() => {
     if (!growKey || grown.current === growKey) return;
@@ -589,7 +611,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     return p ? { x: toS(vp, p).x, y: toS(vp, p).y - 66 } : null;
   })();
   const draftFrom = chainFrom ? (typeof chainFrom === 'string' ? N.get(chainFrom) : chainFrom) : null;
-  const sol = res?.solution;
+  const sol = shown?.solution;
   const cursorStyle = !editing ? undefined : tool === 'select' ? 'default' : 'crosshair';
   const unitHint = editLoad ? (editLoad.type === 'force' ? region.forceUnit : editLoad.type === 'moment' ? `${region.forceUnit}·${region.lengthUnit}` : `${region.forceUnit}/${region.lengthUnit}`) : '';
 
@@ -617,9 +639,13 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         role="img" aria-label={region.name ? `Beam ${region.name}` : 'Beam'}
       >
         {editing && region.grid > 0 && <BeamGrid vp={vp} step={region.grid} />}
-        {hasPanels && res && (res.solution || mode) && (segs
-          ? <StackedDiagrams r={region} d={data} res={res} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={W} low={low} />
-          : <FrameMultiples r={region} d={data} res={res} top={modelH} layout={lay} kinds={kinds} width={W} low={low} />)}
+        {hasPanels && shown && (shown.solution || mode) && (segs
+          ? <StackedDiagrams r={region} d={data} res={shown} vp={vp} top={modelH} layout={lay} kinds={kinds} segs={segs} width={W} low={low} />
+          : <FrameMultiples r={region} d={data} res={shown} top={modelH} layout={lay} kinds={kinds} width={W} low={low} />)}
+        {nIL > 0 && res?.traffic && (
+          <InfluencePanels r={region} d={data} res={res} vp={vp} top={modelH + lay.rows * lay.panelH} h={lay.extraH} width={W}
+            train={trainAt && moving ? moving.P.map((P, i) => ({ P, x: trainAt.lead - trainAt.dir * moving.offsets[i] })) : undefined} />
+        )}
         {hasPanels && !res?.solution && !mode && (
           <g>
             <line x1={0} y1={modelH} x2={W} y2={modelH} className="bm-panel-sep" />
@@ -628,7 +654,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             </text>
           </g>
         )}
-        {diagramOn && <Diagram r={region} d={data} vp={vp} res={res!} kind={show as 'N' | 'V' | 'M' | 'deflection'} low={low} />}
+        {diagramOn && <Diagram r={region} d={data} vp={vp} res={shown!} kind={show as 'N' | 'V' | 'M' | 'deflection'} low={low} />}
         {/* members */}
         {region.members.map((m) => {
           const a = N.get(m.a), b = N.get(m.b);
@@ -667,7 +693,9 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
         {(stacked || show !== 'reactions') && region.loads.map((l, i) => (
           <LoadGlyph key={l.id} r={region} d={data} l={l} vp={vp} res={res} sel={sel.has(l.id)} label={!diagramOn} {...loadLook(l)} stack={lineStack(region.loads, i)} />
         ))}
-        {reactionsOn && <Reactions r={region} d={data} vp={vp} res={res!} />}
+        {reactionsOn && <Reactions r={region} d={data} vp={vp} res={shown!} />}
+        {nIL > 0 && <SectionMarks r={region} vp={vp} />}
+        {trainAt && moving && res && <TrainGlyph r={region} d={data} res={res} vp={vp} moving={moving} lead={trainAt.lead} dir={trainAt.dir} />}
         {/* drafts */}
         {editing && draftFrom && cursor && tool === 'member' && (() => {
           const A = toS(vp, draftFrom), B = toS(vp, cursor.p);
@@ -727,23 +755,60 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       )}
       {/* the strip and the summary scale with the drawing */}
       <div className="bm-chrome" style={{ width: W, height: region.height / k, transform: `scale(${k})` }}>
+        {moving && moving.P.length > 0 && res?.traffic && (() => {
+          // the train's first axle from where it enters to where it leaves
+          const tr = res.traffic, len = moving.offsets[moving.offsets.length - 1] ?? 0;
+          const x0 = tr.path[0].x0, x1 = tr.path[tr.path.length - 1].x1, Lm = LENGTH_M[region.lengthUnit] ?? 1;
+          const start = () => {
+            const e = moving.env?.extremes.M_max;
+            return { id: moving.id, lead: e?.lead ?? (x0 + x1) / 2, dir: e?.dir ?? 1 } as const;
+          };
+          const dir = trainAt?.dir ?? 1;
+          const lo = dir === 1 ? x0 : x0 - len, hi = dir === 1 ? x1 + len : x1;
+          return (
+            <div className="bm-tabs bm-train" role="toolbar" aria-label="Moving load position" onPointerDown={(e) => e.stopPropagation()}>
+              <button className={!trainAt ? 'on' : ''} title="Upper and lower bound over every position" onClick={() => setTrain(null)}>Envelope</button>
+              <button className={trainAt ? 'on' : ''} title="Place the train and see its diagrams" onClick={() => setTrain(trainAt ?? { ...start() })}>Train</button>
+              {trainAt && (
+                <>
+                  <input type="range" min={lo} max={hi} step={tr.step || (hi - lo) / 200} value={Math.min(hi, Math.max(lo, trainAt.lead))} aria-label="Position of the first axle"
+                    onChange={(e) => setTrain({ ...trainAt, lead: Number(e.target.value) })} />
+                  <span className="bm-train-x">{fmt(trainAt.lead / Lm)} {region.lengthUnit}</span>
+                  <button title="Travel the other way" aria-label="Reverse the direction" onClick={() => setTrain({ ...trainAt, dir: trainAt.dir === 1 ? -1 : 1 })}>{trainAt.dir === 1 ? '→' : '←'}</button>
+                </>
+              )}
+            </div>
+          );
+        })()}
         {editing && <div className="sk-status bm-status">{cursor ? `${fmt(cursor.p.x)}, ${fmt(cursor.p.y)} ${region.lengthUnit}` : `grid ${region.grid} ${region.lengthUnit}`}</div>}
       {region.members.length > 0 && (
           <div className={`bm-tabs${stacked ? ' stacked' : ''}`} role="toolbar" aria-label="Diagrams" onPointerDown={(e) => e.stopPropagation()}>
-            {lc && (
+            {(lc || movings.length > 0) && (
               <>
                 <select
-                  className="bm-view" aria-label="Load case or combination shown" value={lcView ?? ''}
-                  title="Show one load case, one combination, or the envelope of the combinations"
-                  onChange={(e) => set({ loadCases: { ...lc, view: e.target.value } }, false)}
+                  className="bm-view" aria-label="Load case, combination or moving load shown" value={moving ? moving.id : lc ? lcView ?? '' : ''}
+                  title="Show one load case, one combination, the envelope of the combinations, or a moving load's envelope"
+                  onChange={(e) => {
+                    const v = e.target.value, isMoving = movings.some((m) => m.id === v);
+                    set({ ...(traffic ? { traffic: { ...traffic, view: isMoving ? v : undefined } } : {}), ...(lc && !isMoving ? { loadCases: { ...lc, view: v } } : {}) }, false);
+                  }}
                 >
-                  <optgroup label="Combinations">
-                    {lc.combos.map((c) => <option key={c.id} value={c.id}>{c.name} = {comboText(c, lc.cases)}</option>)}
-                    {lc.combos.length > 1 && <option value="envelope">Envelope (min / max)</option>}
-                  </optgroup>
-                  <optgroup label="Load cases">
-                    {lc.cases.map((c) => <option key={c.id} value={c.id}>{c.name}{c.label ? ` · ${c.label}` : ''}</option>)}
-                  </optgroup>
+                  {lc ? (
+                    <>
+                      <optgroup label="Combinations">
+                        {lc.combos.map((c) => <option key={c.id} value={c.id}>{c.name} = {comboText(c, [...lc.cases, ...movings])}</option>)}
+                        {lc.combos.length > 1 && <option value="envelope">Envelope (min / max)</option>}
+                      </optgroup>
+                      <optgroup label="Load cases">
+                        {lc.cases.map((c) => <option key={c.id} value={c.id}>{c.name}{c.label ? ` · ${c.label}` : ''}</option>)}
+                      </optgroup>
+                    </>
+                  ) : <option value="">Loads</option>}
+                  {movings.length > 0 && (
+                    <optgroup label="Moving loads">
+                      {movings.map((m) => <option key={m.id} value={m.id}>{m.name} (envelope)</option>)}
+                    </optgroup>
+                  )}
                 </select>
                 <span className="bm-tab-sep" />
               </>
@@ -779,7 +844,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             )}
           </div>
         )}
-        {sol && !lc && !(stacked && kinds.includes('mode')) && (
+        {sol && !lc && !movings.length && !(stacked && kinds.includes('mode')) && (
           <div className={`bm-summary${stacked && region.members.length > 0 ? ' in-strip' : ''}`}>
             {sol.max.M && <span>M<sub>max</sub> {u.moment(sol.max.M.value)}</span>}
             {sol.max.V && !(stacked && region.members.length > 0) && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}

@@ -4364,3 +4364,119 @@ kbd {
 .bm-verdict.ok { color: var(--ok); }
 .bm-verdict.warn { color: var(--warn); }
 .bm-verdict.bad { color: var(--error); }
+
+/* ---------------------------------------------------------------- beam influence lines and moving loads */
+
+.beam-region {
+  --bm-IL: #c2255c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .beam-region {
+    --bm-IL: #faa2c1;
+  }
+}
+
+:root[data-theme='dark'] .beam-region {
+  --bm-IL: #faa2c1;
+}
+
+.bm-fill.IL { fill: var(--bm-IL); }
+.bm-curve.IL { stroke: var(--bm-IL); }
+
+.bm-il-at {
+  fill: var(--bm-IL);
+}
+
+.bm-il-axle line {
+  stroke: var(--bm-load);
+  stroke-width: calc(1px * var(--lw, 1));
+  stroke-dasharray: 2 2;
+}
+
+.bm-il-axle circle {
+  fill: var(--bm-load);
+}
+
+.bm-il-mark line {
+  stroke: var(--bm-IL);
+  stroke-width: calc(1.6px * var(--lw, 1));
+}
+
+.bm-svg .bm-il-mark text {
+  fill: var(--bm-IL);
+  font: 600 calc(10.5px * var(--fs, 1)) var(--font);
+}
+
+.bm-load.bm-moving {
+  color: var(--bm-IL);
+}
+
+.bm-load.bm-moving > .bm-train-bar {
+  stroke: var(--bm-IL);
+  stroke-width: calc(3px * var(--lw, 1));
+  stroke-linecap: round;
+}
+
+.bm-svg .bm-load.bm-moving .bm-label {
+  fill: var(--bm-IL);
+}
+
+.bm-tabs.bm-train {
+  top: 6px;
+  bottom: auto;
+  align-items: center;
+}
+
+.bm-train input[type='range'] {
+  width: 150px;
+  accent-color: var(--bm-IL);
+}
+
+.bm-train-x {
+  min-width: 48px;
+  font: 600 calc(11.5px * var(--fs, 1)) var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.bm-il-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.bm-il-head {
+  display: grid;
+  grid-template-columns: 64px 1fr 24px;
+  gap: 6px;
+  align-items: center;
+}
+
+.bm-il-head input,
+.bm-il-head select,
+.bm-axles input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.bm-where {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+@media print {
+  .bm-tabs.bm-train {
+    display: none;
+  }
+}
