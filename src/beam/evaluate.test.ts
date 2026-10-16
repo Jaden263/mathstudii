@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { evaluateWorksheet, type BeamResult, type MathResult } from '../engine/evaluator';
 import { createRegion, emptyWorksheet, type BeamRegion } from '../model/types';
 import { splitMember, removeItems, type BeamData } from './model';
+import type { BeamSolution } from './solve';
 
 function simpleBeam(): BeamData {
   return {
@@ -139,5 +140,152 @@ describe('load cases and combinations', () => {
     expect(Math.min(...m1min.M) / 1e3).toBeCloseTo(-31.25, 1);
     expect(res.solution).toBe(env.max);
     expect(env.max.max.M!.value / 1e3).toBeCloseTo(-31.25, 1);
+  });
+});
+
+describe('shear deformation, second order and buckling in a worksheet', () => {
+  // a 4 m column, fixed foot, pushed down by P at the head (default section IPE 300)
+  const columnData = (): BeamData => ({
+    nodes: [{ id: 'f', x: 0, y: 0 }, { id: 'h', x: 0, y: 4 }],
+    members: [{ id: 'c', a: 'f', b: 'h' }],
+    supports: [{ id: 's', node: 'f', type: 'fixed', angle: 0, label: 'A' }],
+    loads: [
+      { id: 'N', type: 'force', at: { node: 'h' }, value: '200', angle: -90, case: 'G' },
+      { id: 'H', type: 'force', at: { node: 'h' }, value: '5', angle: 0, case: 'Q' },
+    ],
+  });
+  const EI = 210e9 * 8356e-8;
+  // the number after "=" in the result's TeX ("… = 8\\ \\mathrm{m}")
+  const num = (tex: string) => Number(/[-−]?\d+(?:\.\d+)?(?:e[-+]?\d+)?/.exec(tex.split('=').at(-1)!)![0].replace('−', '-'));
+
+  it('Timoshenko cantilever: δ = P L³/3EI + P L/(G A_v), G from ν = 0.3, A_v of the IPE 300', () => {
+    const d: BeamData = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1.5, y: 0 }],
+      members: [{ id: 'm', a: 'a', b: 'b' }],
+      supports: [{ id: 's', node: 'a', type: 'fixed', angle: 0, label: 'A' }],
+      loads: [{ id: 'P', type: 'force', at: { node: 'b' }, value: '100', angle: -90 }],
+    };
+    const G = 210e9 / 2.6, Av = 25.68e-4, P = 100e3, L = 1.5;
+    const { res, tex } = run(d, ['b.w_max = mm'], { analysis: { shear: true } });
+    expect(res.section?.G).toBeCloseTo(G, 0);
+    expect(res.section!.Av! * 1e4).toBeCloseTo(25.68, 1);
+    expect(num(tex(0))).toBeCloseTo(((P * L ** 3) / (3 * EI) + (P * L) / (G * Av)) * 1000, 2);
+    // without the option: bending only
+    expect(num(run(d, ['b.w_max = mm']).tex(0))).toBeCloseTo(((P * L ** 3) / (3 * EI)) * 1000, 2);
+  });
+
+  it('a member of its own concrete section: G = E/2.4 (ν = 0.2) and A_v = 5/6 A', () => {
+    // a 300 × 500 mm concrete cantilever, 2 m, 200 kN at the tip: δ = P L³/3EI + P L/(G A_v)
+    const Ec = 33e9, A = 0.3 * 0.5, Ic = (0.3 * 0.5 ** 3) / 12, P = 200e3, L = 2;
+    const d: BeamData = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }],
+      members: [{ id: 'm', a: 'a', b: 'b', section: { E: '33 GPa', A: '1500 cm^2', I: `${Ic * 1e8} cm^4`, material: 'concrete' } }],
+      supports: [{ id: 's', node: 'a', type: 'fixed', angle: 0, label: 'A' }],
+      loads: [{ id: 'P', type: 'force', at: { node: 'b' }, value: '200', angle: -90 }],
+    };
+    const { res, tex } = run(d, ['b.w_max = mm'], { analysis: { shear: true } });
+    const Gc = Ec / 2.4, Av = (5 / 6) * A;
+    expect(res.memberSections?.m.G).toBeCloseTo(Gc, 0);
+    expect(res.memberSections!.m.Av).toBeCloseTo(Av, 9);
+    expect(num(tex(0))).toBeCloseTo(((P * L ** 3) / (3 * Ec * Ic) + (P * L) / (Gc * Av)) * 1000, 3);
+  });
+
+  it('α_cr, its modes and the buckling lengths', () => {
+    const d = columnData();
+    d.loads = d.loads.map((l) => ({ ...l, case: undefined }));
+    const { res, tex } = run(d, ['b.alpha_cr =', 'b.L_cr[0] = m', 'b.α_cr_modes[1] / b.α_cr ='], { analysis: { buckling: true } });
+    expect(res.error).toBeUndefined();
+    // cantilever: P_cr = π² EI / (2L)² = 2706 kN against 200 kN
+    const Pcr = (Math.PI ** 2 * EI) / 64;
+    expect(num(tex(0)) / (Pcr / 200e3)).toBeCloseTo(1, 3);
+    expect(num(tex(1))).toBeCloseTo(8, 2);
+    // the second cantilever mode: (3π/2)² / (π/2)² = 9
+    expect(num(tex(2))).toBeCloseTo(9, 1);
+    expect(res.buckling?.modes).toHaveLength(3);
+  });
+
+  it('second order per combination, with the first-order values beside it', () => {
+    const lc = {
+      cases: [{ id: 'G', name: 'G' }, { id: 'Q', name: 'Q' }],
+      combos: [
+        { id: 'u', name: 'ULS', kind: 'ULS' as const, factors: { G: '1.35', Q: '1.5' } },
+        { id: 'k', name: 'SLS', kind: 'SLS' as const, factors: { G: '1', Q: '1' } },
+      ],
+    };
+    const { res, tex } = run(columnData(), ['b.M_max = kN*m', 'b.first.M_max = kN*m', 'b.combos.ULS.alpha_cr =', 'b.alpha_cr ='], { loadCases: lc, analysis: { secondOrder: true } });
+    expect(res.error).toBeUndefined();
+    // first order: 1.5 · 5 kN · 4 m = 30 kN·m at the foot (hogging)
+    expect(num(tex(1))).toBeCloseTo(-30, 6);
+    // second order: H tan(kL)/k with P = 270 kN
+    const P = 270e3, k = Math.sqrt(P / EI), H = 7.5e3;
+    expect(num(tex(0)) / (-(H * Math.tan(k * 4)) / k / 1e3)).toBeCloseTo(1, 2);
+    const Pcr = (Math.PI ** 2 * EI) / 64;
+    expect(num(tex(2))).toBeCloseTo(Pcr / P, 1);
+    expect(num(tex(3))).toBeCloseTo(Pcr / P, 1);
+    expect(res.combos?.every((c) => c.solution?.secondOrder)).toBe(true);
+  });
+
+  it('envelopes over second-order combinations', () => {
+    const lc = {
+      cases: [{ id: 'G', name: 'G' }, { id: 'Q', name: 'Q' }],
+      combos: [
+        { id: 'u1', name: 'ULS1', kind: 'ULS' as const, factors: { G: '1.35', Q: '1.5' } },
+        { id: 'u2', name: 'ULS2', kind: 'ULS' as const, factors: { G: '1.35', Q: '-1.5' } },
+      ],
+      view: 'envelope',
+    };
+    const { res } = run(columnData(), [], { loadCases: lc, analysis: { secondOrder: true } });
+    expect(res.error).toBeUndefined();
+    // wind either way: the envelope holds both foot moments, ± H tan(kL)/k
+    const P = 270e3, k = Math.sqrt(P / EI), M = (7.5e3 * Math.tan(k * 4)) / k;
+    const foot = (sol: BeamSolution) => sol.members[0].M[0];
+    expect(foot(res.envelope!.max) / M).toBeCloseTo(1, 2);
+    expect(foot(res.envelope!.min) / -M).toBeCloseTo(1, 2);
+    expect(res.solution).toBe(res.envelope!.max);
+    // the buckling shown is the lowest combination's (both are the same here)
+    expect(res.buckling?.modes[0].alpha).toBeCloseTo((Math.PI ** 2 * EI) / 64 / P, 1);
+  });
+
+  it('a combination above the critical load fails on its own', () => {
+    const d = columnData();
+    d.loads[0] = { ...d.loads[0], value: '3000' } as BeamData['loads'][number];
+    const lc = {
+      cases: [{ id: 'G', name: 'G' }, { id: 'Q', name: 'Q' }],
+      combos: [
+        { id: 'u', name: 'ULS', kind: 'ULS' as const, factors: { G: '1.35', Q: '1.5' } },
+        { id: 'w', name: 'Wind', kind: 'ULS' as const, factors: { G: '0', Q: '1.5' } },
+      ],
+    };
+    const { res, tex } = run(d, ['b.alpha_cr =', 'b.combos.Wind.M_max = kN*m'], { loadCases: lc, analysis: { secondOrder: true } });
+    expect(res.combos![0].error).toMatch(/critical load/);
+    expect(res.error).toMatch(/ULS/);
+    expect(res.combos![1].solution).toBeDefined();
+    expect(num(tex(0))).toBeLessThan(1);
+    expect(num(tex(1))).toBeCloseTo(-30, 6);
+    // without load cases: the error, and α_cr still in the worksheet
+    d.loads = d.loads.map((l) => ({ ...l, case: undefined }));
+    const one = run(d, ['b.alpha_cr ='], { analysis: { secondOrder: true } });
+    expect(one.res.error).toMatch(/^Above the elastic critical load/);
+    expect(num(one.tex(0))).toBeCloseTo((Math.PI ** 2 * EI) / 64 / 3000e3, 3);
+  });
+
+  it('two equal columns above the critical load are refused (a repeated α_cr)', () => {
+    // both cantilevers pass P_cr = π²EI/(2L)² = 2706 kN together: two stiffnesses turn
+    // negative at once, which the determinant's sign does not show; α_cr does (4000 kN: 0.677)
+    const d: BeamData = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 0, y: 4 }, { id: 'c', x: 5, y: 0 }, { id: 'e', x: 5, y: 4 }],
+      members: [{ id: 'm1', a: 'a', b: 'b' }, { id: 'm2', a: 'c', b: 'e' }],
+      supports: [{ id: 's1', node: 'a', type: 'fixed', angle: 0, label: 'A' }, { id: 's2', node: 'c', type: 'fixed', angle: 0, label: 'C' }],
+      loads: [
+        { id: 'P1', type: 'force', at: { node: 'b' }, value: '4000', angle: -90 },
+        { id: 'P2', type: 'force', at: { node: 'e' }, value: '4000', angle: -90 },
+        { id: 'H', type: 'force', at: { node: 'b' }, value: '1', angle: 0 },
+      ],
+    };
+    const { res, tex } = run(d, ['b.alpha_cr ='], { analysis: { secondOrder: true } });
+    expect(res.solution).toBeUndefined();
+    expect(res.error).toMatch(/critical load/);
+    expect(num(tex(0))).toBeCloseTo((Math.PI ** 2 * EI) / 64 / 4000e3, 3);
+    expect(res.buckling!.modes[1].alpha / res.buckling!.modes[0].alpha).toBeCloseTo(1, 6);
   });
 });

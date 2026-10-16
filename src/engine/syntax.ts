@@ -245,7 +245,13 @@ const UNICODE: [RegExp, string][] = [
   [/∫/g, 'integral'],
   [/Σ|∑/g, 'sum'],
   [/Π\s*\(|∏/g, 'prod('],
+  [/′/g, "'"],
+  [/″/g, "''"],
+  [/‴/g, "'''"],
 ];
+
+// y''(t) is the second derivative of y at t (Mathcad prime notation), not a transpose
+const PRIME_CALL = /(?<![A-Za-z0-9_Ͱ-ϿÀ-ɏ.])([A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ]*(?:\.[A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ]*)*)('+)\s*\(/g;
 
 const IMAG = /(?<![A-Za-z_\d.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[ij](?![A-Za-z0-9_Ͱ-Ͽ])/g;
 
@@ -268,5 +274,6 @@ export function preprocess(src: string): string {
 
 function translate(s: string): string {
   for (const [re, rep] of UNICODE) s = s.replace(re, rep);
+  s = s.replace(PRIME_CALL, (_, name: string, primes: string) => `__d(${name}, ${primes.length}, `);
   return s.replace(IMAG, '($1 * __I)');
 }

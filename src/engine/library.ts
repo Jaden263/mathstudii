@@ -43,7 +43,7 @@ export function numVec(v: unknown, what = 'vector'): { vals: number[]; unit: Uni
   return { vals, unit };
 }
 
-function num(v: unknown, what = 'argument'): number {
+export function num(v: unknown, what = 'argument'): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'boolean') return v ? 1 : 0;
   const s = splitUnit(v);
@@ -51,13 +51,13 @@ function num(v: unknown, what = 'argument'): number {
   return s.value;
 }
 
-function int(v: unknown, what = 'argument'): number {
+export function int(v: unknown, what = 'argument'): number {
   const n = num(v, what);
   if (!Number.isInteger(n)) throw new Error(`${what} must be an integer`);
   return n;
 }
 
-function matrix2D(v: unknown): unknown[][] {
+export function matrix2D(v: unknown): unknown[][] {
   const a = toArray(v);
   if (a.length === 0) return [];
   if (!Array.isArray(a[0])) return a.map((x) => [x]); // vectors are columns
@@ -104,7 +104,7 @@ function mulUnits(value: number, ...units: (Unit | null)[]): unknown {
   return r;
 }
 
-function divUnits(value: number, num: Unit | null, den: Unit | null, power = 1): unknown {
+export function divUnits(value: number, num: Unit | null, den: Unit | null, power = 1): unknown {
   let r: unknown = value;
   if (num) r = math.multiply(r as never, num as never);
   if (den) for (let i = 0; i < power; i++) r = math.divide(r as never, den as never);
@@ -508,7 +508,7 @@ function polyroots(v: unknown) {
   return vec(N.polyRoots(c).map((z) => (z.im === 0 ? z.re : math.complex(z.re, z.im))));
 }
 
-// ---------------------------------------------------------------- transforms & ODEs
+// ---------------------------------------------------------------- transforms
 
 function complexParts(v: unknown) {
   const items = toVector(v);
@@ -552,30 +552,14 @@ function ifft(v: unknown) {
   return vec(r.map((x) => (isComplex(x) ? x.re : x)));
 }
 
-function odeSolve(method: 'rk4' | 'rk45') {
-  return (y0: unknown, x1: unknown, x2: unknown, npts: unknown, D: unknown) => {
-    if (typeof D !== 'function') throw new Error('Last argument must be a function D(x, y) returning the derivative vector');
-    const y = toVector(y0).map((v) => num(v, 'initial value'));
-    const a = num(x1, 'x1'), b = num(x2, 'x2');
-    const n = int(npts, 'number of points');
-    const d = D as (x: number, y: Matrix) => unknown;
-    const deriv = (x: number, yv: number[]) => {
-      tick();
-      const r = d(x, vec(yv));
-      return toVector(r).map((v) => num(v, 'derivative'));
-    };
-    const rowsOut = method === 'rk4' ? N.rk4(y, a, b, n, deriv) : N.rk45(y, a, b, n, deriv);
-    return math.matrix(rowsOut as never);
-  };
-}
-
 // ---------------------------------------------------------------- distributions
 
 const dnorm = (x: unknown, mu: unknown = 0, s: unknown = 1) => {
   const z = (num(x) - num(mu)) / num(s);
   return Math.exp(-0.5 * z * z) / (num(s) * Math.sqrt(2 * Math.PI));
 };
-const pnorm = (x: unknown, mu: unknown = 0, s: unknown = 1) => 0.5 * (1 + N.erf((num(x) - num(mu)) / (num(s) * Math.SQRT2)));
+// erfc keeps the lower tail: pnorm(−9) = 1.1e−19, where 1 + erf(…) is 0
+const pnorm = (x: unknown, mu: unknown = 0, s: unknown = 1) => 0.5 * N.erfc(-(num(x) - num(mu)) / (num(s) * Math.SQRT2));
 const qnorm = (p: unknown, mu: unknown = 0, s: unknown = 1) => num(mu) + num(s) * N.normInv(num(p));
 const pt = (x: unknown, d: unknown) => {
   const t = num(x), v = num(d);
@@ -602,19 +586,21 @@ const dbinom = (k: unknown, n: unknown, p: unknown) => {
   if (kk < 0 || kk > nn) return 0;
   return Math.exp(logChoose(nn, kk) + kk * Math.log(pp) + (nn - kk) * Math.log1p(-pp));
 };
+// P(X ≤ k) = I_(1−p)(n − k, k + 1) and Q(k + 1, λ) (DLMF 8.17.5, 8.4.10): no summing of terms
 const pbinom = (k: unknown, n: unknown, p: unknown) => {
-  let s = 0;
-  for (let i = 0; i <= Math.floor(num(k)); i++) s += dbinom(i, n, p);
-  return Math.min(1, s);
+  const kk = Math.floor(num(k)), nn = int(n), pp = num(p);
+  if (kk < 0) return 0;
+  if (kk >= nn || pp === 0) return 1;
+  return pp === 1 ? 0 : N.betaI(1 - pp, nn - kk, kk + 1);
 };
 const dpois = (k: unknown, l: unknown) => {
   const kk = int(k), lam = num(l);
   return kk < 0 ? 0 : Math.exp(kk * Math.log(lam) - lam - N.gammaln(kk + 1));
 };
 const ppois = (k: unknown, l: unknown) => {
-  let s = 0;
-  for (let i = 0; i <= Math.floor(num(k)); i++) s += dpois(i, l);
-  return Math.min(1, s);
+  const kk = Math.floor(num(k)), lam = num(l);
+  if (kk < 0) return 0;
+  return N.gammaQ(kk + 1, lam);
 };
 
 function randomVec(m: unknown, f: () => number) {
@@ -629,9 +615,6 @@ function gaussRandom() {
 }
 
 // ---------------------------------------------------------------- registration
-
-const special = (f: (n: number, x: number) => number, fixedN?: number) =>
-  fixedN === undefined ? (n: unknown, x: unknown) => f(int(n, 'order'), num(x)) : (x: unknown) => f(fixedN, num(x));
 
 function callOrMultiply(name: unknown, f: unknown, ...args: unknown[]) {
   if (typeof f === 'function') return (f as (...a: unknown[]) => unknown)(...args);
@@ -673,7 +656,6 @@ const LIBRARY: Record<string, unknown> = {
     Re: (z: unknown) => math.re(z as never),
     Im: (z: unknown) => math.im(z as never),
     trunc: (x: unknown) => math.fix(x as never),
-    erfc: (x: unknown) => 1 - N.erf(num(x)),
     combin: (n: unknown, k: unknown) => math.combinations(int(n) as never, int(k) as never),
     permut: (n: unknown, k: unknown) => math.permutations(int(n) as never, int(k) as never),
     Heaviside: (x: unknown) => (num(x) >= 0 ? 1 : 0),
@@ -727,14 +709,11 @@ const LIBRARY: Record<string, unknown> = {
     polyval,
     genfit,
     polyroots,
-    // transforms & ODEs
+    // transforms (ODE solvers: odeLib.ts, special functions: specialLib.ts)
     mcFft: fft,
     mcIfft: ifft,
     cfft,
     icfft,
-    rkfixed: odeSolve('rk4'),
-    Rkadapt: odeSolve('rk45'),
-    rkadapt: odeSolve('rk45'),
     // distributions
     dnorm, pnorm, qnorm,
     dunif: (x: unknown, a: unknown, b: unknown) => (num(x) >= num(a) && num(x) <= num(b) ? 1 / (num(b) - num(a)) : 0),
@@ -753,11 +732,6 @@ const LIBRARY: Record<string, unknown> = {
     rnd: (x: unknown) => Math.random() * num(x),
     runif: (m: unknown, a: unknown, b: unknown) => randomVec(m, () => num(a) + Math.random() * (num(b) - num(a))),
     rnorm: (m: unknown, mu: unknown, s: unknown) => randomVec(m, () => num(mu) + num(s) * gaussRandom()),
-    // special functions
-    J0: special(N.besselJ, 0), J1: special(N.besselJ, 1), Jn: special(N.besselJ),
-    Y0: special(N.besselY, 0), Y1: special(N.besselY, 1), Yn: special(N.besselY),
-    I0: special(N.besselI, 0), I1: special(N.besselI, 1), In: special(N.besselI),
-    K0: special(N.besselK, 0), K1: special(N.besselK, 1), Kn: special(N.besselK),
     // strings
     mcConcat: (...s: unknown[]) => s.map(String).join(''),
     strlen: (s: unknown) => String(s).length,

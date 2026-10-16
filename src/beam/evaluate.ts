@@ -1,12 +1,15 @@
 // Evaluates a beam region in the worksheet: load and section expressions are read from
 // the worksheet scope, the structure is solved, and reactions, extremes and (for a
 // straight horizontal beam) the functions M(x), V(x), N(x), w(x) are exported under
-// the region's name.
+// the region's name. Options: shear deformation, second order, buckling (α_cr).
 import type { Unit } from 'mathjs';
 import type { BeamRegion } from '../model/types';
 import { math, isUnit } from '../engine/math';
 import { loadCase, type BeamSection } from './model';
-import { memberAt, solveStructure, StructureError, type BeamSolution, type Extreme, type MemberResult, type NumLoad, type NumMember, type NumStructure } from './solve';
+import { InstabilityError, memberAt, solveStructure, StructureError, type BeamSolution, type Extreme, type MemberResult, type NumLoad, type NumMember, type NumStructure, type Reaction } from './solve';
+import { bucklingAnalysis, type BucklingResult } from './buckling';
+import { profileShearArea, rhsShearArea, SHEAR_FACTOR, shearModulus, weldedShearArea } from './shear';
+import { identifierOf, movingParts, signedBounds, solveTraffic, trafficValue, withMoving, type TrafficResult } from './traffic';
 
 /** Result of one load case or one combination. */
 export interface CaseResult {
@@ -14,6 +17,10 @@ export interface CaseResult {
   name: string;
   kind?: 'ULS' | 'SLS';
   solution?: BeamSolution;
+  /** Linear buckling of the combination (with the buckling or second-order option). */
+  buckling?: BucklingResult;
+  /** With moving loads: the combination's bounds (`solution` is the upper one). */
+  range?: { max: BeamSolution; min: BeamSolution };
   error?: string;
 }
 
@@ -32,9 +39,29 @@ export interface BeamResult {
   values: Record<string, number[]>;
   /** Item id (load, member, 'section') → problem with its expression. */
   errors: Record<string, string>;
-  /** Default section in SI (E Pa, A m², I m⁴, W m³). */
-  section?: { E: number; A: number; I: number; W?: number };
+  /** Default section in SI (E Pa, A m², I m⁴, W m³; with shear deformation G Pa, A_v m²). */
+  section?: SectionSI;
+  /** Members with their own section: its values in SI, as for `section`. */
+  memberSections?: Record<string, SectionSI>;
+  /** Buckling of what is shown (the envelope: of the combination with the lowest α_cr). */
+  buckling?: BucklingResult;
+  /** The analysis options in effect (absent: first order, no shear, no buckling). */
+  analysis?: { shear: boolean; secondOrder: boolean; buckling: boolean };
+  /** Influence lines and moving loads. */
+  traffic?: TrafficResult;
+  /** The loads' own solution and buckling while `solution` shows a moving load's envelope. */
+  staticSolution?: BeamSolution;
+  staticBuckling?: BucklingResult;
   error?: string;
+}
+
+export interface SectionSI {
+  E: number;
+  A: number;
+  I: number;
+  W?: number;
+  G?: number;
+  Av?: number;
 }
 
 const LENGTH_TO_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
@@ -52,21 +79,38 @@ function quantity(evalExpr: Eval, src: string, base: string, fallback: string, w
   return n;
 }
 
-export function sectionValues(evalExpr: Eval, s: BeamSection): { E: number; A: number; I: number; W?: number } {
+export function sectionValues(evalExpr: Eval, s: BeamSection, shear = false): SectionSI {
   const E = quantity(evalExpr, s.E, 'Pa', 'GPa', 'E');
   const A = quantity(evalExpr, s.A, 'm^2', 'cm^2', 'A');
   const I = quantity(evalExpr, s.I, 'm^4', 'cm^4', 'I');
   const W = s.W?.trim() ? quantity(evalExpr, s.W, 'm^3', 'cm^3', 'W') : undefined;
   if (!(E > 0 && A > 0 && I > 0)) throw new Error('E, A and I must be positive');
-  return { E, A, I, ...(W && W > 0 ? { W } : {}) };
+  return { E, A, I, ...(W && W > 0 ? { W } : {}), ...(shear ? shearValues(evalExpr, s, E, A) : {}) };
+}
+
+/** Shear modulus and shear area of a section (Timoshenko members). */
+function shearValues(evalExpr: Eval, s: BeamSection, E: number, A: number): { G: number; Av: number } {
+  const G = s.G?.trim() ? quantity(evalExpr, s.G, 'Pa', 'GPa', 'G') : shearModulus(E, s.material, s.grade);
+  const len = (src: string, what: string) => quantity(evalExpr, src, 'm', 'mm', what);
+  const r = s.shear;
+  const Av = !r ? profileShearArea(s.label) ?? SHEAR_FACTOR.rect * A
+    : r.kind === 'rhs' ? rhsShearArea(A, len(r.h, 'h'), len(r.b, 'b'))
+    : r.kind === 'welded' ? weldedShearArea(len(r.hw, 'h_w'), len(r.tw, 't_w'))
+    : r.kind === 'value' ? quantity(evalExpr, r.Av, 'm^2', 'cm^2', 'A_v')
+    : SHEAR_FACTOR[r.kind] * A;
+  if (!(G > 0 && Av > 0)) throw new Error('G and the shear area A_v must be positive');
+  return { G, Av };
 }
 
 export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
   const res: BeamResult = { kind: 'beam', values: {}, errors: {} };
   const k = LENGTH_TO_M[r.lengthUnit] ?? 1;
   const F = r.forceUnit;
+  const an = r.analysis ?? {};
+  const withShear = !!an.shear, second = !!an.secondOrder, wantBuckling = !!an.buckling || second;
+  if (r.analysis) res.analysis = { shear: withShear, secondOrder: second, buckling: wantBuckling };
   try {
-    res.section = sectionValues(evalExpr, r.section);
+    res.section = sectionValues(evalExpr, r.section, withShear);
   } catch (e) {
     res.errors.section = (e as Error).message;
   }
@@ -75,7 +119,8 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     let sec = res.section;
     if (m.section) {
       try {
-        sec = sectionValues(evalExpr, m.section);
+        sec = sectionValues(evalExpr, m.section, withShear);
+        (res.memberSections ??= {})[m.id] = sec;
       } catch (e) {
         res.errors[m.id] = (e as Error).message;
         sec = undefined;
@@ -139,19 +184,53 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     res.error = supportError;
     return res;
   }
-  const solve = (ls: NumLoad[]): BeamSolution => solveStructure({ ...base, loads: ls });
+  // influence lines and moving loads (linear, along the load path)
+  try {
+    res.traffic = solveTraffic(r, base, (src, b, fb, what) => quantity(evalExpr, src, b, fb, what), evalExpr, res.errors);
+    // on the region too: the combinations go on without the moving loads
+    if (res.traffic?.error) res.errors.traffic = `Moving loads: ${res.traffic.error}`;
+  } catch (e) {
+    res.error = `Moving loads: ${(e as Error).message}`;
+  }
+  // first order, then buckling from its axial forces, then (below the critical load only)
+  // second order; an unstable load set keeps its buckling result and gets an error
+  const solve = (ls: NumLoad[]): { solution?: BeamSolution; buckling?: BucklingResult; error?: string } => {
+    const st: NumStructure = { ...base, loads: ls };
+    const first = solveStructure(st);
+    const buckling = wantBuckling ? bucklingAnalysis(st, first) : undefined;
+    if (!second) return { solution: first, buckling };
+    const a = buckling?.modes[0]?.alpha;
+    if (a !== undefined && a <= 1) return { buckling, error: `above the elastic critical load (α_cr = ${a.toPrecision(3)} < 1): no second-order equilibrium` };
+    try {
+      const solution = solveStructure(st, { secondOrder: true });
+      solution.secondOrder = { iterations: solution.secondOrder?.iterations ?? 0, first: { max: first.max, reactions: first.reactions } };
+      return { solution, buckling };
+    } catch (e) {
+      if (e instanceof InstabilityError) return { buckling, error: e.message };
+      throw e;
+    }
+  };
   if (!cases) {
     try {
-      res.solution = solve(loads);
+      const out = solve(loads);
+      res.solution = out.solution;
+      res.buckling = out.buckling;
+      if (out.error) res.error = out.error[0].toUpperCase() + out.error.slice(1);
     } catch (e) {
       res.error = e instanceof StructureError ? e.message : `Could not solve: ${(e as Error).message}`;
     }
+    showMoving(res, r);
     return res;
   }
+  // second order is not linear: a combination that is unstable fails on its own
+  const run = (c: { id: string; name: string; kind?: 'ULS' | 'SLS' }, ls: NumLoad[]): CaseResult => {
+    const out = solve(ls);
+    return { ...c, ...out, ...(out.error ? { error: `${c.name}: ${out.error}` } : {}) };
+  };
   // load cases: each case alone, each combination as its own factored load set (exact for a
   // linear structure), and the envelope of the combinations
   try {
-    res.cases = cases.cases.map((c) => ({ id: c.id, name: c.name, solution: solve(loads.filter((l) => l.case === c.id)) }));
+    res.cases = cases.cases.map((c) => run({ id: c.id, name: c.name }, loads.filter((l) => l.case === c.id)));
     res.combos = cases.combos.map((cb) => {
       const factored: NumLoad[] = [];
       for (const c of cases.cases) {
@@ -162,21 +241,66 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
         if (f === 0) continue;
         for (const l of loads) if (l.case === c.id) factored.push(scaleLoad(l, f));
       }
-      return { id: cb.id, name: cb.name, kind: cb.kind, solution: solve(factored) };
+      return run({ id: cb.id, name: cb.name, kind: cb.kind }, factored);
+    });
+    // moving loads in a combination: its static part plus their factored bounds
+    const tr = res.traffic;
+    if (tr) cases.combos.forEach((cb, i) => {
+      const c = res.combos![i], parts = movingParts(cb, tr, evalExpr);
+      if (!parts.length || !c.solution) return;
+      c.range = withMoving(c.solution, parts, tr.structure);
+      c.solution = c.range.max;
     });
   } catch (e) {
     res.error = e instanceof StructureError ? e.message : (e as Error).message;
     return res;
   }
-  const uls = res.combos.filter((c) => c.kind === 'ULS' && c.solution).map((c) => c.solution!);
-  const sls = res.combos.filter((c) => c.kind === 'SLS' && c.solution).map((c) => c.solution!);
-  const all = res.combos.flatMap((c) => (c.solution ? [c.solution] : []));
+  // (a combination with moving loads brings both its bounds)
+  const bounds = (c: CaseResult) => (c.range ? [c.range.max, c.range.min] : c.solution ? [c.solution] : []);
+  const uls = res.combos.filter((c) => c.kind === 'ULS').flatMap(bounds);
+  const sls = res.combos.filter((c) => c.kind === 'SLS').flatMap(bounds);
+  const all = res.combos.flatMap(bounds);
   if (all.length) res.envelope = envelopeOf(uls.length ? uls : all, sls.length ? sls : uls.length ? uls : all);
   const view = cases.view ?? cases.combos.find((c) => c.kind === 'ULS')?.id ?? cases.combos[0]?.id ?? cases.cases[0]?.id;
   res.view = view;
+  const shown = [...res.combos, ...res.cases].find((c) => c.id === view);
   res.solution = view === 'envelope' ? res.envelope?.max
-    : res.combos.find((c) => c.id === view)?.solution ?? res.cases.find((c) => c.id === view)?.solution ?? res.combos[0]?.solution ?? res.cases[0]?.solution;
+    : shown ? shown.solution : res.combos[0]?.solution ?? res.cases[0]?.solution;
+  res.buckling = view === 'envelope' ? governing(res.combos)?.buckling : shown?.buckling;
+  const failed = res.combos.find((c) => c.error) ?? res.cases.find((c) => c.error);
+  if (failed) res.error = shown?.error ?? failed.error;
+  showMoving(res, r);
   return res;
+}
+
+/** A moving load picked in the strip: its envelope is shown (the loads' own solution stays for the worksheet). */
+function showMoving(res: BeamResult, r: BeamRegion): void {
+  const id = r.traffic?.view;
+  const m = id ? res.traffic?.moving.find((q) => q.id === id) : undefined;
+  if (!m?.env) return;
+  if (res.solution) m.env.max.indeterminacy = m.env.min.indeterminacy = res.solution.indeterminacy;
+  res.staticSolution = res.solution;
+  res.staticBuckling = res.buckling;
+  res.solution = m.env.max;
+  res.view = m.id;
+  res.buckling = undefined;
+}
+
+/** The lower bound drawn with what is shown: of the envelope, of a combination with moving loads, of a moving load. */
+export function lowerBound(res?: BeamResult): BeamSolution | undefined {
+  if (!res?.view) return undefined;
+  if (res.view === 'envelope') return res.envelope?.min;
+  return res.combos?.find((c) => c.id === res.view)?.range?.min ?? res.traffic?.moving.find((m) => m.id === res.view)?.env?.min;
+}
+
+/** The combination with the lowest α_cr: the ULS ones, or all when there are none. */
+function governing(list: CaseResult[]): CaseResult | undefined {
+  const uls = list.filter((c) => c.kind === 'ULS' && c.buckling);
+  let best: CaseResult | undefined;
+  for (const c of uls.length ? uls : list.filter((q) => q.buckling)) {
+    if (!best || (c.buckling!.modes[0]?.alpha ?? Infinity) < (best.buckling!.modes[0]?.alpha ?? Infinity)) best = c;
+  }
+  return best;
 }
 
 function scaleLoad(l: NumLoad, f: number): NumLoad {
@@ -278,69 +402,118 @@ export function straightBeam(r: BeamRegion): { id: string; x0: number; x1: numbe
   return segs;
 }
 
-/** Worksheet value: reactions per support, extremes and functions along a straight beam. */
+/** Worksheet value: reactions per support, extremes and functions along a straight beam; influence lines and moving loads. */
 export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
-  if (!r.loadCases || !res.combos) return res.solution ? solutionValue(r, res.solution) : {};
+  const value = loadsValue(r, res);
+  if (res.traffic) {
+    Object.assign(value, trafficValue(r, res.traffic, (sol) => solutionValue(r, sol)));
+    // a combination with moving loads has two bounds: b.combos.ULS the upper, b.combos.ULS.min the lower
+    const combos = value.combos as Record<string, Record<string, unknown>> | undefined;
+    for (const c of res.combos ?? []) if (c.range && combos?.[identifierOf(c.name)]) combos[identifierOf(c.name)].min = solutionValue(r, signedBounds(r, c.range.max, c.range.min).min);
+  }
+  return value;
+}
+
+function loadsValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
+  if (!r.loadCases || !res.combos) {
+    // a moving load shown: the loads' own results (there may be none, above the critical load)
+    const shown = !!res.traffic?.moving.some((m) => m.id === res.view);
+    const sol = shown ? res.staticSolution : res.solution, buckling = shown ? res.staticBuckling : res.buckling;
+    if (sol) return solutionValue(r, sol, buckling);
+    // above the critical load in second order: α_cr is all there is
+    const value: Record<string, unknown> = {};
+    if (buckling) stabilityValue(r, buckling, value);
+    return value;
+  }
   // with load cases: b.cases.G, b.combos.ULS, and at the top the governing values:
   // forces and reactions over the ULS combinations, deflection over the SLS ones
-  const named = (list: CaseResult[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(r, c.solution!)]));
+  // a combination with moving loads: its upper bound as b.M(x) reads it (sagging positive on members drawn right to left)
+  const upper = (c: CaseResult) => (c.range ? signedBounds(r, c.range.max, c.range.min).max : c.solution!);
+  const named = (list: CaseResult[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(r, upper(c), c.buckling)]));
   const value: Record<string, unknown> = { cases: named(res.cases), combos: named(res.combos) };
+  // the lowest α_cr over the ULS combinations
+  const gov = governing(res.combos);
+  if (gov) stabilityValue(r, gov.buckling!, value);
+  // a combination without second-order equilibrium leaves no governing values to give
+  if (res.combos.some((c) => c.error)) return value;
   const uls = res.combos.filter((c) => c.kind === 'ULS' && c.solution);
   const sls = res.combos.filter((c) => c.kind === 'SLS' && c.solution);
   const forceSet = uls.length ? uls : res.combos.filter((c) => c.solution);
   const deflSet = sls.length ? sls : forceSet;
   if (!forceSet.length) return value;
   // the functions M(x), w(x) … of the first ULS combination
-  Object.assign(value, solutionValue(r, forceSet[0].solution!));
-  const F = r.forceUnit, Lu = r.lengthUnit;
-  const metric = Lu === 'm' || Lu === 'cm' || Lu === 'mm';
-  const biggest = (sols: CaseResult[], key: 'M' | 'V' | 'N' | 'w' | 'sigma') => {
-    let best: number | undefined;
-    for (const c of sols) {
-      const v = c.solution!.max[key]?.value;
-      if (v !== undefined && (best === undefined || Math.abs(v) > Math.abs(best))) best = v;
+  Object.assign(value, solutionValue(r, upper(forceSet[0])));
+  const governingOf = (pick: (sol: BeamSolution) => { max: BeamSolution['max']; reactions: Reaction[] } | undefined) => {
+    const biggest = (sols: CaseResult[], key: keyof BeamSolution['max']) => {
+      let best: Extreme | undefined;
+      for (const c of sols) {
+        const e = pick(c.solution!)?.max[key];
+        if (e && (!best || Math.abs(e.value) > Math.abs(best.value))) best = e;
+      }
+      return best;
+    };
+    const max: BeamSolution['max'] = {};
+    for (const key of ['M', 'V', 'N', 'sigma'] as const) {
+      const e = biggest(forceSet, key);
+      if (e) max[key] = e;
     }
-    return best;
+    const w = biggest(deflSet, 'w');
+    if (w) max.w = w;
+    // reactions: the largest resultant over the ULS combinations
+    const reactions = (pick(forceSet[0].solution!)?.reactions ?? []).map((q) => {
+      let best = q;
+      for (const c of forceSet) {
+        const x = pick(c.solution!)?.reactions.find((y) => y.id === q.id);
+        if (x && Math.hypot(x.Rx, x.Ry) > Math.hypot(best.Rx, best.Ry)) best = x;
+      }
+      return best;
+    });
+    return extremesValue(r, max, reactions);
   };
-  const M = biggest(forceSet, 'M'), V = biggest(forceSet, 'V'), N = biggest(forceSet, 'N'), w = biggest(deflSet, 'w'), sg = biggest(forceSet, 'sigma');
-  if (M !== undefined) value.M_max = math.unit(M, 'N m').to(`${F} ${Lu}`);
-  if (V !== undefined) value.V_max = math.unit(V, 'N').to(F);
-  if (N !== undefined) value.N_max = math.unit(N, 'N').to(F);
-  if (w !== undefined) value.w_max = math.unit(w, 'm').to(metric ? 'mm' : 'in');
-  if (sg !== undefined) value.σ_max = value.sigma_max = math.unit(sg, 'Pa').to('MPa');
-  // reactions: the largest resultant over the ULS combinations
-  const force = (v: number) => math.unit(v, 'N').to(F);
-  for (const q of forceSet[0].solution!.reactions) {
-    let best = forceSet[0].solution!.reactions.find((x) => x.id === q.id)!;
-    for (const c of forceSet) {
-      const x = c.solution!.reactions.find((y) => y.id === q.id)!;
-      if (Math.hypot(x.Rx, x.Ry) > Math.hypot(best.Rx, best.Ry)) best = x;
-    }
-    value[q.label] = { Rx: force(best.Rx), Ry: force(best.Ry), M: math.unit(best.M, 'N m').to(`${F} ${Lu}`), R: force(Math.hypot(best.Rx, best.Ry)) };
-  }
+  Object.assign(value, governingOf((sol) => sol));
+  // second order: the governing first-order values beside them
+  if (forceSet[0].solution!.secondOrder?.first) value.first = governingOf((sol) => sol.secondOrder?.first);
   return value;
 }
 
-function identifierOf(name: string): string {
-  const s = name.trim().replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^_+|_+$/g, '');
-  return /^\p{L}/u.test(s) ? s : `_${s}`;
+/** α_cr (lowest mode), all modes' α as a vector, and L_cr per member in drawing order (∞ in tension). */
+function stabilityValue(r: BeamRegion, b: BucklingResult, value: Record<string, unknown>): void {
+  const alphas = b.modes.map((m) => m.alpha);
+  value.α_cr = value.alpha_cr = alphas[0] ?? Infinity;
+  value.α_cr_modes = value.alpha_cr_modes = math.matrix(alphas);
+  value.L_cr = math.matrix(r.members.map((m) => math.unit(b.Lcr[m.id] ?? Infinity, 'm').to(r.lengthUnit)) as never);
 }
 
-function solutionValue(r: BeamRegion, sol: BeamSolution): Record<string, unknown> {
+/** Reactions and extremes of a solution. */
+function extremesValue(r: BeamRegion, max: BeamSolution['max'], reactions: BeamSolution['reactions']): Record<string, unknown> {
   const F = r.forceUnit, Lu = r.lengthUnit;
   const metric = Lu === 'm' || Lu === 'cm' || Lu === 'mm';
   const force = (v: number) => math.unit(v, 'N').to(F);
   const moment = (v: number) => math.unit(v, 'N m').to(`${F} ${Lu}`);
   const defl = (v: number) => math.unit(v, 'm').to(metric ? 'mm' : 'in');
   const value: Record<string, unknown> = {};
-  for (const q of sol.reactions) {
+  for (const q of reactions) {
     value[q.label] = { Rx: force(q.Rx), Ry: force(q.Ry), M: moment(q.M), R: force(Math.hypot(q.Rx, q.Ry)) };
   }
-  if (sol.max.M) value.M_max = moment(sol.max.M.value);
-  if (sol.max.V) value.V_max = force(sol.max.V.value);
-  if (sol.max.N) value.N_max = force(sol.max.N.value);
-  if (sol.max.w) value.w_max = defl(sol.max.w.value);
-  if (sol.max.sigma) value.σ_max = value.sigma_max = math.unit(sol.max.sigma.value, 'Pa').to('MPa');
+  if (max.M) value.M_max = moment(max.M.value);
+  if (max.V) value.V_max = force(max.V.value);
+  if (max.N) value.N_max = force(max.N.value);
+  if (max.w) value.w_max = defl(max.w.value);
+  if (max.sigma) value.σ_max = value.sigma_max = math.unit(max.sigma.value, 'Pa').to('MPa');
+  return value;
+}
+
+function solutionValue(r: BeamRegion, sol: BeamSolution, buckling?: BucklingResult): Record<string, unknown> {
+  const F = r.forceUnit, Lu = r.lengthUnit;
+  const metric = Lu === 'm' || Lu === 'cm' || Lu === 'mm';
+  const force = (v: number) => math.unit(v, 'N').to(F);
+  const moment = (v: number) => math.unit(v, 'N m').to(`${F} ${Lu}`);
+  const defl = (v: number) => math.unit(v, 'm').to(metric ? 'mm' : 'in');
+  const value = extremesValue(r, sol.max, sol.reactions);
+  // second order: the first-order values next to it (b.first.M_max)
+  const first = sol.secondOrder?.first;
+  if (first) value.first = extremesValue(r, first.max, first.reactions);
+  if (buckling) stabilityValue(r, buckling, value);
   const segs = straightBeam(r);
   if (segs) {
     const k = LENGTH_TO_M[Lu] ?? 1;

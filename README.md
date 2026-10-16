@@ -187,6 +187,7 @@ pushed apart automatically.
 | `x_max` | literal subscript (part of the name) |
 | `[1, 2, 3]`, `[1; 2; 3]`, `[1, 2; 3, 4]` | row vector, column vector, matrix |
 | `A'`, `A^-1`, `det(A)` | transpose, inverse, determinant |
+| `y'(t)`, `f''(x)` | derivative of a function (prime notation) |
 | `3 + 4i` | complex number (`i` alone is an ordinary variable) |
 | `x^2 - 1 → factor` | symbolic evaluation with a keyword |
 | `integral(f(x), x, a, b)`, `diff(f(x), x)`, `sum(k^2, k, 1, n)` | calculus operators |
@@ -205,6 +206,92 @@ fact(n) :=
 
 Supported: `if` / `else if` / `else`, `for … ∈ range|vector`, `while`, `break`,
 `continue`, `return`, `try` / `on error`, and local `←` (or `<-`) including `v[k] ← …`.
+
+### Differential equations
+
+A solve block with `odesolve` as the solver solves ordinary differential equations,
+Mathcad-style. Under **Constraints** write the equation in prime notation (or with
+`diff(y(t), t, 2)`) and the conditions; the solver line names the unknown function:
+
+```
+Constraints:  m * u''(t) + c * u'(t) + k * u(t) = 0
+              u(0 s) = 20 mm
+              u'(0 s) = 0 mm/s
+Solver:       u := odesolve(t, 5 s)
+```
+
+`u` is then a function like any other: `u(1 s) = mm`, `u'(0.25 s) = mm/s` and
+`u''(t)` (from the state and the equation, not by differencing), in plots and in
+other formulas. It interpolates between steps with the solver's continuous extension;
+outside the interval it is an error ("u(6 s) is outside the solution interval 0 s … 5 s").
+
+- **Units** come from the conditions (`u(0 s) = 20 mm` makes u a length and u′ a velocity).
+  Conditions that are bare zeros take their units from the equation. Both sides of every
+  equation must agree in units, written as `y''(t) = …` or not; an angle counts as a plain
+  number (θ in degrees with `sin(θ(t))`).
+- **Higher orders and systems**: any order is turned into a first-order system;
+  `[x; y] := odesolve([x, y], t, 15)` solves several unknown functions together (orders may differ).
+  The equations are solved for the highest derivatives at every step, directly when they are
+  written as `y''(t) = …`, by a damped Newton iteration otherwise (`exp(y'(t)) = 1 + t`,
+  `y'(t)^3 + y'(t) = 1` work). Conditions at the right end are integrated backwards.
+- **Boundary value problems**: conditions at two (or more) points, such as a beam
+  `EI * y''''(x) = q` with `y(0) = 0`, `y(L) = 0`, `y''(0) = 0`, `y''(L) = 0`, are solved by
+  shooting: Newton on the unknown starting values, with sensitivities computed on a frozen mesh.
+  When the solution grows too fast for that (a long beam on an elastic foundation,
+  `EI * y''''(x) + k * y(x) = q` with λL ≈ 30), it falls back to multiple shooting: the
+  interval is cut into 8 (then 32) pieces tied together by continuity.
+- **Methods**: adaptive Dormand–Prince 5(4) with the worksheet's tolerance (`TOL`, as the
+  relative error to each component's peak), switching to **Radau IIA** (implicit, order 5) when
+  it detects stiffness — Van der Pol with μ = 1000 over 3000 s takes a fraction of a second.
+  Besides the usual test at the explicit method's stability limit, a short run of Radau is tried
+  now and then where the fastest mode is barely resolved, and kept when it strides much further:
+  that catches forced stiff equations at tight tolerances (`τ y'(t) = cos(ω t) m − y(t)` with
+  τ = 1 ms over 100 s), which the usual test misses.
+  `odesolve(t, b, "radau")` asks for the stiff solver, `"rkadapt"` for the explicit one only,
+  `odesolve(t, b, 200, "fixed")` for 200 classic RK4 steps; a number alone sets the minimum
+  number of steps.
+- **Messages** say what is wrong: `missing initial condition for y'`, a condition on y″ for a
+  second-order equation, units of a condition that do not fit, a singularity (step size too small),
+  boundary conditions that cannot be met or that leave the solution undetermined.
+
+Mathcad's solution-matrix functions work too, with units in each component of y:
+`rkfixed`, `Rkadapt`/`rkadapt`, `Bulstoer`/`bulstoer` (Bulirsch–Stoer), `Radau`/`radau`,
+`Stiffb`/`stiffb`, `Stiffr`/`stiffr` (both solved with Radau IIA here; the Jacobian `J(x, y)`
+is optional, numeric when left out), `AdamsBDF`, `Adams` and `BDF` (Dormand–Prince with
+stiffness switching, Dormand–Prince, Radau). The lower-case forms
+`rkadapt(y, x1, x2, acc, D, kmax, save)` return the solver's own steps.
+
+The prime notation also differentiates ordinary functions: with `f(x) := x^3`, `f'(2) = 12`
+(numerically, up to the fifth derivative). On a matrix `A'(x)` keeps its old meaning,
+transpose times x. Not covered: partial differential equations (`Pdesolve`), delay equations,
+differential-algebraic systems (an equation without a highest derivative is reported).
+
+### Special functions
+
+Bessel functions of any real order `Jn(m, x)`, `Yn`, `In`, `Kn` (and `J0` … `K1`), spherical
+`js(n, x)`, `ys(n, x)`; Airy `Ai`, `Bi`; `gamma(x)` and the upper incomplete `gamma(a, x)`,
+`gammainc(a, x)` (lower), `gammaP`, `gammaQ` (regularised), `beta`, `ibeta(z, a, b)`
+(regularised incomplete beta), `betainc`, `lgamma`, `digamma`, `Psi(x)` / `Psi(n, x)` (digamma
+and polygamma), `zeta`; `erf`, `erfc` (accurate
+in the tail), `erfinv`, `erfcinv`; exponential and trigonometric integrals `Ei`, `E1`,
+`En(n, x)`, `Si`, `Ci`, Fresnel `FresnelS`, `FresnelC` (∫ sin(πt²/2)); elliptic integrals
+`ellipK(k)`, `ellipE(k)`, `ellipE(φ, k)`, `ellipF(φ, k)`, `ellipPi(n, k)`, `ellipPi(n, φ, k)`
+with the **modulus k** (parameter m = k²) and φ in rad or deg; `LambertW(x [, −1])`;
+orthogonal polynomials `Leg(n, x)` / `Leg(n, m, x)` (associated, with the (−1)ᵐ phase),
+`Her` (physicists'), `Lag(n, x)` / `Lag(n, α, x)`, `Tcheb`, `Ucheb`, `Jac(n, a, b, x)`; `sinc`.
+Distributions add `dF`, Weibull, lognormal, gamma, beta, geometric, negative binomial,
+hypergeometric, Cauchy and logistic (`d…`, `p…`, `q…`, Mathcad's arguments), and `qbinom`,
+`qpois`; `pnorm`, `pbinom` and `ppois` keep their digits in the tails. The algorithms
+are the standard ones (Steed/Temme and Hankel asymptotics for Bessel, Lentz continued
+fractions, Carlson's symmetric integrals, Euler–Maclaurin for ζ) and are tested against
+DLMF / Abramowitz & Stegun values and checked against 40-digit mpmath values on a few thousand
+points: within 1e-12 relative (most within 1e-14); near zeros of an oscillating function (Bessel
+J, Y of large order) only the absolute error is that small, while the positive roots of ψ and Ei
+keep full relative accuracy. Orders in the hundreds lose more: J, Y and I of order 1000 are good to
+about 1e-10 relative (Y near a zero less), and ψ⁽ⁿ⁾ of high n at negative x, which is badly
+conditioned there, to about 1e-8. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
+On vectors and matrices they work element by element (`J0([1, 2])`, `pnorm(v, 0, 1)`).
+A worksheet variable with one of these names (say `Si := 3 m`) still works as a variable.
 
 ### Sketches (drawing)
 
@@ -269,6 +356,8 @@ stress (with a section modulus W) and the degree of static indeterminacy.
 
 **Sections:** IPE/HEA/HEB profiles from a list, or any E, A, I and W. All four are
 expressions; bare numbers mean GPa, cm², cm⁴ and cm³. Each member can have its own section.
+A material (steel, or a concrete or timber class, which also sets E) gives the shear
+modulus.
 
 **Back into the worksheet:** name the region (`b`) and the math below can use
 - the reactions per support: `b.A.Ry`, `b.A.Rx`, `b.A.M`, `b.A.R`
@@ -289,8 +378,48 @@ statically determinate and indeterminate structures are handled alike.
   of M/EI. The answers therefore match the handbook formulas, not just approximate them:
   the tests check simply supported, cantilever, propped, continuous and Gerber beams
   and a truss against closed-form results, and a portal frame for equilibrium.
-- **Not included:** shear deformation (Timoshenko), second-order effects (P-Δ, buckling),
-  plasticity, moving loads and self-weight. Add self-weight as a line load.
+- **Not included:** plasticity, imperfections (add equivalent sway forces as loads),
+  lateral-torsional and out-of-plane buckling, and self-weight. Add self-weight as a
+  line load.
+
+**Shear deformation, second order and buckling** (side panel → *Analysis*; all off by
+default, so older worksheets give the same numbers):
+
+- **Shear deformation:** Timoshenko members, φ = 12EI/(G A_v L²). G = E/2(1 + ν) with
+  ν = 0.3 for steel and 0.2 for concrete; timber uses G_mean of its class (E/16 without
+  one), or type G. The shear area is EN 1993-1-1 6.2.6(3) for the listed profiles
+  (A − 2b t_f + (t_w + 2r) t_f, at least h_w t_w), else a rule: rectangle 5/6 A, solid
+  circle 0.9 A, circular hollow 2A/π, rectangular hollow A h/(b + h), welded I h_w t_w, or
+  a value. Fixed-end forces and deflection lines stay exact.
+- **Second order (P-Δ and P-δ):** every case and combination is solved on the deformed
+  structure. Members are cut into 4–8 elements with the consistent geometric stiffness of
+  their axial force (varying linearly along each element, so a column's own weight counts
+  properly), and the axial forces are iterated until the displacements change by less
+  than 10⁻⁶. The shear V is then the force across the deformed member axis (dM/dx).
+  Loads at or above the critical load are reported (α_cr ≤ 1, a stiffness turning
+  negative, or no convergence in 30 iterations) and only the buckling mode is drawn; a
+  combination that fails does so on its own, and then the governing values are withheld.
+  The panel shows how much M_max and δ_max grew against first order, next to
+  1/(1 − 1/α_cr).
+- **Buckling:** for each combination the three lowest load factors α_cr from
+  (K + α K_G(N)) φ = 0 with the first-order axial forces (supports eliminated, hinges with
+  their own rotation, a banded Cholesky factor, then dense eigenvalues or Lanczos). The
+  panel gives α_cr per combination with the EN 1993-1-1 5.2.1(3) verdict (≥ 10: first
+  order is enough, ≥ 15 for a plastic analysis; 3–10: second-order effects count, or the
+  1/(1 − 1/α_cr) amplification of 5.2.2(5)B for sway; < 3: second order required), and
+  the buckling length of each compressed member, L_cr = π √(EI/(α_cr |N|)). **Buckling**
+  in the strip draws the mode (normalised), with a selector for modes 2 and 3.
+- **In the worksheet:** `b.alpha_cr` (`b.α_cr`, the lowest over the ULS combinations),
+  `b.alpha_cr_modes` (a vector), `b.L_cr` (a vector in member order; ∞ for members in
+  tension), per combination `b.combos.ULS.alpha_cr`, and with second order the
+  first-order values beside the results: `b.first.M_max`.
+- **Checked against closed forms:** Euler columns with β = 1, 2, 0.699 and 0.5 and the
+  second mode (within 0.5 %), Engesser's shear-flexible column, pinned- and fixed-base
+  sway portals (Timoshenko & Gere), the Timoshenko cantilever δ = PL³/3EI + PL/GA_v and
+  propped cantilevers, the cantilever column δ = H (tan kL − kL)/(P k) and the
+  beam-column under a uniform load with its exact amplification, M(x) and V(x) along a
+  beam-column under a point load, and Greenhill's column under its own weight
+  ((qL)_cr = 7.837 EI/L²).
 
 **Load cases and combinations.** Side panel → *Use load cases & combinations* splits the
 loads into cases (G permanent, Q imposed, wind, snow …; pick a load's case in its value
@@ -312,12 +441,83 @@ a coil), settle by a given amount (into the support, e.g. 10 mm down), and a fix
 can have a rotational spring (a semi-rigid foot). Springs go into the stiffness matrix,
 settlements are prescribed displacements; both are checked against closed-form results.
 
-The **Beams and frames** example covers two structures:
+**Influence lines and moving loads** (side panel → *Influence lines* and *Moving loads*):
+
+- **Influence lines** of a support reaction (R_y, R_x or the moment of a fixed support),
+  or of M, V, N or the deflection at a section, drawn in panels under the diagrams
+  (positive up, ordinates labelled at the peaks, at supports and on both sides of the
+  shear jump; M in kN·m per kN, deflection in mm per kN). A unit load walks along the
+  **load path**: a straight beam, or the members marked *Load path (deck)* (with none
+  marked, the horizontal ones), which must form one chain from left to right. The
+  stiffness is factorised once and every position is one more right-hand side: the
+  fixed-end forces of the load on its member, so members stay whole and the ordinates
+  are exact at every position (the forces along members come from statics). Positions
+  are every Δx along x (automatic: a round step near 1/200 of the path that the axle
+  spacings divide, on a long path a whole fraction of the spacing such as 0.6 m for LM1;
+  a step asked for is kept between 1/10 of the path and 600 positions), plus member ends
+  and the sections asked for.
+- **Moving loads:** a point load; **EN 1991-2 Load Model 1** for one notional lane
+  (tandem 2 × α_Q·300 kN at 1.2 m and α_q·9 kN/m² × the lane width, α = 1 by default);
+  a crane (two wheels P at a); or any axle train with a uniform load. A train stops with
+  each of its axles on every position, both ways (or one way): with the lines straight
+  between positions those stops are where its extremes are, so none falls between them. The
+  uniform load goes only where the influence line is adverse (Simpson's rule on each
+  smooth stretch, which is exact for the cubic lines of unloaded members; where the line
+  changes sign, the cubic through the nearest four ordinates cut at its zero). The result
+  is an envelope (upper and lower bound, the load may also be absent) of N, V, M, the
+  deflection and the reactions, with the section and the train position of each
+  extreme.
+- **In the combinations** each moving load has a factor column next to the load cases;
+  a combination then has two bounds: its static solution plus the factored moving
+  extreme at each station (the overall envelope includes both). A new moving load gets a
+  factor (1.35 for LM1 and cranes, else 1.5; 1 at SLS) only in the combinations that
+  have no moving load yet; several moving loads in one combination add their extremes
+  (on the safe side, not position by position). Moving loads are linear: with second
+  order on, they are added to the second-order static part as first-order results, and
+  buckling sees the static loads only. If the moving-load analysis fails (say the load
+  path is not one chain), the region says so and the combinations go on without them.
+- **The strip** picks a moving load's envelope like a combination; **Train** places the
+  train on the structure with a slider (and a direction button): the diagrams become
+  those of the train at that position, and the influence-line panels mark each axle
+  with Σ P η.
+- **In the worksheet:** `b.IL.M1(x)`, exact between positions too (the line is one cubic
+  between joints, kinks and jumps, read through its four nearest ordinates), with
+  `b.IL.M1_max`, `_min` (a crest between positions included) and the ordinates as
+  vectors `b.IL.M1_x`, `b.IL.M1_eta` (a position repeated at a jump); per moving load
+  `b.moving.LM1.M_max`, `M_min`, `V_max`, `V_min`, `w_max`, each with `x_M_max` (the
+  section) and `pos_M_max` (the first axle), the reactions `b.moving.LM1.B.Ry_max`,
+  `.Ry_min`, and the envelope as functions `b.moving.LM1.max.M(x)`, `.min.M(x)`; a
+  combination's lower bound is `b.combos.ULS.min`.
+- **Checked against closed forms:** influence lines of M (peak L/4), R_A and V (jump of
+  1) on a simple span, Maxwell's deflection line, R_B of two spans against
+  Müller-Breslau ξ(3L² − ξ²)/2L³, the clamping moment of a propped cantilever
+  ξ(L − ξ)(2L − ξ)/2L², the straight lines of a Gerber beam, and a frame with a hinge, a
+  spring and an inclined roller (and a beam drawn right to left) against the direct
+  solver; PL/4 for a single load, P(2L − a)²/8L for two axles (and PL/4 for a > 0.586 L),
+  R_A = P + P(L − a)/L, −qL²/8 over the middle support and 49/512 qL² in a span for a
+  uniform load on the adverse parts, −0.0736 qL² at 0.9 L with span 1 partly loaded
+  (both spans full give only −0.0675 qL²), and LM1 on a 20 m span by hand
+  (852 x − 43.5 x²).
+- **Limits:** loads act vertically on the path; axle spacings and uniform loads are per
+  metre along x (plan length on an inclined deck); sections are searched at the load
+  positions, and the axles of a train stand on positions together only when Δx divides
+  their spacings (otherwise between two positions the line is taken straight: an error
+  of order Δx²); dynamic factors, multiple lanes and transverse distribution are left to
+  you (scale α or the loads). The influence-line panels show in the *Under* layout only,
+  and *Train* draws the axles (a uniform load has no one position).
+
+The **Beams and frames** example covers four structures:
 
 - A two-span beam with factored loads, its reactions, a stress and deflection check, and
   plots of `b.M(x)` and `b.w(x)`.
 - A portal frame with fixed feet under roof load and wind.
 - Pattern loading: G on both spans, Q on either, three ULS combinations and the envelope.
+- A sway portal on pinned feet in second order with shear deformation: α_cr, the buckling
+  mode, the column's buckling length and the amplified corner moment.
+
+The **Bridge girder** example is a two-span girder (2 × 25 m) under G and LM1: three
+influence lines, the LM1 extremes with where they act, the ULS envelope 1.35 G + 1.35 LM1,
+and a hand check of the hogging moment over the middle support.
 
 ### Python code
 
@@ -584,7 +784,7 @@ Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values
 The honest answer first: Mathcad is decades of work by a large team. Matching
 *all* of it is not one delivery, so this is a solid core with a clear list of
 gaps. Everything marked ✅ is covered by the automated tests in
-`src/engine/engine.test.ts`, or was checked in a real browser.
+`src/engine/*.test.ts`, or was checked in a real browser.
 
 | Area | Status |
 |---|---|
@@ -598,20 +798,20 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Programming (if/for/while/break/continue/return/try) | ✅ |
 | Numeric calculus: adaptive integrals (incl. ±∞, unit aware), derivatives up to order 5, Σ, Π | ✅ |
 | Solving: `root`, `polyroots`, `lsolve`, solve blocks with `find`/`minerr`/`minimize`/`maximize`, inequality constraints, units | ✅ |
-| ODEs: `rkfixed`, `Rkadapt` | ✅ |
-| Statistics and distributions (normal, t, χ², F, binomial, Poisson, exponential, uniform, random) | ✅ |
+| ODEs: `odesolve` solve blocks (initial and boundary values, systems, stiff), `rkfixed`, `Rkadapt`, `Bulstoer`, `Radau`, `Stiffb`/`Stiffr`, units | ✅ (Stiffb/Stiffr use Radau IIA) |
+| Statistics and distributions (normal, t, χ², F, binomial, Poisson, exponential, uniform, Weibull, lognormal, gamma, beta, random) | ✅ |
 | Interpolation and fitting: `linterp`, `cspline`/`interp`, `slope`/`intercept`/`line`, `polyfit`, `genfit` | ✅ |
-| FFT (`fft`, `ifft`, `cfft`, `icfft`), Bessel J/Y/I/K, Γ, erf | ✅ |
+| FFT (`fft`, `ifft`, `cfft`, `icfft`); special functions: Bessel (real order), Airy, Γ and incomplete Γ/B, ψ, ζ, erf/erfinv, Ei/E₁/Si/Ci, Fresnel, elliptic, Lambert W, orthogonal polynomials | ✅ |
 | Symbolics (→): simplify, expand, factor, solve, substitute, float, series, partfrac, coeffs, Laplace and inverse Laplace, limits, (in)definite integrals, derivatives | ✅ (via nerdamer-prime) |
 | Plots: X-Y (lines, points, steps, bars, log axes, units), QuickPlot, polar, 3-D surface, contour, trace readout | ✅ |
 | Text with Markdown, TeX and live values, images, data tables | ✅ |
 | Undo/redo, copy/paste regions, disable evaluation, separate regions, dark mode | ✅ |
 | Page zoom: Ctrl+wheel / trackpad / pinch around the pointer, browser-style steps, Ctrl+0 | ✅ |
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
-| `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
+| `Pdesolve`, `Find` with matrix-valued unknowns | ❌ |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
-| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
+| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (mesh kernel: no free 3-D edge fillets, drafts or sweeps) |
@@ -621,7 +821,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ⚠️ Excel ranges paste into tables and CSV files import/export; no live Excel link or .xlsx files |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas, headers/footers, protected regions, track changes | ❌ |
-| Special functions beyond Bessel/Γ/erf (Airy, elliptic, Fresnel, …), wavelets | ❌ |
+| Hypergeometric functions (`fhyper`, `mhyper`), Kelvin functions, wavelets | ❌ |
 | Native iOS build signed for the App Store | ❌: needs an Apple developer account (the PWA works today) |
 
 ## Development

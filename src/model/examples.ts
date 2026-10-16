@@ -1,7 +1,7 @@
 import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
-import type { BeamCases, BeamData } from '../beam/model';
+import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -518,6 +518,21 @@ export function beamExample(): Worksheet {
       view: 'envelope',
     },
   };
+  // sway portal on pinned feet: second order with shear deformation, and its buckling mode
+  const sway: BeamData & { analysis: BeamAnalysis; panels: BeamPanel[] } = {
+    nodes: [{ id: 'w1', x: 0, y: 0 }, { id: 'w2', x: 0, y: 5 }, { id: 'w3', x: 8, y: 5 }, { id: 'w4', x: 8, y: 0 }],
+    members: [{ id: 'wc1', a: 'w1', b: 'w2' }, { id: 'wr', a: 'w2', b: 'w3' }, { id: 'wc2', a: 'w4', b: 'w3' }],
+    supports: [
+      { id: 'wsA', node: 'w1', type: 'pin', angle: 0, label: 'A' },
+      { id: 'wsD', node: 'w4', type: 'pin', angle: 0, label: 'D' },
+    ],
+    loads: [
+      { id: 'wq', type: 'line', member: 'wr', q1: 'q_s', dir: 'global' },
+      { id: 'wH', type: 'force', at: { node: 'w2' }, value: 'H_s', angle: 0 },
+    ],
+    analysis: { secondOrder: true, shear: true },
+    panels: ['M', 'mode'],
+  };
   return build('Beams and frames', [
     ['text', L, mm(12), { width: mm(170), markdown: '# Beams and frames\nPress **Beam** in the toolbar, draw members, click supports and loads onto them — the reactions and the N, V, M and deflection diagrams follow at once. Loads are worksheet expressions, and the results come back as variables. Double-click a structure to edit it; switch diagrams with the strip below it.' }],
     ['math', L, mm(44), { source: 'q_k := 8 kN/m' }],
@@ -551,6 +566,139 @@ export function beamExample(): Worksheet {
     ['math', mm(65), mm(534), { source: 'pb.combos.ULS_1.M_max = kN*m' }],
     ['math', L, mm(546), { source: 'pb.B.Ry = kN' }],
     ['math', mm(65), mm(546), { source: 'pb.w_max = mm' }],
+    ['text', L, mm(562), { width: mm(170), markdown: '## Stability: a sway portal in second order\nOn pinned feet the portal sways easily. Its analysis (side panel → Analysis) is **second order** with shear deformation: each load set is first checked for buckling — α_cr, with the EN 1993-1-1 5.2.1(3) verdict — and then solved on the deformed structure. The strip shows the moments and the lowest buckling mode.' }],
+    ['math', L, mm(588), { source: 'q_s := 30 kN/m' }],
+    ['math', mm(65), mm(588), { source: 'H_s := 10 kN' }],
+    // tall enough for its diagrams from the start, so it does not grow over the math below
+    ['beam', L, mm(598), { name: 'sp', width: mm(170), height: mm(160), ...sway }],
+    ['math', L, mm(770), { source: 'sp.alpha_cr =' }],
+    ['math', mm(65), mm(770), { source: 'sp.alpha_cr ≥ 3' }],
+    ['math', L, mm(782), { source: 'sp.M_max = kN*m' }],
+    ['math', mm(80), mm(782), { source: 'sp.first.M_max = kN*m' }],
+    ['math', L, mm(794), { source: 'sp.M_max / sp.first.M_max =' }],
+    ['math', mm(80), mm(794), { source: '1 / (1 - 1 / sp.alpha_cr) =' }],
+    ['math', L, mm(810), { source: 'sp.L_cr[0] = m' }],
+    ['text', L, mm(822), { width: mm(170), markdown: 'The corner moment comes mostly from the roof load, which hardly sways the frame, so it grows less than 1/(1 − 1/α_cr): that factor amplifies the sway part only (EN 1993-1-1 5.2.2(5)B). `sp.L_cr` lists the buckling lengths in member order: the left column first.' }],
+  ]);
+}
+
+export function bridgeExample(): Worksheet {
+  // a two-span bridge girder carrying one notional lane: permanent load G, and EN 1991-2 LM1 moving
+  const girder: BeamData & { loadCases: BeamCases; panels: BeamPanel[]; traffic: import('../beam/model').BeamTraffic } = {
+    nodes: [{ id: 'gA', x: 0, y: 0 }, { id: 'gB', x: 25, y: 0 }, { id: 'gC', x: 50, y: 0 }],
+    members: [{ id: 'gm1', a: 'gA', b: 'gB' }, { id: 'gm2', a: 'gB', b: 'gC' }],
+    supports: [
+      { id: 'gsA', node: 'gA', type: 'pin', angle: 0, label: 'A' },
+      { id: 'gsB', node: 'gB', type: 'roller', angle: 0, label: 'B' },
+      { id: 'gsC', node: 'gC', type: 'roller', angle: 0, label: 'C' },
+    ],
+    loads: [
+      { id: 'gg1', type: 'line', member: 'gm1', q1: 'g_k', dir: 'global', case: 'G' },
+      { id: 'gg2', type: 'line', member: 'gm2', q1: 'g_k', dir: 'global', case: 'G' },
+    ],
+    loadCases: {
+      cases: [{ id: 'G', name: 'G', label: 'Permanent' }],
+      combos: [
+        { id: 'gu', name: 'ULS', kind: 'ULS', factors: { G: '1.35', glm: '1.35' } },
+        { id: 'gs', name: 'SLS', kind: 'SLS', factors: { G: '1', glm: '1' } },
+      ],
+      view: 'gu',
+    },
+    panels: ['V', 'M'],
+    traffic: {
+      lines: [
+        { id: 'gRB', name: 'RB', quantity: 'Ry', support: 'gsB' },
+        { id: 'gMB', name: 'MB', quantity: 'M', at: { x: 25, y: 0 } },
+        { id: 'gM1', name: 'M1', quantity: 'M', at: { x: 10, y: 0 } },
+      ],
+      loads: [{ id: 'glm', name: 'LM1', preset: 'lm1', alphaQ: '1', alphaq: '1', w: '3' }],
+    },
+  };
+  return build('Bridge girder: influence lines and LM1', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Bridge girder: influence lines and Load Model 1\nTwo spans of 25 m carry one notional lane. The permanent load G is an ordinary load case; EN 1991-2 Load Model 1 is a **moving load** (side panel → Moving loads): the tandem system 2 × α_Q·300 kN at 1.2 m stops with each axle on every load position, both ways, and the lane load α_q·9 kN/m² × 3 m goes only where the influence line is adverse. The combinations add 1.35 × the LM1 extremes to 1.35 G.' }],
+    ['math', L, mm(52), { source: 'g_k := 60 kN/m' }],
+    ['beam', L, mm(62), {
+      name: 'gb', width: mm(170), height: mm(236), section: { E: '210 GPa', A: '600 cm^2', I: '8000000 cm^4', W: '88900 cm^3' }, ...girder,
+    }],
+    ['text', L, mm(304), { width: mm(170), markdown: '## Influence lines\nThe panels under the diagrams are the influence lines asked for: the reaction at B (1 over B, a cubic each side), the moment over B (negative on both spans) and the moment at 10 m. They come back as functions of x.' }],
+    ['math', L, mm(332), { source: 'gb.IL.RB(10 m) =' }],
+    ['math', mm(80), mm(332), { source: 'gb.IL.MB_min = m' }],
+    ['math', mm(135), mm(332), { source: 'gb.IL.M1_max = m' }],
+    ['plot', L, mm(344), { xExpr: 'x', traces: [{ y: 'gb.IL.MB(x)', style: 'line' }, { y: 'gb.IL.M1(x)', style: 'line' }], xmin: '0 m', xmax: '50 m', xUnit: 'm', yUnit: 'm', title: 'Influence lines of M over B and at 10 m', width: mm(82), height: mm(52) }],
+    ['plot', mm(108), mm(344), { xExpr: 'x', traces: [{ y: 'gb.combos.ULS.M(x)', style: 'line' }, { y: 'gb.combos.ULS.min.M(x)', style: 'line' }], xmin: '0 m', xmax: '50 m', xUnit: 'm', yUnit: 'kN*m', title: 'ULS envelope: 1.35 G + 1.35 LM1', width: mm(82), height: mm(52) }],
+    ['text', L, mm(404), { width: mm(170), markdown: '## LM1 extremes and where they act\n`x_M_max` is the section, `pos_M_max` the first axle of the tandem when it happens. Pick **LM1 (envelope)** in the strip under the girder and press **Train** to drag the tandem along and watch the diagrams.' }],
+    ['math', L, mm(434), { source: 'gb.moving.LM1.M_max = kN*m' }],
+    ['math', mm(105), mm(434), { source: 'gb.moving.LM1.x_M_max = m' }],
+    ['math', L, mm(446), { source: 'gb.moving.LM1.pos_M_max = m' }],
+    ['math', mm(105), mm(446), { source: 'gb.moving.LM1.M_min = kN*m' }],
+    ['math', L, mm(458), { source: 'gb.moving.LM1.B.Ry_max = kN' }],
+    ['math', mm(105), mm(458), { source: 'gb.moving.LM1.w_max = mm' }],
+    ['text', L, mm(472), { width: mm(170), markdown: 'A hand check on the hogging moment: the lane load alone on both spans gives −q L²/8 over B, and the tandem adds about 2 × 300 kN × the lowest ordinate of the influence line (−L/(6√3) = −2.41 m at L/√3).' }],
+    ['math', L, mm(494), { source: 'q_lane := 9 kN/m^2 * 3 m = kN/m' }],
+    ['math', L, mm(512), { source: '-q_lane * (25 m)^2 / 8 = kN*m' }],
+    ['math', mm(100), mm(512), { source: '2 * 300 kN * gb.IL.MB_min = kN*m' }],
+    ['text', L, mm(530), { width: mm(170), markdown: '## Design values\nULS governing moment and bending stress, and the SLS deflection under G + LM1 (characteristic).' }],
+    ['math', L, mm(550), { source: 'gb.M_max = kN*m' }],
+    ['math', mm(88), mm(550), { source: 'gb.σ_max = MPa' }],
+    ['math', mm(140), mm(550), { source: 'gb.w_max = mm' }],
+  ]);
+}
+
+export function odeExample(): Worksheet {
+  return build('Differential equations', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Free vibration of a single-storey frame\nA 30 t roof on two fixed-base HEB 200 columns (sway stiffness 2 × 12 EI/h³), 5 % damping, pushed 20 mm sideways and let go. The solve block takes the differential equation and its initial conditions; `odesolve` returns the displacement as a function of time, with units.' }],
+    ['math', L, mm(42), { source: 'h := 4 m' }],
+    ['math', mm(56), mm(42), { source: 'E := 210 GPa' }],
+    ['math', mm(100), mm(42), { source: 'I_c := section("HEB 200").I_y = cm^4' }],
+    ['math', L, mm(54), { source: 'M := 30000 kg' }],
+    ['math', mm(56), mm(54), { source: 'ζ := 0.05' }],
+    ['math', mm(100), mm(54), { source: 'k := 2 * 12 * E * I_c / h^3 = kN/m' }],
+    ['math', L, mm(66), { source: 'ω := sqrt(k / M)' }],
+    ['math', mm(52), mm(66), { source: 'f_n := ω / (2 π) = Hz' }],
+    ['math', mm(96), mm(66), { source: 'T_n := 1 / f_n = s' }],
+    ['math', mm(136), mm(66), { source: 'c := 2 ζ sqrt(k M) = kN*s/m' }],
+    ['solve', L, mm(80), { guesses: '', constraints: "M * u''(t) + c * u'(t) + k * u(t) = 0\nu(0 s) = 20 mm\nu'(0 s) = 0 mm/s", solver: 'u := odesolve(t, 5 s)' }],
+    ['math', mm(110), mm(86), { source: 'u(1 s) = mm' }],
+    ['math', mm(110), mm(98), { source: "u'(0.25 s) = mm/s" }],
+    ['math', mm(110), mm(110), { source: "u''(0 s) = m/s^2" }],
+    ['plot', L, mm(132), { xExpr: 't', traces: [{ y: 'u(t)', style: 'line' }, { y: '20 mm * exp(-ζ * ω * t)', style: 'line' }, { y: '-20 mm * exp(-ζ * ω * t)', style: 'line' }], xmin: '0 s', xmax: '5 s', xUnit: 's', yUnit: 'mm', title: 'Roof displacement u(t) and its envelope', width: mm(130), height: mm(62) }],
+    ['text', L, mm(200), { width: mm(170), markdown: '**Check** against the closed-form solution of the damped free vibration:' }],
+    ['math', L, mm(210), { source: 'ω_d := ω sqrt(1 - ζ^2)' }],
+    ['math', L, mm(222), { source: 'u_e(t) := 20 mm * exp(-ζ ω t) * (cos(ω_d t) + ζ / sqrt(1 - ζ^2) * sin(ω_d t))' }],
+    ['math', L, mm(238), { source: 'u(1 s) - u_e(1 s) = mm' }],
+    ['text', L, mm(305), { width: mm(170), markdown: '## A short pulse\nThe same frame hit by a 0.2 s half-sine force of 50 kN, starting at rest. `odesolve` handles any right-hand side the worksheet can evaluate.' }],
+    ['math', L, mm(323), { source: 'F(t) := if(t < 0.2 s, 50 kN * sin(π t / 0.2 s), 0 kN)' }],
+    ['solve', L, mm(337), { guesses: '', constraints: "M * v''(t) + c * v'(t) + k * v(t) = F(t)\nv(0 s) = 0 mm\nv'(0 s) = 0 mm/s", solver: 'v := odesolve(t, 3 s)' }],
+    ['plot', mm(110), mm(339), { xExpr: 't', traces: [{ y: 'v(t)', style: 'line' }], xmin: '0 s', xmax: '3 s', xUnit: 's', yUnit: 'mm', title: 'Pulse response v(t)', width: mm(80), height: mm(52) }],
+    ['math', L, mm(383), { source: 'v(0.3 s) = mm' }],
+    ['text', L, mm(400), { width: mm(170), markdown: '## Beam deflection as a boundary value problem\nEI y⁗ = q with y = y″ = 0 at both supports: conditions at two points, solved by shooting. The bare zeros take their units from the equation.' }],
+    ['math', L, mm(422), { source: 'q := 12 kN/m' }],
+    ['math', mm(56), mm(422), { source: 'L := 6 m' }],
+    ['math', mm(96), mm(422), { source: 'EI := 210 GPa * 8360 cm^4' }],
+    ['solve', L, mm(436), { guesses: '', constraints: "EI * y''''(x) = q\ny(0) = 0\ny(L) = 0\ny''(0) = 0\ny''(L) = 0", solver: 'y := odesolve(x, L)' }],
+    ['math', mm(110), mm(442), { source: 'y(L / 2) = mm' }],
+    ['math', mm(110), mm(454), { source: '5 q L^4 / (384 EI) = mm' }],
+    ['math', mm(110), mm(468), { source: "-EI * y''(L / 2) = kN*m" }],
+    ['math', mm(110), mm(482), { source: 'q L^2 / 8 = kN*m' }],
+    ['text', L, mm(502), { width: mm(170), markdown: '## Special functions: a flagpole buckling under its own weight\nGreenhill: a column clamped at the base buckles under its self-weight q when q L³/EI = (9/4) j², j being the first zero of the Bessel function J₋₁/₃ (real order).' }],
+    ['math', L, mm(524), { source: 'j := root(Jn(-1/3, z), z, 1, 2.5) =' }],
+    ['math', mm(110), mm(524), { source: '9 / 4 * j^2 =' }],
+    ['math', L, mm(538), { source: 'q_w := 0.5 kN/m' }],
+    ['math', mm(56), mm(538), { source: 'EI_p := 210 GPa * 2000 cm^4' }],
+    ['math', mm(120), mm(538), { source: 'L_cr := (9 / 4 * j^2 * EI_p / q_w)^(1/3) = m' }],
+    ['text', L, mm(602), { width: mm(170), markdown: '## A ground beam on an elastic foundation\nA 30 m HEB 300 ground beam, simply supported at its ends, rests on soil with a subgrade reaction k = 50 MN/m² per metre of beam and carries 20 kN/m. With λL ≈ 21 the solution grows like e^(λx) from each end, too fast to shoot from one end, so odesolve switches to multiple shooting. Away from the ends the beam just sits on the soil, w = q/k; near an end the moment peaks at λx = π/4 with q/(2λ²) e^(−π/4) sin(π/4), as for a semi-infinite beam (Hetényi).' }],
+    ['math', L, mm(638), { source: 'q_b := 20 kN/m' }],
+    ['math', mm(56), mm(638), { source: 'k_s := 50 MPa' }],
+    ['math', mm(100), mm(638), { source: 'EI_b := 210 GPa * section("HEB 300").I_y' }],
+    ['math', L, mm(650), { source: 'L_b := 30 m' }],
+    ['math', mm(56), mm(650), { source: 'λ := (k_s / (4 EI_b))^(1/4) =' }],
+    ['math', mm(120), mm(650), { source: 'λ * L_b =' }],
+    ['solve', L, mm(664), { guesses: '', constraints: "EI_b * w''''(x) + k_s * w(x) = q_b\nw(0) = 0\nw(L_b) = 0\nw''(0) = 0\nw''(L_b) = 0", solver: 'w := odesolve(x, L_b)' }],
+    ['math', mm(110), mm(668), { source: 'w(L_b / 2) = mm' }],
+    ['math', mm(110), mm(680), { source: 'q_b / k_s = mm' }],
+    ['math', mm(110), mm(692), { source: "M_max := -EI_b * w''(π / (4 λ)) = kN*m" }],
+    ['math', mm(110), mm(706), { source: 'q_b / (2 λ^2) * exp(-π / 4) * sin(π / 4) = kN*m' }],
+    ['plot', L, mm(724), { xExpr: 'x', traces: [{ y: 'w(x)', style: 'line' }], xmin: '0 m', xmax: '30 m', xUnit: 'm', yUnit: 'mm', title: 'Deflection w(x) of the ground beam', width: mm(130), height: mm(55) }],
   ]);
 }
 
@@ -567,4 +715,6 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Python code', make: pythonExample },
   { name: 'CAD part design (parametric)', make: cadExample },
   { name: 'CAD: shells, roundings, lofts', make: shapingExample },
+  { name: 'Bridge girder: influence lines, LM1', make: bridgeExample },
+  { name: 'Differential equations (odesolve)', make: odeExample },
 ];

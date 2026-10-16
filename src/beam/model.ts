@@ -25,6 +25,14 @@ export interface BeamSection {
   I: string;
   /** Elastic section modulus, for bending stress (optional). */
   W?: string;
+  /** Material family, for the shear modulus (ν = 0.3 steel, 0.2 concrete; timber: G_mean). Absent = steel. */
+  material?: BeamMaterial;
+  /** Concrete or timber class E (and G) came from ("C30/37", "C24", "GL24h"). */
+  grade?: string;
+  /** Shear modulus (expression, bare number GPa); empty = from E and the material. */
+  G?: string;
+  /** How the shear area A_v follows from the section; absent = the profile's, else 5/6 A. */
+  shear?: BeamShearArea;
 }
 
 export interface BeamMember {
@@ -36,6 +44,8 @@ export interface BeamMember {
   /** Moment releases (hinges) at the start / end of the member. */
   hingeA?: boolean;
   hingeB?: boolean;
+  /** Part of the load path (deck) the moving loads travel on. */
+  deck?: boolean;
 }
 
 export type SupportType = 'pin' | 'roller' | 'fixed';
@@ -95,9 +105,9 @@ export type BeamLoad =
    */
   | { id: string; type: 'line'; member: string; q1: string; q2?: string; t1?: number; t2?: number; dir: 'global' | 'local'; case?: string };
 
-export type BeamDiagram = 'model' | 'reactions' | 'N' | 'V' | 'M' | 'deflection';
-/** A result diagram drawn under the structure. */
-export type BeamPanel = 'N' | 'V' | 'M' | 'deflection';
+export type BeamDiagram = 'model' | 'reactions' | 'N' | 'V' | 'M' | 'deflection' | 'mode';
+/** A result diagram drawn under the structure ('mode': the buckling mode). */
+export type BeamPanel = 'N' | 'V' | 'M' | 'deflection' | 'mode';
 /** Diagrams stacked under the structure (the default), or one at a time drawn on it. */
 export type BeamLayout = 'stack' | 'overlay';
 
@@ -237,4 +247,102 @@ export function splitMember(d: BeamData, memberId: string, t: number): { data: B
     data: { nodes: [...d.nodes, node], members: d.members.flatMap((q) => (q.id === m.id ? [m1, m2] : [q])), supports: d.supports, loads },
     node: node.id,
   };
+}
+
+export type BeamMaterial = 'steel' | 'concrete' | 'timber';
+
+/** The shear area A_v of a section, for shear deformation (EN 1993-1-1 6.2.6(3) for steel). */
+export type BeamShearArea =
+  /** From A: solid rectangle 5/6 A, solid circle 0.9 A, circular hollow section 2A/π. */
+  | { kind: 'rect' | 'circle' | 'chs' }
+  /** Rectangular hollow section, load along the depth h: A h / (b + h). Bare numbers mm. */
+  | { kind: 'rhs'; h: string; b: string }
+  /** Welded I or box: the webs, h_w t_w. Bare numbers mm. */
+  | { kind: 'welded'; hw: string; tw: string }
+  /** A value (expression, bare number cm²). */
+  | { kind: 'value'; Av: string };
+
+/** How a beam region is analysed. Absent: first order, Euler–Bernoulli members, no buckling. */
+export interface BeamAnalysis {
+  /** Timoshenko members: shear deformation from G and the shear area A_v. */
+  shear?: boolean;
+  /** Second order: equilibrium on the deformed structure (P-Δ and P-δ). */
+  secondOrder?: boolean;
+  /** Linear buckling: α_cr and the buckling modes of each combination. */
+  buckling?: boolean;
+  /** Buckling mode drawn (0 = the lowest). */
+  mode?: number;
+}
+
+/** What an influence line is of: a support reaction, or a force or the deflection at a section. */
+export type InfluenceQuantity = 'Ry' | 'Rx' | 'Mr' | 'V' | 'M' | 'N' | 'w';
+
+export interface BeamInfluenceLine {
+  id: string;
+  /** Name in the worksheet: b.IL.M1(x). */
+  name: string;
+  quantity: InfluenceQuantity;
+  /** Support id (Ry, Rx, Mr). */
+  support?: string;
+  /** Section (V, M, N, w): a point on a member, in the length unit, and the member it was picked on. */
+  at?: { x: number; y: number };
+  member?: string;
+  /** At a joint: the member to the left of the point (default: the one to its right). */
+  left?: boolean;
+}
+
+/**
+ * A moving load: a preset, or an axle train with a uniform load. Values are worksheet
+ * expressions; bare numbers take the region's force and length units.
+ */
+export interface BeamMovingLoad {
+  id: string;
+  /** Name in combinations and the worksheet (b.moving.LM1). */
+  name: string;
+  preset: 'point' | 'lm1' | 'crane' | 'train';
+  /** Point load, or each crane wheel. */
+  P?: string;
+  /** Crane wheel spacing. */
+  a?: string;
+  /** Load Model 1 (EN 1991-2 4.3.2), one notional lane: adjustment factors and the lane width (bare number m). */
+  alphaQ?: string;
+  alphaq?: string;
+  w?: string;
+  /** Train: axle loads with the spacing to the axle before (the first spacing is unused). */
+  axles?: { P: string; a: string }[];
+  /** Train: uniform load, put only where it is adverse. */
+  q?: string;
+  /** Both ways (default), or only towards +x / −x. */
+  dir?: 'both' | 'forward' | 'backward';
+}
+
+/** Influence lines and moving loads of a beam region. */
+export interface BeamTraffic {
+  lines: BeamInfluenceLine[];
+  loads: BeamMovingLoad[];
+  /** Spacing of the load positions (expression; bare number in the length unit); empty = automatic. */
+  step?: string;
+  /** Id of the moving load whose envelope is shown, instead of the loads, case or combination. */
+  view?: string;
+  /** Hide the influence-line panels. */
+  hideLines?: boolean;
+}
+
+/** EN 1991-2 Table 4.2, lane 1: tandem axle load Q₁k and uniform load q₁k. */
+export const LM1 = { Q: 300, q: 9, spacing: 1.2 };
+
+/**
+ * A new moving load. Its values are meant in kN and m: bare numbers in a region that
+ * works in those units, else with the unit written (80 kN at 3.5 mm would be one load).
+ */
+export function movingLoad(preset: BeamMovingLoad['preset'], name: string, units?: { force: BeamForceUnit; length: BeamLengthUnit }): BeamMovingLoad {
+  const id = beamId('t');
+  const kN = (v: number) => (!units || units.force === 'kN' ? String(v) : `${v} kN`);
+  const m = (v: number) => (!units || units.length === 'm' ? String(v) : `${v} m`);
+  switch (preset) {
+    case 'point': return { id, name, preset, P: kN(100) };
+    case 'lm1': return { id, name, preset, alphaQ: '1', alphaq: '1', w: '3' };
+    case 'crane': return { id, name, preset, P: kN(80), a: m(3.5) };
+    case 'train': return { id, name, preset, axles: [{ P: kN(100), a: '0' }, { P: kN(100), a: m(2) }], q: '' };
+  }
 }

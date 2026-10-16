@@ -27,6 +27,12 @@ const RENAME: Record<string, string> = {
   concat: 'mcConcat',
 };
 
+/**
+ * Library functions a worksheet variable of the same name may shadow (Ai, Si, beta …):
+ * calls go through __call so that "Ai (x + 1)" still multiplies when Ai is a value.
+ */
+export const SHADOWABLE = new Set<string>();
+
 /** Functions whose second argument is a bound (dummy) variable. */
 export const BINDERS = new Set(['integral', 'sum', 'prod', 'product', 'diff', 'deriv', 'root', 'mcSum', 'mcProd', 'mcDiff']);
 
@@ -56,7 +62,7 @@ export function transformForEval(node: MathNode): MathNode {
       if (name && RENAME[name]) {
         return new math.FunctionNode(new math.SymbolNode(RENAME[name]), args);
       }
-      if (fn.type === 'SymbolNode' && !(name in math)) {
+      if (fn.type === 'SymbolNode' && (!(name in math) || SHADOWABLE.has(name))) {
         // user names: f(x) calls a function, but s(s + 1) multiplies when s is a value (Mathcad semantics)
         return new math.FunctionNode(new math.SymbolNode('__call'), [new math.ConstantNode(name), fn, ...args]);
       }
