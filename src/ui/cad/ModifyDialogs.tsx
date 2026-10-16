@@ -10,7 +10,7 @@ import {
   type AxisPick, type CadComponent, type CadDesign, type FilletSet, type ModifyFeature, type PlanePick,
 } from '../../cad/design';
 import { refWords, type TopoRef } from '../../cad/topology';
-import { Pick, axisOptions, bodyOptions } from './FeatureDialogs';
+import { Pick, axisOptions, bodyOptions, constructBefore, planeOptions } from './FeatureDialogs';
 
 /** What the next click in the view picks for a modify dialog's plane or axis field. */
 export type PickTarget = 'plane' | 'axis';
@@ -33,7 +33,7 @@ export interface ModifyProps {
  * A size field (a worksheet expression) that previews while typing: what is typed is taken
  * after a short pause, and at once on Enter or when leaving the field; Esc puts it back.
  */
-function Expr({ label, value, onChange, hint, placeholder }: { label: string; value: string; onChange: (v: string) => void; hint?: string; placeholder?: string }) {
+export function Expr({ label, value, onChange, hint, placeholder }: { label: string; value: string; onChange: (v: string) => void; hint?: string; placeholder?: string }) {
   const [v, setV] = useState(value);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => setV(value), [value]);
@@ -72,7 +72,7 @@ function Expr({ label, value, onChange, hint, placeholder }: { label: string; va
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** "3 edges · Clear". */
-function Picked({ label, n, what, onClear }: { label: string; n: number; what: [string, string]; onClear: () => void }) {
+export function Picked({ label, n, what, onClear }: { label: string; n: number; what: [string, string]; onClear: () => void }) {
   return (
     <div className="field">
       <span>{label}</span>
@@ -85,7 +85,7 @@ function Picked({ label, n, what, onClear }: { label: string; n: number; what: [
 }
 
 /** A plane or axis field: a list of origin and sketch choices, a face or edge picked in the view, and the button to pick one. */
-function PickField<T extends PlanePick | AxisPick>({ label, value, options, design, waiting, onWait, onChange, none }: {
+export function PickField<T extends PlanePick | AxisPick>({ label, value, options, design, waiting, onWait, onChange, none }: {
   label: string; value: T | undefined; options: [string, string][]; design: CadDesign; waiting: boolean; onWait: () => void; onChange: (v: T | undefined) => void; none?: string;
 }) {
   const picked = value && typeof value !== 'string' ? (value as TopoRef) : null;
@@ -106,7 +106,8 @@ export function ModifyFields({ design, comp, feature: f, result, target, onTarge
   const sketches = comp.items.filter(isSketch);
   const upto = comp.items.indexOf(f);
   const before = sketches.filter((s) => comp.items.indexOf(s) < (upto < 0 ? Infinity : upto));
-  const planes: [string, string][] = [['XY', 'XY plane'], ['XZ', 'XZ plane'], ['YZ', 'YZ plane'], ...before.map((s) => [s.id, `Plane of ${s.name}`] as [string, string])];
+  const planes = planeOptions(comp, f);
+  const axes = axisOptions(before, constructBefore(comp, f));
   // the bodies it starts from, not those it makes (a split's pieces, copies)
   const bodies = bodyOptions(comp, result).filter(([id]) => !id.startsWith(`${f.id}.`));
   const wait = (t: PickTarget) => onTarget(target === t ? undefined : t);
@@ -177,7 +178,7 @@ export function ModifyFields({ design, comp, feature: f, result, target, onTarge
         <>
           <Picked label="Faces" n={f.faces.length} what={['face', 'faces']} onClear={() => onChange({ faces: [] })} />
           <PickField<PlanePick> label="Neutral plane" value={f.plane} options={planes} design={design} waiting={target === 'plane'} onWait={() => wait('plane')} onChange={(plane) => plane && onChange({ plane })} />
-          <PickField<AxisPick> label="Pull direction" value={f.pull} options={axisOptions(before)} none="Normal of the neutral plane" design={design} waiting={target === 'axis'} onWait={() => wait('axis')} onChange={(pull) => onChange({ pull })} />
+          <PickField<AxisPick> label="Pull direction" value={f.pull} options={axes} none="Normal of the neutral plane" design={design} waiting={target === 'axis'} onWait={() => wait('axis')} onChange={(pull) => onChange({ pull })} />
           <Expr label="Draft angle" value={f.angle} onChange={(angle) => onChange({ angle }, 'angle')} />
           <label className="check"><input type="checkbox" checked={!!f.flip} onChange={(e) => onChange({ flip: e.target.checked || undefined })} /> Flip the pull direction</label>
           <p className="hint">Click the faces to draft. They turn about where they meet the neutral plane; a positive angle takes material off on the side the pull direction points to (a part narrowing towards it).</p>
@@ -213,7 +214,7 @@ export function ModifyFields({ design, comp, feature: f, result, target, onTarge
             <Expr label="ΔY" value={f.dy ?? ''} placeholder="0" onChange={(dy) => onChange({ dy: dy || undefined }, 'dy')} />
             <Expr label="ΔZ" value={f.dz ?? ''} placeholder="0" onChange={(dz) => onChange({ dz: dz || undefined }, 'dz')} />
           </div>
-          <PickField<AxisPick> label="Turn about" value={f.axis} options={axisOptions(before)} none="No turn" design={design} waiting={target === 'axis'} onWait={() => wait('axis')} onChange={(axis) => onChange({ axis })} />
+          <PickField<AxisPick> label="Turn about" value={f.axis} options={axes} none="No turn" design={design} waiting={target === 'axis'} onWait={() => wait('axis')} onChange={(axis) => onChange({ axis })} />
           {f.axis && <Expr label="Angle" value={f.angle ?? ''} placeholder="0" onChange={(angle) => onChange({ angle: angle || undefined }, 'angle')} />}
           <label className="check"><input type="checkbox" checked={!!f.copy} onChange={(e) => onChange({ copy: e.target.checked || undefined })} /> Copy (keep the original)</label>
           <p className="hint">The bodies turn about the axis first, then move by ΔX, ΔY, ΔZ (component axes).</p>

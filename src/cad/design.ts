@@ -499,6 +499,10 @@ export const isModify = (i: DesignItem): i is ModifyFeature => MODIFY_KINDS.has(
 export const CONSTRUCT_KINDS = new Set<DesignItem['kind']>(['plane', 'axis', 'point']);
 export const isConstruct = (i: DesignItem): i is ConstructItem => CONSTRUCT_KINDS.has(i.kind);
 
+/** Items that pick faces, edges or vertices of the bodies before them: edited with the timeline rolled back to them. */
+export const picksOnBodies = (i: DesignItem): boolean => isModify(i) || isConstruct(i) || i.kind === 'thread'
+  || (i.kind === 'sweep' && i.path.kind === 'edges') || (i.kind === 'coil' && (typeof i.plane !== 'string' || (i.centre !== undefined && typeof i.centre !== 'string')));
+
 /** Profiles are identified by the entities of their outer loop. */
 export function profileKey(r: ProfileRegion): string {
   return [...r.outer.entities].sort().join(',');
@@ -1037,9 +1041,14 @@ function picksIn<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodie
       circle: { c: framePoint(f, { x: c[0], y: c[1] }), axis: f.n, r },
     };
   };
+  // a field not filled in yet (a new construction item)
+  const need = (pick: unknown, what: string) => {
+    if (pick === undefined || pick === null || pick === '') throw new Error(`pick the ${what}`);
+  };
   return {
     topo: topoNow,
     plane(pick, what) {
+      need(pick, what);
       if (typeof pick === 'string') {
         if (pick in ORIGIN_FRAMES) return ORIGIN_FRAMES[pick as PlaneRef];
         if (!findSketch(design, pick) && !built[pick]) throw failed(pick, what);
@@ -1049,7 +1058,10 @@ function picksIn<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodie
       if (!e.frame) throw new Error(`the ${what} must be a flat face`);
       return { ...e.frame, n: norm3(e.frame.n), face: true };
     },
-    axis: (pick) => axisAt(ops, design, inp, bodies, built, pick as AxisPick, datums),
+    axis: (pick, what) => {
+      need(pick, what);
+      return axisAt(ops, design, inp, bodies, built, pick as AxisPick, datums);
+    },
     axisPlane(pick) {
       if (pick === 'X' || pick === 'Y') return ORIGIN_FRAMES.XY.n;
       if (pick === 'Z') return ORIGIN_FRAMES.XZ.n;
@@ -1061,6 +1073,7 @@ function picksIn<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodie
       return e.faces.map((i) => b.faces[i]?.frame?.n).find((n): n is Vec3 => !!n) ?? null;
     },
     point(pick, what) {
+      need(pick, what);
       if (typeof pick === 'string') {
         if (pick.includes('/')) return sketchPoint(pick, what);
         const d = datums[pick];
@@ -1077,12 +1090,16 @@ function picksIn<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodie
       return e.type === 'sphere' && e.axis ? e.axis.p : e.c;
     },
     curve(pick, what) {
+      need(pick, what);
       if (typeof pick === 'string') return sketchCurve(pick, what);
       const { e, body } = entity(pick as TopoRef, 'edge', what);
       const b = bodies.find((q) => q.id === body)!;
       return { at: (t) => ops.edgeAt(b.solid, e.index, t), ...(e.line ? { line: e.line } : {}), ...(e.circle ? { circle: e.circle } : {}) };
     },
-    face: (pick, what) => entity(pick as TopoRef, 'face', what).e,
+    face: (pick, what) => {
+      need(pick, what);
+      return entity(pick as TopoRef, 'face', what).e;
+    },
   };
 }
 
@@ -1476,7 +1493,12 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         // the helix is there for sweeps even when the coil makes no body
         datums = { ...datums, [item.id]: { kind: 'helix', helix: g.helix } };
         if (item.pathOnly) break;
-        const tool = ops.sweep(g.region, g.frame, { kind: 'helix', helix: g.helix }, { orientation: 'axis', axis: g.helix.axis, twist: 0, scale: 1 }, item.id);
+        let tool: S;
+        try {
+          tool = ops.sweep(g.region, g.frame, { kind: 'helix', helix: g.helix }, { orientation: 'axis', axis: g.helix.axis, twist: 0, scale: 1 }, item.id);
+        } catch (e) {
+          throw /needs the B-rep kernel/.test(msg(e)) ? new Error(needsBrep('coil')) : e;
+        }
         const rec = { tool, op: item.op, targets: item.targets };
         tools.set(item.id, rec);
         apply(item.id, rec);

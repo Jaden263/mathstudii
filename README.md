@@ -593,11 +593,39 @@ workspace opens full screen in the page. Its layout follows Fusion:
   that removes more is kept.
 - **Revolve:** about the sketch axes or any sketch line, any angle, in either direction.
 - **Hole:** at sketch points — simple, counterbore or countersink, a depth or through all.
+  **Tapped** picks an ISO metric size: the hole is drilled to the tap drill (8.5 mm for
+  M10) and threaded to a depth, cosmetic (rings in the view) or modeled.
+- **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs and circles, a
+  chain of body edges (they follow edits) or the helix of a coil. The profile stays
+  perpendicular to the path (corrected Frenet) or parallel to itself; a twist angle or an
+  end scale (taper) on open paths. A path that makes the swept profile run into itself says so: *the profile
+  reaches 6 mm from the path, but the path bends with a radius of 4 mm: the sweep would
+  cut through itself*.
+- **Coil:** a helix on an origin, sketch or construction plane (or a flat face) at a
+  centre point: diameter, then revolutions and height, revolutions and pitch, or height
+  and pitch; left or right hand; a circle, square or triangle section inside, on or
+  outside the diameter. Path only gives just the helix, for a sweep to follow.
+- **Thread:** ISO metric coarse and fine (ISO 261/262, M1.6 to M64, profile by ISO 68-1)
+  on picked cylinders: external on a shaft, internal in a hole, the size suggested from
+  the diameter. Cosmetic threads are listed in the inspector and drawn as rings; modeled
+  ones cut the real groove (it takes a few seconds).
 - **Pattern:** rectangular (one or two directions) or circular, of features (the copies
   repeat the boolean) or of bodies.
-- **Mirror:** features or bodies, about an origin plane or a sketch plane.
+- **Mirror:** features or bodies, about an origin plane, a sketch plane or a construction plane.
 - **Combine:** join, cut or intersect bodies, optionally keeping the tools.
 - A dialog edits the real feature, so the model previews every change; Cancel rolls it back.
+
+**Construction geometry** (Construct group) sits in the timeline and in a *Construction*
+folder of the browser, drawn orange in the view, and follows edits through its references:
+
+- **Plane:** offset from a plane or face, at an angle about an axis or edge, midplane of
+  two, through three points, tangent to a cylinder at an angle, normal to an edge or a
+  sketch path at a fraction of its length.
+- **Axis:** through two points, along an edge, through a cylinder or cone, normal to a face
+  at a point. **Point:** a vertex, the centre of a circle or sphere, where an edge crosses
+  a plane.
+- Sketches, mirrors, patterns, splits, drafts, coils and joints take them like origin
+  planes and axes.
 
 **Modify** (Solid tab, as in Fusion; they need the B-rep kernel). Edges, faces and bodies
 are clicked in the view while the dialog is open (click again to take one out); what is
@@ -728,6 +756,9 @@ visible lines disappear.
     itself (`shaft.A`, `shaft.Ix`, `shaft.Wx` …)
   - every named dimension (`asm.D_f`) and every moving joint (`asm.Spin` in degrees, a
     slider in length)
+  - each thread and tapped hole: `bolt.Thread1.P`, the pitch diameter `d2`, the minor
+    diameters `d1` (nut) and `d3` (bolt), the stress area `As` = π/4·((d2+d3)/2)² and the
+    tap drill `drill`
 - **Live:** edits travel to the worksheet at once, which recalculates and sends the results
   back. Undo in the CAD window applies to the part only. The worksheet window must stay
   open, since it owns the document. The page shows the 3-D model, the first sketch, or both.
@@ -845,6 +876,11 @@ The **CAD part design** example covers three things:
 The **CAD: shells, roundings, lofts** example has a thin-walled enclosure, a knob with a
 chamfered bottom and a rounded top, and a duct lofted from a rectangle to a circle.
 
+The **CAD: sweeps, coils, threads** example has a compression spring (a coil; its rate
+from the wire and coil sizes), an M12 bolt with a modeled thread whose stress area feeds
+a tension check, and a pipe swept round a bend on a construction plane normal to its path
+(its volume against the closed form).
+
 What it is not, honestly:
 
 - **Modify features, the limits:**
@@ -866,8 +902,17 @@ What it is not, honestly:
     chamfers, shells, drafts or press-pulls; it splits and moves bodies.
 - **Faceted where it matters little:** drawings are hidden-line views of the display
   mesh, so circles in them are fine polylines (their dimensions are exact). The section
-  view's cut bodies cannot be picked. No sweeps along paths and no splines; lofts are
-  ruled (straight between the two profiles).
+  view's cut bodies cannot be picked. No splines; lofts are ruled (straight between the
+  two profiles).
+- **Sweeps, coils, threads, the limits:**
+  - A sweep takes a twist or a taper, not both, and neither on a closed path. Coils have
+    no taper angle and no flat spiral. There is no Rib.
+  - Threads are the basic ISO profile: no tolerance classes, no runout, only metric. A
+    modeled thread on a mesh-kernel build waits for OpenCascade (a tapped hole is drilled
+    to its tap drill until then). Cosmetic threads are not in drawings yet.
+  - The tangent plane is for cylinders only. A vertex is picked as the corner nearest the
+    click on a face or edge; sketch points and curves are chosen from the dialog's lists.
+  - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix.
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
 - **References:**
   - Names come from history. An edit that rebuilds a face from another sketch line (a

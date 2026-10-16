@@ -17,10 +17,11 @@ import type { CadResult } from '../../cad/evaluate';
 import { MATERIALS, cadId, reserveDimNames, type CadSketch, type ConstraintType } from '../../cad/model';
 import { CONSTRAINT_TOOLS } from '../../cad/edit';
 import {
-  FEATURE_LABEL, MODIFY_KINDS, activeItems, designOf, facePlane, findSketch, isModify, isSketch, itemName, nextName, profileKey, sketchFace,
-  type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type DesignFeature, type DesignItem, type DesignSketch, type JointOrigin,
+  FEATURE_LABEL, MODIFY_KINDS, activeItems, designOf, facePlane, findSketch, isConstruct, isModify, isSketch, itemName, nextName, picksOnBodies, profileKey, sketchFace,
+  type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type ConstructItem, type DesignFeature, type DesignItem, type DesignSketch, type JointOrigin,
   type ModifyFeature, type PlaneRef,
 } from '../../cad/design';
+import { MM_PER, threadFor } from '../../cad/threads';
 import { m4Dir, m4Inv, m4Point, norm3, sub3, type Vec3 } from '../../cad/solid';
 import { baseName, faceWords, keyFeature, refTo, refToken, resolveRef, type TopoRef } from '../../cad/topology';
 import type { Vec2 } from '../../cad/profile';
@@ -42,6 +43,7 @@ import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
 import { Dialog, Expr, FeatureFields, JointFields, featureTitle } from './FeatureDialogs';
 import { ModifyFields, type PickTarget } from './ModifyDialogs';
+import { BuildFields, emptyDef, isBuildFeature, withPick, type FieldPick } from './ConstructDialogs';
 import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate } from './jointPick';
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
@@ -63,8 +65,9 @@ type Dlg =
    * click, `set` the fillet set clicked edges go into, and `rollback` the timeline marker to
    * put back afterwards (a feature edited from the timeline is shown as it was built).
    */
-  | { kind: 'feature'; cid: string; id: string; mark: number; isNew: boolean; target?: PickTarget; set?: number; rollback?: { marker: number | undefined } }
-  | { kind: 'sketch'; ref: PlaneRef; offset: string }
+  | { kind: 'feature'; cid: string; id: string; mark: number; isNew: boolean; target?: PickTarget; set?: number; rollback?: { marker: number | undefined }; pick?: FieldPick }
+  /** A new sketch: on an origin plane or a construction plane (its id). */
+  | { kind: 'sketch'; ref: PlaneRef | string; offset: string }
   | { kind: 'joint'; id: string; mark: number; isNew: boolean; picking: 'a' | 'b' | null; snap?: string }
   | { kind: 'measure'; picks: Measured[]; result?: Distance | null; error?: string }
   | { kind: 'interference'; rows: Interference[] | null; error?: string };
@@ -191,6 +194,15 @@ const ICON: Record<DesignItem['kind'], ReactNode> = {
 
 /** Where a sketch is: "the XY plane", "the end face of Extrude1", "face of Body1" (made before sketches followed faces). */
 const planeWords = (s: DesignSketch) => ('ref' in s.plane ? `the ${s.plane.ref} plane` : sketchFace(s) && s.plane.label ? `the ${s.plane.label}` : s.plane.label ?? 'a face');
+
+/** Every reference an item holds (in its fields, lists and definition). */
+function refsIn(v: unknown, out: TopoRef[] = []): TopoRef[] {
+  if (!v || typeof v !== 'object') return out;
+  const r = v as Partial<TopoRef>;
+  if ((r.kind === 'face' || r.kind === 'edge' || r.kind === 'vertex') && typeof r.key === 'string' && r.hint) out.push(r as TopoRef);
+  else for (const x of Array.isArray(v) ? v : Object.values(v)) refsIn(x, out);
+  return out;
+}
 
 const splitKey = (key: string) => {
   const rest = key.slice(2), i = rest.indexOf(':');
@@ -406,6 +418,71 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     }
   };
 
+  /** Faces or edges picked in the view (on the active component) that `ok` takes, as references; the picks are used up. */
+  const usePicks = (k: 'face' | 'edge', ok: (e: BodyResult['faces'][number] | BodyResult['edges'][number]) => boolean = () => true): TopoRef[] => {
+    const occ = comp && editOccurrence(design, comp.id);
+    const out: TopoRef[] = [];
+    for (const p of picks) {
+      if (p.occ !== occ?.id || p.kind !== k) continue;
+      const b = build && bodyOf(build, design, p.occ, p.body);
+      const e = b && (k === 'face' ? b.faces[p.index] : b.edges[p.index]);
+      if (e && ok(e)) out.push(refTo(k, p.body, e));
+    }
+    if (out.length) setPicks([]);
+    return out;
+  };
+
+  /** A new sweep, coil, thread or construction item, from what is selected or picked in the view. */
+  const startBuild = (kind: 'sweep' | 'coil' | 'thread' | 'plane' | 'axis' | 'point', id: string, name: string, op: 'new' | 'join'): DesignFeature | null => {
+    const isCyl = (e: unknown) => (e as { type?: string }).type === 'cylinder';
+    const isFlat = (e: unknown) => !!(e as { frame?: unknown }).frame;
+    switch (kind) {
+      case 'sweep': {
+        const sk = selProfile ? findSketch(cur(), selProfile.sketch) : selSketch && sketchRegions(selSketch, result).length ? selSketch : lastSketch((s) => sketchRegions(s, result).length > 0);
+        if (!sk) {
+          setMsg('Sketch a closed profile, and the path on another plane (lines and arcs end to end), then Sweep');
+          return null;
+        }
+        // the path: edges picked in the view, else the last sketch of open curves, else the helix of a path-only coil
+        const edges = usePicks('edge');
+        const pathSketch = lastSketch((s) => s.id !== sk.id && s.sketch.entities.some((e) => e.type !== 'point') && !sketchRegions(s, result).length);
+        const coil = [...items].reverse().find((i) => i.kind === 'coil' && i.pathOnly);
+        const path = edges.length ? { kind: 'edges' as const, edges } : pathSketch ? { kind: 'sketch' as const, sketch: pathSketch.id } : coil ? { kind: 'coil' as const, coil: coil.id } : { kind: 'sketch' as const, sketch: sk.id };
+        return { kind, id, name, sketch: sk.id, ...(selProfile?.sketch === sk.id ? { profile: selProfile.key } : {}), path, op };
+      }
+      case 'coil': {
+        const face = usePicks('face', isFlat)[0];
+        return { kind, id, name, plane: face ?? 'XY', mode: 'revs-pitch', d: '20', revs: '5', pitch: '5', section: 'circle', size: '2', op };
+      }
+      case 'thread': {
+        if (!bodiesNow.length) {
+          setMsg('There is no body to thread yet');
+          return null;
+        }
+        const faces = usePicks('face', isCyl);
+        // the size that fits the first face: a shaft's major diameter, a hole's tap drill
+        const occ = comp && editOccurrence(design, comp.id);
+        const b = faces[0] && occ && build ? bodyOf(build, design, occ.id, faces[0].body) : null;
+        const f0 = b?.faces.find((q) => q.key === faces[0].key);
+        const fits = f0?.radius ? threadFor(2 * f0.radius * (MM_PER[u] ?? 1), f0.outward === false) : null;
+        return { kind, id, name, faces, size: fits?.name ?? 'M10' };
+      }
+      case 'plane': {
+        const face = usePicks('face', isFlat)[0];
+        return { kind, id, name, def: { type: 'offset', plane: face ?? 'XY', d: '10' } } as ConstructItem;
+      }
+      case 'axis': {
+        const edge = usePicks('edge', (e) => !!(e as { line?: unknown }).line || !!(e as { circle?: unknown }).circle)[0];
+        const cyl = edge ? undefined : usePicks('face', isCyl)[0];
+        return { kind, id, name, def: edge ? { type: 'edge', edge } : cyl ? { type: 'cylinder', face: cyl } : emptyDef('axis', 'points') } as ConstructItem;
+      }
+      case 'point': {
+        const circle = usePicks('edge', (e) => !!(e as { circle?: unknown }).circle)[0];
+        return { kind, id, name, def: circle ? { type: 'centre', of: circle } : emptyDef('point', 'vertex') } as ConstructItem;
+      }
+    }
+  };
+
   const startFeature = (kind: DesignFeature['kind']) => {
     if (!comp) return;
     // "Press pull" names its features PressPull1 …
@@ -439,6 +516,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     } else if (kind === 'mirror') {
       if (!bodiesNow.length) return setMsg('Make a body to mirror first');
       f = { kind, id, name, of: 'bodies', refs: bodiesNow.map((b) => b.id), plane: 'YZ', join: true };
+    } else if (kind === 'sweep' || kind === 'coil' || kind === 'thread' || kind === 'plane' || kind === 'axis' || kind === 'point') {
+      const m = startBuild(kind, id, name, op);
+      if (!m) return;
+      f = m;
     } else if (MODIFY_KINDS.has(kind)) {
       const m = startModify(kind as ModifyFeature['kind'], id, name);
       if (!m) return;
@@ -465,9 +546,18 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     // a modify feature picks on the bodies as it found them: the features after it roll back meanwhile
     const c = cur().components.find((q) => q.id === cid);
     const idx = c ? c.items.indexOf(item) : -1;
-    const rollback = c && isModify(item) && idx + 1 < (c.marker ?? c.items.length) ? { marker: c.marker } : undefined;
+    const rollback = c && picksOnBodies(item) && idx + 1 < (c.marker ?? c.items.length) ? { marker: c.marker } : undefined;
     if (rollback) patchComp(cid, { marker: idx + 1 });
     setDialog({ kind: 'feature', cid, id: item.id, mark: m, isNew: false, rollback });
+  };
+
+  /** A new sketch on a construction plane (as built: the sketch keeps to it). */
+  const sketchOnDatum = (id: string, offset: string) => {
+    const cid = design.components.find((c) => c.items.some((i) => i.id === id))?.id;
+    const d = cid ? build?.components[cid]?.datums?.[id] : undefined;
+    if (!cid || d?.kind !== 'plane') return setMsg('That construction plane has not been built (yet)');
+    const off = offset.trim() && offset.trim() !== '0' ? { offset: offset.trim() } : {};
+    newSketchOn({ frame: { o: d.frame.o, u: d.frame.u, v: d.frame.v }, datum: id, label: itemName(cur(), id), ...off }, cid);
   };
 
   const newSketchOn = (plane: DesignSketch['plane'], cid = comp?.id) => {
@@ -670,6 +760,100 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     patch({ faces, ...(f.kind === 'shell' ? { body: faces.length ? undefined : on.body } : {}) } as Partial<ModifyFeature>);
   };
 
+  /**
+   * What a click gives a field of a sweep, coil, thread or construction dialog: an origin or
+   * construction plane, or a reference to the face, edge or vertex (the corner of the edge
+   * or face nearest to where it was clicked). An error says what the field wants instead.
+   */
+  const pickValue = (kind: FieldPick['kind'], hit: PickHit, self: string): { value: string | TopoRef } | { error: string } => {
+    const key = hit.key ?? '';
+    const on = hitBody(hit);
+    const face = on && hit.face !== undefined && hit.edge === undefined ? on.b.faces[hit.face] : undefined;
+    const edge = on && hit.edge !== undefined ? on.b.edges[hit.edge] : undefined;
+    const M = on && placement(on.occ);
+    const at = M && hit.point ? m4Point(m4Inv(M), hit.point) : null;
+    /** The vertex of an edge or face nearest to the click. */
+    const corner = () => {
+      if (!on || !at) return null;
+      const vs = edge ? edge.v : face ? on.b.edges.filter((e) => e.faces.includes(face.index)).flatMap((e) => e.v) : [];
+      const best = vs.map((i) => on.b.vertices[i]).filter(Boolean).sort((a, b) => Math.hypot(...sub3(a.p, at)) - Math.hypot(...sub3(b.p, at)))[0];
+      return best ? refTo('vertex', on.body, best) : null;
+    };
+    switch (kind) {
+      case 'plane':
+        if (key.startsWith('cp:')) return key.slice(3) === self ? { error: 'Pick another plane' } : { value: key.slice(3) };
+        if (key.startsWith('pl:')) return { value: key.slice(3) };
+        return face?.frame ? { value: refTo('face', on!.body, face) } : { error: 'Pick a flat face, an origin plane or a construction plane' };
+      case 'axis':
+        if (edge && (edge.line || edge.circle)) return { value: refTo('edge', on!.body, edge) };
+        return face && (face.type === 'cylinder' || face.type === 'cone' || face.type === 'torus') ? { value: refTo('face', on!.body, face) } : { error: 'Pick a straight edge, a circle or a cylinder' };
+      case 'point':
+      case 'vertex': {
+        if (kind === 'point' && edge?.circle) return { value: refTo('edge', on!.body, edge) };
+        if (kind === 'point' && face?.type === 'sphere') return { value: refTo('face', on!.body, face) };
+        const v = corner();
+        return v ? { value: v } : { error: 'Pick near a corner (or a circle for its centre)' };
+      }
+      case 'curve':
+        return edge ? { value: refTo('edge', on!.body, edge) } : { error: 'Pick an edge' };
+      case 'centre':
+        if (edge?.circle) return { value: refTo('edge', on!.body, edge) };
+        return face?.type === 'sphere' ? { value: refTo('face', on!.body, face) } : { error: 'Pick a circle, an arc or a sphere' };
+      case 'cylinder':
+        // an axis goes through a cone or torus too; a tangent plane says it needs a cylinder
+        return face && (face.type === 'cylinder' || face.type === 'cone' || face.type === 'torus') ? { value: refTo('face', on!.body, face) } : { error: 'Pick a cylindrical face' };
+      case 'face':
+        return face ? { value: refTo('face', on!.body, face) } : { error: 'Pick a face' };
+    }
+  };
+
+  /**
+   * A click while a sweep, coil, thread or construction dialog is open: the field waiting for
+   * one, else a thread's faces or a sweep's path edges in or out, or a sweep's profile.
+   */
+  const pickForBuild = (c: CadComponent, f: Extract<DesignFeature, { kind: 'sweep' | 'coil' | 'thread' | 'plane' | 'axis' | 'point' }>, hit: PickHit) => {
+    if (dialog?.kind !== 'feature') return;
+    const key = hit.key ?? '';
+    const on = hitBody(hit);
+    if (on && occOf(on.occ)?.component !== c.id) return setMsg('That body belongs to another component');
+    const madeHere = (k: string) => baseName(k).split('+').some((x) => keyFeature(x) === f.id);
+    const pk = dialog.pick;
+    if (pk) {
+      const face = on && hit.face !== undefined ? on.b.faces[hit.face] : undefined;
+      if (face && madeHere(face.key)) return setMsg(`${f.name} made that itself: pick something it starts from`);
+      const r = pickValue(pk.kind, hit, f.id);
+      if ('error' in r) return setMsg(r.error);
+      patchItem(c.id, f.id, withPick(f, pk.field, r.value));
+      // a plane through points takes three clicks
+      const more = pk.field === 'points' && f.kind === 'plane' && f.def.type === 'points' && f.def.points.length < 2;
+      setDialog({ ...dialog, pick: more ? pk : undefined });
+      return;
+    }
+    if (f.kind === 'sweep' && key.startsWith('p:')) {
+      const p = parseProfile(key);
+      return patchItem(c.id, f.id, { sketch: p.sketch, profile: p.key } as Partial<DesignItem>);
+    }
+    if (!on) return;
+    const shownBodies = build?.components[c.id]?.bodies ?? [];
+    const at = (ref: TopoRef) => {
+      const r = resolveRef(ref, shownBodies);
+      return r.ok && r.body === on.body ? r.index : -1;
+    };
+    if (f.kind === 'thread' && hit.face !== undefined) {
+      const face = on.b.faces[hit.face];
+      if (face.type !== 'cylinder') return setMsg('A thread goes on a cylindrical face');
+      if (madeHere(face.key)) return setMsg(`${f.name} made that face: pick the cylinder it threads`);
+      const i = f.faces.findIndex((r) => at(r) === face.index);
+      return patchItem(c.id, f.id, { faces: i >= 0 ? f.faces.filter((_, k) => k !== i) : [...f.faces, refTo('face', on.body, face)] } as Partial<DesignItem>);
+    }
+    if (f.kind === 'sweep' && f.path.kind === 'edges' && hit.edge !== undefined) {
+      const edge = on.b.edges[hit.edge];
+      const i = f.path.edges.findIndex((r) => at(r) === edge.index);
+      const edges = i >= 0 ? f.path.edges.filter((_, k) => k !== i) : [...f.path.edges, refTo('edge', on.body, edge)];
+      return patchItem(c.id, f.id, { path: { kind: 'edges', edges } } as Partial<DesignItem>);
+    }
+  };
+
   const onPick = (hit: PickHit, shift = false) => {
     if (performance.now() - openedAt.current < 500) return;
     const key = hit.key ?? '';
@@ -678,6 +862,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const f = c?.items.find((i) => i.id === dialog.id) as DesignFeature | undefined;
       if (!c || !f) return;
       if (isModify(f)) return pickForModify(c, f, hit);
+      if (isBuildFeature(f)) return pickForBuild(c, f, hit);
       if (key.startsWith('p:') && (f.kind === 'extrude' || f.kind === 'revolve')) {
         const p = parseProfile(key);
         if (p.sketch !== f.sketch) return patchItem(c.id, f.id, { sketch: p.sketch, profiles: [p.key] } as Partial<DesignItem>);
@@ -707,6 +892,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     }
     if (dialog?.kind === 'sketch') {
       if (key.startsWith('pl:')) return newSketchOn({ ref: key.slice(3) as PlaneRef, ...(dialog.offset.trim() && dialog.offset.trim() !== '0' ? { offset: dialog.offset.trim() } : {}) });
+      if (key.startsWith('cp:')) return sketchOnDatum(key.slice(3), dialog.offset);
       const on = hitBody(hit);
       if (on) {
         // the face's exact plane (component coordinates), and a reference the sketch follows
@@ -824,6 +1010,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) onRedo(); else onUndo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); onRedo(); }
     else if (e.key === 'Escape' && dialog?.kind === 'feature' && dialog.target) setDialog({ ...dialog, target: undefined });
+    else if (e.key === 'Escape' && dialog?.kind === 'feature' && dialog.pick) setDialog({ ...dialog, pick: undefined });
     else if (e.key === 'Escape' && dialog) closeDialog(false);
     else if (e.key === 'Escape' && !sketchId && picks.length) setPicks([]);
     else if (!sketchId && !dialog && !mod && !e.altKey) {
@@ -856,7 +1043,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     if (sel?.startsWith('body:')) h.add(`b:${sel.slice(5)}`);
     if (sel?.startsWith('p:')) h.add(sel);
     if (sel?.startsWith('occ:')) h.add(`o:${sel.slice(4)}`);
-    if (sel?.startsWith('item:')) h.add(`s:${sel.slice(5)}`);
+    if (sel?.startsWith('item:')) h.add(`s:${sel.slice(5)}`).add(sel);
     const f = activeFeature;
     const occ = f && dialog?.kind === 'feature' ? editOccurrence(design, dialog.cid) : undefined;
     if (f && occ) {
@@ -876,7 +1063,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     return h;
   }, [hover, sel, dialog, activeFeature, activeJoint, design, result]);
 
-  const pickProfiles = !dialog || activeFeature?.kind === 'extrude' || activeFeature?.kind === 'revolve';
+  const pickProfiles = !dialog || activeFeature?.kind === 'extrude' || activeFeature?.kind === 'revolve' || activeFeature?.kind === 'sweep';
   const box = dr?.box;
   const secNormal: Record<'XY' | 'XZ' | 'YZ', Vec3> = { XY: [0, 0, 1], XZ: [0, 1, 0], YZ: [1, 0, 0] };
   const secAxis = section ? { XY: 2, XZ: 1, YZ: 0 }[section.plane] : 0;
@@ -914,17 +1101,27 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // what a modify feature works on, as shown: the faces and edges it holds (found by their
   // references), its plane or axis if picked, and the roundings or chamfers it made
   const modified = activeFeature && isModify(activeFeature) ? activeFeature : null;
+  // a sweep, coil, thread or construction item: what it holds is marked the same way
+  const held = activeFeature && isBuildFeature(activeFeature) ? activeFeature : null;
   const modMarks = useMemo(() => {
     const out = new Map<string, { faces: number[]; edges: number[] }>();
-    const occ = modified && dialog?.kind === 'feature' ? editOccurrence(design, dialog.cid) : undefined;
+    const occ = (modified || held) && dialog?.kind === 'feature' ? editOccurrence(design, dialog.cid) : undefined;
     const shown = (occ && build?.components[occ.component]?.bodies) || [];
-    if (!modified || !occ) return out;
-    const f = modified;
+    if (!occ) return out;
     const mark = (body: string, kind: 'face' | 'edge', i: number) => {
       const m = out.get(`b:${occ.id}:${body}`) ?? { faces: [], edges: [] };
       (kind === 'face' ? m.faces : m.edges).push(i);
       out.set(`b:${occ.id}:${body}`, m);
     };
+    if (held) {
+      for (const ref of refsIn(held)) {
+        const r = resolveRef(ref, shown);
+        if (r.ok && ref.kind !== 'vertex') mark(r.body, ref.kind, r.index);
+      }
+      return out;
+    }
+    if (!modified) return out;
+    const f = modified;
     const refs: TopoRef[] = f.kind === 'fillet' ? f.sets.flatMap((st) => st.edges) : f.kind === 'chamfer' ? f.edges : 'faces' in f ? [...f.faces] : [];
     for (const pk of [f.kind === 'draft' || f.kind === 'split' ? f.plane : undefined, f.kind === 'draft' ? f.pull : f.kind === 'move' ? f.axis : undefined]) if (pk && typeof pk !== 'string') refs.push(pk);
     for (const ref of refs) {
@@ -936,18 +1133,20 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       for (const b of shown) for (const face of b.faces) if (baseName(face.key).split('+').some((k) => k.startsWith(role))) mark(b.id, 'face', face.index);
     }
     return out;
-  }, [modified, dialog, design, build]);
+  }, [modified, held, dialog, design, build]);
   const marks = useCallback((key: string) => {
     const selFaces: number[] = [...(modMarks.get(key)?.faces ?? [])], selEdges: number[] = [...(modMarks.get(key)?.edges ?? [])];
-    for (const p of modified ? [] : marked) if (`b:${p.occ}:${p.body}` === key) (p.kind === 'face' ? selFaces : selEdges).push(p.index);
+    for (const p of modified || held ? [] : marked) if (`b:${p.occ}:${p.body}` === key) (p.kind === 'face' ? selFaces : selEdges).push(p.index);
     const hv = hoverPick?.key === key ? hoverPick : null;
     if (!selFaces.length && !selEdges.length && !hv) return undefined;
     return { selFaces, selEdges, hoverFace: hv && hv.edge === undefined ? hv.face : undefined, hoverEdge: hv?.edge };
-  }, [marked, hoverPick, modMarks, modified]);
+  }, [marked, hoverPick, modMarks, modified, held]);
+  // origin and construction planes take clicks while a sketch or a plane field waits for one
+  const planePicking = dialog?.kind === 'sketch' || (dialog?.kind === 'feature' && dialog.pick?.kind === 'plane');
   const baseScene = useMemo(() => buildScene(design, result, build, {
-    active: comp?.id ?? '', highlight, showPlanes: (showPlanes || dialog?.kind === 'sketch') && !section, pickProfiles, isolate, size: sceneSize,
-    pickPlanes: dialog?.kind === 'sketch', section: section ? cut : undefined, marks,
-  }), [design, result, build, comp, highlight, showPlanes, dialog, pickProfiles, isolate, sceneSize, section, cut, marks]);
+    active: comp?.id ?? '', highlight, showPlanes: (showPlanes || planePicking) && !section, pickProfiles, isolate, size: sceneSize,
+    pickPlanes: planePicking, pickDatums: planePicking, section: section ? cut : undefined, marks,
+  }), [design, result, build, comp, highlight, showPlanes, planePicking, pickProfiles, isolate, sceneSize, section, cut, marks]);
   // what is being measured (corner points) and the shortest line between the two, and the
   // joint origins a face or edge offers while a joint picks one, drawn on top
   const measuring = dialog?.kind === 'measure' ? dialog : null;
@@ -972,13 +1171,17 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const modPick = modified && dialog?.kind === 'feature'
     ? (dialog.target === 'plane' ? 'faces' : dialog.target === 'axis' ? 'edges' : modified.kind === 'fillet' || modified.kind === 'chamfer' ? 'edges' : modified.kind === 'split' || modified.kind === 'move' ? 'bodies' : 'faces')
     : null;
-  const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint' || modPick === 'edges' || modPick === 'faces';
+  // … and a sweep, coil, thread or construction dialog the faces or edges of its fields, a thread's faces, a sweep's path edges
+  const buildPick = held && dialog?.kind === 'feature'
+    ? (dialog.pick ? (['plane', 'cylinder', 'face'].includes(dialog.pick.kind) ? 'faces' : 'edges') : held.kind === 'thread' ? 'faces' : held.kind === 'sweep' && held.path.kind === 'edges' ? 'edges' : null)
+    : null;
+  const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint' || modPick === 'edges' || modPick === 'faces' || !!buildPick;
   const onHover = (h: PickHit) => {
     const key = h.kind !== 'none' ? h.key : undefined;
     const onBody = !!key?.startsWith('b:') && facePicking;
     const hp = onBody && (h.face !== undefined || h.edge !== undefined) ? { key: key!, face: h.face, edge: dialog?.kind === 'sketch' ? undefined : h.edge } : null;
     setHoverPick((old) => (old?.key === hp?.key && old?.face === hp?.face && old?.edge === hp?.edge ? old : hp));
-    const hk = !onBody && key && (key.startsWith('b:') || key.startsWith('p:') || key.startsWith('pl:')) ? key : null;
+    const hk = !onBody && key && (key.startsWith('b:') || key.startsWith('p:') || key.startsWith('pl:') || key.startsWith('cp:')) ? key : null;
     setHover((old) => (old === hk ? old : hk));
     // a joint picking its origin: the snap points of what is under the pointer
     const jp = dialog?.kind === 'joint' && dialog.picking && onBody ? jointPicks(h) : null;
@@ -1028,7 +1231,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const hintText = (() => {
     if (msg) return msg;
     if (sketchId) return status.msg || status.hint;
-    if (dialog?.kind === 'sketch') return 'Click an origin plane or a flat face to sketch on it';
+    if (dialog?.kind === 'sketch') return 'Click an origin plane, a construction plane or a flat face to sketch on it';
     if (dialog?.kind === 'joint') {
       if (!dialog.picking) return dialog.snap ?? 'Set the joint type and motion, then OK';
       const at = snapHover?.cands[snapHover.best];
@@ -1048,6 +1251,16 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       };
       return `${what[modified.kind]} · Esc cancels`;
     }
+    if (dialog?.kind === 'feature' && dialog.pick) {
+      const what: Record<FieldPick['kind'], string> = {
+        plane: 'a flat face, an origin plane or a construction plane', axis: 'a straight edge, a circle or a cylinder', point: 'a corner (or a circle for its centre)',
+        vertex: 'a corner', curve: 'an edge', centre: 'a circle, an arc or a sphere', cylinder: 'a cylindrical face', face: 'a face',
+      };
+      return `Click ${what[dialog.pick.kind]} · Esc stops picking`;
+    }
+    if (dialog?.kind === 'feature' && activeFeature?.kind === 'thread') return 'Click cylindrical faces to thread them (a shaft outside, a hole inside) · click one again to take it out · Esc cancels';
+    if (dialog?.kind === 'feature' && activeFeature?.kind === 'sweep') return activeFeature.path.kind === 'edges' ? 'Click edges of the path, end to end · click a profile to sweep it · Esc cancels' : 'Click a profile to sweep it · Esc cancels';
+    if (dialog?.kind === 'feature' && held) return 'Pick fills a field from the view (a face, an edge, a corner or a plane) · Esc cancels';
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';
     return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · F fillet · Q press pull · J joint · M measure';
   })();
@@ -1071,6 +1284,18 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         </Dialog>
       );
     }
+    if (dialog.kind === 'feature' && activeFeature && isBuildFeature(activeFeature)) {
+      const c = design.components.find((q) => q.id === dialog.cid)!;
+      const f = activeFeature;
+      return (
+        <Dialog title={featureTitle(f)} error={dr?.errors[f.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <BuildFields design={design} comp={c} feature={f} result={result} unit={u} pick={dialog.pick} onPick={(pick) => setDialog({ ...dialog, pick })}
+            onChange={(p, k) => patchItem(c.id, f.id, p, k ? `${f.id}:${k}` : undefined)} />
+          {dr?.warnings?.[f.id] && <div className="region-warn">{dr.warnings[f.id]}</div>}
+          {dialog.rollback && <p className="hint">The timeline is rolled back to {f.name} while you edit it.</p>}
+        </Dialog>
+      );
+    }
     if (dialog.kind === 'feature' && activeFeature) {
       const c = design.components.find((q) => q.id === dialog.cid)!;
       return (
@@ -1082,13 +1307,16 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     }
     if (dialog.kind === 'sketch') {
       const offset = dialog.offset.trim() && dialog.offset.trim() !== '0' ? { offset: dialog.offset.trim() } : {};
+      const datumPlanes = (comp?.items ?? []).filter((i): i is ConstructItem => i.kind === 'plane' && !!build?.components[comp!.id]?.datums?.[i.id]);
+      const origin = ['XY', 'XZ', 'YZ'].includes(dialog.ref);
       return (
-        <Dialog title="Create sketch" okLabel="Create" onOk={() => newSketchOn({ ref: dialog.ref, ...offset })} onCancel={() => setDialog(null)}>
-          <p className="hint">Click an origin plane or a flat face of a body in the view, or pick a plane here.</p>
+        <Dialog title="Create sketch" okLabel="Create" onOk={() => (origin ? newSketchOn({ ref: dialog.ref as PlaneRef, ...offset }) : sketchOnDatum(dialog.ref, dialog.offset))} onCancel={() => setDialog(null)}>
+          <p className="hint">Click an origin plane, a construction plane or a flat face of a body in the view, or pick a plane here.</p>
           <label className="field">
             <span>Plane</span>
-            <select value={dialog.ref} onChange={(e) => setDialog({ ...dialog, ref: e.target.value as PlaneRef })}>
+            <select value={dialog.ref} onChange={(e) => setDialog({ ...dialog, ref: e.target.value })}>
               <option value="XY">XY (top)</option><option value="XZ">XZ (front)</option><option value="YZ">YZ (right)</option>
+              {datumPlanes.map((p) => <option key={p.id} value={p.id}>{p.name} (construction plane)</option>)}
             </select>
           </label>
           <Expr label="Offset along the normal" value={dialog.offset} placeholder="0" onChange={(o) => setDialog({ ...dialog, offset: o })} />
@@ -1226,7 +1454,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           <div className="cadd-actions">
             <button className="btn primary" onClick={() => editItem(c.id, it)}>{isSketch(it) ? 'Edit sketch' : 'Edit feature'}</button>
             {!isSketch(it) && <button className="btn" onClick={() => patchItem(c.id, it.id, { suppressed: it.suppressed ? undefined : true })}>{it.suppressed ? 'Unsuppress' : 'Suppress'}</button>}
-            {isSketch(it) && <button className="btn" onClick={() => patchItem(c.id, it.id, { hidden: it.hidden ? undefined : true } as Partial<DesignItem>)}>{it.hidden ? 'Show' : 'Hide'}</button>}
+            {(isSketch(it) || isConstruct(it)) && <button className="btn" onClick={() => patchItem(c.id, it.id, { hidden: it.hidden ? undefined : true } as Partial<DesignItem>)}>{it.hidden ? 'Show' : 'Hide'}</button>}
             <button className="btn" onClick={() => patchComp(c.id, { marker: idx + 1 >= c.items.length ? undefined : idx + 1 })}>Roll back to here</button>
             <button className="btn danger" onClick={() => removeItem(c.id, it.id)}><Trash2 size={13} /> Delete</button>
           </div>
@@ -1414,7 +1642,15 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<ArrowUpFromLine size={20} />} label="Extrude" title="Extrude profiles: new body, join, cut or intersect (E)" onClick={() => startFeature('extrude')} />
               <RibbonButton icon={<RotateCw size={20} />} label="Revolve" title="Revolve profiles about an axis" onClick={() => startFeature('revolve')} />
               <RibbonButton icon={<Cone size={20} />} label="Loft" title="Loft: join a profile of one sketch to a profile of another (on an offset plane)" onClick={() => startFeature('loft')} />
-              <RibbonButton icon={<CircleDot size={20} />} label="Hole" title="Holes at sketch points: simple, counterbore, countersink (H)" onClick={() => startFeature('hole')} />
+              <RibbonButton icon={<CircleDot size={20} />} label="Hole" title="Holes at sketch points: simple, counterbore, countersink, tapped (H)" onClick={() => startFeature('hole')} />
+              <RibbonButton icon={<Route size={20} />} label="Sweep" title="Sweep a profile along a path: sketch curves, edges or a coil's helix; twist and taper" on={activeFeature?.kind === 'sweep'} onClick={() => startFeature('sweep')} />
+              <RibbonButton icon={<Tornado size={20} />} label="Coil" title="A coil (spring): a section along a helix on a plane or face" on={activeFeature?.kind === 'coil'} onClick={() => startFeature('coil')} />
+              <RibbonButton icon={<Screw size={20} />} label="Thread" title="ISO metric threads on shafts and in holes, cosmetic or modeled" on={activeFeature?.kind === 'thread'} onClick={() => startFeature('thread')} />
+            </Group>
+            <Group label="Construct">
+              <RibbonButton icon={<Diamond size={20} />} label="Plane" title="Construction plane: offset, at an angle, midplane, through three points, tangent, along a path" on={activeFeature?.kind === 'plane'} onClick={() => startFeature('plane')} />
+              <RibbonButton icon={<MoveDiagonal size={20} />} label="Axis" title="Construction axis: through two points, an edge, a cylinder, or normal to a face" on={activeFeature?.kind === 'axis'} onClick={() => startFeature('axis')} />
+              <RibbonButton icon={<Locate size={20} />} label="Point" title="Construction point: a vertex, a circle's centre, an edge crossing a plane" on={activeFeature?.kind === 'point'} onClick={() => startFeature('point')} />
             </Group>
             <Group label="Pattern">
               <RibbonButton icon={<Grid3x3 size={20} />} label="Pattern" title="Rectangular or circular pattern of features or bodies" onClick={() => startFeature('pattern')} />
@@ -1506,6 +1742,15 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
                             extra={eye(c.hiddenBodies?.includes(b.id), () => patchComp(c.id, { hiddenBodies: c.hiddenBodies?.includes(b.id) ? c.hiddenBodies.filter((x) => x !== b.id) : [...(c.hiddenBodies ?? []), b.id] }))} />
                         ))}
                       </Node>
+                      {c.items.some(isConstruct) && (
+                        <Node k={`cc:${c.id}`} icon={<Diamond size={13} />} label={`Construction (${c.items.filter(isConstruct).length})`}>
+                          {c.items.filter(isConstruct).map((ci) => (
+                            <Node key={ci.id} k={`ci:${ci.id}`} icon={ICON[ci.kind]} label={ci.name} on={sel === `item:${ci.id}`} onClick={() => { setActive(c.id); setSel(`item:${ci.id}`); }}
+                              bad={!!dr?.errors[ci.id]} warn={dr?.warnings?.[ci.id]}
+                              extra={eye(ci.hidden, () => patchItem(c.id, ci.id, { hidden: ci.hidden ? undefined : true } as Partial<DesignItem>))} />
+                          ))}
+                        </Node>
+                      )}
                       <Node k={`cs:${c.id}`} icon={<PenTool size={13} />} label={`Sketches (${sks.length})`}>
                         {sks.map((s) => (
                           <Node key={s.id} k={`s:${s.id}`} icon={<PenTool size={12} />} label={s.name} on={sel === `item:${s.id}`} onClick={() => { setActive(c.id); setSel(`item:${s.id}`); }} bad={!!dr?.errors[s.id]} warn={dr?.warnings?.[s.id]}
@@ -1546,7 +1791,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           ) : (
             <Scene3D
               width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d}
-              navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch' && modPick !== 'faces'}
+              navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch' && modPick !== 'faces' && buildPick !== 'faces'}
               onHover={onHover}
               message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.state === 'none' && shown.notice && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
             />

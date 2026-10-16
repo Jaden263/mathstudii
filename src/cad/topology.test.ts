@@ -60,6 +60,9 @@ describe('names', () => {
     expect(faceWords('f1/end#2', name)).toBe('the end face of Extrude1');
     expect(faceWords('f2/hole1:wall', name)).toBe('the wall of hole 2 of Hole1');
     expect(faceWords('f3.2.f2/hole0:wall', name)).toBe('the wall of hole 1 of Hole1 (copy 2 of Pattern1)');
+    // a thread's groove, and that of a tapped hole
+    expect(faceWords('f1/thread0:groove#3', name)).toBe('the thread of Extrude1');
+    expect(faceWords('f2/hole0:thread:groove', name)).toBe('the thread of hole 1 of Hole1');
   });
 });
 

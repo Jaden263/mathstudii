@@ -5,7 +5,7 @@
 // takes (2π/P)∫ r w(r) dr of cross-section per unit length (a screw-symmetric groove).
 import { describe, expect, it } from 'vitest';
 import { circles, rect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
-import { occ } from './kernel';
+import { occ, setOccEnabled } from './kernel';
 import { buildResultOcc } from './result';
 import { buildDesignOcc } from './build';
 import type { CoilFeature, DesignItem, SweepFeature } from '../design';
@@ -357,6 +357,34 @@ describe('threads', () => {
     expect(blind.errors).toEqual({});
     near(blind.V[0], V0 - PI * 4.25 ** 2 * 15 - grooveArea(s, 4.25, 5, true) * 10, 1e-5);
     expect(run([...plate, hole({ size: 'M10', depth: '20' }, false)]).errors.f1).toMatch(/deeper than the hole/);
+  });
+});
+
+describe('mesh kernel', () => {
+  it('says sweeps, coils and threads need the B-rep kernel; drills a tapped hole; builds construction planes', () => {
+    const plate: DesignItem[] = [
+      { kind: 'sketch', id: 's0', name: 'Plate', plane: { ref: 'XY' }, sketch: rect('r', -20, -20, 20, 20) },
+      { kind: 'extrude', id: 'f0', name: 'Plate', sketch: 's0', extent: { type: 'one', d: '20' }, op: 'new' },
+      { kind: 'sketch', id: 's1', name: 'Top', plane: { ref: 'XY', offset: '20' }, sketch: { points: [{ id: 'q', x: 0, y: 0 }], entities: [{ id: 'e', type: 'point', p: 'q' }], constraints: [] } },
+      { kind: 'hole', id: 'f1', name: 'Hole1', sketch: 's1', d: '', depth: '', through: true, style: 'simple', tap: { size: 'M10', modeled: true } },
+      { kind: 'plane', id: 'p1', name: 'Plane1', def: { type: 'offset', plane: 'XY', d: '7' } },
+      { kind: 'coil', id: 'f2', name: 'Coil1', plane: 'p1', mode: 'revs-pitch', d: '60', revs: '2', pitch: '8', section: 'circle', size: '2', op: 'new' },
+      ...sweepOf(circles('c', [[50, 0, 2]]), curves('q', [[50, 0, 50, 30]])).map((i) => ({ ...i, id: `w${i.id}` }) as DesignItem).map((i) => (i.kind === 'sweep' ? { ...i, sketch: 'ws1', path: { kind: 'sketch' as const, sketch: 'ws2' } } : i)),
+    ];
+    setOccEnabled(false);
+    try {
+      const { res } = solve(single(plate));
+      const d = res.design!;
+      expect(d.brep).toBeFalsy();
+      expect(d.errors.f2).toMatch(/needs the B-rep kernel.*cannot make coils/);
+      expect(d.errors.wf1).toMatch(/needs the B-rep kernel.*cannot sweep profiles/);
+      expect(d.errors.f1).toBeUndefined();
+      expect(d.warnings!.f1).toMatch(/modeled once OpenCascade has loaded/);
+      // drilled to the tap drill, Ø8.5 (the mesh's circles are polygons: 2·10⁻⁴)
+      near(d.bodies.c1[0].mass!.V, 40 * 40 * 20 - PI * 4.25 ** 2 * 20, 2e-4);
+    } finally {
+      setOccEnabled(true);
+    }
   });
 });
 

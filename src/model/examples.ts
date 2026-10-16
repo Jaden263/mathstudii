@@ -702,6 +702,93 @@ export function odeExample(): Worksheet {
   ]);
 }
 
+/** A spring (coil), a bolt with a modeled M12 thread and a pipe swept along a bent path. */
+function sweepDesign(): CadDesign {
+  // hexagon head, 18 across flats
+  const e = 18 / Math.sqrt(3);
+  const head = outline('h', [0, 1, 2, 3, 4, 5].map((k) => [e * Math.cos((k * Math.PI) / 3), e * Math.sin((k * Math.PI) / 3)] as [number, number]));
+  const shank = rings('s', [[12, '12 mm']]);
+  // the pipe's path on XZ: up 80, a quarter bend of radius R_b, on 80
+  const path: CadSketch = {
+    points: [{ id: 'q0', x: 0, y: 0 }, { id: 'q1', x: 0, y: 80 }, { id: 'qc', x: 40, y: 80 }, { id: 'q2', x: 40, y: 120 }, { id: 'q3', x: 120, y: 120 }],
+    entities: [
+      { id: 'pl0', type: 'line', p1: 'q0', p2: 'q1' },
+      { id: 'pa', type: 'arc', c: 'qc', p1: 'q2', p2: 'q1' },
+      { id: 'pl1', type: 'line', p1: 'q2', p2: 'q3' },
+    ],
+    constraints: [
+      { id: 'pf', type: 'fix', refs: ['q0'], at: { x: 0, y: 0 } },
+      { id: 'pv', type: 'vertical', refs: ['pl0'] }, { id: 'ph', type: 'horizontal', refs: ['pl1'] },
+      { id: 'pt0', type: 'tangent', refs: ['pl0', 'pa'] }, { id: 'pt1', type: 'tangent', refs: ['pa', 'pl1'] },
+      { id: 'pd0', type: 'length', refs: ['pl0'], value: '80 mm' }, { id: 'pd1', type: 'length', refs: ['pl1'], value: '80 mm' },
+      { id: 'pr', type: 'radius', refs: ['pa'], value: 'R_b', name: 'R_b' },
+    ],
+  };
+  return {
+    version: 2,
+    components: [
+      {
+        id: 'cs', name: 'Spring', color: '#7f8fa6',
+        items: [{ kind: 'coil', id: 'fs1', name: 'Coil1', plane: 'XY', mode: 'revs-pitch', d: 'D_s', revs: 'n_s', pitch: 'p_s', section: 'circle', size: 'd_w', op: 'new' }],
+      },
+      {
+        id: 'cb', name: 'Bolt', color: '#b8a27a',
+        items: [
+          { kind: 'sketch', id: 'sb1', name: 'Head', plane: { ref: 'XY' }, sketch: head },
+          { kind: 'extrude', id: 'fb1', name: 'Head', sketch: 'sb1', extent: { type: 'one', d: '7.5 mm', dir: '+' }, op: 'new' },
+          { kind: 'sketch', id: 'sb2', name: 'Shank', plane: { ref: 'XY', offset: '7.5 mm' }, sketch: shank },
+          { kind: 'extrude', id: 'fb2', name: 'Shank', sketch: 'sb2', extent: { type: 'one', d: 'l_b', dir: '+' }, op: 'join' },
+          {
+            kind: 'thread', id: 'fb3', name: 'Thread1', size: 'M12', length: 'b_t', modeled: true,
+            faces: [{ kind: 'face', body: 'fb1', key: 'fb2/side:sk0', hint: { p: [0, 0, 32.5], d: [0, 0, 1], type: 'cylinder', r: 6, size: 2 * Math.PI * 6 * 50 } }],
+          },
+        ],
+      },
+      {
+        id: 'cp', name: 'Pipe', color: '#90be6d',
+        items: [
+          { kind: 'sketch', id: 'sp1', name: 'Path', plane: { ref: 'XZ' }, sketch: path },
+          { kind: 'plane', id: 'pp1', name: 'Plane1', def: { type: 'path', curve: 'sp1/pl0', at: '0' } },
+          { kind: 'sketch', id: 'sp2', name: 'Section', plane: { frame: { o: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0] }, datum: 'pp1', label: 'Plane1' }, sketch: rings('t', [[20, 'D_p'], [16, 'D_p - 2 t_p']]) },
+          { kind: 'sweep', id: 'fp1', name: 'Pipe', sketch: 'sp2', path: { kind: 'sketch', sketch: 'sp1' }, op: 'new' },
+        ],
+      },
+    ],
+    occurrences: [
+      { id: 'os', component: 'cs', grounded: true },
+      { id: 'ob', component: 'cb', grounded: true, pos: [70, 0, 0] },
+      { id: 'op', component: 'cp', grounded: true, pos: [120, 0, 0] },
+    ],
+    joints: [],
+  };
+}
+
+export function sweepExample(): Worksheet {
+  return build('CAD: sweeps, coils, threads', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Sweeps, coils and threads\nA compression spring made with **Coil**, an M12 bolt with a **modeled thread**, and a pipe **swept** along a bent path, its section sketched on a **construction plane** square to the path. Change a value and the parts follow; the spring rate and the bolt\'s tensile resistance use the parts\' own data.' }],
+    ['math', L, mm(48), { source: 'D_s := 30 mm' }],
+    ['math', mm(55), mm(48), { source: 'd_w := 3 mm' }],
+    ['math', mm(90), mm(48), { source: 'p_s := 8 mm' }],
+    ['math', mm(125), mm(48), { source: 'n_s := 6' }],
+    ['math', L, mm(60), { source: 'l_b := 50 mm' }],
+    ['math', mm(55), mm(60), { source: 'b_t := 30 mm' }],
+    ['math', mm(90), mm(60), { source: 'D_p := 20 mm' }],
+    ['math', mm(125), mm(60), { source: 't_p := 2 mm' }],
+    ['math', mm(160), mm(60), { source: 'R_b := 40 mm' }],
+    ['cad', L, mm(72), { name: 'sw', width: mm(170), height: mm(90), mode: '3d', view3d: { yaw: -35, pitch: 25 }, density: '7850 kg/m^3', design: sweepDesign() }],
+    ['text', L, mm(168), { width: mm(80), markdown: '**Spring** (EN 13906-1): rate k = G d⁴ / (8 D³ n) with G = 81.5 GPa for spring steel wire.' }],
+    ['math', mm(105), mm(168), { source: 'k_s := 81.5 GPa * d_w^4 / (8 * D_s^3 * n_s) = N/mm' }],
+    ['math', mm(105), mm(182), { source: 'sw.Spring.m = g' }],
+    ['text', L, mm(194), { width: mm(80), markdown: '**Bolt** 8.8 (EN 1993-1-8, Table 3.4): F_t,Rd = k₂ f_ub A_s / γ_M2, A_s from the thread.' }],
+    ['math', mm(105), mm(194), { source: 'sw.Bolt.Thread1.As = mm^2' }],
+    ['math', mm(105), mm(206), { source: 'F_tRd := 0.9 * 800 MPa * sw.Bolt.Thread1.As / 1.25 = kN' }],
+    ['text', L, mm(224), { width: mm(80), markdown: '**Pipe**: the swept volume against the annulus times the length of the path (two straights and a quarter bend).' }],
+    ['math', mm(105), mm(224), { source: 'sw.Pipe.V = cm^3' }],
+    ['math', mm(105), mm(236), { source: 'π / 4 * (D_p^2 - (D_p - 2 t_p)^2) * (160 mm + π / 2 * R_b) = cm^3' }],
+    ['math', mm(105), mm(252), { source: 'sw.Pipe.m = g' }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -715,6 +802,7 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Python code', make: pythonExample },
   { name: 'CAD part design (parametric)', make: cadExample },
   { name: 'CAD: shells, roundings, lofts', make: shapingExample },
+  { name: 'CAD: sweeps, coils, threads', make: sweepExample },
   { name: 'Bridge girder: influence lines, LM1', make: bridgeExample },
   { name: 'Differential equations (odesolve)', make: odeExample },
 ];

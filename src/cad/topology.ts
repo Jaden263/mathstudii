@@ -342,7 +342,8 @@ export function faceWords(key: string, featureName: (id: string) => string | und
   const what = role === 'start' ? 'start face' : role === 'end' ? 'end face' : role.startsWith('side') ? 'side face'
     : role.startsWith('round') ? 'rounding' : role.startsWith('chamfer') ? 'chamfer'
       : role.startsWith('in:') ? 'inner wall' : role.startsWith('out:') ? 'outer wall' : role === 'split' ? 'cut face'
-        : hole ? `${hole[2] === 'wall' ? 'wall' : hole[2] === 'bottom' ? 'bottom' : 'face'} of hole ${+hole[1] + 1}` : 'face';
+        : role.startsWith('thread') ? 'thread'
+          : hole ? `${hole[2] === 'wall' ? 'wall' : hole[2] === 'bottom' ? 'bottom' : hole[2] === 'thread' ? 'thread' : 'face'} of hole ${+hole[1] + 1}` : 'face';
   return `the ${what} of ${feature}${copy}`;
 }
 
