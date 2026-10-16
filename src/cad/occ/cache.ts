@@ -14,8 +14,9 @@ import {
 import { stepKey } from '../keys';
 import { Arena } from '../solid';
 import type { OccBuiltDesign, OccComponentBuild } from './build';
-import type { OC } from './kernel';
+import { hasSolid, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
+import { topologyOcc } from './topology';
 
 interface Step {
   key: string;
@@ -50,6 +51,17 @@ class StepArena extends Arena {
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** A failed component: no bodies, its error. */
+export const failedComponent = (id: string, e: unknown): OccComponentBuild => ({ bodies: [], errors: { [id]: msg(e) }, warnings: {}, frames: {}, tools: new Map() });
+
+/** Place the occurrences of a built design, joint origins on geometry found on its bodies. */
+export function placeBuilt(oc: OC, design: CadDesign, numbers: DesignNumbers, components: Map<string, OccComponentBuild>) {
+  return placeOccurrences(design, numbers, {
+    frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
+    bodies: (cid) => (components.get(cid)?.bodies ?? []).filter((b) => hasSolid(oc, b.solid.shape)).map((b) => topologyOcc(oc, b.solid, b.id)),
+  });
+}
 
 export class TimelineCache {
   private oc: OC | null = null;
@@ -114,17 +126,18 @@ export class TimelineCache {
             next.used = tick;
             at = next;
           }
-          components.set(c.id, { bodies: namedBodies(c, at.state), errors: at.state.errors, tools: at.state.tools });
+          const st = at.state;
+          components.set(c.id, { bodies: namedBodies(c, st), errors: st.errors, warnings: st.warnings, frames: st.frames, tools: st.tools });
         } catch (e) {
-          components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, tools: new Map() });
+          components.set(c.id, failedComponent(c.id, e));
         }
       }
     } finally {
       this.sink.free();
       this.evict(tick, oc.wasmMemory.buffer.byteLength > HEAP_SOFT ? 0 : this.maxSteps);
     }
-    const { placements, errors } = placeOccurrences(design, numbers);
-    return { oc, arena: this.root.arena, components, placements, errors, free: () => {} };
+    const { placements, errors, warnings } = placeBuilt(oc, design, numbers, components);
+    return { oc, arena: this.root.arena, components, placements, errors, warnings, free: () => {} };
   }
 
   /** Evict the ends of branches not used by build `tick` until at most `keep` steps are left. */

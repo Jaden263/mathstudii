@@ -2,20 +2,23 @@
 //
 // Solids carry the history of their faces (which feature and which sketch entity made
 // each one): primitives tag their faces when they are made (an extruded line's side
-// face, the start and end caps, a fillet's round), and every later operation passes
-// the tags on through OCCT's Modified() history. The tags are the preliminary stable
-// keys of the faces (see result.ts).
-import type { NCollection_List_TopoDS_Shape, TopoDS_Edge, TopoDS_Face, TopoDS_Shape, TopoDS_Wire } from 'replicad-opencascadejs';
+// face, the start and end caps, a fillet's round, a thin wall's offset sides), and every
+// later operation passes the tags on through OCCT's history (Modified, IsDeleted): a
+// face a boolean splits keeps its tag on every piece, a face that merges several keeps
+// them all. The persistent names of faces, edges and vertices are made from the tags
+// (occ/topology.ts).
+import type { NCollection_List_TopoDS_Shape, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire } from 'replicad-opencascadejs';
 import type { HoleOptions, SolidOps } from '../design';
 import type { ProfileRegion } from '../profile';
 import type { EdgeOptions } from '../shaping';
 import { Arena, frameDir, frameFromNormal, framePoint, m4Point, m4Rotate, revolveSide, type Frame, type Vec3 } from '../solid';
-import { alignLoop, loopWire, regionFace, reversedLoop, wireFaces, type TaggedEdge } from './geometry';
+import { alignLoop, loopWire, regionFace, reversedLoop, wireFaces, type ProfileFace, type TaggedEdge } from './geometry';
 import { ShapeIndex, ax1, compound, guard, hasSolid, listShapes, occError, pnt, scratch, shapeIndex, subShapes, trsf, vec, xyz, type OC } from './kernel';
+import { topologyOcc } from './topology';
 
 export interface FaceTag {
   face: TopoDS_Shape;
-  /** Preliminary stable key `${feature}/${role}`: f1/side:l3, f1/end, f2/hole0:wall, f4.2.f2/hole0:wall (a copy). */
+  /** History key `${feature}/${role}`: f1/side:l3, f1/end, f2/hole0:wall, f4.2.f2/hole0:wall (a copy). */
   key: string;
   /** Feature that made the face (the pattern or mirror for copies). */
   feature: string;
@@ -165,37 +168,54 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     ];
     return { shape, tags };
   };
-  /** Edges of a face without sketch names (offset outlines). */
-  const looseEdges = (t: Arena, s: TopoDS_Shape, entity: string): TaggedEdge[] => subShapes(oc, t, s, EDGE).map((e) => ({ edge: t.add(oc.TopoDS.Edge(e)), entity }));
-
   const checkExtent = (z0: number, z1: number) => {
     if (!(z1 - z0 > 0)) throw new Error('the extent must be positive');
   };
 
-  /** Faces of one loop offset by d (> 0 grows it); none when it vanishes. */
-  const offsetLoopFaces = (t: Arena, wire: TopoDS_Wire, d: number, f: Frame, z: number): TopoDS_Face[] => {
-    const mk = t.add(new oc.BRepOffsetAPI_MakeOffset(wire, oc.GeomAbs_JoinType.GeomAbs_Intersection, false));
+  /** The edges of a face, named by `name` (by the edge's index in `index`), else `fallback`. */
+  const faceEdges = (t: Arena, face: TopoDS_Shape, index: ShapeIndex, name: string[], fallback: string): TaggedEdge[] =>
+    subShapes(oc, t, face, EDGE).map((e) => ({ edge: t.add(oc.TopoDS.Edge(e)), entity: name[index.indexOf(e)] ?? fallback }));
+
+  /**
+   * Faces of one loop offset by d (> 0 grows it), every edge named after the sketch entity
+   * whose offset it is, with `side` ('out' or 'in'); none when the loop vanishes.
+   */
+  const offsetLoopFaces = (t: Arena, loop: { wire: TopoDS_Wire; edges: TaggedEdge[] }, d: number, f: Frame, z: number, side: string): ProfileFace[] => {
+    const mk = t.add(new oc.BRepOffsetAPI_MakeOffset(loop.wire, oc.GeomAbs_JoinType.GeomAbs_Intersection, false));
     try {
       mk.Perform(d, 0);
       if (!mk.IsDone()) return [];
+      const index = new ShapeIndex(oc), name: string[] = [];
+      for (const e of loop.edges) for (const g of listShapes(t, mk.Generated(e.edge))) name[index.add(g)] = `${e.entity}:${side}`;
       const wires = subShapes(oc, t, t.add(mk.Shape()), oc.TopAbs_ShapeEnum.TopAbs_WIRE).map((w) => t.add(oc.TopoDS.Wire(w)));
-      return wireFaces(oc, t, wires, f, z);
+      return wireFaces(oc, t, wires, f, z).map((face) => ({ face, edges: faceEdges(t, face, index, name, `wall:${side}`) }));
     } catch (e) {
       occError(oc, e, 'the offset vanished');
       return [];
     }
   };
 
-  /** A region offset by d with sharp corners, as a sketch offset: the outline grows by d, holes shrink by d. */
-  const offsetRegion = (t: Arena, r: ProfileRegion, d: number, f: Frame, z: number): TopoDS_Shape | null => {
-    const outer = offsetLoopFaces(t, loopWire(oc, t, r.outer, f, z).wire, d, f, z);
+  /**
+   * A region offset by d with sharp corners, as a sketch offset: the outline grows by d,
+   * holes shrink by d. Its edges are named after the entities they offset.
+   */
+  const offsetRegion = (t: Arena, r: ProfileRegion, d: number, f: Frame, z: number, side: string): { face: TopoDS_Shape; edges: TaggedEdge[] } | null => {
+    const outer = offsetLoopFaces(t, loopWire(oc, t, r.outer, f, z), d, f, z, side);
     if (!outer.length) return null;
-    const holes = r.holes.flatMap((h) => offsetLoopFaces(t, loopWire(oc, t, reversedLoop(h), f, z).wire, -d, f, z));
-    const o = compound(oc, t, outer);
-    if (!holes.length) return o;
-    const cut = t.add(new oc.BRepAlgoAPI_Cut(o, compound(oc, t, holes), progress(t)));
+    const holes = r.holes.flatMap((h) => offsetLoopFaces(t, loopWire(oc, t, reversedLoop(h), f, z), -d, f, z, side));
+    const o = compound(oc, t, outer.map((q) => q.face));
+    if (!holes.length) return { face: o, edges: outer.flatMap((q) => q.edges) };
+    const cut = t.add(new oc.BRepAlgoAPI_Cut(o, compound(oc, t, holes.map((q) => q.face)), progress(t)));
     try {
-      return t.add(guard(oc, 'the wall cannot be offset', () => cut.Shape()));
+      const shape = t.add(guard(oc, 'the wall cannot be offset', () => cut.Shape()));
+      // the cut trims the outlines: their names follow its history
+      const index = new ShapeIndex(oc), name: string[] = [];
+      for (const { edge, entity } of [...outer, ...holes].flatMap((q) => q.edges)) {
+        if (cut.IsDeleted(edge)) continue;
+        const mods = listShapes(t, cut.Modified(edge));
+        for (const g of mods.length ? mods : [edge]) name[index.add(g)] = entity;
+      }
+      return { face: shape, edges: faceEdges(t, shape, index, name, `wall:${side}`) };
     } finally {
       release(cut);
     }
@@ -296,18 +316,18 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       const [a, b] = o.side === 'inside' ? [0, -o.t] : o.side === 'outside' ? [o.t, 0] : [o.t / 2, -o.t / 2];
       const caps = o.cap === 'both' ? 2 : o.cap === 'none' ? 0 : 1;
       return scratch((t) => union(regions.map((r) => {
-        const pf = a ? null : regionFace(oc, t, r, f, z0);
-        const outer = pf ? pf.face : offsetRegion(t, r, a, f, z0);
+        // the wall's faces are named after the entities they offset: the profile's own
+        // sides as in any extrusion, the offset ones with :out or :in
+        const outer = a ? offsetRegion(t, r, a, f, z0, 'out') : regionFace(oc, t, r, f, z0);
         if (!outer) throw new Error('the wall is thicker than the profile');
         if (caps * o.t >= h) throw new Error('the caps are thicker than the extrusion');
-        // the profile's own sides keep their sketch names; offset outlines are just walls
-        const shell = prism(t, outer, pf ? pf.edges : looseEdges(t, outer, 'wall'), scale(f.n, h), tag);
+        const shell = prism(t, outer.face, outer.edges, scale(f.n, h), tag);
         // the hollow, between the caps (and past the open ends)
         const lo = o.cap === 'start' || o.cap === 'both' ? z0 + o.t : z0 - h;
         const hi = o.cap === 'end' || o.cap === 'both' ? z1 - o.t : z1 + h;
-        const inner = b ? offsetRegion(t, r, b, f, lo) : regionFace(oc, t, r, f, lo).face;
+        const inner = b ? offsetRegion(t, r, b, f, lo, 'in') : regionFace(oc, t, r, f, lo);
         if (!inner) return shell;
-        const core = prism(t, inner, looseEdges(t, inner, 'inner'), scale(f.n, hi - lo), tag, ['inner-start', 'inner-end']);
+        const core = prism(t, inner.face, inner.edges, scale(f.n, hi - lo), tag, ['inner-start', 'inner-end']);
         return boolean('cut', shell, [core], 'the wall cannot be made');
       })));
     },
@@ -403,6 +423,8 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
         return { shape: compound(oc, arena, tools.map((s) => s.shape)), tags: tools.flatMap((s) => s.tags) };
       });
     },
+
+    topology: (s, id) => topologyOcc(oc, s, id),
 
     union,
     // a compound: booleans take its solids as separate tools

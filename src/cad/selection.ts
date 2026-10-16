@@ -1,18 +1,19 @@
 // Faces and edges picked in the 3-D view: the selection the inspector describes and the
 // modify features (fillet, chamfer, shell, draft) will take. A pick names a face or edge
 // of a body in an occurrence by its index in the body's tables, and remembers what finds
-// it again after a rebuild renumbers them: the face's history key (edges: the keys of
-// their two faces) and where it was.
-import type { BodyResult, BuildResult, CurveKind, EdgeInfo, FaceInfo, SurfaceKind } from './buildResult';
+// it again after a rebuild renumbers them: the persistent name of the face or edge
+// (topology.ts) and where it was.
+import { polylineMid, type BodyResult, type BuildResult, type CurveKind, type EdgeInfo, type FaceInfo, type SurfaceKind } from './buildResult';
 import type { CadDesign } from './design';
 import { cross3, dot3, len3, m4Dir, norm3, sub3, type M4, type Vec3 } from './solid';
+import { resolveRef } from './topology';
 
 export interface Pick {
   kind: 'face' | 'edge';
   occ: string;
   body: string;
   index: number;
-  /** History key of the face (an edge: of its two faces), '' when unknown. */
+  /** Persistent name of the face or edge, '' when unknown (the mesh kernel). */
   key: string;
   /** Where it was (component coordinates): the face centroid, the edge midpoint. */
   at: Vec3;
@@ -21,26 +22,10 @@ export interface Pick {
 
 export type Selection = Pick[];
 
+export { polylineMid };
+
 /** Identity of a face or edge in a build (picks, highlight sets). */
 export const pickId = (p: { kind: 'face' | 'edge'; occ: string; body: string; index: number }) => `${p.kind === 'face' ? 'f' : 'e'}:${p.occ}:${p.body}:${p.index}`;
-
-/** Point halfway along a polyline (by length). */
-export function polylineMid(p: Float32Array): Vec3 {
-  const n = p.length / 3;
-  if (!n) return [0, 0, 0];
-  let total = 0;
-  for (let i = 1; i < n; i++) total += Math.hypot(p[3 * i] - p[3 * i - 3], p[3 * i + 1] - p[3 * i - 2], p[3 * i + 2] - p[3 * i - 1]);
-  let left = total / 2;
-  for (let i = 1; i < n; i++) {
-    const l = Math.hypot(p[3 * i] - p[3 * i - 3], p[3 * i + 1] - p[3 * i - 2], p[3 * i + 2] - p[3 * i - 1]);
-    if (l >= left && l > 0) {
-      const t = left / l;
-      return [0, 1, 2].map((k) => p[3 * i - 3 + k] + (p[3 * i + k] - p[3 * i - 3 + k]) * t) as Vec3;
-    }
-    left -= l;
-  }
-  return [p[0], p[1], p[2]];
-}
 
 /** The body of an occurrence in a build. */
 export function bodyOf(build: BuildResult, design: CadDesign, occ: string, body: string): BodyResult | undefined {
@@ -57,7 +42,7 @@ export function pickOf(build: BuildResult, design: CadDesign, kind: 'face' | 'ed
     return f ? { kind, occ, body, index, key: f.key, at: f.c, type: f.type } : null;
   }
   const e = b.edges[index];
-  return e ? { kind, occ, body, index, key: e.key, at: polylineMid(e.points), type: e.type } : null;
+  return e ? { kind, occ, body, index, key: e.key, at: e.mid, type: e.type } : null;
 }
 
 /** A click replaces the selection; with shift it adds the pick, or takes it out again. Nothing hit clears it (unless adding). */
@@ -68,40 +53,19 @@ export function select(sel: Selection, p: Pick | null, add: boolean): Selection 
   return sel.some((q) => pickId(q) === id) ? sel.filter((q) => pickId(q) !== id) : [...sel, p];
 }
 
-const dist = (a: Vec3, b: Vec3) => len3(sub3(a, b));
-
-function boxSize(b: BodyResult): number {
-  return b.box ? dist(b.box.min, b.box.max) : 1;
-}
-
 /**
- * The picks found again in a new build: the same key (the nearest when a boolean split the
- * face), else the nearest face or edge of the same type within 5 % of the body's size;
- * picks of bodies that are gone, or with nothing close enough, drop out.
+ * The picks found again in a new build by their names (a split face: the piece nearest to
+ * where it was), else the nearest face or edge of the same type within 5 % of the body's
+ * size; picks of bodies that are gone, or with nothing close enough, drop out.
  */
 export function resolveSelection(sel: Selection, build: BuildResult, design: CadDesign): Selection {
   const out: Selection = [];
   for (const p of sel) {
     const b = bodyOf(build, design, p.occ, p.body);
     if (!b) continue;
-    const list: (FaceInfo | EdgeInfo)[] = p.kind === 'face' ? b.faces : b.edges;
-    const at = (x: FaceInfo | EdgeInfo) => ('c' in x ? x.c : polylineMid(x.points));
-    let best: { i: number; d: number } | null = null;
-    const consider = (x: FaceInfo | EdgeInfo, d: number) => {
-      if (!best || d < best.d) best = { i: x.index, d };
-    };
-    if (p.key) for (const x of list) if (x.key === p.key) consider(x, dist(at(x), p.at));
-    if (!best) {
-      const tol = 0.05 * boxSize(b);
-      for (const x of list) {
-        const d = dist(at(x), p.at);
-        if (x.type === p.type && d <= tol) consider(x, d);
-      }
-    }
-    const found = best as { i: number; d: number } | null;
-    if (!found) continue;
-    const q = pickOf(build, design, p.kind, p.occ, p.body, found.i);
-    if (q && !out.some((r) => pickId(r) === pickId(q))) out.push(q);
+    const r = resolveRef({ kind: p.kind, body: p.body, key: p.key, hint: { p: p.at, type: p.type } }, [b], { near: 0.05 });
+    const q = r.ok ? pickOf(build, design, p.kind, p.occ, p.body, r.index) : null;
+    if (q && !out.some((x) => pickId(x) === pickId(q))) out.push(q);
   }
   return out;
 }

@@ -8,6 +8,7 @@ import {
   type Arena, type Manifold, type ManifoldToplevel, type Mass3,
 } from './solid';
 import { loftSolid, shapedExtrude, thinExtrude } from './shaping';
+import { meshTopology } from './meshTopology';
 
 export interface MeshSolid {
   m: Manifold;
@@ -39,5 +40,6 @@ export function meshOps(K: ManifoldToplevel, arena: Arena): SolidOps<MeshSolid> 
     transform: (s, M) => ({ m: transformSolid(arena, s.m, M), exact: s.exact && transformMass(s.exact, M) }),
     shared: (a, b) => sharedVolume(a.m, b.m),
     box: (ss) => boxOf(ss.map((s) => s.m)),
+    topology: (s, id) => meshTopology(s.m, id),
   };
 }

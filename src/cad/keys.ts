@@ -92,8 +92,9 @@ export function stepKey(prev: string, item: DesignItem, numbers: DesignNumbers, 
 
 /**
  * The numbers a design result was built from: a build needs them without the errors the
- * build itself added (`resolveErrors`; results without it have only resolve errors).
+ * build itself added (`resolveErrors`; results without it have only resolve errors) and
+ * with the sketch planes as resolved, not as the build moved them onto their faces.
  */
-export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string> }): DesignNumbers {
-  return { sketches: dr.sketches, frames: dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors };
+export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string>; resolveFrames?: DesignNumbers['frames'] }): DesignNumbers {
+  return { sketches: dr.sketches, frames: dr.resolveFrames ?? dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors };
 }

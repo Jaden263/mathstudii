@@ -18,6 +18,10 @@ import {
 } from './solid';
 import type { EdgeOptions, ThinOptions } from './shaping';
 import { meshOps } from './meshOps';
+import { meshTopology } from './meshTopology';
+import { faceFrame, faceWords, keyFeature, refTo, resolveRef, resolvedEntity, type BodyTopology, type TopoRef } from './topology';
+import type { FaceInfo } from './buildResult';
+import { snapPlace, type SnapOrigin } from './snaps';
 
 // ------------------------------------------------------------ document
 
@@ -33,8 +37,13 @@ export const ORIGIN_FRAMES: Record<PlaneRef, Frame> = {
 export type SketchPlane =
   /** An origin plane, optionally offset along its normal (worksheet expression). */
   | { ref: PlaneRef; offset?: string }
-  /** A planar face, captured when the sketch was made (it does not follow later edits). */
-  | { frame: { o: Vec3; u: Vec3; v: Vec3 }; label?: string; offset?: string };
+  /**
+   * A planar face: the frame captured when the sketch was made and, since sketches follow
+   * their faces, a reference to the face. Every rebuild finds the face again (among the
+   * bodies built before the sketch) and moves the frame onto it; without a reference
+   * (older documents), or when the face is gone, the captured frame stays.
+   */
+  | { frame: { o: Vec3; u: Vec3; v: Vec3 }; face?: TopoRef; label?: string; offset?: string };
 
 export interface DesignSketch {
   kind: 'sketch';
@@ -193,7 +202,9 @@ export type JointOrigin =
   /** A sketch point; Z along the sketch normal ('n') or its x / y axis. */
   | { kind: 'point'; sketch: string; point: string; axis?: 'n' | 'u' | 'v' }
   /** A picked spot (component coordinates). */
-  | { kind: 'frame'; o: Vec3; z: Vec3; x?: Vec3 };
+  | { kind: 'frame'; o: Vec3; z: Vec3; x?: Vec3 }
+  /** A snap point on a body's geometry (snaps.ts): it follows the face, edge or vertex. */
+  | SnapOrigin;
 
 export type JointType = 'rigid' | 'revolute' | 'slider' | 'cylindrical';
 
@@ -320,6 +331,16 @@ export function offsetFrame(f: Frame, d: number): Frame {
   return d ? { ...f, o: add3(f.o, scale3(f.n, d)) } : f;
 }
 
+/**
+ * The plane of a new sketch on a flat face of a body: the face's plane with the component
+ * origin projected onto it (its x axis kept level), and the reference it follows.
+ */
+export function facePlane(body: string, face: FaceInfo, label?: string): SketchPlane {
+  const n = face.frame!.n;
+  const f = frameFromNormal(scale3(n, dot3(face.frame!.o, n)), n);
+  return { frame: { o: f.o.map((v) => +v.toPrecision(12)) as Vec3, u: f.u, v: f.v }, face: refTo('face', body, face), ...(label ? { label } : {}) };
+}
+
 // ------------------------------------------------------------ building
 
 export interface Body {
@@ -369,21 +390,27 @@ export const pointMapOf = (s: SolvedSketch) => new Map(Object.entries(s.points).
 export interface ComponentBuild {
   bodies: Body[];
   errors: Record<string, string>;
+  warnings: Record<string, string>;
+  /** Sketch planes as built (sketches on faces). */
+  frames: Record<string, Frame>;
   /** Tool solid of every feature that made one (previews, patterns). */
   tools: Map<string, ToolRec>;
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Frame of a sketch in its component, or an error. */
-function frameOf(inp: BuildInputs, sketchId: string): Frame {
-  const f = inp.numbers.frames[sketchId];
+/**
+ * Frame of a sketch in its component, or an error: as built (a sketch on a face where
+ * the face is now), else as resolved.
+ */
+function frameIn(inp: BuildInputs, sketchId: string, built?: Record<string, Frame>): Frame {
+  const f = built?.[sketchId] ?? inp.numbers.frames[sketchId];
   if (!f) throw new Error(inp.numbers.errors[sketchId] ?? 'the sketch is missing or failed');
   return f;
 }
 
 /** Axis in component coordinates: origin axis or a sketch line. */
-export function axisOf(design: CadDesign, inp: BuildInputs, ref: AxisRef): { p: Vec3; d: Vec3 } {
+export function axisOf(design: CadDesign, inp: BuildInputs, ref: AxisRef, built?: Record<string, Frame>): { p: Vec3; d: Vec3 } {
   if (ref === 'X') return { p: [0, 0, 0], d: [1, 0, 0] };
   if (ref === 'Y') return { p: [0, 0, 0], d: [0, 1, 0] };
   if (ref === 'Z') return { p: [0, 0, 0], d: [0, 0, 1] };
@@ -392,7 +419,7 @@ export function axisOf(design: CadDesign, inp: BuildInputs, ref: AxisRef): { p: 
   const e = sk?.sketch.entities.find((q) => q.id === eid);
   const sol = inp.numbers.sketches[sid];
   if (!sk || e?.type !== 'line' || !sol) throw new Error('the pattern axis is missing');
-  const f = frameOf(inp, sid);
+  const f = frameIn(inp, sid, built);
   const [ax, ay] = sol.points[e.p1], [bx, by] = sol.points[e.p2];
   return { p: framePoint(f, { x: ax, y: ay }), d: norm3(frameDir(f, { x: bx - ax, y: by - ay })) };
 }
@@ -464,6 +491,8 @@ export interface SolidOps<S> {
   /** Volume two solids share. */
   shared(a: S, b: S): number;
   box(solids: S[]): { min: Vec3; max: Vec3 } | null;
+  /** The faces, edges and vertices of a body with their persistent names (topology.ts). */
+  topology(s: S, id: string): BodyTopology;
 }
 
 export interface TimelineBody<S> {
@@ -483,6 +512,10 @@ export interface TimelineTool<S> {
 export interface Timeline<S> {
   bodies: TimelineBody<S>[];
   errors: Record<string, string>;
+  /** Problems that did not stop an item (a sketch whose face is gone keeps its old plane). */
+  warnings: Record<string, string>;
+  /** Sketch planes found on the bodies (sketches on faces), by sketch id. */
+  frames: Record<string, Frame>;
   /** Tool solid of every feature that made one (previews, patterns). */
   tools: Map<string, TimelineTool<S>>;
 }
@@ -520,20 +553,20 @@ function reach<S>(ops: SolidOps<S>, f: Frame, solids: S[]): number {
 }
 
 /** Copies a pattern or mirror makes (transforms in component coordinates). */
-function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | MirrorFeature): M4[] {
+function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | MirrorFeature, built: Record<string, Frame>): M4[] {
   const p = inp.numbers.params[f.id] ?? {};
   if (f.kind === 'mirror') {
     let fr: Frame;
     if (f.plane in ORIGIN_FRAMES) fr = ORIGIN_FRAMES[f.plane as PlaneRef];
-    else fr = frameOf(inp, f.plane);
+    else fr = frameIn(inp, f.plane, built);
     return [m4Mirror(fr.o, fr.n)];
   }
   const out: M4[] = [];
   const n = Math.round(p.count ?? 0);
   if (f.type === 'rect') {
-    const a = axisOf(design, inp, f.axis);
+    const a = axisOf(design, inp, f.axis, built);
     const n2 = f.axis2 ? Math.round(p.count2 ?? 1) : 1;
-    const a2 = f.axis2 ? axisOf(design, inp, f.axis2) : null;
+    const a2 = f.axis2 ? axisOf(design, inp, f.axis2, built) : null;
     for (let i = 0; i < n; i++) for (let j = 0; j < n2; j++) {
       if (!i && !j) continue;
       let t = scale3(a.d, i * (p.spacing ?? 0));
@@ -541,7 +574,7 @@ function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | M
       out.push(m4Translate(t));
     }
   } else {
-    const a = axisOf(design, inp, f.axis);
+    const a = axisOf(design, inp, f.axis, built);
     const total = p.spacing ?? 2 * Math.PI;
     const full = Math.abs(Math.abs(total) - 2 * Math.PI) < 1e-9;
     const step = n > 1 ? total / (full ? n : n - 1) : 0;
@@ -558,11 +591,49 @@ export interface TimelineState<S> {
   bodies: TimelineBody<S>[];
   tools: Map<string, TimelineTool<S>>;
   errors: Record<string, string>;
+  warnings: Record<string, string>;
+  /** Planes of the sketches on faces, found on the bodies built before them. */
+  frames: Record<string, Frame>;
   /** Ids of every body made so far, in order (default names count them). */
   made: string[];
 }
 
-export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, made: [] });
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, made: [] });
+
+/** The face a sketch follows, if it does (sketches made on faces before references existed do not). */
+export const sketchFace = (s: DesignSketch): TopoRef | undefined => ('frame' in s.plane ? s.plane.face : undefined);
+
+/** Name of a design item by id (for messages). */
+export function itemName(design: CadDesign, id: string): string | undefined {
+  for (const c of design.components) for (const i of c.items) if (i.id === id) return i.name;
+  return undefined;
+}
+
+/**
+ * A sketch on a face, on the bodies built before it: the face found again by its reference
+ * and the sketch plane moved onto it (topology.ts), else the captured plane with a warning.
+ */
+function sketchOnFace<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignSketch, ref: TopoRef): TimelineState<S> {
+  const captured = inp.numbers.frames[item.id];
+  if (!captured || inp.numbers.errors[item.id]) return prev;
+  const bodies = prev.bodies.map((b) => ops.topology(b.solid, b.id));
+  const r = resolveRef(ref, bodies);
+  const face = resolvedEntity(bodies, 'face', r);
+  const f = face && faceFrame(planeFrame(item.plane), face);
+  const frames = { ...prev.frames, [item.id]: f ? offsetFrame(f, inp.numbers.params[item.id]?.offset ?? 0) : captured };
+  const warnings = { ...prev.warnings };
+  delete warnings[item.id];
+  if (!f) {
+    // the feature that made the face may be gone with it: the label still says what it was
+    const plane = item.plane as { label?: string };
+    const words = !itemName(design, keyFeature(ref.key)) && plane.label ? `the ${plane.label}` : faceWords(ref.key, (id) => itemName(design, id));
+    warnings[item.id] = bodies.some((b) => b.named === false)
+      ? `the mesh kernel cannot follow ${words} until OpenCascade has loaded; the sketch stays where the face was when it was made`
+      : face ? `reference lost: ${words} is no longer flat; the sketch stays where the face was when it was made`
+        : `reference lost: ${words}, which the sketch is on, is gone; the sketch stays where the face was when it was made`;
+  }
+  return { ...prev, frames, warnings };
+}
 
 /**
  * Run one item of a component's timeline with a solid kernel: the meaning of every
@@ -570,12 +641,18 @@ export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: ne
  * mesh and the B-rep kernel build the same design. A failing feature records its error.
  */
 export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignItem): TimelineState<S> {
-  if (item.kind === 'sketch' || item.suppressed) return prev;
+  if (item.kind === 'sketch') {
+    const face = sketchFace(item);
+    return face && !item.suppressed ? sketchOnFace(ops, design, inp, prev, item, face) : prev;
+  }
+  if (item.suppressed) return prev;
   // copy on write: bodies change their solid in place below
   const bodies = prev.bodies.map((b) => ({ ...b }));
   const tools = new Map(prev.tools);
   const errors = { ...prev.errors };
   const made = [...prev.made];
+  const built = prev.frames;
+  const frameOf = (sketchId: string) => frameIn(inp, sketchId, built);
   const P = inp.numbers.params;
   const created = (id: string, feature: string, solid: S) => {
     bodies.push({ id, name: '', feature, solid });
@@ -607,7 +684,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
     if (inp.numbers.errors[item.id]) throw new Error(inp.numbers.errors[item.id]);
     switch (item.kind) {
       case 'extrude': {
-        const f = frameOf(inp, item.sketch);
+        const f = frameOf(item.sketch);
         const regions = selectedProfiles(inp, item.sketch, item.profiles);
         const ex = item.extent;
         let z0: number, z1: number;
@@ -640,14 +717,14 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
       case 'loft': {
         if (item.sketch === item.sketch2) throw new Error('pick two different sketches');
         const pick = (sid: string, key?: string) => selectedProfiles(inp, sid, key ? [key] : undefined)[0];
-        const tool = ops.loft({ region: pick(item.sketch, item.profile), frame: frameOf(inp, item.sketch) }, { region: pick(item.sketch2, item.profile2), frame: frameOf(inp, item.sketch2) }, item.id);
+        const tool = ops.loft({ region: pick(item.sketch, item.profile), frame: frameOf(item.sketch) }, { region: pick(item.sketch2, item.profile2), frame: frameOf(item.sketch2) }, item.id);
         const rec = { tool, op: item.op, targets: item.targets };
         tools.set(item.id, rec);
         apply(item.id, rec);
         break;
       }
       case 'revolve': {
-        const f = frameOf(inp, item.sketch);
+        const f = frameOf(item.sketch);
         const sk = findSketch(design, item.sketch)!;
         const regions = selectedProfiles(inp, item.sketch, item.profiles);
         const ax = sketchAxis(sk, item.axis, inp.numbers.sketches[item.sketch]);
@@ -659,7 +736,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         break;
       }
       case 'hole': {
-        const f = frameOf(inp, item.sketch);
+        const f = frameOf(item.sketch);
         const sk = findSketch(design, item.sketch)!;
         const sol = inp.numbers.sketches[item.sketch];
         const ids = item.points?.length ? item.points : sk.sketch.entities.filter((e) => e.type === 'point').map((e) => e.id);
@@ -679,7 +756,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
       }
       case 'pattern':
       case 'mirror': {
-        const Ms = copyMatrices(design, inp, item);
+        const Ms = copyMatrices(design, inp, item, built);
         if (!item.refs.length) throw new Error(`pick the ${item.of} to ${item.kind}`);
         if (item.of === 'features') {
           for (const ref of item.refs) {
@@ -716,7 +793,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { bodies, tools, errors, made };
+  return { ...prev, bodies, tools, errors, made };
 }
 
 /**
@@ -734,7 +811,7 @@ export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): Timeli
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, tools: st.tools };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, tools: st.tools };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */
@@ -742,16 +819,18 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
   const t = runTimeline(meshOps(K, arena), design, comp, inp);
   return {
     bodies: t.bodies.map((b) => ({ id: b.id, name: b.name, feature: b.feature, solid: b.solid.m, exact: b.solid.exact })),
-    errors: t.errors,
+    errors: t.errors, warnings: t.warnings, frames: t.frames,
     tools: new Map([...t.tools].map(([id, r]) => [id, { tool: r.tool.m, exact: r.tool.exact, op: r.op, targets: r.targets }])),
   };
 }
 
 /**
  * Bodies with exact properties, without the kernel: possible while every feature of the
- * component makes a new body by extrude or revolve. Null otherwise.
+ * component makes a new body by extrude or revolve, and no sketch has to find its face
+ * on a body first. Null otherwise.
  */
 export function exactComponent(design: CadDesign, comp: CadComponent, inp: BuildInputs): { bodies: { id: string; name: string; feature: string; mass: Mass3 }[]; errors: Record<string, string> } | null {
+  if (activeItems(comp).some((i) => isSketch(i) && sketchFace(i))) return null;
   const all = activeItems(comp).filter((i): i is DesignFeature => i.kind !== 'sketch' && !i.suppressed);
   const feats = all.filter((f): f is ExtrudeFeature | RevolveFeature => (f.kind === 'extrude' && f.op === 'new' && f.extent.type !== 'all') || (f.kind === 'revolve' && f.op === 'new'));
   if (feats.length < all.length) return null;
@@ -762,7 +841,7 @@ export function exactComponent(design: CadDesign, comp: CadComponent, inp: Build
     const p = inp.numbers.params[f.id] ?? {};
     try {
       if (inp.numbers.errors[f.id]) throw new Error(inp.numbers.errors[f.id]);
-      const fr = frameOf(inp, f.sketch);
+      const fr = frameIn(inp, f.sketch);
       const regions = selectedProfiles(inp, f.sketch, f.profiles);
       let props: MassProps | null = null;
       if (f.kind === 'extrude') {
@@ -785,15 +864,33 @@ export function exactComponent(design: CadDesign, comp: CadComponent, inp: Build
 
 // ------------------------------------------------------------ assembly
 
-/** Joint origin as a frame matrix in its component. */
-export function jointFrame(numbers: DesignNumbers, o: JointOrigin): M4 {
+/**
+ * What a placement knows of the built bodies: the sketch planes as built and the named
+ * topology of each component's bodies (joint origins on geometry are found on them).
+ * Without it (no kernel yet) joint origins on geometry stay where they were picked.
+ */
+export interface PlacementGeometry {
+  frames: Record<string, Frame>;
+  bodies(componentId: string): BodyTopology[];
+}
+
+/** Joint origin as a frame matrix in its component; `lost` says why a snap point stays where it was picked. */
+export function jointFrame(numbers: DesignNumbers, o: JointOrigin, bodies?: BodyTopology[], frames?: Record<string, Frame>, lost?: (why: string) => void): M4 {
   if (o.kind === 'origin') return IDENTITY;
-  if (o.kind === 'frame') {
-    const z = norm3(o.z);
-    const x = o.x ? norm3(o.x) : frameFromNormal(o.o, z).u;
-    return m4Frame(o.o, x, cross3(z, x), z);
+  if (o.kind === 'frame' || o.kind === 'snap') {
+    let at = { o: o.o, z: o.z };
+    if (o.kind === 'snap' && bodies) {
+      const found = snapPlace(o, bodies);
+      if (found) at = found;
+      else lost?.(bodies.some((b) => b.named === false)
+        ? 'the mesh kernel cannot follow joint origins on geometry until OpenCascade has loaded'
+        : `reference lost: the ${o.label} is gone; the joint keeps its origin where it was picked`);
+    }
+    const z = norm3(at.z);
+    const x = o.kind === 'frame' && o.x ? norm3(o.x) : frameFromNormal(at.o, z).u;
+    return m4Frame(at.o, x, cross3(z, x), z);
   }
-  const f = numbers.frames[o.sketch], sol = numbers.sketches[o.sketch];
+  const f = frames?.[o.sketch] ?? numbers.frames[o.sketch], sol = numbers.sketches[o.sketch];
   const q = sol?.points[o.point];
   if (!f || !q) throw new Error('the joint point no longer exists');
   const at = framePoint(f, { x: q[0], y: q[1] });
@@ -817,9 +914,18 @@ export interface Placement {
  * Place the occurrences: grounded ones (or the first, if none is) stay where they are,
  * joints then carry their neighbours along the joint tree. Loops that disagree are reported.
  */
-export function placeOccurrences(design: CadDesign, numbers: DesignNumbers): { placements: Record<string, Placement>; errors: Record<string, string> } {
+export function placeOccurrences(design: CadDesign, numbers: DesignNumbers, geo?: PlacementGeometry): { placements: Record<string, Placement>; errors: Record<string, string>; warnings: Record<string, string> } {
   const placements: Record<string, Placement> = {};
   const errors: Record<string, string> = {};
+  const warnings: Record<string, string> = {};
+  const compOf = (occ: string) => design.occurrences.find((o) => o.id === occ)?.component ?? '';
+  const topo = new Map<string, BodyTopology[]>();
+  const bodiesOf = (occ: string) => {
+    if (!geo) return undefined;
+    const cid = compOf(occ);
+    if (!topo.has(cid)) topo.set(cid, geo.bodies(cid));
+    return topo.get(cid);
+  };
   const occ = design.occurrences;
   const pose = (o: CadOccurrence) => m4Pose(o.pos, o.rot);
   for (const o of occ) if (o.grounded) placements[o.id] = { matrix: pose(o), by: 'ground' };
@@ -832,7 +938,12 @@ export function placeOccurrences(design: CadDesign, numbers: DesignNumbers): { p
       if (j.a.occ === j.b.occ) throw new Error('a joint needs two different occurrences');
       const p = numbers.params[j.id] ?? {};
       if (numbers.errors[j.id]) throw new Error(numbers.errors[j.id]);
-      frames.set(j.id, { Fa: jointFrame(numbers, j.a.origin), Fb: jointFrame(numbers, j.b.origin), M: jointMotion(j, p.angle ?? 0, p.offset ?? 0) });
+      const lost = (why: string) => (warnings[j.id] ??= why);
+      frames.set(j.id, {
+        Fa: jointFrame(numbers, j.a.origin, bodiesOf(j.a.occ), geo?.frames, lost),
+        Fb: jointFrame(numbers, j.b.origin, bodiesOf(j.b.occ), geo?.frames, lost),
+        M: jointMotion(j, p.angle ?? 0, p.offset ?? 0),
+      });
     } catch (e) {
       errors[j.id] = msg(e);
     }
@@ -860,7 +971,7 @@ export function placeOccurrences(design: CadDesign, numbers: DesignNumbers): { p
     }
   }
   for (const o of occ) placements[o.id] ??= { matrix: pose(o), by: 'free' };
-  return { placements, errors };
+  return { placements, errors, warnings };
 }
 
 // ------------------------------------------------------------ properties
@@ -898,6 +1009,8 @@ export interface BuiltDesign {
   placements: Record<string, Placement>;
   /** Joint and occurrence problems. */
   errors: Record<string, string>;
+  /** Joints whose origin on geometry was lost. */
+  warnings: Record<string, string>;
   free(): void;
 }
 
@@ -910,11 +1023,14 @@ export function buildDesign(K: ManifoldToplevel, design: CadDesign, numbers: Des
     try {
       components.set(c.id, buildComponent(K, arena, design, c, inp));
     } catch (e) {
-      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, tools: new Map() });
+      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, tools: new Map() });
     }
   }
-  const { placements, errors } = placeOccurrences(design, numbers);
-  return { arena, components, placements, errors, free: () => arena.free() };
+  const { placements, errors, warnings } = placeOccurrences(design, numbers, {
+    frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
+    bodies: (cid) => (components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)),
+  });
+  return { arena, components, placements, errors, warnings, free: () => arena.free() };
 }
 
 export function bodyMass(b: Body): Mass3 {

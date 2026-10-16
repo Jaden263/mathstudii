@@ -78,6 +78,10 @@ export interface DesignResult extends DesignNumbers {
   display?: string;
   /** The errors of resolving the numbers, before the build added its own (`errors` has both). */
   resolveErrors?: Record<string, string>;
+  /** Items and joints whose references were lost but which still build (a sketch whose face is gone). */
+  warnings?: Record<string, string>;
+  /** The sketch planes as resolved, before the build moved sketches on faces onto them (`frames` are as built). */
+  resolveFrames?: Record<string, Frame>;
 }
 
 export { designNumbers } from './keys';
@@ -250,8 +254,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   result.ok = Object.values(numbers.sketches).every((s) => s.ok);
 
   const dr: DesignResult = {
-    ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, display: designKey(design, numbers),
-    bodies: {}, components: {}, placements: {}, kernel: false,
+    ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, frames: { ...numbers.frames }, resolveFrames: numbers.frames, warnings: {},
+    display: designKey(design, numbers), bodies: {}, components: {}, placements: {}, kernel: false,
   };
   const density = (cid: string) => numbers.params[cid]?.density;
   const compMass = new Map<string, Mass3[]>();
@@ -281,6 +285,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       compMass.set(c.id, masses);
     }
     Object.assign(dr.errors, m.errors);
+    Object.assign(dr.warnings!, m.warnings);
+    Object.assign(dr.frames, m.frames);
     dr.placements = m.placements;
     dr.box = m.box;
   } else if (K) {
@@ -290,6 +296,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       for (const c of design.components) {
         const cb = built.components.get(c.id)!;
         Object.assign(dr.errors, cb.errors);
+        Object.assign(dr.warnings!, cb.warnings);
+        Object.assign(dr.frames, cb.frames);
         const masses: Mass3[] = [];
         dr.bodies[c.id] = cb.bodies.map((b) => {
           if (b.solid.isEmpty()) return { id: b.id, name: b.name, feature: b.feature, empty: true };
@@ -300,6 +308,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
         compMass.set(c.id, masses);
       }
       Object.assign(dr.errors, built.errors);
+      Object.assign(dr.warnings!, built.warnings);
       dr.placements = built.placements;
       dr.box = boxOf(design.occurrences.filter((o) => !o.hidden).flatMap((o) => placedSolids(built, design, o.id).map((p) => p.solid))) ?? undefined;
     } finally {
@@ -339,6 +348,12 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   for (const c of design.components) {
     if (numbers.errors[c.id]) result.featureError ??= numbers.errors[c.id];
     for (const i of activeItems(c)) if (i.kind !== 'sketch' && dr.errors[i.id] && !i.suppressed) result.featureError ??= `${i.name}: ${dr.errors[i.id]}`;
+  }
+  // a lost reference builds on, but the worksheet hears of it (the mesh kernel cannot follow
+  // references at all: that is no news while OpenCascade loads)
+  if (dr.brep) {
+    for (const c of design.components) for (const i of activeItems(c)) if (dr.warnings?.[i.id]) result.featureError ??= `${i.name}: ${dr.warnings[i.id]}`;
+    for (const j of design.joints) if (dr.warnings?.[j.id]) result.featureError ??= `${j.name}: ${dr.warnings[j.id]}`;
   }
   result.design = dr;
   return { result };

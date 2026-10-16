@@ -4,19 +4,25 @@
 // from the feature that changed, cache.ts).
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import {
-  buildInputs, placeOccurrences, runTimeline, type CadDesign, type DesignNumbers, type Placement, type TimelineBody, type TimelineTool,
+  buildInputs, runTimeline, type CadDesign, type DesignNumbers, type Placement, type TimelineBody, type TimelineTool,
 } from '../design';
 import { designKey } from '../keys';
-import { Arena, type Mass3, type Vec3 } from '../solid';
-import { timelineCache } from './cache';
-import { hasSolid, renewOcc, scratch, trsf, xyz, type OC } from './kernel';
+import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
+import { failedComponent, placeBuilt, timelineCache } from './cache';
+import { hasSolid, occBox, renewOcc, scratch, trsf, xyz, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
+
+export { occBox };
 
 export type OccBody = TimelineBody<OccSolid>;
 
 export interface OccComponentBuild {
   bodies: OccBody[];
   errors: Record<string, string>;
+  /** Problems that did not stop an item (a lost reference). */
+  warnings: Record<string, string>;
+  /** Sketch planes as built (sketches on faces). */
+  frames: Record<string, Frame>;
   tools: Map<string, TimelineTool<OccSolid>>;
 }
 
@@ -27,10 +33,10 @@ export interface OccBuiltDesign {
   placements: Record<string, Placement>;
   /** Joint and occurrence problems. */
   errors: Record<string, string>;
+  /** Joints whose origin on geometry was lost. */
+  warnings: Record<string, string>;
   free(): void;
 }
-
-const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Build every component with OCCT and place the occurrences. Call `free()` when done. */
 export function buildDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbers): OccBuiltDesign {
@@ -42,11 +48,11 @@ export function buildDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbers
     try {
       components.set(c.id, runTimeline(ops, design, c, inp));
     } catch (e) {
-      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, tools: new Map() });
+      components.set(c.id, failedComponent(c.id, e));
     }
   }
-  const { placements, errors } = placeOccurrences(design, numbers);
-  return { oc, arena, components, placements, errors, free: () => arena.free() };
+  const { placements, errors, warnings } = placeBuilt(oc, design, numbers, components);
+  return { oc, arena, components, placements, errors, warnings, free: () => arena.free() };
 }
 
 export const isEmptyShape = (oc: OC, s: TopoDS_Shape) => !hasSolid(oc, s);
@@ -87,16 +93,6 @@ export function occMass(oc: OC, s: TopoDS_Shape): Mass3 {
   });
 }
 
-export function occBox(oc: OC, shapes: TopoDS_Shape[]): { min: Vec3; max: Vec3 } | null {
-  return scratch((t) => {
-    const bb = t.add(new oc.Bnd_Box());
-    // the optimal box hugs curved faces (the plain one is padded by their control points)
-    for (const s of shapes) oc.BRepBndLib.AddOptimal(s, bb, false, false);
-    if (bb.IsVoid()) return null;
-    return { min: [bb.GetXMin(), bb.GetYMin(), bb.GetZMin()], max: [bb.GetXMax(), bb.GetYMax(), bb.GetZMax()] };
-  });
-}
-
 // ------------------------------------------------------------ measured designs (for the worksheet)
 
 export interface MeasuredBody {
@@ -112,6 +108,10 @@ export interface MeasuredDesign {
   bodies: Record<string, MeasuredBody[]>;
   /** Feature, component, joint and occurrence problems. */
   errors: Record<string, string>;
+  /** Items and joints whose references were lost (they still build). */
+  warnings: Record<string, string>;
+  /** Sketch planes as built (a sketch on a face follows it). */
+  frames: Record<string, Frame>;
   placements: Record<string, Placement>;
   /** Bounding box of the visible occurrences (assembly coordinates). */
   box?: { min: Vec3; max: Vec3 };
@@ -137,11 +137,13 @@ export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbe
   }
   const built = buildDesignCached(oc, design, numbers);
   try {
-    const out: MeasuredDesign = { bodies: {}, errors: { ...built.errors }, placements: built.placements };
+    const out: MeasuredDesign = { bodies: {}, errors: { ...built.errors }, warnings: { ...built.warnings }, frames: {}, placements: built.placements };
     let box: { min: Vec3; max: Vec3 } | null = null;
     for (const c of design.components) {
       const cb = built.components.get(c.id)!;
       Object.assign(out.errors, cb.errors);
+      Object.assign(out.warnings, cb.warnings);
+      Object.assign(out.frames, cb.frames);
       out.bodies[c.id] = cb.bodies.map((b) => (isEmptyShape(oc, b.solid.shape)
         ? { id: b.id, name: b.name, feature: b.feature, empty: true }
         : { id: b.id, name: b.name, feature: b.feature, mass: shapeMass(oc, b.solid.shape) }));
