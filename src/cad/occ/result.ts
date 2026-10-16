@@ -42,8 +42,10 @@ function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): FaceInfo 
   const reversed = face.Orientation() === oc.TopAbs_Orientation.TopAbs_REVERSED;
   if (type === 'plane') {
     const pos = t.add(t.add(a.Plane()).Position());
-    const n0 = xyz(t.add(pos.Direction())), u = xyz(t.add(pos.XDirection()));
-    // the surface normal turned out of the material
+    const u = xyz(t.add(pos.XDirection()));
+    // the surface normal is X × Y (a mirrored plane's axes are left-handed, so not its
+    // Direction), turned out of the material
+    const n0 = norm3(cross3(u, xyz(t.add(pos.YDirection()))));
     const n: Vec3 = reversed ? [-n0[0], -n0[1], -n0[2]] : n0;
     info.frame = { o: xyz(t.add(p.CentreOfMass())), u, v: norm3(cross3(n, u)), n };
   } else if (type === 'cylinder') {

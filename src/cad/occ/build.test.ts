@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { circles, points, poly, rect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
 import type { DesignItem } from '../design';
-import { occ, renewOcc, setOccEnabled } from './kernel';
+import { occ, occError, renewOcc, setOccEnabled } from './kernel';
 import { buildDesignOcc } from './build';
 import { builtResultOcc } from './result';
 import { stepFile, stlFile } from './exchange';
@@ -428,12 +428,13 @@ describe('B-rep sketch planes and the worksheet', () => {
   });
 
   it('deletes every OCCT object a build, its result and its export make', () => {
-    // a handle left over keeps its whole solid (and triangulation) in WASM memory
+    // a handle left over keeps its whole solid (and triangulation) in WASM memory; the design
+    // has every feature, two holes that overlap (fused first) and a pattern of a cut
     const oc = occ()!;
     const design = single([
       { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: poly('a', [[0, 0], [80, 0], [80, 30], [40, 50], [0, 30]]) },
       { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '20' }, op: 'new', edgeEnd: { type: 'fillet', r: '2' }, edgeStart: { type: 'chamfer', r: '1' } },
-      { kind: 'sketch', id: 's2', name: 'T', plane: { ref: 'XY', offset: '20' }, sketch: points('h', [[20, 15], [60, 15]]) },
+      { kind: 'sketch', id: 's2', name: 'T', plane: { ref: 'XY', offset: '20' }, sketch: points('h', [[20, 15], [26, 15], [60, 15]]) },
       { kind: 'hole', id: 'f2', name: 'H', sketch: 's2', d: '6', depth: '', through: true, style: 'countersink', csD: '12', csAngle: '90 deg' },
       { kind: 'pattern', id: 'f3', name: 'P', of: 'bodies', refs: ['f1'], type: 'rect', axis: 'Y', count: '2', spacing: '60', join: true },
       { kind: 'sketch', id: 's3', name: 'L', plane: { ref: 'XY', offset: '40' }, sketch: circles('l', [[40, 20, 8]]) },
@@ -443,6 +444,7 @@ describe('B-rep sketch planes and the worksheet', () => {
       { kind: 'revolve', id: 'f6', name: 'Rev', sketch: 's4', axis: 'y', angle: '270 deg', op: 'new' },
       { kind: 'mirror', id: 'f7', name: 'M', of: 'bodies', refs: ['f6'], plane: 'XZ' },
       { kind: 'combine', id: 'f8', name: 'C', target: 'f4', tools: ['f5'], op: 'cut', keepTools: true },
+      { kind: 'pattern', id: 'f9', name: 'PH', of: 'features', refs: ['f2'], type: 'rect', axis: 'X', count: '2', spacing: '5' },
     ]);
     const { res, numbers } = solve(design);
     expect(res.featureError).toBeUndefined();
@@ -472,5 +474,16 @@ describe('B-rep sketch planes and the worksheet', () => {
       { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: circles('c', [[0, 0, 10]]) },
       { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
     ])).res)[0], PI * 1000);
+  });
+
+  it('restarts a kernel that trapped', async () => {
+    // out of memory or a crash inside OCCT ends in a WebAssembly trap, which can leave the
+    // instance broken: the error says so and a fresh instance takes over
+    const old = occ()!;
+    const e = occError(old, new WebAssembly.RuntimeError('memory access out of bounds'), 'the cut failed');
+    expect(e.message).toMatch(/^the cut failed .*restarts/);
+    const fresh = await renewOcc(Infinity)!;
+    expect(fresh).not.toBe(old);
+    expect(occ()).toBe(fresh);
   });
 });

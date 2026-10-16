@@ -161,6 +161,24 @@ describe('B-rep build results', () => {
     expect(Math.abs(cone.axis!.d[2])).toBeCloseTo(1, 12);
   });
 
+  it('turns the faces of a mirrored copy out of the material', () => {
+    // a 30 × 10 × 10 block at x = 10…40 mirrored across YZ: its copy's axes are left-handed
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 10, 0, 40, 10) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+      { kind: 'mirror', id: 'f2', name: 'M', of: 'bodies', refs: ['f1'], plane: 'YZ' },
+    ]);
+    const { numbers } = solve(design);
+    const [, copy] = buildResultOcc(occ()!, design, numbers).components.c1.bodies;
+    const n = (key: string) => copy.faces.find((f) => f.key === key)!.frame!.n.map((v) => Math.round(v) + 0);
+    // the line x = 40 → x = −40, facing −x; the top stays on top
+    expect(n('f2.1.f1/side:al1')).toEqual([-1, 0, 0]);
+    expect(n('f2.1.f1/end')).toEqual([0, 0, 1]);
+    expect(n('f2.1.f1/start')).toEqual([0, 0, -1]);
+    expect(copy.faces.filter((f) => f.type === 'plane')).toHaveLength(6);
+    near(meshVolume(copy), 3000, 1e-9);
+  });
+
   it('describes the torus of a rounded disc rim', () => {
     // Ø40 × 18 disc, top rim rounded r = 5: the round is a quarter torus, tube centre 20 − 5
     // from the axis and 18 − 5 up

@@ -373,9 +373,20 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
 
     hole(centres, d, o, tag) {
       return scratch((t) => {
-        // separate tools in one compound: a cut takes them all at once
         const parts = centres.map((p, i) => holeTool(t, p, d, o, `${tag}/hole${i}`));
-        return { shape: compound(oc, arena, parts.map((s) => s.shape)), tags: parts.flatMap((s) => s.tags) };
+        // holes that overlap are fused first: a cut through tools that overlap each other is
+        // several times slower, and patterns repeat it for every copy
+        const D = Math.max(o.d, o.cbD ?? 0, o.csD ?? 0);
+        const group = centres.map((_, i) => i);
+        const root = (i: number): number => (group[i] === i ? i : (group[i] = root(group[i])));
+        for (let i = 0; i < centres.length; i++) for (let j = 0; j < i; j++) {
+          if (Math.hypot(centres[i][0] - centres[j][0], centres[i][1] - centres[j][1], centres[i][2] - centres[j][2]) < D) group[root(i)] = root(j);
+        }
+        const clusters = new Map<number, OccSolid[]>();
+        parts.forEach((s, i) => clusters.set(root(i), [...(clusters.get(root(i)) ?? []), s]));
+        const tools = [...clusters.values()].map(union);
+        // the rest stay separate tools in one compound: a cut takes them all at once
+        return { shape: compound(oc, arena, tools.map((s) => s.shape)), tags: tools.flatMap((s) => s.tags) };
       });
     },
 

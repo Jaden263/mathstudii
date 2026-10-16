@@ -499,7 +499,11 @@ Until it has loaded, or where it cannot, [Manifold](https://github.com/elalish/m
 booleans never leave cracks. Curves become polygons with a vertex every 2°, so volumes of
 booleaned bodies are within about 2·10⁻⁴ of the true solid (a cylinder comes out ~0.02 %
 small). The values refresh by themselves once OpenCascade is ready. The CAD window's 3-D
-view, section view, drawings and STL button still use the Manifold mesh for now.
+view, section view, drawings and STL button still use the Manifold mesh for now. The two
+kernels build the same features, with three known differences: lofts pair the two
+profiles differently (a rectangle-to-circle duct differs by ~0.1 %), thin walls keep
+corners sharper than ~29° pointed in OpenCascade where Manifold bevels them, and a few
+borderline roundings one kernel accepts the other refuses.
 
 **Exchange:** DXF import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
 POLYLINE with bulges), and binary STL export of the assembly for 3-D printing.
