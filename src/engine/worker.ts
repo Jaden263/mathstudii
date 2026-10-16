@@ -95,6 +95,8 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
     post(out, true);
     const failed = await startPython();
     if (failed) {
+      // no evaluation follows this one: CAD parts get their exact values now
+      if (needsBrep(out)) await ensureBrep();
       out = evaluateWorksheet(ws, overrides);
       for (const r of out.results.values()) {
         if (r.kind === 'python' && r.loading) {
