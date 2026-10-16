@@ -315,6 +315,10 @@ function dopri(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
     }
     const ok = finite(y5) && finite(k[6]);
     const err = ok ? rms(errv, scale.weights(y, y5)) : Infinity;
+    // a replayed step 1 % wrong is no step at all: a mesh made on a solution with no motion in
+    // it (y ≡ 0) strides through a stiff transient explicitly and blows up. Callers then solve
+    // afresh
+    if (mesh && err * rtol > 0.01) throw new Error(`ODE replay: the mesh does not fit this solution at t = ${t.toPrecision(6)}`);
     if (mesh || err <= 1) {
       if (!ok) throw new Error(`ODE solver: the solution is not finite after t = ${t.toPrecision(6)}`);
       const r2 = y5.map((v, i) => v - y[i]);

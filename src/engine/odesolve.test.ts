@@ -197,6 +197,15 @@ describe('odesolve: boundary value problems (shooting)', () => {
     const ss = [...beam, block("y''''(x) = q/(E*I)\ny(0) = 0\ny(L) = 0\ny''(0) = 0\ny''(L) = 0", 'y := odesolve(x, L, 10, "fixed")')];
     expect(last([...ss, 'abs(y(L/2) / (5*q*L^4/(384*E*I)) - 1) ='])).toBeLessThan(1e-9);
   });
+  it('a boundary layer: the first shot has no motion in it', () => {
+    // ε y″ + y′ = 0, y(0) = 0, y(1) = 1: y = (1 − e^(−x/ε)) / (1 − e^(−1/ε)). The first shot (y′(0) = 0) is
+    // y ≡ 0, whose few long steps cannot carry the stiff transient of a perturbed shot; that used to
+    // end in "do not determine the solution"
+    for (const eps of [1e-3, 1e-4]) {
+      const b = [block(`${eps} * y''(x) + y'(x) = 0\ny(0) = 0\ny(1) = 1`, 'y := odesolve(x, 1)')];
+      expect(last([...b, `abs(y(${10 * eps}) - (1 - exp(-10)) / (1 - exp(${-1 / eps}))) =`]), String(eps)).toBeLessThan(1e-7);
+    }
+  });
   it('says when the conditions cannot be met', () => {
     // Bratu y″ = −λ e^y, y(0) = y(1) = 0 has no solution for λ > 3.5138 (the fold)
     expect(solverError([block("y''(x) = -4*exp(y(x))\ny(0) = 0\ny(1) = 0", 'y := odesolve(x, 1)')])).toMatch(/could not be met/);
