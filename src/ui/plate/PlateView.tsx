@@ -536,6 +536,8 @@ export function PlateView({ region, result, editing, selected: regionSelected, d
       else onDone(false);
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && mine && ui.selected.length) {
       e.preventDefault();
+      // the sheet's own Delete would remove the whole (selected) region as well
+      e.stopPropagation();
       dispatch({ type: 'update', id: region.id, patch: removePlateItems(region, new Set(ui.selected)) });
       setUi({ selected: [] });
     }
