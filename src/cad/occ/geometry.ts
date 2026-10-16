@@ -2,8 +2,8 @@
 // polylines), with the sketch entity behind every edge, which later names the faces an
 // edge sweeps.
 import type { TopoDS_Edge, TopoDS_Face, TopoDS_Vertex, TopoDS_Wire } from 'replicad-opencascadejs';
-import { segPoint, type Loop, type ProfileRegion, type Seg, type Vec2 } from '../profile';
-import { framePoint, type Arena, type Frame } from '../solid';
+import { loopPolygon, segPoint, type Loop, type ProfileRegion, type Seg, type Vec2 } from '../profile';
+import { add3, framePoint, norm3, scale3, sub3, type Arena, type Frame, type Vec3 } from '../solid';
 import { ax2, frameAx3, guard, pnt, type OC } from './kernel';
 
 export interface TaggedEdge {
@@ -80,6 +80,37 @@ export function regionFace(oc: OC, arena: Arena, r: ProfileRegion, f: Frame, z: 
     if (!mf.IsDone()) throw new Error('the profile cannot be made into a face');
     return { face: arena.add(mf.Face()), edges: [...outer.edges, ...holes.flatMap((h) => h.edges)] };
   });
+}
+
+/**
+ * The second loop of a loft run the same way round as the first and started at the
+ * corner that matches the first loop's start (relative to their centres), as the mesh
+ * kernel pairs them: a ruled loft between two squares at right angles then bends instead
+ * of twisting inside out. Loops with different numbers of segments, and circles, come
+ * back only turned round; OCCT matches those itself.
+ */
+export function alignLoop(a: Loop, fa: Frame, b: Loop, fb: Frame): Loop {
+  const na = norm3(fa.n), nb = norm3(fb.n);
+  let l = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < 0 ? reversedLoop(b) : b;
+  const n = a.segs.length;
+  if (l.segs.length !== n || n < 2) return l;
+  const corners = (q: Loop, f: Frame) => q.segs.map((s) => framePoint(f, segPoint(s, 0)));
+  const centre = (q: Loop, f: Frame) => {
+    const p = loopPolygon(q).map((v) => framePoint(f, v));
+    return p.reduce((s, v) => add3(s, scale3(v, 1 / p.length)), [0, 0, 0] as Vec3);
+  };
+  const A = corners(a, fa), B = corners(l, fb), cA = centre(a, fa), cB = centre(l, fb);
+  let best = 0, bestD = Infinity;
+  for (let s = 0; s < n; s++) {
+    let d = 0;
+    for (let i = 0; i < n; i++) {
+      const e = sub3(sub3(A[i], cA), sub3(B[(i + s) % n], cB));
+      d += e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+    }
+    // a tie (a square turned 45°) keeps the earliest start
+    if (d < bestD * (1 - 1e-12)) [best, bestD] = [s, d];
+  }
+  return best ? { segs: [...l.segs.slice(best), ...l.segs.slice(0, best)], entities: [...l.entities.slice(best), ...l.entities.slice(0, best)] } : l;
 }
 
 /** Planar faces bounded by single closed wires (each oriented to bound a finite area). */

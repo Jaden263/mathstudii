@@ -10,7 +10,7 @@ import type { HoleOptions, SolidOps } from '../design';
 import type { ProfileRegion } from '../profile';
 import type { EdgeOptions } from '../shaping';
 import { Arena, frameDir, frameFromNormal, framePoint, m4Point, m4Rotate, revolveSide, type Frame, type Vec3 } from '../solid';
-import { loopWire, regionFace, reversedLoop, wireFaces, type TaggedEdge } from './geometry';
+import { alignLoop, loopWire, regionFace, reversedLoop, wireFaces, type TaggedEdge } from './geometry';
 import { ShapeIndex, ax1, compound, guard, hasSolid, listShapes, occError, pnt, scratch, shapeIndex, subShapes, trsf, vec, xyz, type OC } from './kernel';
 
 export interface FaceTag {
@@ -334,17 +334,31 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
 
     loft(a, b, tag) {
       return scratch((t) => {
-        const wa = loopWire(oc, t, a.region.outer, a.frame, 0), wb = loopWire(oc, t, b.region.outer, b.frame, 0);
-        // ruled: straight lines between the two profiles
-        const ts = t.add(new oc.BRepOffsetAPI_ThruSections(true, true, 1e-6));
-        ts.AddWire(wa.wire);
-        ts.AddWire(wb.wire);
+        const lb = alignLoop(a.region.outer, a.frame, b.region.outer, b.frame);
+        const wa = loopWire(oc, t, a.region.outer, a.frame, 0), wb = loopWire(oc, t, lb, b.frame, 0);
+        // corner to corner when the loops match (OCCT's own matching turns a loft between
+        // planes at right angles inside out); otherwise, and for circles, OCCT matches them
+        const paired = lb.segs.length === a.region.outer.segs.length && lb.segs.length > 1;
         const what = 'the two profiles cannot be lofted (they may cross each other)';
-        const shape = arena.add(guard(oc, what, () => {
-          ts.Build(progress(t));
-          return ts.Shape();
-        }));
-        if (!hasSolid(oc, shape) || !(shapeVolume(oc, shape) > 0)) throw new Error(what);
+        const attempt = (check: boolean) => {
+          // ruled: straight lines between the two profiles
+          const ts = t.add(new oc.BRepOffsetAPI_ThruSections(true, true, 1e-6));
+          ts.CheckCompatibility(check);
+          ts.AddWire(wa.wire);
+          ts.AddWire(wb.wire);
+          try {
+            ts.Build(progress(t));
+            const s = t.add(ts.Shape());
+            return hasSolid(oc, s) && shapeVolume(oc, s) > 0 ? { ts, s } : null;
+          } catch (e) {
+            occError(oc, e, what);
+            return null;
+          }
+        };
+        const made = attempt(!paired) ?? attempt(paired);
+        if (!made) throw new Error(what);
+        const { ts } = made;
+        const shape = keep(t, made.s);
         const feature = featureOf(tag);
         const tags = [
           ...capTags(t, t.add(ts.FirstShape()), `${tag}/start`, feature),

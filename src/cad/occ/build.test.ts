@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { circles, points, poly, rect, roundedRect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
 import type { DesignItem } from '../design';
+import type { CadSketch } from '../model';
 import { occ, occError, renewOcc, setOccEnabled } from './kernel';
 import { buildDesignOcc } from './build';
 import { builtResultOcc } from './result';
@@ -176,6 +177,26 @@ describe('B-rep shells and roundings', () => {
     near(volumes(res)[0], (30 / 3) * (A1 + A2 + Math.sqrt(A1 * A2)));
     // centroid of a frustum above the larger end: h (A1 + 2√(A1A2) + 3A2) / (4 (A1 + √(A1A2) + A2))
     near(res.design!.bodies.c1[0].mass!.zg, (30 * (A1 + 2 * 800 + 3 * A2)) / (4 * (A1 + 800 + A2)));
+  });
+
+  it('lofts between planes at right angles without turning inside out', () => {
+    // from the floor (z = 0) to the wall x = 60, both ends over the same y range: the
+    // straight rulings keep y, so every y slice is the quadrilateral between the floor chord
+    // (x = cx ± w) and the wall chord (z = cz ∓ w), of area (60 − cx + cz) w (shoelace)
+    const elbow = (floor: CadSketch, wall: CadSketch) => solve(single([
+      { kind: 'sketch', id: 's1', name: 'Floor', plane: { ref: 'XY' }, sketch: floor },
+      { kind: 'sketch', id: 's2', name: 'Wall', plane: { ref: 'YZ', offset: '60' }, sketch: wall },
+      { kind: 'loft', id: 'f1', name: 'Loft', sketch: 's1', sketch2: 's2', op: 'new' },
+    ])).res;
+    // squares 20 × 20: cx = 10, cz = 20 and w = 10 over 20 of y
+    const sq = elbow(rect('a', 0, 0, 20, 20), rect('b', 0, 10, 20, 30));
+    expect(sq.featureError).toBeUndefined();
+    near(volumes(sq)[0], 70 * 10 * 20);
+    // circles r = 8 (the wall's sketch x is world y): ∫ w dy is half the disc, π r²/2; the
+    // ruled surface between circles at an angle is a B-spline, integrated numerically (1e-8)
+    const ci = elbow(circles('a', [[10, 10, 8]]), circles('b', [[10, 20, 8]]));
+    expect(ci.featureError).toBeUndefined();
+    near(volumes(ci)[0], (70 * PI * 64) / 2, 1e-8);
   });
 });
 

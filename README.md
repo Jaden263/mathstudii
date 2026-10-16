@@ -502,8 +502,9 @@ booleaned bodies are within about 2·10⁻⁴ of the true solid (a cylinder come
 small). The values refresh by themselves once OpenCascade is ready. If it cannot load,
 Manifold also draws the parts, and the views say so (*Mesh kernel*); STEP export then
 waits for OpenCascade. The two kernels build the same features, with three known
-differences: lofts pair the two profiles differently (a rectangle-to-circle duct differs by
-~0.1 %), thin walls keep corners sharper than ~29° pointed in OpenCascade where Manifold
+differences: lofts pair the two profiles differently (OpenCascade corner to corner, from
+the corners that match, Manifold at equal arc lengths: a rectangle-to-circle duct differs by
+~0.1 %, a square to a square turned 45° by ~10 %), thin walls keep corners sharper than ~29° pointed in OpenCascade where Manifold
 bevels them, and a few borderline roundings one kernel accepts the other refuses.
 
 **Never in the way.** All kernel work runs in a worker; the page itself loads no kernel:
