@@ -227,6 +227,18 @@ describe('moving loads in a beam region', () => {
     expect(H.v[H.v.length - 1]).toBeCloseTo(0, 9);
   });
 
+  it('narrows a step coarser than a tenth of the path, widens one finer than 600 positions', () => {
+    // a 10 m step on a 4 m span would leave the envelope only the two ends: 0.4 m, and PL/4 at midspan
+    const coarse = run(span(4), { lines: [], loads: [{ id: 'p', name: 'P', preset: 'point', P: '10' }], step: '10' }, []);
+    expect(coarse.res.traffic!.step).toBeCloseTo(0.4, 12);
+    expect(coarse.res.traffic!.adjusted).toBe('narrowed');
+    expect(coarse.num('moving.P.M_max', 'kN m')).toBeCloseTo(10, 9);
+    const fine = run(span(20), { lines: [], loads: [{ id: 'p', name: 'P', preset: 'point', P: '10' }], step: '1 mm' }, []);
+    expect(fine.res.traffic!.step).toBeCloseTo(20 / MAX_POSITIONS, 12);
+    expect(fine.res.traffic!.adjusted).toBe('widened');
+    expect(fine.num('moving.P.M_max', 'kN m')).toBeCloseTo(50, 9);
+  });
+
   it('chooses a step that the axle spacings divide', () => {
     expect(autoStep(20, [0, 1.2])).toBe(0.1);
     expect(autoStep(100, [0, 1.2])).toBe(0.2);

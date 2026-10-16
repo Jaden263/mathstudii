@@ -101,6 +101,8 @@ export interface InfluenceResult {
 const OFF_PATH = 8;
 /** At most about this many load positions: a finer step is widened. */
 export const MAX_POSITIONS = 600;
+/** At least this many steps along the path: a coarser step is narrowed (else the envelope has no inside). */
+export const MIN_STEPS = 10;
 
 /**
  * The load path as one chain from left to right: the members marked as deck, or with
@@ -425,7 +427,7 @@ export function influenceAnalysis(st: NumStructure, path: PathSeg[], step: numbe
   const onPath = new Map(path.map((p) => [p.member, p]));
   const span = path[path.length - 1].x1 - path[0].x0;
   if (!(span > 0)) throw new StructureError('The load path has no length');
-  step = Math.max(step > 0 ? step : span / 200, span / MAX_POSITIONS);
+  step = Math.min(Math.max(step > 0 ? step : span / 200, span / MAX_POSITIONS), span / MIN_STEPS);
 
   // stations per member: on the path the load positions, a grid every `step` from its
   // left end (so axles spaced in whole steps stand on positions together) plus the

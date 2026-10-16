@@ -6,7 +6,7 @@ import { Trash2 } from 'lucide-react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import { straightBeam } from '../../beam/evaluate';
-import { ilPeak, MAX_POSITIONS, type Critical } from '../../beam/influence';
+import { ilPeak, MAX_POSITIONS, MIN_STEPS, type Critical } from '../../beam/influence';
 import { beamId, movingLoad, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad, type BeamTraffic, type InfluenceQuantity } from '../../beam/model';
 import { identifierOf } from '../../beam/traffic';
 import { LazyInput } from '../sketch/SketchProps';
@@ -341,7 +341,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
             <p className="hint">
               Load path: {res.path.length === region.members.length ? 'the whole beam' : `member${res.path.length > 1 ? 's' : ''} ${res.path.map((p) => region.members.findIndex((m) => m.id === p.member) + 1).join(', ')}`}
               {' '}from x = {fmt(res.path[0].x0 / Lm)} to {fmt(res.path[res.path.length - 1].x1 / Lm)} {region.lengthUnit}, {res.xs.length} load positions.
-              {res.widened ? ` Δx is ${fmt(res.step / Lm)} ${region.lengthUnit}: at most ${MAX_POSITIONS} positions.` : ''}
+              {res.adjusted ? ` Δx is ${fmt(res.step / Lm)} ${region.lengthUnit}: ${res.adjusted === 'widened' ? `at most ${MAX_POSITIONS} positions` : `at least ${MIN_STEPS} steps`}.` : ''}
               {!straight && !region.members.some((m) => m.deck) ? ' Mark the deck members (select one → Load path) if the loads travel elsewhere.' : ''}
             </p>
           )}

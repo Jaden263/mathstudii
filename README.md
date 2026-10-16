@@ -434,7 +434,8 @@ settlements are prescribed displacements; both are checked against closed-form r
   fixed-end forces of the load on its member, so members stay whole and the ordinates
   are exact at every position (the forces along members come from statics). Positions
   are every Δx along x (automatic: a round step near 1/200 of the path that the axle
-  spacings divide; at most 600 positions), plus member ends and the sections asked for.
+  spacings divide; a step asked for is kept between 1/10 of the path and 600 positions),
+  plus member ends and the sections asked for.
 - **Moving loads:** a point load; **EN 1991-2 Load Model 1** for one notional lane
   (tandem 2 × α_Q·300 kN at 1.2 m and α_q·9 kN/m² × the lane width, α = 1 by default);
   a crane (two wheels P at a); or any axle train with a uniform load. A train stops with

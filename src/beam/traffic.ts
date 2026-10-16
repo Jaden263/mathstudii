@@ -51,8 +51,8 @@ export interface TrafficResult {
   /** Load positions (m) and their spacing. */
   xs: number[];
   step: number;
-  /** The step asked for was finer than the analysis takes (MAX_POSITIONS). */
-  widened?: boolean;
+  /** The step asked for was finer or coarser than the analysis takes (MAX_POSITIONS, MIN_STEPS): the one used is `step`. */
+  adjusted?: 'widened' | 'narrowed';
   lines: TrafficLine[];
   moving: TrafficMoving[];
   /** The structure without loads or settlements, in SI: the train at one position is solved on it. */
@@ -193,7 +193,8 @@ export function solveTraffic(r: BeamRegion, base: Omit<NumStructure, 'loads'>, r
     const res = influenceAnalysis(structure, out.path, step, queries, specs);
     out.xs = res.xs;
     out.step = res.step;
-    if (res.step > step * (1 + 1e-9)) out.widened = true;
+    if (res.step > step * (1 + 1e-9)) out.adjusted = 'widened';
+    else if (res.step < step * (1 - 1e-9)) out.adjusted = 'narrowed';
     for (const line of res.lines) {
       const l = tr.lines.find((q) => q.id === line.id)!, q = queries.find((x) => x.id === line.id)!;
       const m = q.member ? structure.members.find((x) => x.id === q.member) : undefined;
