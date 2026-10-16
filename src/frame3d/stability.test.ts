@@ -68,6 +68,61 @@ describe('space frame stability', () => {
     expect(both.nodes.b[1] / ((H * (Math.tan(k * L) - k * L)) / (P * k))).toBeCloseTo(1, 3);
   });
 
+  it('second order: beam-columns with loads along them (Timoshenko & Gere)', () => {
+    // pin-ended, held against twisting at one end, compression P along x
+    const L = 6, P = 400e3;
+    const pinned = (loads: NumFrame['loads']): NumFrame => ({
+      nodes: [node('a', 0, 0, 0), node('b', L, 0, 0)],
+      members: [mem('m', 'a', 'b')],
+      supports: [{ id: 'A', node: 'a', dofs: [true, true, true, true, false, false] }, { id: 'B', node: 'b', dofs: [false, true, true, false, false, false] }],
+      loads: [{ id: 'P', type: 'node', node: 'b', F: [-P, 0, 0], M: [0, 0, 0] }, ...loads],
+    });
+    // uniform q down (local +z): M_mid = (q L²/8) · 2 (1 − cos u) / (u² cos u), u = kL/2, about the strong axis
+    const q = 20e3, k = Math.sqrt(P / (E * Iy)), u = (k * L) / 2;
+    const s1 = solveFrame3(pinned([{ id: 'q', type: 'line', member: 'm', t1: 0, t2: 1, q1: [0, 0, -q], q2: [0, 0, -q], local: false }]), { secondOrder: true });
+    expect(memberAt3(s1.members[0], L / 2).My / (((q * L * L) / 8) * (2 * (1 - Math.cos(u))) / (u * u * Math.cos(u)))).toBeCloseTo(1, 3);
+    // and its deflection: w = 5qL⁴/384EI · 24 (sec u − 1 − u²/2) / (5 u⁴)
+    const w = ((5 * q * L ** 4) / (384 * E * Iy)) * ((24 * (1 / Math.cos(u) - 1 - (u * u) / 2)) / (5 * u ** 4));
+    expect(-memberAt3(s1.members[0], L / 2).uz / w).toBeCloseTo(1, 3);
+    // a point load Q at 0.3 L along y (weak axis), inside an element: M(a) = Q sin(k(L − a)) sin(ka) / (k sin kL)
+    const Q = 8e3, kz = Math.sqrt(P / (E * Iz)), a = 0.3 * L;
+    const s2 = solveFrame3(pinned([{ id: 'Q', type: 'point', member: 'm', t: 0.3, F: [0, Q, 0], M: [0, 0, 0], local: false }]), { secondOrder: true });
+    const exact = (Q * Math.sin(kz * (L - a)) * Math.sin(kz * a)) / (kz * Math.sin(kz * L));
+    expect(Math.abs(memberAt3(s2.members[0], a).Mz) / exact).toBeCloseTo(1, 3);
+  });
+
+  it('second order and buckling of a pin-jointed tower', () => {
+    // a square lattice tower (legs, rings, one diagonal per face), every bar pin-jointed
+    const w = 2, levels = [0, 2, 4, 6], P = 200e3;
+    const nodes = levels.flatMap((z, k) => [[0, 0], [w, 0], [w, w], [0, w]].map(([x, y], c) => node(`n${k}${c}`, x, y, z)));
+    const pin = { relA: [false, false, false, true, true, true], relB: [false, false, false, false, true, true] };
+    const members: NumMember3[] = [];
+    for (let k = 0; k + 1 < levels.length; k++) {
+      for (let c = 0; c < 4; c++) {
+        const c2 = (c + 1) % 4;
+        members.push(mem(`l${k}${c}`, `n${k}${c}`, `n${k + 1}${c}`, pin), mem(`r${k}${c}`, `n${k + 1}${c}`, `n${k + 1}${c2}`, pin), mem(`d${k}${c}`, `n${k}${c}`, `n${k + 1}${c2}`, pin));
+      }
+      members.push(mem(`p${k}`, `n${k + 1}0`, `n${k + 1}2`, pin));
+    }
+    const st: NumFrame = {
+      nodes, members,
+      supports: [0, 1, 2, 3].map((c) => ({ id: `s${c}`, node: `n0${c}`, dofs: [true, true, true, false, false, false] })),
+      loads: [0, 1, 2, 3].map((c) => ({ id: `P${c}`, type: 'node' as const, node: `n3${c}`, F: [5e3, 0, -P / 4] as [number, number, number], M: [0, 0, 0] as [number, number, number] })),
+    };
+    const first = solveFrame3(st);
+    const b = buckling3(st, first);
+    expect(b.modes[0].alpha).toBeGreaterThan(1);
+    // a truss member that buckles alone does so as a pin-ended strut: no α below the weakest leg's
+    const legN = Math.min(...first.members.filter((m) => m.id[0] === 'l').map((m) => Math.min(...m.N)));
+    expect(b.modes[0].alpha).toBeLessThanOrEqual((Math.PI ** 2 * E * Iz) / (2 * 2) / -legN * (1 + 1e-3));
+    // second order converges and stays near first order well below α_cr
+    const second = solveFrame3(st, { secondOrder: true });
+    const top = (s: typeof first) => s.nodes.n30[0];
+    expect(top(second) / top(first)).toBeGreaterThan(1);
+    expect(top(second) / top(first)).toBeLessThan(1 / (1 - 1 / b.modes[0].alpha) * 1.05);
+    for (const m of second.members) expect(Math.abs(memberAt3(m, 0).My)).toBeLessThan(1e-6 * P);
+  });
+
   it('above the critical load there is no second-order equilibrium', () => {
     const L = 4, Pcr = (Math.PI ** 2 * E * Iz) / (2 * L) ** 2;
     expect(() => solveFrame3(column(L, FIXED, null, 1.2 * Pcr, [0, 1e3]), { secondOrder: true })).toThrow(InstabilityError);

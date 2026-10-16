@@ -181,8 +181,8 @@ export function Frame3DView({ region, result, editing, selected: regionSelected,
   };
   const describe = (h: { kind: 'node' | 'member'; id: string; t: number }, at: { x: number; y: number }): Hover | null => {
     if (h.kind === 'node') {
-      const n = region.nodes.find((q) => q.id === h.id)!;
-      const lines = [`(${[n.x, n.y, n.z].map((c) => (/^\s*-?[\d.]+\s*$/.test(c) ? fmt(Number(c)) : c)).join(', ')}) ${region.lengthUnit}`];
+      const n = region.nodes.find((q) => q.id === h.id)!, p = pos.get(n.id)!;
+      const lines = [`(${p.map((c) => fmt(c / Lm)).join(', ')}) ${region.lengthUnit}`];
       const d = sol?.nodes[n.id];
       if (d && show !== 'mode') lines.push(`u = (${d.slice(0, 3).map((c) => u.defl(c)).join(', ')})`);
       const r = sol?.reactions.find((q) => q.node === n.id);

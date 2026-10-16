@@ -18,18 +18,24 @@ export function frame3dResultsTsv(r: Frame3DRegion, res: Frame3DResult): string 
   if (!sol) return null;
   const F = FORCE_N[r.forceUnit] ?? 1e3, L = LENGTH_M[r.lengthUnit] ?? 1;
   const name = new Map([...r.nodes, ...r.members].map((q) => [q.id, q.name]));
-  const num = (v: number) => String(+v.toPrecision(6));
+  // round-off next to the largest value of its kind (SI) reads as 0
+  const tidy = (values: number[]) => {
+    const big = Math.max(0, ...values.map(Math.abs));
+    return (v: number, per: number) => String(Math.abs(v) < 1e-9 * big ? 0 : +(v / per).toPrecision(6));
+  };
+  const rf = tidy(sol.reactions.flatMap((q) => q.F)), rm = tidy(sol.reactions.flatMap((q) => q.M));
   const rows: string[][] = [['Node', `Rx [${r.forceUnit}]`, 'Ry', 'Rz', `Mx [${r.forceUnit}·${r.lengthUnit}]`, 'My', 'Mz']];
-  for (const q of sol.reactions) rows.push([name.get(q.node) ?? '?', ...q.F.map((v) => num(v / F)), ...q.M.map((v) => num(v / (F * L)))]);
+  for (const q of sol.reactions) rows.push([name.get(q.node) ?? '?', ...q.F.map((v) => rf(v, F)), ...q.M.map((v) => rm(v, F * L))]);
   rows.push([]);
   rows.push(['Member', ...FORCES.flatMap((k) => [`${k} max`, `${k} min`])]);
-  for (const mr of sol.members) {
-    const ex = memberExtremes(mr);
+  const ex = sol.members.map(memberExtremes);
+  const mf = tidy(ex.flatMap((e) => [e.N, e.Vy, e.Vz].flatMap((x) => [x.max, x.min]))), mm = tidy(ex.flatMap((e) => [e.T, e.My, e.Mz].flatMap((x) => [x.max, x.min])));
+  sol.members.forEach((mr, i) => {
     rows.push([name.get(mr.id) ?? '?', ...FORCES.flatMap((k) => {
-      const per = k === 'N' || k === 'Vy' || k === 'Vz' ? F : F * L;
-      return [num(ex[k].max / per), num(ex[k].min / per)];
+      const force = k === 'N' || k === 'Vy' || k === 'Vz', f = force ? mf : mm, per = force ? F : F * L;
+      return [f(ex[i][k].max, per), f(ex[i][k].min, per)];
     })]);
-  }
+  });
   return toTsv(rows);
 }
 
