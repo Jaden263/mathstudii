@@ -69,7 +69,8 @@ export function snapsOn(b: BodyResult | BodyTopology, at: { face?: number; edge?
     const face = flatSide(b, e);
     if (e.circle) centre(e, face ?? b.faces[e.faces[0]]);
     else if (face?.frame) out.push({ snap: 'mid', ref: refTo('edge', b.id, e), face: refTo('face', b.id, face), o: e.mid, z: face.frame.n, label: 'midpoint of the edge' });
-    vertexSnaps(e.v.filter((v) => v >= 0), face);
+    // a closed curve's one vertex is only where its parameter starts: no point to snap to
+    if (e.v[0] !== e.v[1]) vertexSnaps(e.v.filter((v) => v >= 0), face);
     return out;
   }
   const f = at.face !== undefined ? b.faces[at.face] : undefined;
@@ -84,7 +85,7 @@ export function snapsOn(b: BodyResult | BodyTopology, at: { face?: number; edge?
     if (!e.faces.includes(f.index) || e.faces[0] === e.faces[1]) continue;
     if (e.circle) centre(e, f);
     else if (f.frame) out.push({ snap: 'mid', ref: refTo('edge', b.id, e), face: refTo('face', b.id, f), o: e.mid, z: f.frame.n, label: 'midpoint of an edge' });
-    verts.push(...e.v.filter((v) => v >= 0));
+    if (e.v[0] !== e.v[1]) verts.push(...e.v.filter((v) => v >= 0));
   }
   vertexSnaps(verts, f);
   return out;

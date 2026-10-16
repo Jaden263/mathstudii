@@ -13,7 +13,7 @@ import {
   activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, hasFeatures, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
   placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
 } from './design';
-import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
+import { boxOf, kernel, kernelFailure, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
 import { designKey } from './keys';
 import { dimensionValue } from './dimension';
 import { occ, occFailure } from './occ/kernel';
@@ -74,6 +74,8 @@ export interface DesignResult extends DesignNumbers {
   brep?: boolean;
   /** Why the B-rep kernel is not there (it could not load): the mesh kernel built the part. */
   brepError?: string;
+  /** Neither kernel could load: why the mesh kernel did not (nothing built the part). */
+  kernelError?: string;
   /** Key of the built design (keys.ts): its display data comes separately, once per key. */
   display?: string;
   /** The errors of resolving the numbers, before the build added its own (`errors` has both). */
@@ -316,11 +318,14 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     }
   } else {
     const inp = buildInputs(design, numbers);
+    // both kernels failed to load: nothing is coming, say so instead of waiting
+    const none = failure && kernelFailure();
+    if (none) dr.kernelError = none;
     for (const c of design.components) {
       const ex = exactComponent(design, c, inp);
       if (!ex) {
-        result.needsKernel = true;
-        for (const i of activeItems(c)) if (i.kind !== 'sketch' && !i.suppressed) dr.errors[i.id] ??= 'loading the 3-D kernel…';
+        if (!none) result.needsKernel = true;
+        for (const i of activeItems(c)) if (i.kind !== 'sketch' && !i.suppressed) dr.errors[i.id] ??= none ? 'the 3-D kernel could not load' : 'loading the 3-D kernel…';
         compMass.set(c.id, []);
         dr.bodies[c.id] = [];
         continue;

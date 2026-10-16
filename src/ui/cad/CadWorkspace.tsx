@@ -16,10 +16,11 @@ import type { CadResult } from '../../cad/evaluate';
 import { MATERIALS, cadId, reserveDimNames, type CadSketch, type ConstraintType } from '../../cad/model';
 import { CONSTRAINT_TOOLS } from '../../cad/edit';
 import {
-  FEATURE_LABEL, activeItems, designOf, findSketch, isSketch, nextName, profileKey,
-  type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type DesignFeature, type DesignItem, type DesignSketch, type PlaneRef,
+  FEATURE_LABEL, activeItems, designOf, facePlane, findSketch, isSketch, itemName, nextName, profileKey, sketchFace,
+  type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type DesignFeature, type DesignItem, type DesignSketch, type JointOrigin, type PlaneRef,
 } from '../../cad/design';
-import { dot3, frameFromNormal, m4Dir, m4Inv, m4Point, norm3, scale3, sub3, type Vec3 } from '../../cad/solid';
+import { m4Dir, m4Inv, m4Point, norm3, sub3, type Vec3 } from '../../cad/solid';
+import { faceWords } from '../../cad/topology';
 import type { Vec2 } from '../../cad/profile';
 import { designNumbers } from '../../cad/keys';
 import type { BodyResult } from '../../cad/buildResult';
@@ -38,6 +39,7 @@ import { exportPart, type PartFormat } from './exportPart';
 import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
 import { Dialog, Expr, FeatureFields, JointFields, featureTitle } from './FeatureDialogs';
+import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate } from './jointPick';
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
 
@@ -165,6 +167,9 @@ const ICON: Record<DesignItem['kind'], ReactNode> = {
   sketch: <PenTool size={14} />, extrude: <ArrowUpFromLine size={14} />, revolve: <RotateCw size={14} />, hole: <CircleDot size={14} />,
   pattern: <Grid3x3 size={14} />, mirror: <FlipHorizontal2 size={14} />, combine: <Combine size={14} />, loft: <Cone size={14} />,
 };
+
+/** Where a sketch is: "the XY plane", "the end face of Extrude1", "face of Body1" (made before sketches followed faces). */
+const planeWords = (s: DesignSketch) => ('ref' in s.plane ? `the ${s.plane.ref} plane` : sketchFace(s) && s.plane.label ? `the ${s.plane.label}` : s.plane.label ?? 'a face');
 
 const splitKey = (key: string) => {
   const rest = key.slice(2), i = rest.indexOf(':');
@@ -457,57 +462,27 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
 
   /**
-   * Joint origin from a click on a face, in component coordinates: on a cylinder its axis
-   * at the nearest end circle, on a flat face the centre of a hole or shaft rim on it, else
-   * a centre or point of the component's sketches near the click.
+   * The joint origins a hit offers (component coordinates): the snap points of the face or
+   * edge under the pointer and the sketch points on it, the nearest one first chosen; on a
+   * face without any, the spot itself.
    */
-  const pickedOrigin = (occId: string, hit: PickHit): { o: Vec3; z: Vec3; snap?: string } | null => {
-    const occ = occOf(occId), M = placement(occId);
-    if (!occ || !M || !hit.point) return null;
-    const inv = m4Inv(M);
-    const p = m4Point(inv, hit.point);
-    const on = hitBody(hit);
-    const face = on && hit.face !== undefined ? on.b.faces[hit.face] : undefined;
-    let n: Vec3 | null = face?.frame ? face.frame.n : hit.normal ? norm3(m4Dir(inv, hit.normal)) : null;
-    // the rims of the face: circle edges bounding it
-    const rims = on && hit.face !== undefined ? on.b.edges.filter((e) => e.circle && e.faces.includes(hit.face!)) : [];
-    if (face?.type === 'cylinder' && face.axis) {
-      const best = rims.sort((x, y) => Math.hypot(...sub3(x.circle!.c, p)) - Math.hypot(...sub3(y.circle!.c, p)))[0];
-      const d = norm3(face.axis.d);
-      const o = best ? best.circle!.c : sub3(face.axis.p, scale3(d, -dot3(sub3(p, face.axis.p), d)));
-      return { o, z: d, snap: `axis of the ${num(2 * (face.radius ?? 0))} ${u} cylinder` };
+  const jointPicks = (hit: PickHit): { occ: string; cands: JointCandidate[]; best: number } | null => {
+    const on = hitBody(hit), M = on && placement(on.occ);
+    if (!on || !M || !hit.point || (hit.face === undefined && hit.edge === undefined)) return null;
+    const p = m4Point(m4Inv(M), hit.point);
+    const cid = occOf(on.occ)!.component;
+    const cands = jointCandidates(design, dr, cid, on.b, { face: hit.edge === undefined ? hit.face : undefined, edge: hit.edge }, (v) => `${num(v)} ${u}`);
+    if (!cands.length && hit.normal) {
+      const z = norm3(m4Dir(m4Inv(M), hit.normal));
+      cands.push({ origin: { kind: 'frame', o: p, z }, o: p, z, label: 'spot on the face' });
     }
-    if (!n) return null;
-    let best: { o: Vec3; score: number; label: string } | null = null;
-    for (const e of rims) {
-      const c = e.circle!;
-      const score = Math.hypot(...sub3(c.c, p)) / (c.r * 1.15);
-      if (score < 1 && (!best || score < best.score)) best = { o: c.c, score, label: `centre of the ⌀${num(2 * c.r)} rim` };
-    }
-    if (!best) {
-      const c = design.components.find((q) => q.id === occ.component);
-      for (const s of c?.items.filter(isSketch) ?? []) {
-        const f = dr?.frames[s.id], sol = dr?.sketches[s.id];
-        if (!f || !sol) continue;
-        const cand: { id: string; tol: number; label: string }[] = [];
-        for (const e of s.sketch.entities) {
-          if (e.type === 'circle') cand.push({ id: e.c, tol: (sol.radii[e.id] ?? e.r) * 1.15, label: `circle centre (${s.name})` });
-          if (e.type === 'arc') cand.push({ id: e.c, tol: sceneSize * 0.04, label: `arc centre (${s.name})` });
-          if (e.type === 'point') cand.push({ id: e.p, tol: sceneSize * 0.03, label: `point (${s.name})` });
-        }
-        for (const k of cand) {
-          const q = sol.points[k.id];
-          if (!q) continue;
-          const w: Vec3 = [f.o[0] + f.u[0] * q[0] + f.v[0] * q[1], f.o[1] + f.u[1] * q[0] + f.v[1] * q[1], f.o[2] + f.u[2] * q[0] + f.v[2] * q[1]];
-          const at = sub3(w, scale3(n, dot3(sub3(w, p), n))); // onto the picked face plane
-          const score = Math.hypot(...sub3(at, p)) / k.tol;
-          if (score < 1 && (!best || score < best.score)) best = { o: at, score, label: k.label };
-        }
-      }
-    }
-    n = norm3(n);
-    return best ? { o: best.o, z: n, snap: best.label } : { o: p, z: n };
+    return { occ: on.occ, cands, best: nearestCandidate(cands, p) };
   };
+  const [snapHover, setSnapHover] = useState<{ occ: string; cands: JointCandidate[]; best: number; id: string } | null>(null);
+  const jointPicking = dialog?.kind === 'joint' && !!dialog.picking;
+  useEffect(() => {
+    if (!jointPicking) setSnapHover(null);
+  }, [jointPicking]);
 
   /** What a click measures: a corner of the body when one is close, else the edge or face hit. */
   const measured = (hit: PickHit): Measured | null => {
@@ -579,30 +554,31 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (key.startsWith('pl:')) return newSketchOn({ ref: key.slice(3) as PlaneRef, ...(dialog.offset.trim() && dialog.offset.trim() !== '0' ? { offset: dialog.offset.trim() } : {}) });
       const on = hitBody(hit);
       if (on) {
-        // the face's exact plane (component coordinates)
+        // the face's exact plane (component coordinates), and a reference the sketch follows
         const face = hit.face !== undefined ? on.b.faces[hit.face] : undefined;
         if (!face?.frame) return setMsg('Pick a flat face (or an origin plane) to sketch on');
-        const n = face.frame.n;
-        const f = frameFromNormal(scale3(n, dot3(face.frame.o, n)), n);
-        const o = occOf(on.occ)!;
-        return newSketchOn({ frame: { o: f.o.map((v) => +v.toPrecision(12)) as Vec3, u: f.u, v: f.v }, label: `face of ${on.b.name}` }, o.component);
+        const label = face.key ? faceWords(face.key, (id) => itemName(cur(), id)).replace(/^the /, '') : `face of ${on.b.name}`;
+        const offset = dialog.offset.trim() && dialog.offset.trim() !== '0' ? { offset: dialog.offset.trim() } : {};
+        return newSketchOn({ ...facePlane(on.body, face, label), ...offset }, occOf(on.occ)!.component);
       }
       return;
     }
     if (dialog?.kind === 'joint') {
       if (!dialog.picking || !key.startsWith('b:')) return;
-      const { occ } = parseBody(key);
       const j = design.joints.find((q) => q.id === dialog.id);
-      if (!j) return;
+      const picked = jointPicks(hit);
+      const c = picked?.cands[picked.best];
+      if (!j || !picked || !c) return;
+      const { occ } = picked;
       const other = dialog.picking === 'a' ? j.b.occ : j.a.occ;
-      const o = pickedOrigin(occ, hit);
-      if (!o) return;
+      const origin: JointOrigin = c.origin;
       // picking the part the other side already uses swaps the sides
       const patch: Partial<CadJoint> = occ === other
-        ? { [dialog.picking]: { occ, origin: { kind: 'frame', o: o.o, z: o.z } }, [dialog.picking === 'a' ? 'b' : 'a']: dialog.picking === 'a' ? { ...j.a } : { ...j.b }, flip: true }
-        : { [dialog.picking]: { occ, origin: { kind: 'frame', o: o.o, z: o.z } }, flip: true };
+        ? { [dialog.picking]: { occ, origin }, [dialog.picking === 'a' ? 'b' : 'a']: dialog.picking === 'a' ? { ...j.a } : { ...j.b }, flip: true }
+        : { [dialog.picking]: { occ, origin }, flip: true };
       patchJoint(j.id, patch);
-      setDialog({ ...dialog, picking: dialog.picking === 'b' ? 'a' : null, snap: o.snap ? `Snapped to the ${o.snap}` : 'On the face (no centre nearby)' });
+      setSnapHover(null);
+      setDialog({ ...dialog, picking: dialog.picking === 'b' ? 'a' : null, snap: origin.kind === 'frame' ? 'On the face (it has no snap points)' : `Snapped to the ${c.label}` });
       return;
     }
     if (dialog?.kind === 'measure') {
@@ -787,19 +763,24 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     active: comp?.id ?? '', highlight, showPlanes: (showPlanes || dialog?.kind === 'sketch') && !section, pickProfiles, isolate, size: sceneSize,
     pickPlanes: dialog?.kind === 'sketch', section: section ? cut : undefined, marks,
   }), [design, result, build, comp, highlight, showPlanes, dialog, pickProfiles, isolate, sceneSize, section, cut, marks]);
-  // what is being measured (corner points) and the shortest line between the two, drawn on top
+  // what is being measured (corner points) and the shortest line between the two, and the
+  // joint origins a face or edge offers while a joint picks one, drawn on top
   const measuring = dialog?.kind === 'measure' ? dialog : null;
+  const snapping = dialog?.kind === 'joint' && dialog.picking ? snapHover : null;
+  const snapM = snapping ? placement(snapping.occ) : undefined;
   const scene = useMemo(() => {
-    if (!measuring?.picks.length) return baseScene;
-    const r = sceneSize * 0.012;
-    const cross3d = (p: Vec3) => [p[0] - r, p[1], p[2], p[0] + r, p[1], p[2], p[0], p[1] - r, p[2], p[0], p[1] + r, p[2], p[0], p[1], p[2] - r, p[0], p[1], p[2] + r];
-    const segs: number[] = [];
-    for (const m of measuring.picks) if (m.ref.kind === 'point') segs.push(...cross3d(m.ref.p));
-    const d = measuring.result;
-    if (d) segs.push(...d.a, ...d.b, ...cross3d(d.a), ...cross3d(d.b));
-    if (!segs.length) return baseScene;
-    return { ...baseScene, lines: [...baseScene.lines, { key: 'measure', segments: new Float32Array(segs), color: [0.95, 0.6, 0.05] as [number, number, number], overlay: true }] };
-  }, [baseScene, measuring, sceneSize]);
+    const extra = snapping && snapM ? candidateGlyphs(snapping.cands, snapping.best, snapM, sceneSize) : [];
+    if (measuring?.picks.length) {
+      const r = sceneSize * 0.012;
+      const cross3d = (p: Vec3) => [p[0] - r, p[1], p[2], p[0] + r, p[1], p[2], p[0], p[1] - r, p[2], p[0], p[1] + r, p[2], p[0], p[1], p[2] - r, p[0], p[1], p[2] + r];
+      const segs: number[] = [];
+      for (const m of measuring.picks) if (m.ref.kind === 'point') segs.push(...cross3d(m.ref.p));
+      const d = measuring.result;
+      if (d) segs.push(...d.a, ...d.b, ...cross3d(d.a), ...cross3d(d.b));
+      if (segs.length) extra.push({ key: 'measure', segments: new Float32Array(segs), color: [0.95, 0.6, 0.05] as [number, number, number], overlay: true });
+    }
+    return extra.length ? { ...baseScene, lines: [...baseScene.lines, ...extra] } : baseScene;
+  }, [baseScene, measuring, snapping, snapM, sceneSize]);
 
   // faces and edges are picked one by one, except while a feature dialog picks bodies
   const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint';
@@ -810,6 +791,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     setHoverPick((old) => (old?.key === hp?.key && old?.face === hp?.face && old?.edge === hp?.edge ? old : hp));
     const hk = !onBody && key && (key.startsWith('b:') || key.startsWith('p:') || key.startsWith('pl:')) ? key : null;
     setHover((old) => (old === hk ? old : hk));
+    // a joint picking its origin: the snap points of what is under the pointer
+    const jp = dialog?.kind === 'joint' && dialog.picking && onBody ? jointPicks(h) : null;
+    const id = jp ? `${key}:${h.face}:${h.edge}:${jp.best}` : '';
+    setSnapHover((old) => ((old?.id ?? '') === id ? old : jp && { ...jp, id }));
   };
 
   const view3d: SceneView = region.view3dW
@@ -820,9 +805,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ browser
 
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
-  const Node = ({ k, icon, label, badge, children, onClick, on, extra, bad }: { k: string; icon: ReactNode; label: ReactNode; badge?: string; children?: ReactNode; onClick?: () => void; on?: boolean; extra?: ReactNode; bad?: boolean }) => (
+  const Node = ({ k, icon, label, badge, children, onClick, on, extra, bad, warn }: { k: string; icon: ReactNode; label: ReactNode; badge?: string; children?: ReactNode; onClick?: () => void; on?: boolean; extra?: ReactNode; bad?: boolean; warn?: string }) => (
     <li>
-      <div className={`cadw-node${on ? ' on' : ''}${bad ? ' bad' : ''}`}>
+      <div className={`cadw-node${on ? ' on' : ''}${bad ? ' bad' : warn ? ' warn' : ''}`} title={warn}>
         {children ? <button className="cadw-twisty" onClick={() => toggle(k)} aria-label={open[k] ? 'Collapse' : 'Expand'}>{open[k] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button> : <span className="cadw-twisty" />}
         <button className="cadw-node-label" onClick={onClick ?? (() => toggle(k))}>{icon}<span>{label}</span>{badge && <em className={`cadw-badge${badge === '✓' ? ' ok' : ''}`}>{badge}</em>}</button>
         {extra}
@@ -849,12 +834,17 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ status
 
   const errorCount = Object.keys(dr?.errors ?? {}).length;
+  const warnCount = Object.keys(dr?.warnings ?? {}).length;
   const kernelState = busy || (shown.state === 'loading' ? 'Loading the 3-D kernel…' : shown.state === 'rebuilding' ? 'Rebuilding…' : !result ? 'Evaluating…' : '');
   const hintText = (() => {
     if (msg) return msg;
     if (sketchId) return status.msg || status.hint;
     if (dialog?.kind === 'sketch') return 'Click an origin plane or a flat face to sketch on it';
-    if (dialog?.kind === 'joint') return dialog.picking ? `Click a face of the ${dialog.picking === 'b' ? 'part that moves' : 'part it goes onto'} (snaps to hole and shaft centres)` : dialog.snap ?? 'Set the joint type and motion, then OK';
+    if (dialog?.kind === 'joint') {
+      if (!dialog.picking) return dialog.snap ?? 'Set the joint type and motion, then OK';
+      const at = snapHover?.cands[snapHover.best];
+      return at ? `Click: the ${at.label} · move over faces and edges for their snap points` : `Hover a face or edge of the ${dialog.picking === 'b' ? 'part that moves' : 'part it goes onto'}: its snap points show (centres, axes, midpoints, vertices)`;
+    }
     if (dialog?.kind === 'measure') return 'Click two faces, edges or corners: the smallest distance between them';
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';
     return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · J joint · M measure';
@@ -1013,10 +1003,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         <div className="props">
           <h3 className="sub">{FEATURE_LABEL[it.kind]}</h3>
           <label className="field"><span>Name</span><LazyInput label="Name" mono={false} value={it.name} onCommit={(v) => v.trim() && patchItem(c.id, it.id, { name: v.trim() })} /></label>
-          {isSketch(it) && <p className="hint">On {'ref' in it.plane ? `the ${it.plane.ref} plane` : it.plane.label ?? 'a face'}{it.plane.offset ? `, offset ${it.plane.offset}` : ''}.</p>}
+          {isSketch(it) && <p className="hint">On {planeWords(it)}{it.plane.offset ? `, offset ${it.plane.offset}` : ''}{'frame' in it.plane ? (sketchFace(it) ? ': it follows the face through edits' : ', where the face was when the sketch was made') : ''}.</p>}
           {isSketch(it) && dr?.sketches[it.id] && <p className="hint">{dr.sketches[it.id].dof === 0 ? 'Fully defined' : `${dr.sketches[it.id].dof} DOF free`}{dr.sketches[it.id].section ? ` · A = ${num(dr.sketches[it.id].section!.A)} ${u}²` : ''}</p>}
           {isSketch(it) && <Expr label="Plane offset" value={it.plane.offset ?? ''} placeholder="0" onChange={(v) => patchItem(c.id, it.id, { plane: { ...it.plane, offset: v || undefined } } as Partial<DesignItem>)} />}
           {dr?.errors[it.id] && <div className="region-error">{dr.errors[it.id]}</div>}
+          {dr?.warnings?.[it.id] && <div className="region-warn">{dr.warnings[it.id]}</div>}
           <div className="cadd-actions">
             <button className="btn primary" onClick={() => editItem(c.id, it)}>{isSketch(it) ? 'Edit sketch' : 'Edit feature'}</button>
             {!isSketch(it) && <button className="btn" onClick={() => patchItem(c.id, it.id, { suppressed: it.suppressed ? undefined : true })}>{it.suppressed ? 'Unsuppress' : 'Suppress'}</button>}
@@ -1068,6 +1059,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           <h3 className="sub">Joint · {j.type}</h3>
           <label className="field"><span>Name</span><LazyInput label="Joint name" mono={false} value={j.name} onCommit={(v) => v.trim() && patchJoint(j.id, { name: v.trim() })} /></label>
           {dr?.errors[j.id] && <div className="region-error">{dr.errors[j.id]}</div>}
+          {dr?.warnings?.[j.id] && <div className="region-warn">{dr.warnings[j.id]}</div>}
           <div className="row2">
             <Expr label="Angle" value={j.angle} onChange={(angle) => patchJoint(j.id, { angle })} />
             <Expr label="Offset" value={j.offset} onChange={(offset) => patchJoint(j.id, { offset })} />
@@ -1101,12 +1093,12 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         <h3 className="sub">Mass properties (assembly)</h3>
         <MassTable m={dr?.total} unit={u} />
         {dr?.box && <p className="hint">Size {fmtNum(dr.box.max[0] - dr.box.min[0])} × {fmtNum(dr.box.max[1] - dr.box.min[1])} × {fmtNum(dr.box.max[2] - dr.box.min[2])} {u}</p>}
-        {errorCount > 0 && (
+        {errorCount + warnCount > 0 && (
           <>
             <h3 className="sub">Problems</h3>
-            {Object.entries(dr!.errors).map(([id, e]) => {
+            {[...Object.entries(dr!.errors).map(([id, e]) => [id, e, 'region-error']), ...Object.entries(dr!.warnings ?? {}).map(([id, e]) => [id, e, 'region-warn'])].map(([id, e, cls]) => {
               const name = design.components.flatMap((c) => c.items).find((i) => i.id === id)?.name ?? design.joints.find((j) => j.id === id)?.name ?? design.components.find((c) => c.id === id)?.name ?? id;
-              return <div key={id} className="region-error">{name}: {e}</div>;
+              return <div key={`${cls}:${id}`} className={cls}>{name}: {e}</div>;
             })}
           </>
         )}
@@ -1294,7 +1286,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
                       </Node>
                       <Node k={`cs:${c.id}`} icon={<PenTool size={13} />} label={`Sketches (${sks.length})`}>
                         {sks.map((s) => (
-                          <Node key={s.id} k={`s:${s.id}`} icon={<PenTool size={12} />} label={s.name} on={sel === `item:${s.id}`} onClick={() => { setActive(c.id); setSel(`item:${s.id}`); }} bad={!!dr?.errors[s.id]}
+                          <Node key={s.id} k={`s:${s.id}`} icon={<PenTool size={12} />} label={s.name} on={sel === `item:${s.id}`} onClick={() => { setActive(c.id); setSel(`item:${s.id}`); }} bad={!!dr?.errors[s.id]} warn={dr?.warnings?.[s.id]}
                             badge={dr?.sketches[s.id] ? (dr.sketches[s.id].dof === 0 ? '✓' : String(dr.sketches[s.id].dof)) : undefined}
                             extra={eye(s.hidden, () => patchItem(c.id, s.id, { hidden: s.hidden ? undefined : true } as Partial<DesignItem>))} />
                         ))}
@@ -1312,7 +1304,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               </Node>
               <Node k="joints" icon={<Link2 size={14} />} label={`Joints (${design.joints.length})`}>
                 {design.joints.map((j) => (
-                  <Node key={j.id} k={`j:${j.id}`} icon={<Link2 size={12} />} label={`${j.name} · ${j.type}`} on={sel === `joint:${j.id}`} onClick={() => setSel(`joint:${j.id}`)} bad={!!dr?.errors[j.id]} />
+                  <Node key={j.id} k={`j:${j.id}`} icon={<Link2 size={12} />} label={`${j.name} · ${j.type}`} on={sel === `joint:${j.id}`} onClick={() => setSel(`joint:${j.id}`)} bad={!!dr?.errors[j.id]} warn={dr?.warnings?.[j.id]} />
                 ))}
               </Node>
             </ul>
@@ -1334,11 +1326,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d}
               navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch'}
               onHover={onHover}
-              message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
+              message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.noticeShort === 'No 3-D kernel' && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
             />
           )}
           {!inSketch && (shown.notice || (shown.state !== 'ready' && shown.state !== 'none' && scene.meshes.length > 0)) && (
-            <span className={`cadw-kernel${shown.notice ? ' warn' : ''}`} title={shown.notice}>{shown.notice ? 'Mesh kernel (approximate)' : shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Rebuilding…'}</span>
+            <span className={`cadw-kernel${shown.notice ? ' warn' : ''}`} title={shown.notice}>{shown.notice ? (shown.noticeShort === 'Mesh kernel' ? 'Mesh kernel (approximate)' : shown.noticeShort) : shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Rebuilding…'}</span>
           )}
           {!inSketch && section && (
             <div className="cadw-inspect" onPointerDown={(e) => e.stopPropagation()}>
@@ -1354,7 +1346,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           )}
           {inSketch && !ds!.sketch.entities.length && (
             <div className="cadw-empty">
-              <b>Sketch on {'ref' in ds!.plane ? `the ${ds!.plane.ref} plane` : ds!.plane.label ?? 'a face'}</b>
+              <b>Sketch on {planeWords(ds!)}</b>
               <span>Line (L), Rectangle (R), Circle (C) … then add relations and dimensions. Grey outlines are the bodies this plane cuts — Project turns them into geometry.</span>
             </div>
           )}
@@ -1386,8 +1378,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <span key={it.id} className="cadw-tl-slot">
                 {i === marker && <span className="cadw-tl-marker" title="Timeline marker" />}
                 <button
-                  className={`cadw-tl-item${i >= marker ? ' rolled' : ''}${'suppressed' in it && it.suppressed ? ' off' : ''}${dr?.errors[it.id] ? ' bad' : ''}${sel === `item:${it.id}` ? ' on' : ''}`}
-                  title={`${it.name}${dr?.errors[it.id] ? ` — ${dr.errors[it.id]}` : ''} (double-click to edit)`} aria-label={it.name}
+                  className={`cadw-tl-item${i >= marker ? ' rolled' : ''}${'suppressed' in it && it.suppressed ? ' off' : ''}${dr?.errors[it.id] ? ' bad' : dr?.warnings?.[it.id] ? ' warn' : ''}${sel === `item:${it.id}` ? ' on' : ''}`}
+                  title={`${it.name}${dr?.errors[it.id] ? ` — ${dr.errors[it.id]}` : dr?.warnings?.[it.id] ? ` — ${dr.warnings[it.id]}` : ''} (double-click to edit)`} aria-label={it.name}
                   onClick={() => setSel(`item:${it.id}`)} onDoubleClick={() => editItem(comp.id, it)}
                 >
                   {ICON[it.kind]}
@@ -1407,7 +1399,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             {!sketchResult.ok ? `Over-defined: ${sketchResult.conflicting.length} conflicting` : sketchResult.dof === 0 ? 'Fully defined' : `Under-defined · ${sketchResult.dof} DOF`}
           </span>
         )}
-        {!inSketch && (kernelState || errorCount > 0) && <span className={`cadw-dof ${errorCount ? 'warn' : ''}`}>{kernelState || `${errorCount} problem${errorCount > 1 ? 's' : ''}`}</span>}
+        {!inSketch && (kernelState || errorCount + warnCount > 0) && <span className={`cadw-dof ${errorCount + warnCount ? 'warn' : ''}`}>{kernelState || `${errorCount + warnCount} problem${errorCount + warnCount > 1 ? 's' : ''}`}</span>}
         <span className="cadw-hint">{hintText}</span>
         {inSketch && <label className="cadw-snaptoggle" title="Show relation glyphs"><input type="checkbox" checked={ui.cadRelations} onChange={(e) => setUi({ cadRelations: e.target.checked })} /> Relations</label>}
         {inSketch && <label className="cadw-snaptoggle" title="Snap to the grid"><Magnet size={13} /> <input type="checkbox" checked={ui.cadGridSnap} onChange={(e) => setUi({ cadGridSnap: e.target.checked })} /> Grid</label>}

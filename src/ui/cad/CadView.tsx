@@ -98,7 +98,7 @@ export function CadView({ region, result, editing, selected, dispatch, onDone }:
               message={empty ? '' : waiting && !scene.meshes.length ? (shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Building the part…') : !scene.meshes.length && !scene.lines.length ? 'Open the part and model it: Sketch, then Extrude' : undefined}
             />
             {waiting && scene.meshes.length > 0 && <span className="cad-busy">{shown.state === 'loading' ? 'Loading 3-D kernel…' : 'Rebuilding…'}</span>}
-            {shown.notice && <span className="cad-busy warn" title={shown.notice}>Mesh kernel</span>}
+            {shown.notice && <span className="cad-busy warn" title={shown.notice}>{shown.noticeShort}</span>}
           </div>
         )}
       </div>

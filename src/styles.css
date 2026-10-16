@@ -4582,3 +4582,18 @@ kbd {
   font: inherit;
   cursor: pointer;
 }
+
+/* CAD: references that survive edits (lost ones are warnings) */
+
+.cadw-tl-item.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.region-warn {
+  font-size: 11.5px;
+  color: var(--warn);
+  margin-top: 2px;
+  max-width: 420px;
+  white-space: normal;
+}

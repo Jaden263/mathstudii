@@ -1,10 +1,12 @@
 // The UI's kernel requests: one at a time per lane, the newest waiting one wins, and a
 // worker that went away fails what it was asked instead of leaving it hanging.
 import { describe, expect, it } from 'vitest';
-import type { KernelCall, KernelReply } from '../../cad/kernel/protocol';
+import { NO_KERNEL_NOTICE, type KernelCall, type KernelReply } from '../../cad/kernel/protocol';
 import type { CadResult } from '../../cad/evaluate';
 import type { BuildResult } from '../../cad/buildResult';
-import { displayDelay, isSuperseded, kernelHostStopped, kernelRequest, receiveDisplay, setKernelHost, waitingFor } from './kernelClient';
+import {
+  displayDelay, isSuperseded, kernelHostStopped, kernelNotice, kernelRequest, receiveDisplay, setKernelHost, setKernelWorkerFactory, waitingFor,
+} from './kernelClient';
 
 /** A stand-in worker that answers section requests with their offset after `ms`. */
 function fakeWorker(ms = 5) {
@@ -21,6 +23,28 @@ function fakeWorker(ms = 5) {
     },
   };
   return { worker: w as unknown as Worker, asked };
+}
+
+/** A stand-in for a kernel worker of the CAD window's own: events like a real one, answers if asked to. */
+class OwnWorker extends EventTarget {
+  terminated = false;
+  constructor(private answers: boolean) {
+    super();
+  }
+  postMessage(m: { kernelPort?: MessagePort }) {
+    const port = m.kernelPort!;
+    port.onmessage = (e: MessageEvent<KernelCall>) => {
+      const { rid, req } = e.data;
+      if (this.answers && req.op === 'section') port.postMessage({ rid, ok: true, value: req.plane.offset, kernel: 'brep' } satisfies KernelReply);
+    };
+  }
+  terminate() {
+    this.terminated = true;
+  }
+  /** What a worker does when an error escapes it (out of memory, a failed import). */
+  crash(message: string) {
+    this.dispatchEvent(Object.assign(new Event('error'), { message }));
+  }
 }
 
 const section = (offset: number) => ({ op: 'section' as const, design: { version: 2 as const, components: [], occurrences: [], joints: [] }, numbers: { sketches: {}, frames: {}, params: {}, errors: {} }, plane: { n: [1, 0, 0] as [number, number, number], offset } });
@@ -66,6 +90,35 @@ describe('kernel requests from the UI', () => {
     expect(await next).toBe(2);
     expect(b.asked).toEqual([2]);
     setKernelHost(null);
+  });
+
+  it('a worker of our own that crashes fails what it was asked; the next request starts a new one', async () => {
+    const made: OwnWorker[] = [];
+    setKernelWorkerFactory(() => {
+      const w = new OwnWorker(made.length > 0);
+      made.push(w);
+      return w as unknown as Worker;
+    });
+    try {
+      const lost = kernelRequest(section(1), 'own').catch((e: Error) => e.message);
+      const queued = kernelRequest(section(2), 'own');
+      made[0].crash('out of memory');
+      expect(await lost).toMatch(/^the 3-D kernel stopped \(out of memory\) — it starts again with the next request$/);
+      expect(made[0].terminated).toBe(true);
+      // the lane went on to the request that waited, on a fresh worker
+      expect(await queued).toBe(2);
+      expect(await kernelRequest(section(3))).toBe(3);
+      expect(made).toHaveLength(2);
+    } finally {
+      setKernelWorkerFactory(null);
+    }
+  });
+
+  it('no kernel at all: the same notice whether the worksheet or a CAD window’s own worker found out', () => {
+    expect(kernelNotice({ kernelError: 'wasm failed' }, null, false)).toEqual({ notice: NO_KERNEL_NOTICE, noticeShort: 'No 3-D kernel' });
+    expect(kernelNotice(undefined, null, true).notice).toBe(NO_KERNEL_NOTICE);
+    expect(kernelNotice({ brepError: 'x' }, null, false).noticeShort).toBe('Mesh kernel');
+    expect(kernelNotice(undefined, { kernel: 'brep', components: {}, placements: {}, errors: {} }, false)).toEqual({});
   });
 
   it('a view without display data says what it waits for', () => {

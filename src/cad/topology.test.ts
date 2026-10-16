@@ -166,6 +166,11 @@ describe('joint snap points', () => {
     expect(snaps.find((s) => s.snap === 'centroid')!.z).toEqual([0, 0, 1]);
   });
 
+  it('a hole rim offers its centre, not the vertex where its parameter starts', () => {
+    expect(snapsOn(plate, { edge: 0 }).map((s) => s.snap)).toEqual(['centre']);
+    expect(snapsOn(plate, { face: 0 }).some((s) => s.snap === 'vertex')).toBe(false);
+  });
+
   it('a cylinder offers its axis at its middle', () => {
     const a = snapsOn(plate, { face: 1 }).find((s) => s.snap === 'axis')!;
     expect(a.o).toEqual([50, 30, 5]);

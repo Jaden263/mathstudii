@@ -306,7 +306,7 @@ export function originOptions(design: CadDesign, cid: string): { key: string; la
   return out;
 }
 
-export const originKey = (o: JointOrigin) => (o.kind === 'origin' ? 'origin' : o.kind === 'point' ? `${o.sketch}/${o.point}/${o.axis ?? 'n'}` : 'frame');
+export const originKey = (o: JointOrigin) => (o.kind === 'origin' ? 'origin' : o.kind === 'point' ? `${o.sketch}/${o.point}/${o.axis ?? 'n'}` : o.kind);
 
 export function JointFields({ design, joint: j, picking, onPick, onChange, values }: {
   design: CadDesign;
@@ -330,13 +330,17 @@ export function JointFields({ design, joint: j, picking, onPick, onChange, value
       <fieldset className="cadd-side">
         <legend>{title}</legend>
         <Pick label="Occurrence" value={end.occ} options={design.occurrences.map((o) => [o.id, occName(o.id)])} onChange={(occ) => onChange({ [s]: { occ, origin: { kind: 'origin' } } } as Partial<CadJoint>)} />
-        <Pick label="Joint origin" value={key} options={[...(key === 'frame' ? [['frame', 'Picked on the model'] as [string, string]] : []), ...opts.map((o) => [o.key, o.label] as [string, string])]}
+        <Pick label="Joint origin" value={key} options={[
+          ...(key === 'frame' ? [['frame', 'Picked on the model'] as [string, string]] : []),
+          ...(end.origin.kind === 'snap' ? [['snap', `On the model: ${end.origin.label}`] as [string, string]] : []),
+          ...opts.map((o) => [o.key, o.label] as [string, string]),
+        ]}
           onChange={(k) => {
             const o = opts.find((x) => x.key === k);
             if (o) onChange({ [s]: { occ: end.occ, origin: o.origin } } as Partial<CadJoint>);
           }} />
         <button className={`btn${picking === s ? ' primary' : ''}`} onClick={() => onPick(picking === s ? null : s)}>
-          {picking === s ? 'Click a face… (Esc to stop)' : 'Pick on the model'}
+          {picking === s ? 'Click a snap point… (Esc to stop)' : 'Pick on the model'}
         </button>
       </fieldset>
     );

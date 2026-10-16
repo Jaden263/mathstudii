@@ -37,9 +37,16 @@ export interface ViewSpecRequest {
   hidden: boolean;
 }
 
+/** What a request that needs a kernel fails with when neither could load. */
+export const NO_KERNEL = 'the 3-D kernel could not load';
+
+/** What a view says when neither kernel could load (the worksheet's results and a CAD window's own worker alike). */
+export const NO_KERNEL_NOTICE = 'No 3-D kernel: neither OpenCascade nor the mesh kernel could load, so the part cannot be built or shown';
+
 /** What each request answers. */
 export interface KernelValues {
-  warm: { brep: boolean };
+  /** Which kernels loaded. */
+  warm: { brep: boolean; mesh: boolean };
   display: BuildResult | null;
   section: SectionBody[];
   outline: Vec2[][];

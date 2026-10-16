@@ -580,6 +580,9 @@ workspace opens full screen in the page. Its layout follows Fusion:
   flat face of a body. The sketch opens looking straight at its plane. The bodies it cuts
   show as grey reference outlines, and **Project** turns them into fixed sketch geometry
   (circles come back as circles).
+  - A sketch on a face follows the face. Make the base taller and the sketch, with the
+    holes and bosses on it, moves up. Make it wider and the sketch stays where it was:
+    its origin is the component origin projected onto the face.
 - **Extrude:** one side, symmetric, two sides or through all. Operations are new body,
   join, cut or intersect. Click profiles in the view to pick them and bodies to choose
   targets. Cuts go into the material automatically: both directions are tried and the one
@@ -597,8 +600,14 @@ workspace opens full screen in the page. Its layout follows Fusion:
 - **New component** adds a component and makes it active. **Insert copy** adds another
   occurrence of the active component.
 - **Joints:** rigid, revolute, slider and cylindrical. A joint origin is either picked on
-  a face (it snaps to hole and shaft centres) or chosen from a list: the component origin,
-  or any sketch point or circle centre with Z along the sketch normal or a sketch axis.
+  the model or chosen from a list: the component origin, or any sketch point or circle
+  centre with Z along the sketch normal or a sketch axis.
+  - Picking works as in Fusion. Hover a face or edge and its snap points show as small
+    glyphs: the face's centre, a cylinder's axis, circle and arc centres, edge midpoints
+    and vertices. The one nearest the pointer is marked with its Z axis, and a click
+    takes it.
+  - A joint on a snap point follows its geometry. Move or resize the hole a pin sits in,
+    and the pin goes with it.
   - The angle and offset are worksheet expressions, so a calculation can drive the
     mechanism. A slider drives revolute joints by hand.
   - **Flip** makes mating faces point at each other.
@@ -724,6 +733,9 @@ bevels them, and a few borderline roundings one kernel accepts the other refuses
 - Section views, sketch outlines, measuring, interference, drawings and exports are
   requests to the worker. In a separate CAD window, a kernel worker of its own answers.
   The views show *Loading the 3-D kernel…* or *Rebuilding…* meanwhile.
+- If that worker fails (an error escapes it), whatever it was asked fails with a message,
+  and the next request starts a fresh one. If neither kernel can load, the worksheet and
+  the CAD window both say *No 3-D kernel*.
 
 **Exact display and selection.** The 3-D views draw the B-rep: curved faces are smoothly
 shaded, and edges are the true edges as crisp lines (no seams). In the CAD window:
@@ -736,13 +748,36 @@ shaded, and edges are the true edges as crisp lines (no seams). In the CAD windo
   - totals for several picks
   - for two picks, the angle and parallel gap between them and, with **Distance**, the
     exact smallest distance
-- **Rebuilds:** picks follow their faces through a rebuild, by the faces' history.
+- **Rebuilds:** picks follow their faces and edges through a rebuild, by their names (below).
 - **Other tools:**
   - **Measure** (M) works on faces, edges and snapped corners, on the exact geometry.
-  - **Sketch on a face** takes the face's exact plane.
-  - **Joints** snap to cylinder axes and hole or shaft rims.
+  - **Sketch on a face** takes the face's exact plane, and follows it.
+  - **Joints** snap to face centres, axes, circle centres, edge midpoints and vertices.
 - **Drawings:** the hidden-line views come from the worker and are dimensioned from the
   exact box.
+
+**References that survive edits.** Every face, edge and vertex has a name from the feature
+history, the same after every rebuild. Sketches on faces, joints on geometry and the
+selection store these names:
+
+- **Faces** are named after the feature and the sketch line or cap that made them
+  (`f1/side:l3`, `f1/end`, `f2/hole0:wall`). Pattern and mirror copies carry a prefix
+  (`f3.2.f2/hole0:wall`).
+  - A face that a cut splits keeps its name on both pieces, numbered `#1`, `#2` along its
+    own x axis. Faces that a join merges keep both names (`f1/end+f2/end`).
+  - The walls of a thin extrusion are named after the line they offset (`side:l0:out`,
+    `side:l0:in`).
+- **Edges** are named after their two faces. **Vertices** are named after the faces that
+  meet there.
+- **Finding a reference again:** first by its name. A split face or edge gives the piece
+  nearest to where it was, and the first piece on a tie. A renamed entity that has not
+  moved is found by its geometry.
+- **Lost references:** when nothing matches, the timeline marks the item yellow:
+  *reference lost: the end face of Boss, which the sketch is on, is gone*.
+  - A sketch then keeps the plane it had when it was made.
+  - A joint keeps the origin where it was picked.
+  - The worksheet shows the message too. Nothing is ever moved to some other face.
+- **Order:** a sketch can only refer to faces built before it in the timeline.
 
 **Exchange:**
 
@@ -779,8 +814,16 @@ What it is not, honestly:
 - **Selection is not used by features yet:** picked faces and edges feed the inspector
   and Measure; fillet, chamfer, shell and draft on them are still to come.
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
-- **Face sketches:** a sketch on a face keeps that face's position from when it was made;
-  it does not follow later edits.
+- **References:**
+  - Names come from history. An edit that rebuilds a face from another sketch line (a
+    line deleted and drawn again) gives it a new name. A reference to it is then lost
+    unless the face has not moved.
+  - A reference remembers where its entity was when it was picked, not where it was at
+    the last rebuild. So after many edits, the piece of a split face it picks is the one
+    nearest that first place.
+  - Sketches on faces made before this version keep their fixed plane.
+  - The mesh kernel (only while OpenCascade loads, or if it cannot) has no names. It
+    finds a referenced face or edge only where it has not moved, and the timeline says so.
 - **Joints:** no joint limits, motion studies or contact.
 - **Drawings:** only the overall sizes are dimensioned automatically. There are no section
   views on the sheet and no GD&T.
@@ -875,7 +918,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |

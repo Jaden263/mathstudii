@@ -23,10 +23,16 @@ export const CIRCLE_SEGMENTS = 180;
 
 let K: ManifoldToplevel | null = null;
 let loading: Promise<ManifoldToplevel> | null = null;
+let failure: string | null = null;
 
 /** The kernel, or null while it is still loading (or failed to load). */
 export function kernel(): ManifoldToplevel | null {
   return K;
+}
+
+/** Why the kernel could not load, or null (not tried yet, loading, or loaded). */
+export function kernelFailure(): string | null {
+  return failure;
 }
 
 /**
@@ -40,6 +46,9 @@ export function initKernel(wasmUrl?: string): Promise<ManifoldToplevel> {
     m.setup();
     K = m;
     return m;
+  }).catch((e) => {
+    failure = e instanceof Error ? e.message : String(e);
+    throw e;
   });
   return loading;
 }

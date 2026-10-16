@@ -50,6 +50,8 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
     };
     w.onerror = (err) => {
       console.error('Evaluation worker error', err);
+      // the CAD views' kernel requests it was answering fail now instead of waiting forever
+      kernelHostStopped('the calculation failed — try again');
       setState((s) => ({ ...s, busy: false, slow: false }));
     };
   }, []);
