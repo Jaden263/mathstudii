@@ -19,6 +19,20 @@ export function poly(p: string, pts: P[]): CadSketch {
 
 export const rect = (p: string, x0: number, y0: number, x1: number, y1: number) => poly(p, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
 
+/** A w × h rectangle from the origin with its corners rounded to r: lines and quarter arcs. */
+export function roundedRect(p: string, w: number, h: number, r: number): CadSketch {
+  const pts: P[] = [[r, 0], [w - r, 0], [w, r], [w, h - r], [w - r, h], [r, h], [0, h - r], [0, r]];
+  const centres: P[] = [[w - r, r], [w - r, h - r], [r, h - r], [r, r]];
+  return {
+    points: [...pts.map(([x, y], i) => ({ id: `${p}p${i}`, x, y })), ...centres.map(([x, y], i) => ({ id: `${p}c${i}`, x, y }))],
+    entities: [0, 1, 2, 3].flatMap((k) => [
+      { id: `${p}l${k}`, type: 'line' as const, p1: `${p}p${2 * k}`, p2: `${p}p${2 * k + 1}` },
+      { id: `${p}a${k}`, type: 'arc' as const, c: `${p}c${k}`, p1: `${p}p${2 * k + 1}`, p2: `${p}p${(2 * k + 2) % 8}` },
+    ]),
+    constraints: [],
+  };
+}
+
 /** Add circles (centre, radius) to a sketch. */
 export function withCircles(sk: CadSketch, p: string, circles: [number, number, number][]): CadSketch {
   return {

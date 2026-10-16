@@ -2,7 +2,7 @@
 // inertias. Exact geometry means exact numbers: tolerances are 1e-9 relative unless a
 // test says why not.
 import { describe, expect, it, vi } from 'vitest';
-import { circles, points, poly, rect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
+import { circles, points, poly, rect, roundedRect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
 import type { DesignItem } from '../design';
 import { occ, occError, renewOcc, setOccEnabled } from './kernel';
 import { buildDesignOcc } from './build';
@@ -134,6 +134,19 @@ describe('B-rep shells and roundings', () => {
       { kind: 'extrude', id: 'f1', name: 'Knob', sketch: 's1', extent: { type: 'one', d: '18' }, op: 'new', edgeStart: { type: 'chamfer', r: '1' }, edgeEnd: { type: 'fillet', r: '5' } },
     ]));
     near(volumes(res)[0], PI * R * R * h - fil - ch);
+  });
+
+  it('a fillet round a rounded rectangle (lines and tangent arcs)', () => {
+    // straight edges lose (1 − π/4) r² per unit length; each corner arc of radius R turns the
+    // same section through its angle at R − s, so all four together lose 2π (R A − ∫∫ s dA)
+    const R = 5, r = 2, A = (1 - PI / 4) * r * r, k = r ** 3 * (5 / 6 - PI / 4);
+    const { res } = solve(single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: roundedRect('a', 60, 40, R) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new', edgeEnd: { type: 'fillet', r: '2' } },
+    ]));
+    expect(res.featureError).toBeUndefined();
+    const V0 = (60 * 40 - (4 - PI) * R * R) * 10;
+    near(volumes(res)[0], V0 - A * 2 * (50 + 30) - 2 * PI * (R * A - k));
   });
 
   it('reports a rounding that does not fit', () => {
