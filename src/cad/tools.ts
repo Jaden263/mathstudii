@@ -36,8 +36,9 @@ const unit = (v: Vec2) => {
   return { x: v.x / l, y: v.y / l };
 };
 
+/** A copy to edit (whatever else the sketch carries, its projected sources, goes along). */
 export function cloneSketch(sk: CadSketch): CadSketch {
-  return { points: [...sk.points], entities: [...sk.entities], constraints: [...sk.constraints] };
+  return { ...sk, points: [...sk.points], entities: [...sk.entities], constraints: [...sk.constraints] };
 }
 
 /** Point id for a Ref, adding the point (and its on-curve constraint) to `sk` when needed. Mutates sk. */

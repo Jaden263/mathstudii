@@ -11,6 +11,27 @@ import { findProfiles, profileProperties, type Vec2 } from './profile';
 import type { CadConstraint, CadEntity, CadSketch } from './model';
 import { bsPoint } from './curves';
 import { splineOf } from './sketchCurves';
+import { circle, fillet } from './tools';
+
+describe('a sketch with projected references', () => {
+  it('keeps its sources through every edit, so the references go on following the model', () => {
+    const sources: CadSketch['sources'] = [{ id: 'r1', kind: 'section', label: 'section of the bodies' }];
+    const sk: CadSketch = { ...rectangle(40, 20), sources };
+    const P = posOf(sk);
+    const edits = [
+      circle(sk, { p: { x: 20, y: 10 } }, 5),
+      fillet(sk, P, 'C', 3),
+      chamfer(sk, P, 'B', 2),
+      offset(sk, P, R0, ['l0'], 4, { x: 20, y: 30 }),
+      pattern(sk, P, ['l1'], { kind: 'rect', count: 3, spacing: 10 }),
+      spline(sk, [{ p: { x: 0, y: 30 } }, { p: { x: 20, y: 40 } }, { p: { x: 40, y: 30 } }], {}),
+    ];
+    for (const r of edits) {
+      if (typeof r === 'string') throw new Error(r);
+      expect(r.sketch.sources).toEqual(sources);
+    }
+  });
+});
 
 const { PI, abs, hypot, cos, sin } = Math;
 const near = (v: number, want: number, rel = 1e-9) => expect(abs(v - want) / abs(want)).toBeLessThan(rel);

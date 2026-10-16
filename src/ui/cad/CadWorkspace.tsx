@@ -994,7 +994,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const { dxfToSketch } = await import('../../cad/dxf');
       const { sketch, warnings } = dxfToSketch(await file.text());
       const sk = ds.sketch;
-      replaceSketch(ds.id, { sketch: { points: [...sk.points, ...sketch.points], entities: [...sk.entities, ...sketch.entities], constraints: [...sk.constraints, ...sketch.constraints] }, view: undefined });
+      replaceSketch(ds.id, { sketch: { ...sk, points: [...sk.points, ...sketch.points], entities: [...sk.entities, ...sketch.entities], constraints: [...sk.constraints, ...sketch.constraints] }, view: undefined });
       setMsg(`Imported ${sketch.entities.length} entities from ${file.name}${warnings.length ? ` · ${warnings.join('; ')}` : ''}`);
       window.setTimeout(() => canvas.current?.fit(), 80);
     } catch (err) {
