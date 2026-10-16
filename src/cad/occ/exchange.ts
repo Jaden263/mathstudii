@@ -72,13 +72,32 @@ export function stepFile(oc: OC, built: OccBuiltDesign, design: CadDesign, scope
       const ok = guard(oc, 'the STEP file could not be written', () => writer.Perform(doc, path, t.add(new oc.Message_ProgressRange())));
       if (!ok) throw new Error('the STEP file could not be written');
       try {
-        return oc.FS.readFile(path, { encoding: 'utf8' }) as string;
+        return part21Ascii(oc.FS.readFile(path, { encoding: 'utf8' }) as string);
       } finally {
         oc.FS.unlink(path);
       }
     } finally {
       restore();
     }
+  });
+}
+
+/**
+ * STEP files are ASCII (ISO 10303-21): other characters, which OCCT writes as raw UTF-8 and
+ * which only occur in names, become \X2\…\X0\ (4 hex digits each), or \X4\…\X0\ (8) past
+ * the basic plane, for readers that hold to it.
+ */
+export function part21Ascii(text: string): string {
+  return text.replace(/[^\x00-\x7f]+/gu, (run) => {
+    const cps = [...run].map((c) => c.codePointAt(0)!);
+    let out = '';
+    for (let i = 0; i < cps.length;) {
+      const wide = cps[i] > 0xffff;
+      let hex = '';
+      for (; i < cps.length && cps[i] > 0xffff === wide; i++) hex += cps[i].toString(16).toUpperCase().padStart(wide ? 8 : 4, '0');
+      out += `\\X${wide ? 4 : 2}\\${hex}\\X0\\`;
+    }
+    return out;
   });
 }
 

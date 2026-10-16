@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { circles, rect, single, solve, withCircles } from './fixtures';
 import { occ, scratch, type OC } from './kernel';
 import { buildDesignOcc, occBox, occMass } from './build';
-import { stepFile, stlFile } from './exchange';
+import { part21Ascii, stepFile, stlFile } from './exchange';
 import type { CadDesign } from '../design';
 
 const { PI } = Math;
@@ -112,6 +112,28 @@ describe('STEP export', () => {
       const text = stepFile(oc, built, design, { kind: 'component', component: 'c1' }, { unit: 'm' });
       expect(text).toMatch(/SI_UNIT\(\$,\.METRE\.\)/);
       near(readStep(oc, text).mass.V, 2000 * 1000 * 500, 1e-9);
+    } finally {
+      built.free();
+    }
+  });
+});
+
+describe('STEP text', () => {
+  it('writes names beyond ASCII as ISO 10303-21 escapes', () => {
+    // ü U+00FC, Ø U+00D8 (basic plane: \X2\, 4 hex digits); 𝛼 U+1D6FC (\X4\, 8 hex digits)
+    expect(part21Ascii("PRODUCT('Bügel Ø𝛼',$)")).toBe("PRODUCT('B\\X2\\00FC\\X0\\gel \\X2\\00D8\\X0\\\\X4\\0001D6FC\\X0\\',$)");
+    const oc = occ()!;
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 4, 2) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '1' }, op: 'new' },
+    ], 'Bügel');
+    const { numbers } = solve(design);
+    const built = buildDesignOcc(oc, design, numbers);
+    try {
+      const text = stepFile(oc, built, design, { kind: 'component', component: 'c1' });
+      expect(/[^\x00-\x7f]/.test(text)).toBe(false);
+      expect(text).toContain("'B\\X2\\00FC\\X0\\gel'");
+      near(readStep(oc, text).mass.V, 8, 1e-9);
     } finally {
       built.free();
     }
