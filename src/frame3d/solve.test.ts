@@ -332,3 +332,56 @@ describe('space frame: size', () => {
     eq.F.forEach((v) => expect(Math.abs(v)).toBeLessThan(1e-3));
   }, 30000);
 });
+
+describe('space frame: loads along a member', () => {
+  // the same loads on a member and on a node placed where they sit: fixed-end forces and
+  // statics in both planes against the stiffness method itself, Timoshenko, β, inclined
+  for (const shear of [false, true]) {
+    it(`point forces and moments in every direction${shear ? ' (Timoshenko)' : ''}`, () => {
+      const extra: Partial<NumMember3> = { beta: 0.4, ...(shear ? { Avy: 30e-4, Avz: 25.7e-4 } : {}) };
+      const a: Vec3 = [0, 0, 0], b: Vec3 = [3, 2, 1.5], t = 0.37, k: Vec3 = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+      const F: Vec3 = [4e3, -7e3, 9e3], M: Vec3 = [2e3, -5e3, 3e3];
+      const supports = [sup('a'), sup('b', [true, true, true, false, false, false])];
+      for (const local of [false, true]) {
+        const whole = solveFrame3({
+          nodes: [node('a', ...a), node('b', ...b)], members: [mem('m', 'a', 'b', extra)], supports,
+          loads: [{ id: 'p', type: 'point', member: 'm', t, F, M, local }],
+        });
+        // as a nodal load at k: member axes to global first
+        const { R } = memberAxes(a, b, extra.beta);
+        const g = (v: Vec3): Vec3 => (local ? [0, 1, 2].map((c) => R[0][c] * v[0] + R[1][c] * v[1] + R[2][c] * v[2]) as Vec3 : v);
+        const split = solveFrame3({
+          nodes: [node('a', ...a), node('k', ...k), node('b', ...b)], members: [mem('m1', 'a', 'k', extra), mem('m2', 'k', 'b', extra)], supports,
+          loads: [atNode('p', 'k', g(F), g(M))],
+        });
+        for (let c = 0; c < 2; c++) for (let q = 0; q < 3; q++) {
+          expect(whole.reactions[c].F[q]).toBeCloseTo(split.reactions[c].F[q], 5);
+          expect(whole.reactions[c].M[q]).toBeCloseTo(split.reactions[c].M[q], 5);
+        }
+        const L = whole.members[0].L, s = t * L;
+        for (const x of [0.2 * s, s - 1e-9, s + 1e-9, s + 0.5 * (L - s)]) {
+          const p = memberAt3(whole.members[0], x), q = x < s ? memberAt3(split.members[0], x) : memberAt3(split.members[1], x - s);
+          for (const key of ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'] as const) expect(p[key]).toBeCloseTo(q[key], 4);
+          for (const key of ['ux', 'uy', 'uz'] as const) expect(p[key]).toBeCloseTo(q[key], 12);
+        }
+      }
+    });
+  }
+
+  it('Timoshenko cantilever under a uniform load: q L⁴/8EI + q L²/2GA_v, partial loads by superposition', () => {
+    const L = 3, q = 12e3, Avz = 25.7e-4;
+    const st = (t1: number, t2: number): NumFrame => ({
+      nodes: [node('a', 0, 0, 0), node('b', L, 0, 0)], members: [mem('m', 'a', 'b', { Avz, Avy: 30e-4 })], supports: [sup('a')],
+      loads: [{ id: 'q', type: 'line', member: 'm', t1, t2, q1: [0, 0, -q], q2: [0, 0, -q], local: false }],
+    });
+    const full = solveFrame3(st(0, 1));
+    expect(full.nodes.b[2]).toBeCloseTo((-q * L ** 4) / (8 * E * Iy) - (q * L * L) / (2 * G * Avz), 12);
+    // two halves add up to the whole, at the tip and along the member
+    const h1 = solveFrame3(st(0, 0.5)), h2 = solveFrame3(st(0.5, 1));
+    expect(h1.nodes.b[2] + h2.nodes.b[2]).toBeCloseTo(full.nodes.b[2], 12);
+    for (const x of [0.4, 1.5, 2.2]) {
+      expect(memberAt3(h1.members[0], x).My + memberAt3(h2.members[0], x).My).toBeCloseTo(memberAt3(full.members[0], x).My, 5);
+      expect(memberAt3(h1.members[0], x).uz + memberAt3(h2.members[0], x).uz).toBeCloseTo(memberAt3(full.members[0], x).uz, 12);
+    }
+  });
+});
