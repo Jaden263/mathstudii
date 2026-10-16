@@ -9,7 +9,7 @@ import { loadCase, type BeamSection } from './model';
 import { InstabilityError, memberAt, solveStructure, StructureError, type BeamSolution, type Extreme, type MemberResult, type NumLoad, type NumMember, type NumStructure, type Reaction } from './solve';
 import { bucklingAnalysis, type BucklingResult } from './buckling';
 import { profileShearArea, rhsShearArea, SHEAR_FACTOR, shearModulus, weldedShearArea } from './shear';
-import { identifierOf, movingParts, solveTraffic, trafficValue, withMoving, type TrafficResult } from './traffic';
+import { identifierOf, movingParts, signedBounds, solveTraffic, trafficValue, withMoving, type TrafficResult } from './traffic';
 
 /** Result of one load case or one combination. */
 export interface CaseResult {
@@ -187,6 +187,8 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
   // influence lines and moving loads (linear, along the load path)
   try {
     res.traffic = solveTraffic(r, base, (src, b, fb, what) => quantity(evalExpr, src, b, fb, what), evalExpr, res.errors);
+    // on the region too: the combinations go on without the moving loads
+    if (res.traffic?.error) res.errors.traffic = `Moving loads: ${res.traffic.error}`;
   } catch (e) {
     res.error = `Moving loads: ${(e as Error).message}`;
   }
@@ -407,7 +409,7 @@ export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknow
     Object.assign(value, trafficValue(r, res.traffic, (sol) => solutionValue(r, sol)));
     // a combination with moving loads has two bounds: b.combos.ULS the upper, b.combos.ULS.min the lower
     const combos = value.combos as Record<string, Record<string, unknown>> | undefined;
-    for (const c of res.combos ?? []) if (c.range && combos?.[identifierOf(c.name)]) combos[identifierOf(c.name)].min = solutionValue(r, c.range.min);
+    for (const c of res.combos ?? []) if (c.range && combos?.[identifierOf(c.name)]) combos[identifierOf(c.name)].min = solutionValue(r, signedBounds(r, c.range.max, c.range.min).min);
   }
   return value;
 }
@@ -425,7 +427,9 @@ function loadsValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
   }
   // with load cases: b.cases.G, b.combos.ULS, and at the top the governing values:
   // forces and reactions over the ULS combinations, deflection over the SLS ones
-  const named = (list: CaseResult[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(r, c.solution!, c.buckling)]));
+  // a combination with moving loads: its upper bound as b.M(x) reads it (sagging positive on members drawn right to left)
+  const upper = (c: CaseResult) => (c.range ? signedBounds(r, c.range.max, c.range.min).max : c.solution!);
+  const named = (list: CaseResult[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(r, upper(c), c.buckling)]));
   const value: Record<string, unknown> = { cases: named(res.cases), combos: named(res.combos) };
   // the lowest α_cr over the ULS combinations
   const gov = governing(res.combos);
@@ -438,7 +442,7 @@ function loadsValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
   const deflSet = sls.length ? sls : forceSet;
   if (!forceSet.length) return value;
   // the functions M(x), w(x) … of the first ULS combination
-  Object.assign(value, solutionValue(r, forceSet[0].solution!));
+  Object.assign(value, solutionValue(r, upper(forceSet[0])));
   const governingOf = (pick: (sol: BeamSolution) => { max: BeamSolution['max']; reactions: Reaction[] } | undefined) => {
     const biggest = (sols: CaseResult[], key: keyof BeamSolution['max']) => {
       let best: Extreme | undefined;

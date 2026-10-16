@@ -6,7 +6,7 @@
 import type { Unit } from 'mathjs';
 import type { BeamRegion } from '../model/types';
 import { math, isUnit } from '../engine/math';
-import { LM1, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad } from './model';
+import { LM1, type BeamCombo, type BeamData, type BeamInfluenceLine, type BeamMovingLoad } from './model';
 import {
   boundExtremes, ilPeak, ilValue, influenceAnalysis, linearPieces, loadPath, MAX_POSITIONS,
   type Critical, type ExtremeKey, type InfluenceQuery, type PathSeg, type ReactionKey, type TrainEnvelope, type TrainSpec,
@@ -103,16 +103,24 @@ export function trainOf(ml: BeamMovingLoad, r: BeamRegion, read: Read, evalExpr:
 /**
  * A round step near span/200 that divides every axle spacing, so the axles of a train
  * stand on load positions together (1.2 m for LM1: 0.1, 0.2 …). Not finer than the
- * analysis takes (MAX_POSITIONS), since a widened step would divide nothing.
+ * analysis takes (MAX_POSITIONS), since a widened step would divide nothing; on a long
+ * path where no round step is coarse enough, a whole fraction of the first spacing
+ * (0.6 m for LM1 on 150 m), and only failing that a round step that divides nothing.
  */
 export function autoStep(span: number, offsets: number[]): number {
-  const target = span / 200;
+  const target = span / 200, finest = (span / MAX_POSITIONS) * (1 - 1e-9);
   const nice: number[] = [];
   for (let e = Math.ceil(Math.log10(target)); nice.length < 16; e--) {
     for (const m of [5, 2.5, 2, 1]) if (m * 10 ** e <= target * (1 + 1e-9)) nice.push(+(m * 10 ** e).toPrecision(6));
   }
   const divides = (s: number) => offsets.every((o) => Math.abs(o / s - Math.round(o / s)) < 1e-6);
-  return nice.find((s) => s >= (span / MAX_POSITIONS) * (1 - 1e-9) && divides(s)) ?? nice[0];
+  const round = nice.find((s) => s >= finest && divides(s));
+  if (round) return round;
+  const first = offsets.find((o) => o > 1e-9);
+  if (first) {
+    for (let k = Math.max(1, Math.ceil(first / target - 1e-9)); first / k >= finest; k++) if (divides(first / k)) return first / k;
+  }
+  return nice[0];
 }
 
 /** The member and fraction of an influence line's section: on its member, else the load path first. */
@@ -275,6 +283,27 @@ export function withMoving(sol: BeamSolution, parts: { env: TrainEnvelope; f: nu
   return { max: hi, min: lo };
 }
 
+/**
+ * Upper and lower bounds as the worksheet reads them: b.M(x) turns the moment of a member
+ * drawn right to left to sagging positive, so there the upper bound of M is the lower one
+ * in member axes (both bounds share their stations).
+ */
+export function signedBounds(r: BeamData, max: BeamSolution, min: BeamSolution): { max: BeamSolution; min: BeamSolution } {
+  const N = new Map(r.nodes.map((q) => [q.id, q]));
+  const flipped = new Set(r.members.filter((m) => (N.get(m.b)?.x ?? 0) < (N.get(m.a)?.x ?? 0)).map((m) => m.id));
+  if (!flipped.size) return { max, min };
+  const swap = (a: BeamSolution, b: BeamSolution): BeamSolution => ({
+    ...a,
+    members: a.members.map((mr) => {
+      const other = b.members.find((q) => q.id === mr.id);
+      if (!flipped.has(mr.id) || !other || other.s.length !== mr.s.length) return mr;
+      const out = { ...mr, M: other.M };
+      return { ...out, pieces: linearPieces(out) };
+    }),
+  });
+  return { max: swap(max, min), min: swap(min, max) };
+}
+
 /** The moving loads of a combination with their factors (worksheet expressions, plain numbers). */
 export function movingParts(cb: BeamCombo, tr: TrafficResult, evalExpr: Eval): { env: TrainEnvelope; f: number }[] {
   const out: { env: TrainEnvelope; f: number }[] = [];
@@ -348,8 +377,9 @@ export function trafficValue(r: BeamRegion, tr: TrafficResult, solutionValue: (s
       }
       v[sp.label] = o;
     }
-    v.max = solutionValue(env.max);
-    v.min = solutionValue(env.min);
+    const bounds = signedBounds(r, env.max, env.min);
+    v.max = solutionValue(bounds.max);
+    v.min = solutionValue(bounds.min);
     moving[identifierOf(m.name)] = v;
   }
   if (Object.keys(moving).length) value.moving = moving;

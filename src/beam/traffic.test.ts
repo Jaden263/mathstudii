@@ -192,6 +192,49 @@ describe('moving loads in a beam region', () => {
     expect(num('IL.V1', undefined, '13 m')).toBeCloseTo(V, 12);
   });
 
+  it('a member drawn right to left: moving-load extremes and bounds read as when drawn left to right', () => {
+    // two spans l = 8 m, P = 100 kN moving, g = 10 kN/m on span 2; with M_B(ξ) = −ξ(l² − ξ²)/(4l²)
+    // and R_A = 1 − ξ/l + M_B/l. At 12 m (middle of span 2, by symmetry as at 4 m): the load
+    // there gives 4 R_A(4) = 1.625 m, the load in span 1 gives M_B/2, lowest at ξ = 4.5 on the
+    // 0.5 m grid (−0.38452 m); g alone on span 2 gives 3/32 g l² = 60 kN·m there
+    const data = (flip: boolean): BeamData => ({
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 8, y: 0 }, { id: 'c', x: 16, y: 0 }],
+      members: [{ id: 'm1', a: 'a', b: 'b' }, flip ? { id: 'm2', a: 'c', b: 'b' } : { id: 'm2', a: 'b', b: 'c' }],
+      supports: [{ id: 'sA', node: 'a', type: 'pin', angle: 0, label: 'A' }, { id: 'sB', node: 'b', type: 'roller', angle: 0, label: 'B' }, { id: 'sC', node: 'c', type: 'roller', angle: 0, label: 'C' }],
+      loads: [{ id: 'g', type: 'line', member: 'm2', q1: 'g_k', dir: 'global', case: 'G' }],
+    });
+    const lc: BeamCases = { cases: [{ id: 'G', name: 'G' }], combos: [{ id: 'u', name: 'ULS', kind: 'ULS', factors: { G: '1', p: '1' } }] };
+    const MB = (xi: number) => (-xi * (64 - xi * xi)) / 256;
+    for (const flip of [false, true]) {
+      const { num } = run(data(flip), { lines: [], loads: [{ id: 'p', name: 'P', preset: 'point', P: '100' }], step: '0.5' }, [], { loadCases: lc });
+      expect(num('moving.P.max.M', 'kN m', '12 m')).toBeCloseTo(162.5, 9);
+      expect(num('moving.P.min.M', 'kN m', '12 m')).toBeCloseTo(50 * MB(4.5), 9);
+      // hogging over B, the load at 4.5 m (or 11.5 m); sagging x R_A(x) largest at 3.5 m (12.5 m) on the grid
+      expect(num('moving.P.M_min', 'kN m')).toBeCloseTo(100 * MB(4.5), 9);
+      expect(num('moving.P.x_M_min', 'm')).toBeCloseTo(8, 9);
+      expect(num('moving.P.M_max', 'kN m')).toBeCloseTo(100 * 3.5 * (1 - 3.5 / 8 + MB(3.5) / 8), 9);
+      expect([3.5, 12.5].some((x) => Math.abs(num('moving.P.x_M_max', 'm') - x) < 1e-9)).toBe(true);
+      // the combination's bounds: 60 kN·m plus the upper or lower moving extreme
+      expect(num('combos.ULS.M', 'kN m', '12 m')).toBeCloseTo(60 + 162.5, 9);
+      expect(num('combos.ULS.min.M', 'kN m', '12 m')).toBeCloseTo(60 + 50 * MB(4.5), 9);
+      expect(num('M', 'kN m', '12 m')).toBeCloseTo(60 + 162.5, 9);
+    }
+  });
+
+  it('a failed moving-load analysis shows on the region, and the loads still solve', () => {
+    // a column cannot be the deck: the combinations go on without the moving load, so say so
+    const data: BeamData = {
+      nodes: [{ id: 'f1', x: 0, y: 0 }, { id: 'c1', x: 0, y: 5 }, { id: 'c2', x: 8, y: 5 }, { id: 'f2', x: 8, y: 0 }],
+      members: [{ id: 'k1', a: 'f1', b: 'c1', deck: true }, { id: 'd', a: 'c1', b: 'c2' }, { id: 'k2', a: 'f2', b: 'c2' }],
+      supports: [{ id: 'sA', node: 'f1', type: 'fixed', angle: 0, label: 'A' }, { id: 'sD', node: 'f2', type: 'fixed', angle: 0, label: 'D' }],
+      loads: [{ id: 'g', type: 'line', member: 'd', q1: 'g_k', dir: 'global' }],
+    };
+    const { res } = run(data, { lines: [], loads: [{ id: 'p', name: 'P', preset: 'point', P: '100' }] }, []);
+    expect(res.traffic!.error).toMatch(/vertical member/);
+    expect(res.errors.traffic).toMatch(/^Moving loads: .*vertical member/);
+    expect(res.solution).toBeDefined();
+  });
+
   it('a frame: the deck carries the loads; errors stay with their item', () => {
     // portal frame, deck 0 … 8 m on columns 5 m high
     const data: BeamData = {
@@ -245,8 +288,13 @@ describe('moving loads in a beam region', () => {
     expect(autoStep(18, [0, 1.2])).toBe(0.05);
     expect(autoStep(30, [0, 3.5])).toBe(0.1);
     // 0.1 m divides 1.3 m, but 2000 positions on 200 m are more than the analysis takes: it
-    // would widen the step to 1/3 m, which divides nothing; a round step near L/200 instead
+    // would widen the step to 1/3 m, which divides nothing; half the spacing instead (no
+    // round step from 1 m down to 1/3 m divides 1.3 m)
     expect(200 / 0.1).toBeGreaterThan(MAX_POSITIONS);
-    expect(autoStep(200, [0, 1.3])).toBe(1);
+    expect(autoStep(200, [0, 1.3])).toBeCloseTo(0.65, 12);
+    // LM1 on 150 m: 0.5 and 0.25 m do not divide 1.2 m, 0.2 m would be 750 positions
+    expect(autoStep(150, [0, 1.2])).toBeCloseTo(0.6, 12);
+    // nothing divides 1.2 and 2.5 m between 1.5 and 0.5 m: the round step
+    expect(autoStep(300, [0, 1.2, 2.5])).toBe(1);
   });
 });

@@ -83,6 +83,7 @@ export interface TrainEnvelope {
   /** Upper and lower bound over every position (the train may also be absent: bounds include 0). */
   max: BeamSolution;
   min: BeamSolution;
+  /** The extremes and where they act; M sagging positive, on members drawn right to left too (`max`, `min` are in member axes). */
   extremes: Partial<Record<ExtremeKey, Critical>>;
   /** Per support id. */
   reactions: Record<string, Partial<Record<ReactionKey, { value: number; lead?: number; dir?: 1 | -1 }>>>;
@@ -704,6 +705,9 @@ export function influenceAnalysis(st: NumStructure, path: PathSeg[], step: numbe
     for (const m of st.members) {
       const list = stationsOf.get(m.id)!;
       const L = list[list.length - 1].s;
+      // the extremes of M in the beam's sign convention, as the influence lines: on a member
+      // drawn right to left its local y points down, so its sagging bound is the lower one
+      const sg = Nd.get(m.b)!.x < Nd.get(m.a)!.x ? -1 : 1;
       const H: MemberResult = { id: m.id, L, s: [], N: [], V: [], M: [], dx: [], dy: [], pieces: [] };
       const Lo: MemberResult = { id: m.id, L, s: [], N: [], V: [], M: [], dx: [], dy: [], pieces: [] };
       for (const sn of list) {
@@ -715,8 +719,10 @@ export function influenceAnalysis(st: NumStructure, path: PathSeg[], step: numbe
         }
         const gt = (a: number, c: number) => a > c, lt = (a: number, c: number) => a < c;
         for (const key of ['M', 'V', 'N'] as const) {
-          consider(`${key}_max`, b[key].hi, sn, b[key].ihi, gt);
-          consider(`${key}_min`, b[key].lo, sn, b[key].ilo, lt);
+          const up = key === 'M' && sg < 0 ? { v: -b.M.lo, c: b.M.ilo } : { v: b[key].hi, c: b[key].ihi };
+          const down = key === 'M' && sg < 0 ? { v: -b.M.hi, c: b.M.ihi } : { v: b[key].lo, c: b[key].ilo };
+          consider(`${key}_max`, up.v, sn, up.c, gt);
+          consider(`${key}_min`, down.v, sn, down.c, lt);
         }
         // the largest vertical deflection, either way
         const down = -b.dy.lo >= b.dy.hi;
