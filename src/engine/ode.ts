@@ -258,7 +258,7 @@ interface StepperOptions {
   detectStiff?: boolean;
   /** Stop for a trial of the implicit method after this many accepted steps. */
   trialAfter?: number;
-  /** Stop after this many accepted steps. */
+  /** A trial: stop after this many accepted steps, or more rejected ones. */
   maxSteps?: number;
   /** First step size to try (default: Hairer's estimate). */
   h0?: number;
