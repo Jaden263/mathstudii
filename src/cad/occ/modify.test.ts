@@ -140,6 +140,10 @@ describe('fillet', () => {
     const { V, errors } = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: String(r) }] }]);
     expect(errors).toEqual({});
     near(V[0], V0 - A * (2 * (100 - 2 * R) + 2 * (60 - 2 * R) + 2 * PI * rho), 1e-7);
+    // the eight roundings of the chain are named after the one picked edge, told apart by place
+    const b = bodiesOf(built(single([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: String(r) }] }])))[0];
+    expectUnique(b);
+    expect(b.faces.filter((q) => q.key.startsWith(`f2/round:${refToken(edges[0])}#`))).toHaveLength(8);
     // without the chain OpenCascade cannot round only the picked edge: it says so
     const off = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: String(r) }], chain: false }]);
     expect(off.errors.f2).toMatch(/tangent edges.*7 more.*Tangent chain/);
@@ -189,6 +193,15 @@ describe('fillet', () => {
     expect(two.errors.f3).toBeUndefined();
     expect(two.warnings.f3).toMatch(/^reference lost: the edge between the end face and the side face of Boss is gone; the other edges are still rounded/);
     near(two.V[0], 60000 - (1 - PI / 4) * 100);
+  });
+
+  it('suppressed or rolled back, it is as if it were not there', () => {
+    const items = box(100, 60, 10);
+    const edges = edgesAt(items, [TOP_FRONT]);
+    const f: DesignItem = { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: '3' }] };
+    near(run([...items, { ...f, suppressed: true }]).V[0], 60000);
+    const { res } = solve({ ...single([...items, f]), components: [{ id: 'c1', name: 'Part', items: [...items, f], marker: 2 }] });
+    near(volumes(res)[0], 60000);
   });
 });
 
@@ -390,6 +403,47 @@ describe('press-pull', () => {
     const { V, errors } = run([...boss, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: wall, d: '2' }]);
     expect(errors).toEqual({});
     near(V[0], PI * 100 * h);
+  });
+
+  it('a half-round notch in an edge narrows by d: (π/2)(R² − (R − d)²) h; a rounding is refused', () => {
+    // a 100 × 60 × 10 plate with a notch of R = 10 cut into its front edge: a half cylinder whose
+    // ends meet the front face, so the ring that grows into it ends in that face
+    const R = 10, h = 10, d = 3;
+    const sk: CadSketch = {
+      points: [[0, 0], [40, 0], [60, 0], [100, 0], [100, 60], [0, 60], [50, 0]].map(([x, y], i) => ({ id: `n${i}`, x, y })),
+      entities: [
+        { id: 'e0', type: 'line', p1: 'n0', p2: 'n1' },
+        { id: 'e1', type: 'arc', c: 'n6', p1: 'n2', p2: 'n1' },
+        { id: 'e2', type: 'line', p1: 'n2', p2: 'n3' }, { id: 'e3', type: 'line', p1: 'n3', p2: 'n4' },
+        { id: 'e4', type: 'line', p1: 'n4', p2: 'n5' }, { id: 'e5', type: 'line', p1: 'n5', p2: 'n0' },
+      ],
+      constraints: [],
+    };
+    const notched: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'Base', plane: { ref: 'XY' }, sketch: sk },
+      { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: String(h) }, op: 'new' },
+    ];
+    const V0 = (6000 - (PI * R * R) / 2) * h;
+    // the centroid of a half cylinder's surface lies 2R/π from its axis
+    const wall = facesAt(notched, [[50, (2 * R) / PI, 5]]);
+    const all: DesignItem[] = [...notched, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: wall, d: String(d) }];
+    const { V, errors } = run(all);
+    expect(errors).toEqual({});
+    near(V[0], V0 + (PI / 2) * (R * R - (R - d) ** 2) * h);
+    const b = bodiesOf(built(single(all)))[0];
+    expectUnique(b);
+    // the front face is one face again, its notch narrower
+    // the front face's two pieces keep their names, each 3 longer
+    near(b.faces.find((q) => q.key === 'f1/side:e0')!.area, (40 + d) * h);
+    near(b.faces.find((q) => q.key === 'f1/side:e2')!.area, (40 + d) * h);
+
+    // a rounded box edge is a part cylinder between two faces it is tangent to
+    const items = box(100, 60, 10);
+    const edges = edgesAt(items, [TOP_FRONT]);
+    const rounded: DesignItem[] = [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: '3' }] }];
+    const round = bodiesOf(built(single(rounded)))[0].faces.find((q) => q.key.startsWith('f2/round:'))!;
+    const pulled = run([...rounded, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: [refTo('face', 'f1', round)], d: '1' }]);
+    expect(pulled.errors.f3).toBe('a rounding between two faces cannot be press-pulled: change its radius instead');
   });
 
   it('pushed through the whole body is refused', () => {

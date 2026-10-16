@@ -390,7 +390,8 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     const own = faceTags(s, face);
     // the faces next to it, across each of its edges
     const allFaces = subShapes(oc, t, s.shape, FACE);
-    const across = (edge: TopoDS_Shape) => allFaces.filter((g) => !g.IsSame(face) && shapeIndex(oc, t, g, EDGE).has(edge));
+    const edgesOf = allFaces.map((g) => shapeIndex(oc, t, g, EDGE));
+    const across = (edge: TopoDS_Shape) => allFaces.filter((g, i) => !g.IsSame(face) && edgesOf[i].has(edge));
     const retag = (target: TopoDS_Shape, from: FaceTag[]) => from.map((g) => ({ face: target, key: g.key, feature: g.feature }));
     if (info.type === 'plane' && info.frame) {
       const mk = t.add(new oc.BRepPrimAPI_MakePrism(f, vec(oc, t, scale(info.frame.n, d)), false, true));
@@ -434,23 +435,39 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       const sec = t.add(t.add(new oc.BRepBuilderAPI_MakeFace(t.add(mw.Wire()), true)).Face());
       const span = UMax - UMin;
       const axis = ax1(oc, t, L, pos.Direct() ? Z : scale(Z, -1));
-      const mk = t.add(span >= 2 * Math.PI - 1e-9 ? new oc.BRepPrimAPI_MakeRevol(sec, axis, false) : new oc.BRepPrimAPI_MakeRevol(sec, axis, span, false));
+      const full = span >= 2 * Math.PI - 1e-9;
+      const mk = t.add(full ? new oc.BRepPrimAPI_MakeRevol(sec, axis, false) : new oc.BRepPrimAPI_MakeRevol(sec, axis, span, false));
       const shape = arena.add(guard(oc, 'the cylinder cannot be grown', () => mk.Shape()));
-      // the moved wall is the edge at the new radius; ends and cut sides extend the flat faces they lie in
+      // the moved wall is the face at the new radius; the ring's ends (and the sides of a part
+      // ring) extend the flat faces they lie in
       const tags: FaceTag[] = [];
       const neighbours = subShapes(oc, t, f, EDGE).flatMap(across);
       const flat = neighbours.map((g) => ({ g, info: faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0) })).filter((q) => q.info.frame);
       const tol = 1e-7 * (1 + r1 + Math.abs(VMax - VMin));
+      /** The flat neighbour a face of the ring lies in, the nearest of them (two pieces of one face may share its plane). */
+      const planeOf = (g: TopoDS_Shape) => {
+        const c = faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0).c;
+        const v = t.add(t.add(new oc.BRepBuilderAPI_MakeVertex(pnt(oc, t, c))).Vertex());
+        const dist = (q: (typeof flat)[number]) => t.add(new oc.BRepExtrema_DistShapeShape(v, q.g)).Value();
+        return flat.filter((q) => Math.abs(dot3(sub3(c, q.info.frame!.o), q.info.frame!.n)) < tol)
+          .map((q) => ({ q, d: dist(q) })).sort((a, b) => a.d - b.d)[0]?.q;
+      };
       sides.forEach((e, i) => {
         for (const g of listShapes(arena, mk.Generated(e))) {
+          const on = i === 0 || i === 2 ? planeOf(g) : undefined;
           if (i === (r2 > r ? 1 : 3)) tags.push(...retag(g, own));
-          else if (i === 0 || i === 2) {
-            const c = faceInfo(oc, t, t.add(oc.TopoDS.Face(g)), 0).c;
-            const on = flat.find((q) => Math.abs(dot3(sub3(c, q.info.frame!.o), q.info.frame!.n)) < tol);
-            if (on) tags.push(...retag(g, faceTags(s, on.g)));
-          }
+          else if (on) tags.push(...retag(g, faceTags(s, on.g)));
         }
       });
+      if (!full) {
+        // a part cylinder ends on flat faces across it (a slot's end); a rounding between two faces
+        // it is tangent to does not, and a ring on it would stand out of them
+        for (const cap of [t.add(mk.FirstShape()), t.add(mk.LastShape())]) {
+          const on = planeOf(cap);
+          if (!on) throw new Error('a rounding between two faces cannot be press-pulled: change its radius instead');
+          tags.push(...retag(keep(t, cap), faceTags(s, on.g)));
+        }
+      }
       return { shape, tags: within(tags, shape) };
     }
     throw new Error('press-pull moves flat and cylindrical faces only');
