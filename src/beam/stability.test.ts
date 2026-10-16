@@ -297,6 +297,22 @@ describe('second order', () => {
     expect(sol.max.M!.s).toBeCloseTo(L / 2, 2);
   });
 
+  it('a shear-flexible cantilever column (Engesser): δ = H tan(kL) / (P k (1 − P/GA_v)) − H L / P', () => {
+    // EI w″ (1 − P/GA_v) = M with the shear strain from dM/dx (the force across the
+    // deformed axis), so k² = P / (EI (1 − P/GA_v)); the foot turns by H/(GA_v − P).
+    // Shear-soft (G/20) so that it matters: P/GA_v = 0.22 at 0.7 P_cr
+    const L = 3, H = 1e3, Gs = G / 20, GA = Gs * Av;
+    const PE = (Math.PI ** 2 * EI) / (2 * L) ** 2, P = (0.7 * PE) / (1 + PE / GA);
+    const st: NumStructure = { ...column(L, 'fixed', null, P, { G: Gs, Av, A: 1 }), loads: [{ id: 'P', type: 'force', at: { node: 'h' }, Fx: H, Fy: -P }] };
+    const sol = solveStructure(st, { secondOrder: true });
+    const k = Math.sqrt(P / (EI * (1 - P / GA)));
+    const delta = (H * Math.tan(k * L)) / (P * k * (1 - P / GA)) - (H * L) / P;
+    near(sol.nodes.h.dx, delta, 0.005);
+    near(sol.reactions[0].M, H * L + P * delta, 0.005);
+    // without the shear flexibility it would be a quarter less
+    expect(delta / ((H * (Math.tan(Math.sqrt(P / EI) * L) - Math.sqrt(P / EI) * L)) / (P * Math.sqrt(P / EI)))).toBeGreaterThan(1.25);
+  });
+
   it('moment and shear along a beam-column under a central point load', () => {
     // simple beam, Q at midspan, axial compression P (k² = P/EI): for x ≤ L/2
     // M(x) = Q sin(kx) / (2k cos(kL/2)), and the shear across the deformed axis V = dM/dx = Q cos(kx) / (2 cos(kL/2))
