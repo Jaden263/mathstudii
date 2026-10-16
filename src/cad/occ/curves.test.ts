@@ -12,6 +12,7 @@ import type { CadSketch } from '../model';
 import { bsDomain, bsEval, bsPoint, interpolate } from '../curves';
 import { findProfiles, profileProperties, type Vec2 } from '../profile';
 import { capHeight } from '../text';
+import { extrudeProps } from '../features';
 
 const { PI, abs, hypot } = Math;
 const near = (v: number, want: number, rel = 1e-9) => expect(abs(v - want) / abs(want)).toBeLessThan(rel);
@@ -73,6 +74,18 @@ describe('ellipses on the B-rep kernel', () => {
     const { res } = solve(single(extrude(sk, 4)));
     expect(res.featureError).toBeUndefined();
     near(volumes(res)[0], (PI * 30 * 12 * 4) / 2);
+  });
+
+  it('an elliptic prism\'s moments of inertia: V(b²/4 + h²/12), V(a²/4 + h²/12), V(a² + b²)/4', () => {
+    // the adaptive integration finds the inertia only when asked for it (it once came out
+    // negative: Iyy = −V·|c|²), and to 10⁻⁹ in its own pass
+    const a = 30, b = 12, h = 10, V = PI * a * b * h;
+    const m = solve(single(extrude(ellipse(a, b), h))).res.design!.bodies.c1[0].mass!;
+    near(m.V, V);
+    near(m.zg, h / 2);
+    near(m.Ixx, V * (b * b / 4 + h * h / 12), 1e-8);
+    near(m.Iyy, V * (a * a / 4 + h * h / 12), 1e-8);
+    near(m.Izz, (V * (a * a + b * b)) / 4, 1e-8);
   });
 
   it('the mesh kernel builds it from a fine polygon (within 2·10⁻⁴)', () => {
@@ -194,6 +207,15 @@ describe('text', () => {
     expect(res.featureError).toBeUndefined();
     const V = volumes(res).reduce((a, b) => a + b, 0);
     near(V, A * 2, 1e-9);
+  });
+
+  it('extruded text has the moments of inertia of its profile (exact second moments of the outline)', () => {
+    const sk = text('Bag 8', 10);
+    const want = extrudeProps(findProfiles(sk).regions, 2)!;
+    const m = solve(single(extrude(sk, 2))).res.design!.bodies.c1[0].mass!;
+    near(m.xg, want.xg, 1e-9);
+    near(m.yg, want.yg, 1e-9);
+    for (const k of ['Ixx', 'Iyy', 'Izz'] as const) near(m[k], want[k], 1e-8);
   });
 
   it('capitals stand capHeight × size tall: an "H" of size 20 is 13.88 high', () => {

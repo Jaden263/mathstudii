@@ -234,28 +234,38 @@ export function listShapes(t: Arena, list: NCollection_List_TopoDS_Shape): TopoD
  * Volume properties into p. OCCT's default integration is exact on planes, cylinders,
  * cones, spheres and tori but not on the faces a spline sweeps when it is extruded or
  * revolved (a spline profile extruded comes out 10⁻⁴ off, text 10⁻³), so shapes with such
- * faces go through the adaptive Gauss–Kronrod integration (exact to 10⁻¹²). Not span by
- * span: that is as exact but can take seconds (a box with an elliptical pocket: 6 s against
- * 7 ms). General B-spline faces (sweeps along curves, lofts) keep the default: there the
- * adaptive one takes minutes, and the default is within about 10⁻⁵.
+ * faces go through the adaptive Gauss–Kronrod integration: volume and centroid to 10⁻¹²,
+ * and the moments of inertia (asked for separately: they cost the most) in a second pass
+ * asked for 10⁻⁸ (it comes within 10⁻⁹), as at 10⁻¹² they can take seconds (a box with an
+ * elliptical pocket: 4 s against 60 ms). Returns the properties to take the moments of
+ * inertia from: p, or that second pass (in t). General B-spline faces (sweeps along
+ * curves, lofts) keep the default: there the adaptive one takes minutes, and the default
+ * is within about 10⁻⁵.
  */
-export function volumeProperties(oc: OC, s: TopoDS_Shape, p: GProp_GProps): void {
+export function volumeProperties(oc: OC, t: Arena, s: TopoDS_Shape, p: GProp_GProps): GProp_GProps {
   const S = oc.GeomAbs_SurfaceType;
   const analytic: GeomAbs_SurfaceType[] = [S.GeomAbs_Plane, S.GeomAbs_Cylinder, S.GeomAbs_Cone, S.GeomAbs_Sphere, S.GeomAbs_Torus];
   const swept: GeomAbs_SurfaceType[] = [S.GeomAbs_SurfaceOfExtrusion, S.GeomAbs_SurfaceOfRevolution];
-  const adaptive = scratch((t) => {
+  const adaptive = scratch((u) => {
     let any = false;
-    const ex = t.add(new oc.TopExp_Explorer(s, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    const ex = u.add(new oc.TopExp_Explorer(s, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
     for (; ex.More(); ex.Next()) {
-      const ty = t.add(new oc.BRepAdaptor_Surface(t.add(oc.TopoDS.Face(t.add(ex.Current()))), true)).GetType();
+      const ty = u.add(new oc.BRepAdaptor_Surface(u.add(oc.TopoDS.Face(u.add(ex.Current()))), true)).GetType();
       if (analytic.includes(ty)) continue;
       if (!swept.includes(ty)) return false;
       any = true;
     }
     return any;
   });
-  if (adaptive) oc.BRepGProp.VolumePropertiesGK(s, p, 1e-12, false, true, true, false, false);
-  else oc.BRepGProp.VolumeProperties(s, p, false, false, false);
+  if (!adaptive) {
+    oc.BRepGProp.VolumeProperties(s, p, false, false, false);
+    return p;
+  }
+  // (Eps, OnlyClosed, IsUseSpan, CGFlag, IFlag, SkipShared): CGFlag alone leaves the inertia out
+  oc.BRepGProp.VolumePropertiesGK(s, p, 1e-12, false, true, true, false, false);
+  const pi = t.add(new oc.GProp_GProps());
+  oc.BRepGProp.VolumePropertiesGK(s, pi, 1e-8, false, true, false, true, false);
+  return pi;
 }
 
 export function hasSolid(oc: OC, s: TopoDS_Shape): boolean {

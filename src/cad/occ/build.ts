@@ -83,12 +83,12 @@ const shapeMass = (oc: OC, s: TopoDS_Shape) => {
 export function occMass(oc: OC, s: TopoDS_Shape): Mass3 {
   return scratch((t) => {
     const p = t.add(new oc.GProp_GProps());
-    volumeProperties(oc, s, p);
+    const pi = volumeProperties(oc, t, s, p);
     const V = p.Mass();
     const g = t.add(p.CentreOfMass());
     const c = xyz(g);
     if (!(Math.abs(V) > 0)) return { V: 0, c, C: new Array(9).fill(0) };
-    const I = (x: number, y: number, z: number) => p.MomentOfInertia(t.add(new oc.gp_Ax1(g, t.add(new oc.gp_Dir(x, y, z)))));
+    const I = (x: number, y: number, z: number) => pi.MomentOfInertia(t.add(new oc.gp_Ax1(g, t.add(new oc.gp_Dir(x, y, z)))));
     const Jxx = I(1, 0, 0), Jyy = I(0, 1, 0), Jzz = I(0, 0, 1);
     // about (a + b)/√2: ½(Jaa + Jbb) + Jab, and the product ∫ab dV = −Jab
     const Pxy = (Jxx + Jyy) / 2 - I(1, 1, 0), Pxz = (Jxx + Jzz) / 2 - I(1, 0, 1), Pyz = (Jyy + Jzz) / 2 - I(0, 1, 1);
