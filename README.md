@@ -492,21 +492,61 @@ countersink is a true cone, and volume, centroid and inertia are surface integra
 the exact faces. The tests check them against closed forms to 10⁻⁹ (a fillet round a
 box, a torus by Pappus, a countersunk hole, a pyramid frustum loft). The kernel is big
 (7 MB compressed), so it loads in the background the first time a worksheet has a CAD
-part, only in the calculation worker, and is cached after that (offline too).
+part (or a CAD window opens), only in a worker, and is cached after that (offline too).
 
 Until it has loaded, or where it cannot, [Manifold](https://github.com/elalish/manifold)
 (WASM, Apache-2.0) builds the parts. It keeps every solid a closed 2-manifold, so
 booleans never leave cracks. Curves become polygons with a vertex every 2°, so volumes of
 booleaned bodies are within about 2·10⁻⁴ of the true solid (a cylinder comes out ~0.02 %
-small). The values refresh by themselves once OpenCascade is ready. The CAD window's 3-D
-view, section view, drawings and STL button still use the Manifold mesh for now. The two
-kernels build the same features, with three known differences: lofts pair the two
-profiles differently (a rectangle-to-circle duct differs by ~0.1 %), thin walls keep
-corners sharper than ~29° pointed in OpenCascade where Manifold bevels them, and a few
-borderline roundings one kernel accepts the other refuses.
+small). The values refresh by themselves once OpenCascade is ready. If it cannot load,
+Manifold also draws the parts, and the views say so (*Mesh kernel*); STEP export then
+waits for OpenCascade. The two kernels build the same features, with three known
+differences: lofts pair the two profiles differently (a rectangle-to-circle duct differs by
+~0.1 %), thin walls keep corners sharper than ~29° pointed in OpenCascade where Manifold
+bevels them, and a few borderline roundings one kernel accepts the other refuses.
 
-**Exchange:** DXF import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
-POLYLINE with bulges), and binary STL export of the assembly for 3-D printing.
+**Never in the way.** All kernel work runs in a worker; the page itself loads no kernel:
+
+- The calculation worker builds the parts for the worksheet, then sends each design's
+  display data (meshes, faces, edges) once. A math-only edit sends nothing and rebuilds
+  nothing.
+- **Incremental rebuilds:** every step of a timeline keeps what it built. Changing a
+  feature rebuilds it and the features after it. Rolling the timeline marker back and
+  forth, renaming, recolouring or panning a sketch rebuilds nothing. For example, a new
+  body on a plate with 60 counterbored holes rebuilds in 25 ms instead of 2.1 s.
+- Typing in the worksheet stays smooth while a heavy part rebuilds (no long tasks on the
+  page).
+- Section views, sketch outlines, measuring, interference, drawings and exports are
+  requests to the worker. In a separate CAD window, a kernel worker of its own answers.
+  The views show *Loading the 3-D kernel…* or *Rebuilding…* meanwhile.
+
+**Exact display and selection.** The 3-D views draw the B-rep: curved faces are smoothly
+shaded, and edges are the true edges as crisp lines (no seams). In the CAD window:
+
+- **Picking:** faces and edges light up under the pointer; edges within 5 px win.
+- **Selection:** click picks a face or edge, Shift-click adds one or takes it out again.
+- **Inspector:** shows what is picked:
+  - surface or curve type, area, radius / diameter, axis, normal, length
+  - totals for several picks
+  - for two picks, the angle and parallel gap between them and, with **Distance**, the
+    exact smallest distance
+- **Rebuilds:** picks follow their faces through a rebuild, by the faces' history.
+- **Other tools:**
+  - **Measure** (M) works on faces, edges and snapped corners, on the exact geometry.
+  - **Sketch on a face** takes the face's exact plane.
+  - **Joints** snap to cylinder axes and hole or shaft rims.
+- **Drawings:** the hidden-line views come from the worker and are dimensioned from the
+  exact box.
+
+**Exchange:**
+
+- **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
+  POLYLINE with bulges).
+- **STEP AP214:** exact solids with names, colours and the assembly structure.
+- **STL:** binary, tessellated finely from the exact surfaces.
+
+STEP and STL are on the CAD window's **File** tab and in the part's right-click menu.
+They download in the browser and open a save dialog in the desktop app.
 
 The **CAD part design** example covers three things:
 
@@ -525,11 +565,12 @@ What it is not, honestly:
   edges of an extrusion (plus sketch fillets for the side edges). You cannot pick any
   3-D edge to round yet, and there are no drafts. The B-rep kernel can do both; the
   features and picking are still to come.
-- **Display still faceted:** the 3-D view and the drawings show the mesh kernel's
-  solids, so drawings show circles as fine polylines. No sweeps along paths and no
-  splines; lofts are ruled (straight between the two profiles).
-- **STEP:** the B-rep kernel writes STEP AP214 files (bodies, components, assemblies with
-  their placements) and STL from the exact surfaces, but there is no button for them yet.
+- **Faceted where it matters little:** drawings are hidden-line views of the display
+  mesh, so circles in them are fine polylines (their dimensions are exact). The section
+  view's cut bodies cannot be picked. No sweeps along paths and no splines; lofts are
+  ruled (straight between the two profiles).
+- **Selection is not used by features yet:** picked faces and edges feed the inspector
+  and Measure; fillet, chamfer, shell and draft on them are still to come.
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
 - **Face sketches:** a sketch on a face keeps that face's position from when it was made;
   it does not follow later edits.
@@ -627,7 +668,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (exact B-rep values; no free 3-D edge fillets, drafts or sweeps yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |

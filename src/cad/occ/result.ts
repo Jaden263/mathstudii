@@ -12,7 +12,11 @@ import { occ, scratch, shapeIndex, xyz, type OC } from './kernel';
 export interface MeshOptions {
   /** Chord deviation of the display mesh as a fraction of the body's size (default 5·10⁻⁴). */
   deflection?: number;
-  /** Largest angle between neighbouring mesh normals on a curved face, radians (default 0.1). */
+  /**
+   * Largest angle between neighbouring mesh normals on a curved face, radians (default 0.25:
+   * smooth normals hide the facets, and OCCT's mesher takes 4× as long at 0.1 on a part with
+   * many small holes).
+   */
   angle?: number;
 }
 
@@ -146,7 +150,7 @@ export function bodyResultOcc(oc: OC, body: OccBody, o: MeshOptions = {}): BodyR
     });
     // display mesh and edge polylines, tessellated by OCCT
     const size = out.box ? Math.hypot(out.box.max[0] - out.box.min[0], out.box.max[1] - out.box.min[1], out.box.max[2] - out.box.min[2]) : 1;
-    const tol = Math.max(size * (o.deflection ?? 5e-4), 1e-9), ang = o.angle ?? 0.1;
+    const tol = Math.max(size * (o.deflection ?? 5e-4), 1e-9), ang = o.angle ?? 0.25;
     const raw = t.add(oc.ReplicadMeshExtractor.extract(shape, tol, ang, false));
     const positions = heap(oc, Float32Array, raw.getVerticesPtr(), raw.getVerticesSize());
     const normals = heap(oc, Float32Array, raw.getNormalsPtr(), raw.getNormalsSize());

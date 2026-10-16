@@ -1260,7 +1260,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         )}
         {shownTab === 'file' && (
           <Group label="Export">
-            <RibbonButton icon={<FileBox size={20} />} label="STEP" title="Export the exact solids as STEP AP214 (other CAD programs), with names, colours and the assembly" disabled={!!busy} onClick={() => void exportAs('step')} />
+            <RibbonButton icon={<FileBox size={20} />} label="STEP"
+              title={shown.build?.kernel === 'mesh' ? 'STEP needs the exact B-rep kernel, which could not load' : 'Export the exact solids as STEP AP214 (other CAD programs), with names, colours and the assembly'}
+              disabled={!!busy || shown.build?.kernel === 'mesh'} onClick={() => void exportAs('step')} />
             <RibbonButton icon={<Download size={20} />} label="STL" title="Export as STL (3-D printing), tessellated finely from the exact surfaces" disabled={!!busy} onClick={() => void exportAs('stl')} />
           </Group>
         )}
