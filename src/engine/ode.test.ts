@@ -29,6 +29,19 @@ describe('ODE solvers on y′ = −y', () => {
     // y′ = y², y(0) = 1 has y = 1/(1 − t): a singularity at t = 1
     expect(() => solveIvp((_t, y) => [y[0] * y[0]], 0, [1], 2)).toThrow(/too small at t = 1\.0000/);
   });
+  it('dense output backwards reads the step that holds t, not its neighbour', () => {
+    // y″ = −y from t = 20 back to 0 with y = sin t: between the steps the interpolant must do
+    // as well as forwards (a lookup one step off extrapolates: 50× worse with Radau)
+    const f = (_t: number, y: number[]) => [y[1], -y[0]];
+    type Sol = ReturnType<typeof solveIvp>;
+    const mid = (s: Sol, own: boolean) =>
+      Math.max(...s.segments.map((g) => Math.abs((own ? g.at((g.a + g.b) / 2) : s.at((g.a + g.b) / 2))[0] - Math.sin((g.a + g.b) / 2))));
+    for (const method of ['dopri', 'radau', 'bs'] as OdeMethod[]) {
+      const back = solveIvp(f, 20, [Math.sin(20), Math.cos(20)], 0, { method, rtol: 1e-6 });
+      expect(mid(back, false), method).toBe(mid(back, true));
+      expect(mid(back, false), method).toBeLessThan(3 * mid(solveIvp(f, 0, [0, 1], 20, { method, rtol: 1e-6 }), false));
+    }
+  });
 });
 
 describe('damped oscillator', () => {
@@ -106,6 +119,20 @@ describe('stiff problems', () => {
     expect(Math.abs(y[0] + y[1] + y[2] - 1)).toBeLessThan(1e-12);
     const fine = solveIvp(rob, 0, [1, 0, 0], 40, { method: 'radau', rtol: 1e-11 }).at(40);
     y.forEach((v, i) => expect(Math.abs(v - fine[i]) / fine[i]).toBeLessThan(1e-6));
+    // Hairer & Wanner's reference solution at x = 40 (Solving ODEs II, IV.10)
+    const ref = [0.7158270687193941, 9.185534764557522e-6, 0.2841637457458413];
+    fine.forEach((v, i) => expect(Math.abs(v - ref[i]) / ref[i]).toBeLessThan(1e-8));
+  });
+  it('Van der Pol, ε = 10⁻⁶, against Hairer & Wanner\'s reference solution', () => {
+    // VDPOL: y₁′ = y₂, ε y₂′ = (1 − y₁²) y₂ − y₁, y(0) = (2, 0); at x = 2 (Solving ODEs II, IV.10)
+    // y₁ = 1.706167732170469, y₂ = −0.8928097010248125
+    const eps = 1e-6;
+    const f = (_t: number, y: number[]) => [y[1], ((1 - y[0] * y[0]) * y[1] - y[0]) / eps];
+    for (const [method, rtol, tol] of [['auto', 1e-9, 1e-8], ['radau', 1e-12, 1e-10]] as [OdeMethod, number, number][]) {
+      const y = solveIvp(f, 0, [2, 0], 2, { method, rtol }).at(2);
+      expect(Math.abs(y[0] - 1.706167732170469), method).toBeLessThan(tol);
+      expect(Math.abs(y[1] + 0.8928097010248125), method).toBeLessThan(10 * tol);
+    }
   });
 });
 

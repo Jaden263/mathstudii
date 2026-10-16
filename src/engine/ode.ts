@@ -151,12 +151,13 @@ class Run {
       if (segs.length === 0) return y0.slice();
       const tol = 1e-12 * Math.max(hi - lo, Math.abs(lo), Math.abs(hi), 1e-300);
       if (t < lo - tol || t > hi + tol) throw new Error('outside the solution interval');
-      // segments run in the direction of integration
+      // segments run in the direction of integration: the first one whose far end t has
+      // not passed (b going forwards, a going backwards)
       let a = 0, b = segs.length - 1;
-      const d = this.dir;
+      const fwd = this.dir > 0;
       while (a < b) {
         const m = (a + b) >> 1;
-        if (d * (t - segs[m].b) > 0) a = m + 1;
+        if (fwd ? t > segs[m].b : t < segs[m].a) a = m + 1;
         else b = m;
       }
       return segs[a].at(t);

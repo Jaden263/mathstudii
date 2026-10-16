@@ -35,6 +35,8 @@ interface Call {
 const METHODS: Record<string, OdeMethod> = {
   adaptive: 'auto', auto: 'auto', adams: 'auto', adamsbdf: 'auto',
   rkadapt: 'dopri', nonstiff: 'dopri', dopri: 'dopri',
+  // Bulirsch–Stoer's steps vary in order, so its solution is a poor interpolant: adaptive here
+  bulstoer: 'dopri',
   radau: 'radau', stiff: 'radau', bdf: 'radau', stiffb: 'radau', stiffr: 'radau',
   fixed: 'rk4', rkfixed: 'rk4', rk4: 'rk4',
 };
@@ -207,6 +209,13 @@ const per = (u: Unit | null, t: Unit | null, k: number): Unit | null => {
 };
 
 const sameDims = (a: Unit | null, b: Unit | null) => (!a && !b) || (!!a && !!b && a.equalBase(b));
+
+const ANGLE = BASE_UNITS.indexOf('rad');
+/** Same dimensions, an angle counting as a plain number (θ in deg against sin θ). */
+function sameDimsLoose(a: Unit | null, b: Unit | null): boolean {
+  const da = a ? dimsOfValue(a) : [], db = b ? dimsOfValue(b) : [];
+  return BASE_UNITS.every((_, i) => i === ANGLE || Math.abs((da[i] ?? 0) - (db[i] ?? 0)) < 1e-9);
+}
 
 function unitText(u: Unit | null): string {
   return u ? u.formatUnits() || 'no unit' : 'no unit';
@@ -393,51 +402,123 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
     try {
       const l = c.L.evaluate(scope), r = c.R.evaluate(scope);
       // "… = 0" needs no unit on the zero
-      v = r === 0 ? l : l === 0 ? math.unaryMinus(r as never) : math.subtract(l as never, r as never);
+      try {
+        v = r === 0 ? l : l === 0 ? math.unaryMinus(r as never) : math.subtract(l as never, r as never);
+      } catch (e) {
+        // θ″ in deg/s² against g/L sin θ in 1/s²: an angle is a plain number
+        const a = splitUnit(l), b = splitUnit(r);
+        if (!sameDimsLoose(a.unit, b.unit)) throw e;
+        v = a.value - b.value;
+      }
     } catch (e) {
       const msg = (e as Error).message;
-      if (/Units do not match|dimension/i.test(msg)) throw new Error(`The two sides of “${c.text}” have different units`);
+      if (/Units do not match|dimension|Unexpected type of argument/i.test(msg)) throw new Error(`The two sides of “${c.text}” have different units`);
       throw e;
     }
     return value(v, c.text, t);
   });
+  // the explicit forms' units, checked on the first value that has any
+  const unitChecked = names.map(() => false);
+  const explicitValue = (j: number, t: number): number => {
+    const c = explicit[j]!;
+    const v = c.expr.evaluate(scope);
+    if (!unitChecked[j]) {
+      const u = isUnit(v) ? splitUnit(v).unit : null;
+      if (u || v !== 0) {
+        const need = units[j][order[j]];
+        if (!sameDimsLoose(u, need)) {
+          throw new Error(`“${c.text}”: ${derivName(names[j], order[j])} has units of ${unitText(need)}, the other side ${unitText(u)}`);
+        }
+        unitChecked[j] = true;
+      }
+    }
+    return value(v, c.text, t);
+  };
 
   let lastU: number[] = names.map(() => 0);
   const uScale = names.map(() => 0);
   let jac: number[][] | null = null;
+  const unsolvable = (t: number) =>
+    new Error(`The equations cannot be solved for ${names.map((n, j) => derivName(n, order[j])).join(', ')} at ${where(t)}: does each equation contain a highest derivative?`);
   const highest = (t: number, Y: number[]): number[] => {
     setState(t, Y);
-    if (allExplicit) {
-      return explicit.map((c) => value(c!.expr.evaluate(scope), c!.text, t));
-    }
-    // chord Newton on G(U) = 0 from the last solution; G is usually linear in U
-    let U = lastU.slice();
-    for (let it = 0; it < 30; it++) {
+    if (allExplicit) return names.map((_, j) => explicitValue(j, t));
+    // Newton on G(U) = 0 from the last solution. G is usually linear in U (one step); the
+    // Jacobian is kept while it works, steps are damped by the natural monotonicity test
+    // ‖J⁻¹G(U + λΔU)‖ < ‖ΔU‖ (Deuflhard), which needs no scale for the residuals
+    const G = (U: number[]): number[] | null => {
       setHighest(U);
-      const G = residuals(t);
-      if (!jac || it === 4 || it === 12) {
-        jac = G.map(() => new Array(names.length).fill(0));
-        for (let q = 0; q < names.length; q++) {
-          const d = 1e-7 * Math.max(Math.abs(U[q]), uScale[q]) || 1e-7;
-          const Up = U.slice();
-          Up[q] += d;
-          setHighest(Up);
-          const Gp = residuals(t);
-          for (let i = 0; i < G.length; i++) jac[i][q] = (Gp[i] - G[i]) / (Up[q] - U[q]);
-        }
-      }
-      let dU: number[];
       try {
-        dU = N.solveLinear(jac, G.map((g) => -g));
-      } catch {
-        throw new Error(`The equations cannot be solved for ${names.map((n, j) => derivName(n, order[j])).join(', ')} at ${where(t)}: does each equation contain a highest derivative?`);
+        const g = residuals(t);
+        return g.every(Number.isFinite) ? g : null;
+      } catch (e) {
+        if (/different units|cannot be solved/.test((e as Error).message)) throw e;
+        return null; // no real value there (sqrt of a negative …): a shorter step
       }
-      U = U.map((u, q) => u + dU[q]);
-      if (dU.every((d, q) => Math.abs(d) <= 1e-12 * Math.max(Math.abs(U[q]), uScale[q]) || d === 0)) {
+    };
+    const scaleOf = (U: number[], q: number) => Math.max(Math.abs(U[q]), uScale[q], 1e-300);
+    const size = (d: number[], U: number[]) => Math.sqrt(d.reduce((s, v, q) => s + (v / scaleOf(U, q)) ** 2, 0) / d.length);
+    const jacobianAt = (U: number[], g: number[]) => {
+      const J = g.map(() => new Array(names.length).fill(0));
+      for (let q = 0; q < names.length; q++) {
+        const d = 1e-7 * Math.max(Math.abs(U[q]), uScale[q]) || 1e-7;
+        const Up = U.slice();
+        Up[q] += d;
+        const gp = G(Up);
+        if (!gp) throw unsolvable(t);
+        for (let i = 0; i < g.length; i++) J[i][q] = (gp[i] - g[i]) / (Up[q] - U[q]);
+      }
+      return J;
+    };
+    const step = (J: number[][], g: number[]) => {
+      try {
+        return N.solveLinear(J, g.map((v) => -v));
+      } catch {
+        return null;
+      }
+    };
+    let U = lastU.slice();
+    let g = G(U);
+    if (!g) {
+      U = U.map(() => 0);
+      g = G(U);
+      if (!g) throw new Error(`Could not solve the equations for ${names.map((n, j) => derivName(n, order[j])).join(', ')} at ${where(t)}`);
+    }
+    let fresh = false;
+    if (!jac) { jac = jacobianAt(U, g); fresh = true; }
+    for (let it = 0; it < 60; it++) {
+      let dU = step(jac, g);
+      if (!dU && !fresh) { jac = jacobianAt(U, g); fresh = true; dU = step(jac, g); }
+      if (!dU) throw unsolvable(t);
+      const done = (d: number[], at: number[]) => d.every((v, q) => Math.abs(v) <= 1e-12 * scaleOf(at, q));
+      if (done(dU, U)) {
+        U = U.map((u, q) => u + dU![q]);
         lastU = U;
         U.forEach((u, q) => (uScale[q] = Math.max(uScale[q], Math.abs(u))));
         return U;
       }
+      const n0 = size(dU, U);
+      let accepted: { U: number[]; g: number[]; theta: number } | null = null;
+      for (let lambda = 1; lambda > 1e-10 && !accepted; lambda /= 2) {
+        const Un = U.map((u, q) => u + lambda * dU![q]);
+        const gn = G(Un);
+        const dn = gn && step(jac, gn);
+        if (!gn || !dn) continue;
+        const theta = size(dn, Un) / n0;
+        if (theta <= 1 - lambda / 4) accepted = { U: Un, g: gn, theta };
+        else if (!fresh) break; // an old Jacobian: renew it before shortening the step
+      }
+      if (!accepted) {
+        if (fresh) break;
+        jac = jacobianAt(U, g);
+        fresh = true;
+        continue;
+      }
+      U = accepted.U;
+      g = accepted.g;
+      // slow contraction: a Newton step with a new Jacobian does better than the old one
+      fresh = false;
+      if (accepted.theta > 0.25) { jac = jacobianAt(U, g); fresh = true; }
     }
     throw new Error(`Could not solve the equations for ${names.map((n, j) => derivName(n, order[j])).join(', ')} at ${where(t)}`);
   };

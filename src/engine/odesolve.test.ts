@@ -79,6 +79,31 @@ describe('odesolve: initial value problems', () => {
     expect(last([block("exp(y'(t)) = 1 + t\ny(0) = 0", 'y := odesolve(t, 2)'), 'abs(y(2) - (3 ln(3) - 2)) ='])).toBeLessThan(1e-8);
     // m(t) y″ = −k y with the mass on the left
     expect(last([block("(1 + 0*t) * y''(t) + y(t) = 0\ny(0) = 1\ny'(0) = 0", 'y := odesolve(t, 3)'), 'abs(y(3) - cos(3)) ='])).toBeLessThan(1e-8);
+    // y′³ + y′ = 1: y′ is the real root of u³ + u − 1 (Cardano: ∛(½ + √(31/108)) + ∛(½ − √(31/108)) =
+    // 0.6823278038280193), constant, so y(1) is that root. A Newton from u = 0 without a fresh
+    // Jacobian cycles 0 → 1 → 0 here
+    expect(last([block("y'(t)^3 + y'(t) = 1\ny(0) = 0", 'y := odesolve(t, 1)'), 'abs(y(1) - 0.6823278038280193) ='])).toBeLessThan(1e-12);
+    // sinh y′ = 10 + t: y(1) = ∫₀¹ arsinh(10 + s) ds = [(10 + s) arsinh(10 + s) − √((10 + s)² + 1)]₀¹
+    const F = (s: number) => (10 + s) * Math.asinh(10 + s) - Math.sqrt((10 + s) ** 2 + 1);
+    expect(last([block("sinh(y'(t)) = 10 + t\ny(0) = 0", 'y := odesolve(t, 1)'), `abs(y(1) - ${F(1) - F(0)}) =`])).toBeLessThan(1e-9);
+  });
+  it('checks the units of explicit equations too', () => {
+    // y″ = −y with y in mm and t in s is not dimensionally sound (y″ is mm/s²)
+    expect(solverError([block("y''(t) = -y(t)\ny(0 s) = 1 mm\ny'(0 s) = 0 mm/s", 'y := odesolve(t, 1 s)')])).toBe("“y''(t) = -y(t)”: y'' has units of mm / s^2, the other side mm");
+    expect(solverError([block("y'(t) = 5 m\ny(0 s) = 1 mm", 'y := odesolve(t, 1 s)')])).toMatch(/y' has units of mm \/ s, the other side m$/);
+    // an angle is a plain number: θ in degrees against g/L sin θ. Reference: θ(1 s) = −9.998806048670672°
+    // (y″ = −9.81 sin y, y(0) = 10° by a 25-digit Taylor-series integration, mpmath odefun)
+    const pend = (eq: string) => [block(`${eq}\nθ(0 s) = 10 deg\nθ'(0 s) = 0 deg/s`, 'θ := odesolve(t, 2 s)'), 'θ(1 s) = deg'];
+    expect(last(pend("θ''(t) = -(9.81 m/s^2) / (1 m) * sin(θ(t))"), { precision: 10 })).toBeCloseTo(-9.998806048670672, 7);
+    expect(last(pend("θ''(t) * (1 m) = -(9.81 m/s^2) * sin(θ(t))"), { precision: 10 })).toBeCloseTo(-9.998806048670672, 7);
+  });
+  it('conditions at the end: integrated backwards with full accuracy between the steps', () => {
+    // y″ = −y, y(20) = sin 20, y′(20) = cos 20 ⇒ y = sin t on [0, 20]
+    const b = [block("y''(t) = -y(t)\ny(20) = sin(20)\ny'(20) = cos(20)", 'y := odesolve(t, 0, "radau")')];
+    const worst = last([...b, 'k := 0 .. 2000', 'e := abs(y(k / 100) - sin(k / 100))', 'max(e) ='], { tol: 1e-6 });
+    // a lookup one step off (extrapolating) was 4e−5 here
+    expect(worst).toBeGreaterThan(0);
+    expect(worst).toBeLessThan(1e-6);
   });
   it('systems of mixed order, destructured or as a vector', () => {
     // x″ = −x + z, z′ = −z: z = e^−t, x = ½(cos t + sin t ... ) — check z and the energy-free part
@@ -188,7 +213,7 @@ describe('odesolve: messages', () => {
     expect(solverError([block("y'(t) = y(t)^2\ny(0) = 1", 'y := odesolve(t, 2)')])).toMatch(/too small at t = 1\.0000/);
     expect(solverError([block('y(t) = 1\ny(0) = 1', 'y := odesolve(t, 2)')])).toMatch(/No derivative of y/);
     expect(solverError([block("y'(t) = 1\ny(0) = 1", 'odesolve(t, 2)')])).toMatch(/Assign the solution/);
-    const out = run([block("y'(t) = -y(t)\ny(0 s) = 1 mm", 'y := odesolve(t, 10 s)'), 'y(12 s) =']);
+    const out = run([block("y'(t) = -y(t) / (1 s)\ny(0 s) = 1 mm", 'y := odesolve(t, 10 s)'), 'y(12 s) =']);
     expect((out[1] as MathResult).error).toBe('y(12 s) is outside the solution interval 0 s … 10 s');
     expect((run(['odesolve(t, 1) ='])[0] as MathResult).error).toMatch(/solver of a solve block/);
   });
