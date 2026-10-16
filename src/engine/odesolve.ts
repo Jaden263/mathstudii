@@ -446,14 +446,16 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
     // Newton on G(U) = 0 from the last solution. G is usually linear in U (one step); the
     // Jacobian is kept while it works, steps are damped by the natural monotonicity test
     // ‖J⁻¹G(U + λΔU)‖ < ‖ΔU‖ (Deuflhard), which needs no scale for the residuals
-    const G = (U: number[]): number[] | null => {
+    // a trial point may have no real value (sqrt of a negative …): a shorter step; elsewhere
+    // the error is the user's ("k" is not defined, y itself out of a function's domain)
+    const G = (U: number[], trial = true): number[] | null => {
       setHighest(U);
       try {
         const g = residuals(t);
         return g.every(Number.isFinite) ? g : null;
       } catch (e) {
-        if (/different units|cannot be solved/.test((e as Error).message)) throw e;
-        return null; // no real value there (sqrt of a negative …): a shorter step
+        if (!trial || /different units/.test((e as Error).message)) throw e;
+        return null;
       }
     };
     const scaleOf = (U: number[], q: number) => Math.max(Math.abs(U[q]), uScale[q], 1e-300);
@@ -462,9 +464,14 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
       const J = g.map(() => new Array(names.length).fill(0));
       for (let q = 0; q < names.length; q++) {
         const d = 1e-7 * Math.max(Math.abs(U[q]), uScale[q]) || 1e-7;
-        const Up = U.slice();
-        Up[q] += d;
-        const gp = G(Up);
+        // forwards, or backwards at the edge of the equation's domain
+        let Up = U.slice(), gp: number[] | null = null;
+        for (const s of [d, -d]) {
+          Up = U.slice();
+          Up[q] += s;
+          gp = G(Up);
+          if (gp) break;
+        }
         if (!gp) throw unsolvable(t);
         for (let i = 0; i < g.length; i++) J[i][q] = (gp[i] - g[i]) / (Up[q] - U[q]);
       }
@@ -481,7 +488,7 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
     let g = G(U);
     if (!g) {
       U = U.map(() => 0);
-      g = G(U);
+      g = G(U, false);
       if (!g) throw new Error(`Could not solve the equations for ${names.map((n, j) => derivName(n, order[j])).join(', ')} at ${where(t)}`);
     }
     let fresh = false;

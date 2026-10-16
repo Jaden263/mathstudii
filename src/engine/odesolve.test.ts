@@ -86,6 +86,9 @@ describe('odesolve: initial value problems', () => {
     // sinh y′ = 10 + t: y(1) = ∫₀¹ arsinh(10 + s) ds = [(10 + s) arsinh(10 + s) − √((10 + s)² + 1)]₀¹
     const F = (s: number) => (10 + s) * Math.asinh(10 + s) - Math.sqrt((10 + s) ** 2 + 1);
     expect(last([block("sinh(y'(t)) = 10 + t\ny(0) = 0", 'y := odesolve(t, 1)'), `abs(y(1) - ${F(1) - F(0)}) =`])).toBeLessThan(1e-9);
+    // the iteration's own trial points may fail; the user's mistakes still come through
+    expect(solverError([block("2*y''(t) + qq*y(t) = 0\ny(0) = 1\ny'(0) = 0", 'y := odesolve(t, 1)')])).toBe('"qq" is not defined');
+    expect(solverError([block("2*y''(t) + sqrt(y(t)) = 0\ny(0) = 1\ny'(0) = 0", 'y := odesolve(t, 5)')])).toMatch(/does not give a single real value at t = /);
   });
   it('checks the units of explicit equations too', () => {
     // y″ = −y with y in mm and t in s is not dimensionally sound (y″ is mm/s²)
