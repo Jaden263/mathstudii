@@ -150,6 +150,33 @@ describe('plates against Timoshenko & Woinowsky-Krieger', () => {
     expect(at(mesh, f.mx, [r, 0]) / (-(q * r * r) / 8)).toBeCloseTo(1, 1);
   });
 
+  it('a thick simply supported square (t/a = 0.1, 0.2) adds the shear deflection exactly', () => {
+    // hard simply supported polygonal Reissner–Mindlin plates (Wang, Reddy & Lee, Shear
+    // Deformable Beams and Plates, 2000, ch. 10): w = w_K + M_K / (κ G t), M_K = (m_x + m_y)/(1 + ν)
+    // of the Kirchhoff plate: at the centre w_K = 0.00406235 q a⁴/D and m_x = m_y = 0.047886 q a²
+    for (const ta of [0.1, 0.2]) {
+      const t = ta * a;
+      const { mesh, f, D } = plate(square(a), 'simple', [uniform(q)], { size: a / 32, t });
+      const S = ((5 / 6) * E * t) / (2 * (1 + nu));
+      const ref = (0.00406235 * q * a ** 4) / D + (2 * 0.047886 * q * a * a) / (1 + nu) / S;
+      near(wAt(mesh, f, [a / 2, a / 2]), ref, 1e-3);
+    }
+  });
+
+  it('an interior panel of a flat slab on point columns (§ 100, ν = 0.2)', () => {
+    // a square panel of an endless slab on columns: by symmetry its edges do not turn
+    // (β_n = 0: rotational springs, no vertical ones) and columns hold its corners;
+    // w = 0.00581 q a⁴ / D at the centre, where M_x = M_y = 0.0331 q a²; each column a quarter
+    const sq = square(a);
+    const D2 = Dof(0.01, 0.2);
+    const springs: NumPlateSupport[] = sq.map((p, i) => ({ id: `s${i}`, kind: 'line', a: p, b: sq[(i + 1) % 4], fix: 'spring', k: 0, kr: (1e6 * D2) / a }));
+    const columns: NumPlateSupport[] = sq.map((p, i) => ({ id: `c${i}`, kind: 'point', at: p }));
+    const { mesh, f, D } = plate(sq, 'free', [uniform(q)], { size: a / 48, nu: 0.2, points: sq, extra: [...springs, ...columns] });
+    near(wAt(mesh, f, [a / 2, a / 2]) / ((q * a ** 4) / D), 0.00581, 0.003);
+    near(at(mesh, f.mx, [a / 2, a / 2]) / (q * a * a), 0.0331, 0.005);
+    for (let i = 4; i < 8; i++) expect(f.support[i] / (q * a * a)).toBeCloseTo(0.25, 9);
+  });
+
   it('converges at second order in h', () => {
     const err = [4, 8, 16, 32].map((n) => {
       const { mesh, f, D } = plate(square(a), 'simple', [uniform(q)], { size: a / n });

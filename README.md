@@ -678,25 +678,33 @@ the right-click menu).
 - **Mesh:** a rectangle with rectangular openings and walls along the axes gets a
   structured grid through every edge, wall and column head (loads get grid lines where
   that leaves no sliver). Any other outline is a constrained Delaunay triangulation
-  refined by Ruppert's algorithm to angles of at least 25° (except at sharp corners of the
-  outline) and edges under a size limit; each triangle is split into three quads, which are
-  then smoothed. The automatic size gives about 1200 elements.
+  refined by Ruppert's algorithm to angles of at least 25° (except at sharp corners: of the
+  outline, or where a wall meets or crosses an edge at a shallow angle) and edges under a
+  size limit; each triangle is split into three quads, which are then smoothed. The
+  automatic size gives about 1200 elements; at most 30 000 are allowed (a smaller element
+  size is refused with a message rather than left to run for minutes).
 - **Curved edges:** a polygon standing for a curve (corners turning by less than 20°) has
   its boundary nodes moved onto the curve, with the curve's tangent. A simply supported
   polygon of straight chords converges to another plate than the circle (Babuška's
   paradox: a 48-gon came out 27 % too stiff).
 - **Solver:** each load is integrated exactly into the elements (patches clipped to each
-  element, lines cut at element edges), so loads need not follow the mesh. The stiffness
+  element, lines cut at element edges), so loads need not follow the mesh; the part of a
+  patch or line load beyond the outline or in an opening is dropped, and one wholly off
+  the plate is reported. The stiffness
   is numbered node by node, by reverse Cuthill–McKee or a sort along the long side,
   whichever gives the smaller envelope, then assembled straight into that envelope and
   factorised once (skyline Cholesky). Every load case is one more right-hand side and every
   combination a sum of cases. In Chrome 10 000 unknowns take 0.3 – 0.4 s and 15 000
-  about 0.7 s, meshing and recovery included. The mesh and the factor are cached on the numbers
-  that define the plate, so recalculating the sheet for anything else is instant.
+  about 0.7 s, meshing and recovery included. The mesh and the solutions are cached on the
+  numbers that define the plate and its loads, so recalculating the sheet for anything else
+  is instant.
 - **Supports:** a simple support holds w and the rotation along the edge, as w = 0 along a
   line does in Kirchhoff's theory. The supports' twisting couples are turned into forces
   (Kelvin–Tait), so edge reactions come out as Kirchhoff's V = q + ∂m_xy/∂s, with the
-  forces that hold the corners down. On an irregular mesh the nodal reactions alternate
+  forces that hold the corners down. A clamped edge has no twisting moment (V = q there)
+  and no corner force where it meets a simple one. Near a re-entrant corner the shear is
+  singular, and how the edges meeting there share its load moves by a few per cent from
+  mesh to mesh (their sum does not). On an irregular mesh the nodal reactions alternate
   from node to node; a [¼ ½ ¼] filter along the line takes that out of the values per
   length.
 - **Results:** moments by superconvergent patch recovery: a quadratic fitted at each
@@ -717,6 +725,10 @@ the right-click menu).
   - central point load: 0.01160 P a²/D;
   - b/a = 2: 0.01013, 0.1017, 0.0464;
   - simply supported and clamped circles from the closed forms;
+  - an interior panel of a flat slab on point columns (§ 100, ν = 0.2): 0.00581 q a⁴/D
+    and 0.0331 q a² at the centre;
+  - thick plates (t/a = 0.1, 0.2): the simply supported square's Mindlin deflection
+    w_K + M_K/(κ G t);
   - second-order convergence to Navier's series, the same square on unstructured and on
     skew (turned) meshes.
 
