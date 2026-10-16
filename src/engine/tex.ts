@@ -4,6 +4,7 @@ import { math, isUnitName } from './math';
 import { parseExpr } from './compile';
 import { parseRange, splitTop, type Lhs } from './syntax';
 import { escapeText } from './format';
+import { specialFunctionTex } from './specialTex';
 
 /** Names defined in the worksheet; these render as variables rather than units. */
 export const texCtx = { defined: new Set<string>(), symbolic: false };
@@ -180,7 +181,14 @@ function functionTex(n: AnyNode): string | undefined {
   const args = n.args as MathNode[];
   const a = (i: number) => t(args[i]);
   const isVar = (i: number) => (args[i] as AnyNode)?.type === 'SymbolNode';
+  // y''(t), written __d(y, 2, t) by the preprocessor
+  if (name === '__d' && args.length >= 3) {
+    const k = Number((args[1] as AnyNode).value);
+    return `{${a(0)}}${k <= 3 ? "'".repeat(k) : `^{(${k})}`}${call(argList(args.slice(2)))}`;
+  }
   if (texCtx.defined.has(name)) return `${nameTex(name)}${call(argList(args))}`;
+  const special = specialFunctionTex(name, args.map(t));
+  if (special) return special;
   switch (name) {
     case 'sqrt': return `\\sqrt{${a(0)}}`;
     case 'cbrt': return `\\sqrt[3]{${a(0)}}`;

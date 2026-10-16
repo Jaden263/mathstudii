@@ -18,7 +18,10 @@ import { evaluateSketch, type SketchResult } from './sketchEval';
 import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
 import { solveBeam, beamValue, type BeamResult } from '../beam/evaluate';
 import { pythonReady, runPython, resetPython, pyParams } from '../python/runtime';
+import { odesolveArgs, odesolveNames, solveOdeBlock, type OdeLine } from './odesolve';
 import './materialsLib';
+import './specialLib';
+import './odeLib';
 
 export type { SketchResult, CadResult, BeamResult };
 
@@ -606,8 +609,10 @@ class Evaluator {
         out.guesses.push({ tex: exprTex(g), error: friendlyError(e) });
       }
     }
-    type Constraint = { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string };
+    type Constraint = { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string; src: OdeLine };
     const cons: Constraint[] = [];
+    // in an odesolve block the variable (t) and the unknown functions are names, not units
+    for (const n of odesolveNames(r.solver)) texCtx.defined.add(n);
     for (const c of lines(r.constraints)) {
       const parts = splitComparison(c);
       if (!parts) {
@@ -617,7 +622,7 @@ class Evaluator {
       const [l, op, rr] = parts;
       const opTex: Record<string, string> = { '=': '\\boldsymbol{=}', '==': '\\boldsymbol{=}', '<': '<', '>': '>', '<=': '\\le', '>=': '\\ge', '≤': '\\le', '≥': '\\ge', '!=': '\\ne', '≠': '\\ne' };
       try {
-        cons.push({ lhs: compileExpr(l), rhs: compileExpr(rr), op });
+        cons.push({ lhs: compileExpr(l), rhs: compileExpr(rr), op, src: { lhs: l, op, rhs: rr } });
         out.constraints.push({ tex: `${exprTex(l)} ${opTex[op] ?? op} ${exprTex(rr)}` });
       } catch (e) {
         out.constraints.push({ tex: exprTex(c), error: friendlyError(e) });
@@ -642,7 +647,7 @@ class Evaluator {
     }
   }
 
-  private runSolver(src: string, local: ChainScope, cons: { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string }[]) {
+  private runSolver(src: string, local: ChainScope, cons: { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string; src: OdeLine }[]) {
     if (!src) throw new Error('Add a solver call, e.g. x := find(x)');
     let lhs: Lhs | null = null;
     let rest = src;
@@ -660,6 +665,8 @@ class Evaluator {
       rest = rest.slice(0, e);
     }
     if (!lhs) show = true;
+    const odeArgs = odesolveArgs(rest);
+    if (odeArgs) return this.runOdesolve(lhs, odeArgs, local, cons.map((c) => c.src));
     const m = /^\s*(find|minerr|minimize|maximize)\s*\((.*)\)\s*$/s.exec(rest);
     if (!m) throw new Error('Solver must be find(…), minerr(…), minimize(f, …) or maximize(f, …)');
     const fn = m[1];
@@ -755,6 +762,26 @@ class Evaluator {
       return lhs ? `${lhsTex(lhs)} \\coloneqq ${callTex}${shown}` : `${callTex}${shown}`;
     };
     return { tex, value };
+  }
+
+  /** y := odesolve(t, b): the constraints are differential equations and their conditions. */
+  private runOdesolve(lhs: Lhs | null, args: string[], local: ChainScope, lines: OdeLine[]) {
+    if (!lhs) throw new Error('Assign the solution to the unknown function: y := odesolve(t, 10 s)');
+    const lhsNames = lhs.kind === 'destructure' ? lhs.names : lhs.kind === 'var' || lhs.kind === 'func' ? [lhs.name] : [];
+    const { functions } = solveOdeBlock(lines, args, lhsNames, local, engineCtx.tol);
+    const callTex = exprTex(`odesolve(${args.join(', ')})`);
+    if (lhs.kind === 'destructure') {
+      if (lhs.names.length !== functions.length) throw new Error(`Expected ${functions.length} names on the left`);
+      lhs.names.forEach((n, i) => {
+        this.global.set(n, functions[i]);
+        this.ranges.delete(n);
+      });
+    } else if (lhs.kind === 'var' || lhs.kind === 'func') {
+      this.global.set(lhs.name, functions.length === 1 ? functions[0] : vec(functions));
+      this.ranges.delete(lhs.name);
+    } else throw new Error('Assign the solution to a function name or an [x; y] list');
+    this.updateDefined();
+    return { tex: () => `${lhsTex(lhs)} \\coloneqq ${callTex}`, value: null as unknown };
   }
 
   // ------------------------------------------------------------ tables

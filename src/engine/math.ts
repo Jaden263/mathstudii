@@ -112,6 +112,11 @@ function withValue(u: Unit, value: number): Unit {
   return c;
 }
 
+/** value (SI) with the unit of a template from splitUnit, without unit arithmetic (fast). */
+export function quantity(value: number, unit: Unit | null): number | Unit {
+  return unit ? withValue(unit, value) : value;
+}
+
 export function joinUnit(value: number, unit: Unit | null): number | Unit {
   if (!unit) return value;
   return math.multiply(value, unit) as Unit;

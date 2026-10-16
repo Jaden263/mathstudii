@@ -1,6 +1,7 @@
 // Pure numerical algorithms on plain JS numbers. Units are stripped/re-attached
 // by the callers (see splitUnit in math.ts), which keeps these routines simple
 // and fast.
+import * as S from './special';
 
 export type Fn1 = (x: number) => number;
 
@@ -478,71 +479,6 @@ function radix2(re: number[], im: number[], inverse: boolean): { re: number[]; i
   return { re, im };
 }
 
-// ---------------------------------------------------------------- ODEs
-
-export type Deriv = (x: number, y: number[]) => number[];
-
-/** Classic fixed-step 4th-order Runge–Kutta. Returns rows [x, y1, y2, ...]. */
-export function rk4(y0: number[], x0: number, x1: number, steps: number, D: Deriv): number[][] {
-  const h = (x1 - x0) / steps;
-  let y = y0.slice();
-  const out = [[x0, ...y]];
-  for (let i = 0; i < steps; i++) {
-    const x = x0 + i * h;
-    const k1 = D(x, y);
-    const k2 = D(x + h / 2, y.map((v, j) => v + (h / 2) * k1[j]));
-    const k3 = D(x + h / 2, y.map((v, j) => v + (h / 2) * k2[j]));
-    const k4 = D(x + h, y.map((v, j) => v + h * k3[j]));
-    y = y.map((v, j) => v + (h / 6) * (k1[j] + 2 * k2[j] + 2 * k3[j] + k4[j]));
-    out.push([x0 + (i + 1) * h, ...y]);
-  }
-  return out;
-}
-
-/** Adaptive Dormand–Prince 5(4), reported at equally spaced output points. */
-export function rk45(y0: number[], x0: number, x1: number, points: number, D: Deriv, tol = 1e-9): number[][] {
-  const out = [[x0, ...y0]];
-  let x = x0;
-  let y = y0.slice();
-  let h = (x1 - x0) / Math.max(points, 1) / 4;
-  const c = [0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1, 1];
-  const a = [
-    [], [1 / 5], [3 / 40, 9 / 40], [44 / 45, -56 / 15, 32 / 9],
-    [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729],
-    [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656],
-    [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84],
-  ];
-  const b5 = [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0];
-  const b4 = [5179 / 57600, 0, 7571 / 16695, 393 / 640, -92097 / 339200, 187 / 2100, 1 / 40];
-  for (let p = 1; p <= points; p++) {
-    const target = x0 + ((x1 - x0) * p) / points;
-    let guard = 0;
-    while ((x1 > x0 ? x < target : x > target) && guard++ < 100000) {
-      if ((x1 > x0 && x + h > target) || (x1 < x0 && x + h < target)) h = target - x;
-      const k: number[][] = [];
-      for (let s = 0; s < 7; s++) {
-        const ys = y.map((v, j) => v + h * a[s].reduce((acc, aij, l) => acc + aij * k[l][j], 0));
-        k.push(D(x + c[s] * h, ys));
-      }
-      const y5 = y.map((v, j) => v + h * b5.reduce((acc, bi, s) => acc + bi * k[s][j], 0));
-      const y4 = y.map((v, j) => v + h * b4.reduce((acc, bi, s) => acc + bi * k[s][j], 0));
-      let err = 0;
-      for (let j = 0; j < y.length; j++) {
-        const sc = tol + tol * Math.max(Math.abs(y[j]), Math.abs(y5[j]));
-        err = Math.max(err, Math.abs(y5[j] - y4[j]) / sc);
-      }
-      if (err <= 1 || Math.abs(h) < 1e-14 * Math.max(1, Math.abs(x))) {
-        x += h;
-        y = y5;
-      }
-      const factor = err === 0 ? 5 : Math.min(5, Math.max(0.2, 0.9 * Math.pow(err, -0.2)));
-      h *= factor;
-    }
-    out.push([target, ...y]);
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------- interpolation
 
 /** Natural cubic spline second derivatives. */
@@ -601,133 +537,26 @@ export function polyfit(xs: number[], ys: number[], degree: number): number[] {
 }
 
 // ---------------------------------------------------------------- special functions
+// (implemented in special.ts; these names are kept for the distribution functions)
 
-export function gammaln(x: number): number {
-  const g = 7;
-  const p = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
-    -176.61503916999185, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
-  if (x < 0.5) return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - gammaln(1 - x);
-  x -= 1;
-  let a = p[0];
-  const t = x + g + 0.5;
-  for (let i = 1; i < g + 2; i++) a += p[i] / (x + i);
-  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
-}
+export const gammaln = S.lgamma;
 
 /** Regularised lower incomplete gamma P(a, x). */
 export function gammaP(a: number, x: number): number {
-  if (x <= 0) return 0;
-  if (x < a + 1) {
-    let sum = 1 / a, term = sum;
-    for (let n = 1; n < 1000; n++) {
-      term *= x / (a + n);
-      sum += term;
-      if (Math.abs(term) < Math.abs(sum) * 1e-16) break;
-    }
-    return sum * Math.exp(-x + a * Math.log(x) - gammaln(a));
-  }
-  // continued fraction for Q
-  let b = x + 1 - a, c = 1 / 1e-300, d = 1 / b, h = d;
-  for (let i = 1; i < 1000; i++) {
-    const an = -i * (i - a);
-    b += 2;
-    d = an * d + b; if (Math.abs(d) < 1e-300) d = 1e-300;
-    c = b + an / c; if (Math.abs(c) < 1e-300) c = 1e-300;
-    d = 1 / d;
-    const del = d * c;
-    h *= del;
-    if (Math.abs(del - 1) < 1e-16) break;
-  }
-  return 1 - Math.exp(-x + a * Math.log(x) - gammaln(a)) * h;
+  return x <= 0 ? 0 : S.gammaPQ(a, x).p;
 }
 
 /** Regularised incomplete beta I_x(a, b). */
 export function betaI(x: number, a: number, b: number): number {
-  if (x <= 0) return 0;
-  if (x >= 1) return 1;
-  const bt = Math.exp(gammaln(a + b) - gammaln(a) - gammaln(b) + a * Math.log(x) + b * Math.log(1 - x));
-  const cf = (x: number, a: number, b: number) => {
-    const qab = a + b, qap = a + 1, qam = a - 1;
-    let c = 1, d = 1 - (qab * x) / qap;
-    if (Math.abs(d) < 1e-300) d = 1e-300;
-    d = 1 / d;
-    let h = d;
-    for (let m = 1; m <= 1000; m++) {
-      const m2 = 2 * m;
-      let aa = (m * (b - m) * x) / ((qam + m2) * (a + m2));
-      d = 1 + aa * d; if (Math.abs(d) < 1e-300) d = 1e-300;
-      c = 1 + aa / c; if (Math.abs(c) < 1e-300) c = 1e-300;
-      d = 1 / d; h *= d * c;
-      aa = (-(a + m) * (qab + m) * x) / ((a + m2) * (qap + m2));
-      d = 1 + aa * d; if (Math.abs(d) < 1e-300) d = 1e-300;
-      c = 1 + aa / c; if (Math.abs(c) < 1e-300) c = 1e-300;
-      d = 1 / d;
-      const del = d * c;
-      h *= del;
-      if (Math.abs(del - 1) < 1e-16) break;
-    }
-    return h;
-  };
-  return x < (a + 1) / (a + b + 2) ? (bt * cf(x, a, b)) / a : 1 - (bt * cf(1 - x, b, a)) / b;
+  return x <= 0 ? 0 : x >= 1 ? 1 : S.betaInc(x, a, b);
 }
 
-export function erf(x: number): number {
-  // via incomplete gamma for full double precision
-  return x >= 0 ? gammaP(0.5, x * x) : -gammaP(0.5, x * x);
-}
-
-/** Inverse standard normal CDF (Acklam, refined by one Halley step). */
-export function normInv(p: number): number {
-  if (p <= 0) return -Infinity;
-  if (p >= 1) return Infinity;
-  const a = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.38357751867269e2, -3.066479806614716e1, 2.506628277459239];
-  const b = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2, 6.680131188771972e1, -1.328068155288572e1];
-  const c = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
-  const d = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996, 3.754408661907416];
-  const pl = 0.02425;
-  let x: number;
-  if (p < pl) {
-    const q = Math.sqrt(-2 * Math.log(p));
-    x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
-  } else if (p <= 1 - pl) {
-    const q = p - 0.5, r = q * q;
-    x = ((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q) / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
-  } else {
-    const q = Math.sqrt(-2 * Math.log(1 - p));
-    x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
-  }
-  const e = 0.5 * (1 + erf(x / Math.SQRT2)) - p;
-  const u = e * Math.sqrt(2 * Math.PI) * Math.exp((x * x) / 2);
-  return x - u / (1 + (x * u) / 2);
-}
+export const erf = S.erf;
+export const normInv = S.normInv;
 
 /** Invert a monotone increasing CDF on (lo, hi) by bisection + Brent. */
 export function invertCdf(cdf: Fn1, p: number, lo: number, hi: number): number {
   while (cdf(lo) > p) lo = lo < 0 ? lo * 2 : lo - 1;
   while (cdf(hi) < p) hi = hi > 0 ? hi * 2 : hi + 1;
   return brent((x) => cdf(x) - p, lo, hi, 1e-13);
-}
-
-/** Bessel function of the first kind J_n(x) (integer n) via its integral representation. */
-export function besselJ(n: number, x: number): number {
-  return integrate((t) => Math.cos(n * t - x * Math.sin(t)), 0, Math.PI, 1e-13) / Math.PI;
-}
-
-/** Modified Bessel function of the first kind I_n(x) (integer n). */
-export function besselI(n: number, x: number): number {
-  return integrate((t) => Math.exp(x * Math.cos(t)) * Math.cos(n * t), 0, Math.PI, 1e-13) / Math.PI;
-}
-
-/** Bessel function of the second kind Y_n(x), x > 0 (integer n). */
-export function besselY(n: number, x: number): number {
-  if (x <= 0) throw new Error('Yn requires x > 0');
-  const a = integrate((t) => Math.sin(x * Math.sin(t) - n * t), 0, Math.PI, 1e-13) / Math.PI;
-  const b = integrate((t) => (Math.exp(n * t) + (n % 2 === 0 ? 1 : -1) * Math.exp(-n * t)) * Math.exp(-x * Math.sinh(t)), 0, Infinity, 1e-13) / Math.PI;
-  return a - b;
-}
-
-/** Modified Bessel function of the second kind K_n(x), x > 0. */
-export function besselK(n: number, x: number): number {
-  if (x <= 0) throw new Error('Kn requires x > 0');
-  return integrate((t) => Math.exp(-x * Math.cosh(t)) * Math.cosh(n * t), 0, Infinity, 1e-13);
 }
