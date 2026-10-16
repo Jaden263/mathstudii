@@ -30,7 +30,9 @@ describe('CAD example worksheet', () => {
     const bore = Math.PI * 25.5 ** 2;
     const hole = Math.PI * 4.5 ** 2 * 12 + Math.PI * (7.5 ** 2 - 4.5 ** 2) * 4;
     const Vf = Math.PI * 100 ** 2 * 12 + Math.PI * 50 ** 2 * 20 - bore * 32 - 6 * hole;
-    expect(res.design!.components.cf!.V / Vf).toBeCloseTo(1, 3);
+    // built by the B-rep kernel (loaded in test-setup): exact, not just within the mesh's faceting
+    expect(res.design!.brep).toBe(true);
+    expect(Math.abs(res.design!.components.cf!.V / Vf - 1)).toBeLessThan(1e-9);
     expect(res.design!.placements.os.by).toBe('joint');
     const shaftLine = out.results.get(ws.regions.find((r) => r.kind === 'math' && r.source.startsWith('asm.Spin'))!.id) as MathResult;
     expect(shaftLine.tex).toContain('15');
