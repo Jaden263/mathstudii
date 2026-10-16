@@ -18,7 +18,7 @@
 // to the hint), else by the hint alone when the entity is still exactly where it was
 // (renamed, not moved), else it is lost.
 import type { CurveKind, EdgeInfo, FaceInfo, SurfaceKind, VertexInfo } from './buildResult';
-import { cross3, dot3, frameFromNormal, len3, norm3, scale3, sub3, type Frame, type Vec3 } from './solid';
+import { add3, cross3, dot3, frameFromNormal, len3, norm3, scale3, sub3, type Frame, type Vec3 } from './solid';
 
 export type TopoKind = 'face' | 'edge' | 'vertex';
 
@@ -261,17 +261,64 @@ export function resolvedEntity<K extends TopoKind>(bodies: BodyTopology[], kind:
 // ------------------------------------------------------------ sketch planes on faces
 
 /**
- * The plane of a sketch on a face, found again on the face as it is now: the normal from
- * the face, the sketch origin and x axis the stored ones projected onto the new plane.
- * A face that moved along its normal (the base extruded taller) carries the sketch with
- * it; one that grew or shrank in its plane leaves it where it was. Null when the face is
- * no longer flat.
+ * The point of a face a sketch's origin sits on, when it sits on one: a vertex (a part
+ * drawn from the origin) or the centre of a circle or arc edge (a disc centred on it).
+ * The sketch then moves with that point when the face moves in its plane.
  */
-export function faceFrame(stored: Frame, face: FaceInfo): Frame | null {
+export interface FaceAnchor {
+  /** The vertex, or the circle or arc edge whose centre it is. */
+  ref: TopoRef;
+  /** Where the point was when the sketch was made. */
+  at: Vec3;
+}
+
+/** The anchor of a sketch origin `o` on a face of a body: its vertex or circle centre at `o`, if any. */
+export function faceAnchor(b: BodyTopology, face: FaceInfo, o: Vec3): FaceAnchor | undefined {
+  const tol = 1e-6 * topologySize(b);
+  for (const e of b.edges) {
+    // a seam is no edge of the shape, and a closed curve's one vertex only where its parameter starts
+    if (!e.faces.includes(face.index) || e.faces[0] === e.faces[1]) continue;
+    if (e.circle && len3(sub3(e.circle.c, o)) <= tol) return { ref: refTo('edge', b.id, e), at: e.circle.c };
+    for (const vi of e.v[0] !== e.v[1] ? e.v : []) {
+      const v = b.vertices[vi];
+      if (v && len3(sub3(v.p, o)) <= tol) return { ref: refTo('vertex', b.id, v), at: v.p };
+    }
+  }
+  return undefined;
+}
+
+/** Where an anchor is on the bodies as built, or null when its vertex or circle is gone. */
+export function anchorPoint(a: FaceAnchor, bodies: BodyTopology[]): Vec3 | null {
+  const r = resolveRef(a.ref, bodies);
+  if (a.ref.kind === 'vertex') return resolvedEntity(bodies, 'vertex', r)?.p ?? null;
+  return resolvedEntity(bodies, 'edge', r)?.circle?.c ?? null;
+}
+
+/** The smallest rotation taking unit vector a onto unit vector b (Rodrigues), or null when they are opposite. */
+function turnOnto(a: Vec3, b: Vec3): ((x: Vec3) => Vec3) | null {
+  const k = cross3(a, b), c = dot3(a, b);
+  if (c < -1 + 1e-9) return null;
+  return (x) => add3(add3(scale3(x, c), cross3(k, x)), scale3(k, dot3(k, x) / (1 + c)));
+}
+
+/**
+ * The plane of a sketch on a face, found again on the face as it is now: the normal from
+ * the face, the x axis the stored one turned with the face. The origin moves with the
+ * face's anchor (`anchor`: where it was and where it is now) if the sketch has one;
+ * otherwise it is the stored origin projected onto the new plane. So a face that moved
+ * along its normal (the base extruded taller) carries the sketch with it, one that grew
+ * or shrank in its plane leaves it where it was, and one that moved in its plane takes
+ * it along when the sketch origin sits on one of its vertices or circle centres. Null
+ * when the face is no longer flat.
+ */
+export function faceFrame(stored: Frame, face: FaceInfo, anchor?: { from: Vec3; to: Vec3 }): Frame | null {
   if (face.type !== 'plane' || !face.frame) return null;
   const n = norm3(face.frame.n);
-  const o = sub3(stored.o, scale3(n, dot3(sub3(stored.o, face.frame.o), n)));
-  const u0 = sub3(stored.u, scale3(n, dot3(stored.u, n)));
+  const turn = turnOnto(norm3(stored.n), n);
+  const moved = anchor && turn ? add3(anchor.to, turn(sub3(stored.o, anchor.from))) : stored.o;
+  const o = sub3(moved, scale3(n, dot3(sub3(moved, face.frame.o), n)));
+  const u1 = turn ? turn(stored.u) : stored.u;
+  const u0 = sub3(u1, scale3(n, dot3(u1, n)));
   const u = len3(u0) > 1e-6 ? norm3(u0) : frameFromNormal(o, n).u;
   return { o, u, v: cross3(n, u), n };
 }

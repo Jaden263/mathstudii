@@ -559,7 +559,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         if (!face?.frame) return setMsg('Pick a flat face (or an origin plane) to sketch on');
         const label = face.key ? faceWords(face.key, (id) => itemName(cur(), id)).replace(/^the /, '') : `face of ${on.b.name}`;
         const offset = dialog.offset.trim() && dialog.offset.trim() !== '0' ? { offset: dialog.offset.trim() } : {};
-        return newSketchOn({ ...facePlane(on.body, face, label), ...offset }, occOf(on.occ)!.component);
+        return newSketchOn({ ...facePlane(on.b, face, label), ...offset }, occOf(on.occ)!.component);
       }
       return;
     }

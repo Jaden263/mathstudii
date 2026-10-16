@@ -39,7 +39,8 @@ const base = (h: string, w = 100): DesignItem[] => [
 
 /** The plane of a sketch on face `key` of the body that `items` build, as the CAD window makes it. */
 function planeOn(items: DesignItem[], key: string, pre: string[] = []): DesignSketch['plane'] {
-  return facePlane('f1', face(first(built(single(items), pre)), key), 'end face of Extrude1');
+  const b = first(built(single(items), pre));
+  return facePlane(b, face(b, key), 'end face of Extrude1');
 }
 
 describe('names on the B-rep kernel', () => {
@@ -211,6 +212,77 @@ describe('sketches on faces', () => {
     near(volumes(res)[0], 9000 * 10 - PI * 100);
   });
 
+  it('a base moved in its plane takes the sketch along: its origin sits on the base’s corner', () => {
+    // the 100 × 60 base with its corner at (xb, 0): a fixed point at the origin drives it
+    const driven = (h: string): DesignItem[] => {
+      const r = rect('a', 0, 0, 100, 60);
+      const sketch = {
+        points: [...r.points, { id: 'o', x: 0, y: 0 }], entities: [...r.entities, { id: 'oe', type: 'point' as const, p: 'o' }],
+        constraints: [
+          { id: 'fo', type: 'fix', refs: ['o'] }, { id: 'px', type: 'distanceX', refs: ['o', 'ap0'], value: 'xb' }, { id: 'py', type: 'distanceY', refs: ['o', 'ap0'], value: '0 mm' },
+          { id: 'h0', type: 'horizontal', refs: ['al0'] }, { id: 'h2', type: 'horizontal', refs: ['al2'] }, { id: 'v1', type: 'vertical', refs: ['al1'] }, { id: 'v3', type: 'vertical', refs: ['al3'] },
+          { id: 'w', type: 'distanceX', refs: ['ap0', 'ap1'], value: '100 mm' }, { id: 'd', type: 'distanceY', refs: ['ap0', 'ap3'], value: '60 mm' },
+        ],
+      } as DesignSketch['sketch'];
+      return [{ kind: 'sketch', id: 's1', name: 'Base', plane: { ref: 'XY' }, sketch }, { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: h }, op: 'new' }];
+    };
+    const plane = planeOn(driven('10'), 'f1/end', ['xb := 0 mm']);
+    // made at xb = 0, the sketch origin (0, 0, 10) is the corner where lines al0 and al3 meet
+    expect('anchor' in plane && plane.anchor?.ref.key).toBe('f1/end|f1/side:al0|f1/side:al3');
+    const d = single([...driven('h'),
+      { kind: 'sketch', id: 's2', name: 'Top', plane, sketch: points('p', [[30, 20]]) },
+      { kind: 'hole', id: 'f2', name: 'Hole1', sketch: 's2', d: '10', depth: '4', style: 'simple' },
+    ]);
+    for (const [xb, h] of [[0, 10], [50, 10], [-30, 25]]) {
+      const { res, numbers } = solve(d, [`xb := ${xb} mm`, `h := ${h} mm`]);
+      expect(res.design!.warnings).toEqual({});
+      close(res.design!.frames.s2.o, [xb, 0, h]);
+      // still a Ø10 hole 4 deep in the top: V = 100 · 60 · h − π · 5² · 4, at (xb + 30, 20)
+      near(volumes(res)[0], 6000 * h - PI * 25 * 4);
+      close(face(first(buildResultOcc(occ()!, d, numbers)), 'f2/hole0:bottom').c, [xb + 30, 20, h - 4]);
+    }
+  });
+
+  it('a sketch centred on a disc stays centred when the disc moves and grows', () => {
+    // a disc of radius R about (cx, 0), a Ø8 hole 3 deep on a sketch on its top, 10 off its centre
+    const disc = (cx: string, R: string): DesignItem[] => {
+      const c = circles('k', [[0, 0, 20]]);
+      const sketch = {
+        points: [...c.points, { id: 'o', x: 0, y: 0 }], entities: [...c.entities, { id: 'oe', type: 'point' as const, p: 'o' }],
+        constraints: [
+          { id: 'fo', type: 'fix', refs: ['o'] }, { id: 'px', type: 'distanceX', refs: ['o', 'kc0'], value: cx }, { id: 'py', type: 'distanceY', refs: ['o', 'kc0'], value: '0 mm' },
+          { id: 'r', type: 'radius', refs: ['kk0'], value: R },
+        ],
+      } as DesignSketch['sketch'];
+      return [{ kind: 'sketch', id: 's1', name: 'Disc', plane: { ref: 'XY' }, sketch }, { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' }];
+    };
+    const plane = planeOn(disc('cx', 'R'), 'f1/end', ['cx := 0 mm', 'R := 20 mm']);
+    // the origin is the centre of the disc's top rim
+    expect('anchor' in plane && plane.anchor?.ref.key).toBe('f1/end|f1/side:kk0');
+    const d = single([...disc('cx', 'R'),
+      { kind: 'sketch', id: 's2', name: 'Top', plane, sketch: points('p', [[10, 0]]) },
+      { kind: 'hole', id: 'f2', name: 'Hole1', sketch: 's2', d: '8', depth: '3', style: 'simple' },
+    ]);
+    for (const [cx, R] of [[0, 20], [35, 20], [35, 30]]) {
+      const { res, numbers } = solve(d, [`cx := ${cx} mm`, `R := ${R} mm`]);
+      expect(res.design!.warnings).toEqual({});
+      close(res.design!.frames.s2.o, [cx, 0, 10]);
+      // V = π R² · 10 − π · 4² · 3, the hole 10 from the disc's centre
+      near(volumes(res)[0], PI * R * R * 10 - PI * 16 * 3);
+      close(face(first(buildResultOcc(occ()!, d, numbers)), 'f2/hole0:bottom').c, [cx + 10, 0, 7]);
+    }
+  });
+
+  it('a face with no vertex or centre where the sketch origin lands: no anchor, it keeps its place in the plane', () => {
+    // a boss away from the origin: its top has nothing at (0, 0, 25)
+    const boss: DesignItem[] = [...base('10'),
+      { kind: 'sketch', id: 'sb', name: 'B', plane: { ref: 'XY', offset: '10' }, sketch: rect('b', 20, 10, 40, 30) },
+      { kind: 'extrude', id: 'fb', name: 'Boss', sketch: 'sb', extent: { type: 'one', d: '15' }, op: 'join' },
+    ];
+    const bb = first(built(single(boss)));
+    expect('anchor' in facePlane(bb, face(bb, 'fb/end'))).toBe(false);
+  });
+
   it('offset planes from faces follow too', () => {
     const d = single([...base('h'),
       { kind: 'sketch', id: 's2', name: 'Above', plane: { ...planeOn(base('10'), 'f1/end'), offset: '5' }, sketch: rect('b', 10, 10, 30, 30) },
@@ -265,7 +337,8 @@ describe('sketches on faces', () => {
       { kind: 'sketch', id: 'sb', name: 'B', plane: { ref: 'XY', offset: '10' }, sketch: rect('b', 20, 10, 40, 30) },
       { kind: 'extrude', id: 'fb', name: 'Boss', sketch: 'sb', extent: { type: 'one', d: '15' }, op: 'join' },
     ];
-    const plane = facePlane('f1', face(first(built(single(boss))), 'fb/end'), 'end face of Boss');
+    const bb = first(built(single(boss)));
+    const plane = facePlane(bb, face(bb, 'fb/end'), 'end face of Boss');
     const onBoss = (items: DesignItem[]) => single([...items,
       { kind: 'sketch', id: 's2', name: 'OnBoss', plane, sketch: points('p', [[30, 20]]) },
       { kind: 'hole', id: 'f2', name: 'Hole1', sketch: 's2', d: '6', depth: '3', style: 'simple' },
@@ -288,7 +361,8 @@ describe('sketches on faces', () => {
       { kind: 'sketch', id: 'sb', name: 'B', plane: { ref: 'XY', offset: '10' }, sketch: rect('b', 20, 10, 40, 30) },
       { kind: 'extrude', id: 'fb', name: 'Boss', sketch: 'sb', extent: { type: 'one', d: '15' }, op: 'join' },
     ];
-    const plane = facePlane('f1', face(first(built(single(boss))), 'fb/end'));
+    const bb = first(built(single(boss)));
+    const plane = facePlane(bb, face(bb, 'fb/end'));
     const d = single([...base('10'), { kind: 'sketch', id: 's2', name: 'Early', plane, sketch: rect('p', 22, 12, 38, 28) }, ...boss.slice(2)]);
     expect(solve(d).res.design!.warnings!.s2).toMatch(/^reference lost/);
   });

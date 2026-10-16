@@ -19,7 +19,9 @@ import {
 import type { EdgeOptions, ThinOptions } from './shaping';
 import { meshOps } from './meshOps';
 import { meshTopology } from './meshTopology';
-import { faceFrame, faceWords, keyFeature, refTo, resolveRef, resolvedEntity, type BodyTopology, type TopoRef } from './topology';
+import {
+  anchorPoint, faceAnchor, faceFrame, faceWords, keyFeature, refTo, resolveRef, resolvedEntity, type BodyTopology, type FaceAnchor, type TopoRef,
+} from './topology';
 import type { FaceInfo } from './buildResult';
 import { snapPlace, type SnapOrigin } from './snaps';
 
@@ -41,9 +43,10 @@ export type SketchPlane =
    * A planar face: the frame captured when the sketch was made and, since sketches follow
    * their faces, a reference to the face. Every rebuild finds the face again (among the
    * bodies built before the sketch) and moves the frame onto it; without a reference
-   * (older documents), or when the face is gone, the captured frame stays.
+   * (older documents), or when the face is gone, the captured frame stays. When the origin
+   * sits on a vertex or circle centre of the face (`anchor`), it moves with that point.
    */
-  | { frame: { o: Vec3; u: Vec3; v: Vec3 }; face?: TopoRef; label?: string; offset?: string };
+  | { frame: { o: Vec3; u: Vec3; v: Vec3 }; face?: TopoRef; anchor?: FaceAnchor; label?: string; offset?: string };
 
 export interface DesignSketch {
   kind: 'sketch';
@@ -333,12 +336,17 @@ export function offsetFrame(f: Frame, d: number): Frame {
 
 /**
  * The plane of a new sketch on a flat face of a body: the face's plane with the component
- * origin projected onto it (its x axis kept level), and the reference it follows.
+ * origin projected onto it (its x axis kept level), the reference it follows and, when the
+ * origin lands on a vertex or circle centre of the face, that point as its anchor.
  */
-export function facePlane(body: string, face: FaceInfo, label?: string): SketchPlane {
+export function facePlane(body: BodyTopology, face: FaceInfo, label?: string): SketchPlane {
   const n = face.frame!.n;
   const f = frameFromNormal(scale3(n, dot3(face.frame!.o, n)), n);
-  return { frame: { o: f.o.map((v) => +v.toPrecision(12)) as Vec3, u: f.u, v: f.v }, face: refTo('face', body, face), ...(label ? { label } : {}) };
+  const anchor = faceAnchor(body, face, f.o);
+  return {
+    frame: { o: f.o.map((v) => +v.toPrecision(12)) as Vec3, u: f.u, v: f.v }, face: refTo('face', body.id, face),
+    ...(anchor ? { anchor } : {}), ...(label ? { label } : {}),
+  };
 }
 
 // ------------------------------------------------------------ building
@@ -619,7 +627,11 @@ function sketchOnFace<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
   const bodies = prev.bodies.map((b) => ops.topology(b.solid, b.id));
   const r = resolveRef(ref, bodies);
   const face = resolvedEntity(bodies, 'face', r);
-  const f = face && faceFrame(planeFrame(item.plane), face);
+  // the origin goes with the vertex or circle centre it sits on; without one (or with it
+  // gone) it is the stored one projected onto the face
+  const anchor = 'frame' in item.plane ? item.plane.anchor : undefined;
+  const to = face && anchor ? anchorPoint(anchor, bodies) : null;
+  const f = face && faceFrame(planeFrame(item.plane), face, to && anchor ? { from: anchor.at, to } : undefined);
   const frames = { ...prev.frames, [item.id]: f ? offsetFrame(f, inp.numbers.params[item.id]?.offset ?? 0) : captured };
   const warnings = { ...prev.warnings };
   delete warnings[item.id];

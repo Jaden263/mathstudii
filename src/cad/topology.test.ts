@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EdgeInfo, FaceInfo, VertexInfo } from './buildResult';
 import {
-  baseName, faceFrame, faceName, faceWords, refTo, resolveRef, sameFamily, uniqueNames, vertexKey,
+  baseName, faceAnchor, faceFrame, faceName, faceWords, refTo, resolveRef, sameFamily, uniqueNames, vertexKey,
   type BodyTopology, type EdgeFacts, type TopoRef,
 } from './topology';
 import { snapPlace, snapsOn } from './snaps';
@@ -141,6 +141,39 @@ describe('sketch planes on faces', () => {
     expect(f.v[0] * n[0] + f.v[1] * n[1] + f.v[2] * n[2]).toBeCloseTo(0, 15);
     expect(f.v[1]).toBeCloseTo(c, 15);
     expect(f.o[2]).toBeCloseTo(10, 12);
+  });
+
+  it('an anchored origin moves with its anchor: the face slid 50 along x', () => {
+    const f = faceFrame(stored, plane(0, 'f1/end', [100, 30, 10], [0, 0, 1]), { from: [0, 0, 10], to: [50, 0, 10] })!;
+    expect(f.o).toEqual([50, 0, 10]);
+    expect(f.u).toEqual([1, 0, 0]);
+  });
+
+  it('a face turned 90° about x: the anchored frame turns rigidly with it', () => {
+    // R = rotation about x by −90°: (x, y, z) → (x, z, −y); the stored origin 5 off its anchor
+    const off: Frame = { ...stored, o: [5, 0, 10] };
+    const f = faceFrame(off, { ...plane(0, 'f1/end', [50, 10, -30], [0, 1, 0]), frame: { o: [50, 10, -30], u: [1, 0, 0], v: [0, 0, -1], n: [0, 1, 0] } }, { from: [0, 0, 10], to: [0, 10, 0] })!;
+    // o = to + R(o − from) = (0, 10, 0) + (5, 0, 0); u = R(1, 0, 0); v = R(0, 1, 0) = (0, 0, −1)
+    expect(tidy(f.o)).toEqual([5, 10, 0]);
+    expect(tidy(f.u)).toEqual([1, 0, 0]);
+    expect(tidy(f.v)).toEqual([0, 0, -1]);
+  });
+
+  it('the anchor of a sketch origin: a vertex or circle centre of the face at that point, else none', () => {
+    // the top of a 100 × 60 × 10 box: its edge along y = 0 runs from corner 0 to corner 1
+    const top = plane(0, 'f1/end', [50, 30, 10], [0, 0, 1], 6000), front = plane(1, 'f1/side:l0', [50, 0, 5], [0, -1, 0], 1000);
+    const corners: VertexInfo[] = [
+      { index: 0, key: 'f1/end|f1/side:l0|f1/side:l3', p: [0, 0, 10], edges: [0] },
+      { index: 1, key: 'f1/end|f1/side:l0|f1/side:l1', p: [100, 0, 10], edges: [0] },
+    ];
+    const b = body('f1', [top, front], [line(0, 'f1/end|f1/side:l0', [0, 0, 10], [100, 0, 10], [0, 1], [0, 1])], corners);
+    expect(faceAnchor(b, b.faces[0], [0, 0, 10])).toEqual({ ref: refTo('vertex', 'f1', corners[0]), at: [0, 0, 10] });
+    expect(faceAnchor(b, b.faces[0], [5, 5, 10])).toBeUndefined();
+    // a disc's top: the centre of its rim
+    const disc = body('f1', [plane(0, 'f1/end', [0, 0, 10], [0, 0, 1], 400 * Math.PI)], [{
+      index: 0, key: 'f1/end|f1/side:k0', type: 'circle', length: 40 * Math.PI, circle: { c: [0, 0, 10], axis: [0, 0, 1], r: 20 }, faces: [0, 1], mid: [-20, 0, 10], v: [0, 0],
+    }]);
+    expect(faceAnchor(disc, disc.faces[0], [0, 0, 10])?.ref.key).toBe('f1/end|f1/side:k0');
   });
 
   it('a face that is no longer flat gives no plane', () => {

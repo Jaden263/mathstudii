@@ -583,6 +583,10 @@ workspace opens full screen in the page. Its layout follows Fusion:
   - A sketch on a face follows the face. Make the base taller and the sketch, with the
     holes and bosses on it, moves up. Make it wider and the sketch stays where it was:
     its origin is the component origin projected onto the face.
+  - When that origin lands on a corner of the face or the centre of a circular edge (a
+    base drawn from the origin, a disc centred on it), the sketch keeps to that point:
+    move the base or the disc in its plane and the sketch goes along. Otherwise it keeps
+    its place in the plane, as in Fusion.
 - **Extrude:** one side, symmetric, two sides or through all. Operations are new body,
   join, cut or intersect. Click profiles in the view to pick them and bodies to choose
   targets. Cuts go into the material automatically: both directions are tried and the one
@@ -823,6 +827,8 @@ What it is not, honestly:
     the last rebuild. So after many edits, the piece of a split face it picks is the one
     nearest that first place.
   - Sketches on faces made before this version keep their fixed plane.
+  - A sketch follows one point of its face (a corner or circle centre at its origin), so
+    a face that turns within its own plane does not turn the sketch.
   - The mesh kernel (only while OpenCascade loads, or if it cannot) has no names. It
     finds a referenced face or edge only where it has not moved, and the timeline says so.
     A sketch or joint picked while it draws the part gets no name either, so it follows
