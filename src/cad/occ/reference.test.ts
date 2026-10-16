@@ -13,6 +13,7 @@ import type { DesignItem } from '../design';
 import type { CadEntity, CadSketch, SketchSource } from '../model';
 import { refTo } from '../topology';
 import { findProfiles, profileProperties } from '../profile';
+import { withReferencesOf } from '../reference';
 
 const { PI, abs, hypot, cos, sin, SQRT1_2 } = Math;
 const near = (v: number, want: number, rel = 1e-9) => expect(abs(v - want) / Math.max(abs(want), 1e-300)).toBeLessThan(rel);
@@ -101,6 +102,39 @@ describe('projected edges', () => {
       near(c[0], w - 15);
       near(c[1], 30);
     }
+  });
+
+  it('a point of the sketch\'s own that no curve uses (only constraints) stays, and what hangs on it follows', () => {
+    const b = plateBody();
+    const edge = b.edges.find((e) => e.line && abs(e.line.a[0] - 100) < 1e-9 && abs(e.line.b[0] - 100) < 1e-9 && abs(e.line.a[2] - 10) < 1e-9)!;
+    const src: SketchSource = { id: 'r1', kind: 'edge', ref: refTo('edge', b.id, edge) };
+    // m: the projected edge's midpoint, only constraints on it; the hole 15 left of it
+    const sk: CadSketch = {
+      ...refSketch([src]),
+      points: [{ id: 'r1.p0', x: 100, y: 0 }, { id: 'r1.p1', x: 100, y: 60 }, { id: 'm', x: 100, y: 30 }, { id: 'c', x: 85, y: 30 }],
+      entities: [{ id: 'r1.e0', type: 'line', p1: 'r1.p0', p2: 'r1.p1', ref: 'r1', construction: true }, { id: 'k', type: 'circle', c: 'c', r: 5 }],
+      constraints: [
+        { id: 'mid', type: 'midpoint', refs: ['m', 'r1.e0'] },
+        { id: 'hz', type: 'horizontal', refs: ['c', 'm'] },
+        { id: 'dx', type: 'distanceX', refs: ['c', 'm'], value: '15' },
+        { id: 'dr', type: 'radius', refs: ['k'], value: '5' },
+      ],
+    };
+    const items: DesignItem[] = [...plate(), { kind: 'sketch', id: 's1', name: 'Hole', plane: { ref: 'XY', offset: '10' }, sketch: sk }];
+    const { res } = solve(single(items), ['w := 130']);
+    const rebuilt = built(res, 's1')!;
+    expect(rebuilt.points.map((p) => p.id)).toContain('m');
+    expect(rebuilt.constraints.map((k) => k.id).sort()).toEqual(['dr', 'dx', 'hz', 'mid']);
+    const s = res.design!.sketches.s1;
+    expect(s.dof).toBe(0);
+    near(s.points.c[0], 115);
+    near(s.points.m[0], 130);
+    // written back into the stored sketch, the point and its constraints are still there
+    const back = withReferencesOf(sk, rebuilt);
+    expect(back).not.toBe(sk);
+    expect(back.points.find((p) => p.id === 'm')).toBeDefined();
+    expect(back.constraints).toHaveLength(4);
+    near(back.points.find((p) => p.id === 'r1.p0')!.x, 130);
   });
 
   it('a face\'s outer loop: four lines that close a profile (made solid geometry, it extrudes to the face)', () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initKernel } from './solid';
 import { evaluateWorksheet, type CadResult, type MathResult } from '../engine/evaluator';
-import { cadExample, sweepExample } from '../model/examples';
+import { cadExample, curvesExample, sweepExample } from '../model/examples';
 import { designOf } from './design';
 import { designKey, designNumbers } from './keys';
 import { withSolution } from './edit';
@@ -123,5 +123,33 @@ describe('CAD sweeps example worksheet', () => {
     // k = G d⁴ / (8 D³ n) = 81 500 · 81 / (8 · 27 000 · 6) = 5.094 N/mm; F_t,Rd = 0.9 · 800 · 84.27 / 1.25 = 48.5 kN
     expect([...tex.entries()].find(([s]) => s.startsWith('k_s'))![1]).toContain('5.09');
     expect([...tex.entries()].find(([s]) => s.startsWith('F_tRd'))![1]).toContain('48.5');
+  });
+});
+
+describe('CAD sketcher curves example worksheet', () => {
+  it('exact volumes from an ellipse, a closed spline and text; the hole keeps to the projected edge as the plate widens', () => {
+    const rel = (v: number, want: number) => Math.abs(v / want - 1);
+    for (const w of [120, 160]) {
+      const ws0 = curvesExample();
+      const ws = { ...ws0, regions: ws0.regions.map((r) => (r.kind === 'math' && r.source.startsWith('w_p') ? { ...r, source: `w_p := ${w} mm` } : r)) };
+      const out = evaluateWorksheet(ws);
+      for (const r of ws.regions) if (r.kind === 'math') expect((out.results.get(r.id) as MathResult).error, r.source).toBeUndefined();
+      const res = out.results.get(ws.regions.find((r) => r.kind === 'cad')!.id) as CadResult;
+      expect(res.featureError).toBeUndefined();
+      expect(res.design!.errors).toEqual({});
+      expect(res.design!.brep).toBe(true);
+      expect(res.dof).toBe(0);
+      const C = res.design!.components;
+      // plate: the box less the elliptical pocket π·a·b·d (an exact ellipse) and the hole
+      const hole = Math.PI * 5 ** 2 * 10, Vp = w * 80 * 10 - Math.PI * 30 * 18 * 4 - hole;
+      expect(rel(C.cpl!.V, Vp)).toBeLessThan(1e-9);
+      // the hole 15 left of the plate's projected right-hand edge (x = w/2): the centroid moves by its moment
+      expect(Math.abs(C.cpl!.xg - (-hole * (w / 2 - 15)) / Vp)).toBeLessThan(1e-9);
+      expect(res.design!.sketches.sq2.points.hc[0]).toBeCloseTo(w / 2 - 15, 9);
+      // cam: the closed spline's area from the sketch (Green's theorem, exact per knot span) times its thickness
+      expect(rel(C.ccm!.V, res.design!.sketches.sm0.section!.A * 12)).toBeLessThan(1e-9);
+      // tag: what the engraving took is the letters' area (their counters left standing) times its depth
+      expect(rel(70 * 24 * 3 - C.ctg!.V, res.design!.sketches.st1.section!.A * 0.8)).toBeLessThan(1e-7);
+    }
   });
 });

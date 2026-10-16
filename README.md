@@ -807,8 +807,17 @@ workspace opens full screen in the page. Its layout follows Fusion:
 
 - **Sketch:** click an origin plane (XY, XZ, YZ, with an optional offset expression) or any
   flat face of a body. The sketch opens looking straight at its plane. The bodies it cuts
-  show as grey reference outlines, and **Project** turns them into fixed sketch geometry
-  (circles come back as circles).
+  show as grey reference outlines.
+  - **Project** (Sketch tab): click edges or faces of the bodies in the 3-D view (the
+    model rolls back to the sketch while you pick), or include construction points and
+    axes. Their curves, a face's outer loop for a face, come into the sketch as purple
+    reference geometry. It is fixed in the sketch but follows the model: dimension a hole
+    to a projected edge, make the plate wider, and the edge and the hole move along.
+    **Intersect** brings in the section of the bodies with the sketch plane the same way.
+  - Circles come back as circles (or ellipses, seen at an angle), straight edges as lines;
+    other curves as splines through points on them.
+  - A projected edge that is gone after an edit says so (*reference lost*) and keeps its
+    last place.
   - A sketch on a face follows the face. Make the base taller and the sketch, with the
     holes and bosses on it, moves up. Make it wider and the sketch stays where it was:
     its origin is the component origin projected onto the face.
@@ -824,7 +833,8 @@ workspace opens full screen in the page. Its layout follows Fusion:
 - **Hole:** at sketch points — simple, counterbore or countersink, a depth or through all.
   **Tapped** picks an ISO metric size: the hole is drilled to the tap drill (8.5 mm for
   M10) and threaded to a depth, cosmetic (rings in the view) or modeled.
-- **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs and circles, a
+- **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs, circles, splines
+  and ellipses, a
   chain of body edges (they follow edits) or the helix of a coil. The profile stays
   perpendicular to the path (corrected Frenet) or parallel to itself; a twist angle (a
   positive one turns it by the right-hand rule about the path) or an end scale (taper) on
@@ -840,7 +850,7 @@ workspace opens full screen in the page. Its layout follows Fusion:
   on picked cylinders: external on a shaft, internal in a hole, the size suggested from
   the diameter. Cosmetic threads are listed in the inspector and drawn as rings; modeled
   ones cut the real groove (it takes a few seconds).
-- **Rib:** an open line or arc drawn on a plane through the middle of the rib grows in that
+- **Rib:** an open line, arc, spline or elliptical arc drawn on a plane through the middle of the rib grows in that
   plane until the body closes it off (or to a depth), as thick as asked across the plane
   (both sides, one or the other) — the gusset in the corner of a bracket. Both sides of the
   curve are tried and the one the body closes off is taken; Flip takes the other.
@@ -958,19 +968,43 @@ visible lines disappear.
 - **Selecting:** drag right for window select, drag left for crossing select.
 - **Sketching:** line chains, corner and centre rectangles, circles, centre and
   3-point arcs, regular polygons, slots, points and construction geometry.
+  - **Splines** through fit points (N), or on control points (Shift+N). A fit spline is a
+    cubic through its points with natural ends; select it to drag tangent handles out of
+    its ends (their length sets how far the tangent reaches). Click the first point again
+    to close it. The points are ordinary sketch points: they snap, take constraints and
+    dimensions, and the solver moves them.
+  - **Ellipses** (Shift+E) by centre, end of the major axis and minor radius, with a
+    construction line along the major axis; **elliptical arcs** too. Both are exact
+    ellipses in the solid.
+  - **Text** (Shift+P): a string at a size (capitals are 0.694 of it) and angle, in KaTeX Sans
+    Serif. Its letters are closed profiles with their holes (o, a, e, B), to extrude or
+    to cut into a face.
+  - Splines, ellipses and text are exact in the B-rep kernel (B-spline and ellipse edges,
+    the font's quadratic outlines as B-splines); the mesh kernel uses fine polylines.
   - New points snap to existing points (shared, so outlines are connected), to
     midpoints (with a midpoint relation) and onto curves.
   - Nearly horizontal or vertical lines get that constraint automatically.
   - Each tool adds the relations that keep its shape: a polygon stays regular, a slot
     stays tangent, a centre rectangle stays centred.
 - **Modify:**
-  - **Fillet** keeps a virtual sharp, so dimensions to the corner survive.
-  - **Trim** splits at crossings and turns circles into arcs.
+  - **Fillet** keeps a virtual sharp, so dimensions to the corner survive. **Chamfer** too,
+    with its two distances as dimensions.
+  - **Trim** splits at crossings (with splines and ellipses too) and turns circles into arcs.
+  - **Extend** lengthens a line or arc to the next curve; **Break** splits a curve where
+    you click (a control spline exactly, by knot insertion).
   - **Mirror** creates the copies with symmetry relations.
-- **Constraints:** coincident, point on line/circle, horizontal, vertical, parallel,
-  perpendicular, tangent, equal, midpoint, symmetric, concentric and fix.
+  - **Offset** (Shift+O) copies a chain of lines and arcs at a distance: convex corners get an
+    arc tangent to both sides, concave ones are trimmed. The distance is one dimension,
+    so changing it moves the whole copy, and the copy follows the original.
+  - **Rectangular and circular patterns** of the selection, with constraints that keep
+    the copies spaced. The count is in the side panel and can be changed afterwards.
+- **Constraints:** coincident, point on line/circle/ellipse/spline, horizontal, vertical,
+  parallel, perpendicular, collinear, tangent (lines, circles, arcs, ellipses and a
+  spline's end to any of them), curvature (G2, at a spline's end), equal (also ellipses),
+  midpoint, symmetric, concentric (also ellipses) and fix.
 - **Dimensions:** length, distance (aligned, horizontal, vertical, point to line), angle,
-  radius and diameter. They can be driving or reference. Names are unique across the part.
+  radius and diameter, an ellipse's major and minor radii, offsets and pattern spacings.
+  They can be driving or reference (shown in parentheses). Names are unique across the part.
 - **Solver:** a Levenberg–Marquardt solver keeps every constraint while you drag
   geometry, and moves the geometry as little as possible.
 - **Constraint status:** the rank of the constraint Jacobian gives the degrees of freedom.
@@ -1092,7 +1126,7 @@ features and the selection store these names:
 **Exchange:**
 
 - **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
-  POLYLINE with bulges).
+  POLYLINE with bulges). Splines, ellipses and text are exported as fine polylines.
 - **STEP AP214:** exact solids with names, colours and the assembly structure.
 - **STL:** binary, tessellated finely from the exact surfaces, always in millimetres (STL
   has no units, and slicers read millimetres), whatever the part's unit.
@@ -1116,6 +1150,12 @@ from the wire and coil sizes), an M12 bolt with a modeled thread whose stress ar
 a tension check, and a pipe swept round a bend on a construction plane normal to its path
 (its volume against the closed form).
 
+The **CAD: splines, ellipses, text, projected edges** example has a plate with an
+elliptical pocket (its volume against π·a·b·d) and a hole dimensioned from one of the
+plate's edges projected into the hole's sketch: make the plate wider and the hole keeps
+its distance from the edge. A cam on a closed spline (its volume against the sketch's
+area times the thickness) and a tag with engraved text are next to it.
+
 What it is not, honestly:
 
 - **Modify features, the limits:**
@@ -1137,8 +1177,7 @@ What it is not, honestly:
     chamfers, shells, drafts or press-pulls; it splits and moves bodies.
 - **Faceted where it matters little:** drawings are hidden-line views of the display
   mesh, so circles in them are fine polylines (their dimensions are exact). The section
-  view's cut bodies cannot be picked. No splines; lofts are ruled (straight between the
-  two profiles).
+  view's cut bodies cannot be picked. Lofts are ruled (straight between the two profiles).
 - **Sweeps, coils, threads, ribs, the limits:**
   - A sweep takes a twist or a taper, not both, and neither on a closed path. Coils have
     no taper angle and no flat spiral.
@@ -1153,6 +1192,22 @@ What it is not, honestly:
   - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix
     (ribs it makes too).
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
+  - Offsets of splines and ellipses are one-time copies (fit splines through points of the
+    offset curve); only offsets of lines and arcs stay linked to their distance. A linked
+    offset assumes its corners stay convex or concave as they were.
+  - Extend works on lines and arcs; trim cuts lines, circles and arcs (at crossings with
+    any curve). Breaking a fit spline puts two fit splines through its points, which is
+    close to the original but not the same curve.
+  - Curvature (G2) needs the spline end's tangent handle. A circular pattern copies text
+    at its original angle.
+  - Text uses one font, KaTeX Sans Serif, with its 121 characters: Latin letters, digits,
+    ASCII punctuation except `< > \ { | }` and backtick, and Greek capitals. Others are
+    left out, and the side panel says which.
+  - Projected curves other than lines, circles and ellipses are fit splines through at
+    most 25 points on them (32 when closed). The mesh kernel's projections and sections are polylines, with
+    circles recognised.
+  - Volumes of bodies with general B-spline faces (not extruded or revolved, such as
+    lofts or sweeps along splines) are accurate to about 1e-5.
 - **References:**
   - Names come from history. An edit that rebuilds a face from another sketch line (a
     line deleted and drawn again) gives it a new name. A reference to it is then lost
@@ -1262,7 +1317,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
@@ -1316,5 +1371,11 @@ for symbolics and [KaTeX](https://katex.org) for typesetting. The integrator,
 solvers, ODE methods, FFT, distributions and special functions are implemented
 in `src/engine/numeric.ts`. Section properties (Green's theorem for polygons, closed
 forms for circles) are in `src/engine/geometry.ts`.
+
+Sketch text uses the KaTeX Sans Serif font (`src/cad/fonts/KaTeX_SansSerif-Regular.ttf`,
+Copyright (c) 2009-2010 Design Science, Inc., Copyright (c) 2014-2018 Khan Academy),
+bundled unmodified under the SIL Open Font License 1.1, whose full text is in
+`src/cad/fonts/OFL.txt`. Its outlines are read with [opentype.js](https://opentype.js.org)
+(MIT).
 
 mathstudii is an independent project and is not affiliated with PTC (Mathcad) or SMath.

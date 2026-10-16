@@ -124,6 +124,30 @@ describe('rib', () => {
     near(apart.V[1], 60 * 20 * 3);
   });
 
+  it('a concave quarter ellipse: the 40 × 30 rectangle less the quarter ellipse, (1200 − π·40·30/4) · t', () => {
+    // centre (50, 40), semi-axes 40 along x and 30 along y, from (10, 40) anticlockwise to (50, 10)
+    const sk: CadSketch = {
+      points: [{ id: 'c', x: 50, y: 40 }, { id: 'a', x: 90, y: 40 }, { id: 'p', x: 10, y: 40 }, { id: 'q', x: 50, y: 10 }],
+      entities: [{ id: 'el', type: 'ellipse', c: 'c', a: 'a', r: 30, p1: 'p', p2: 'q' }],
+      constraints: [],
+    };
+    const { V, errors } = run([...bracket(), ...ribOn(sk)]);
+    expect(errors).toEqual({});
+    near(V[0], BRACKET + (1200 - 300 * PI) * 4, 1e-7);
+  });
+
+  it('a quadratic control spline: the corner triangle less the parabolic segment, 2/3 of its control triangle (Archimedes)', () => {
+    // poles (10, 50), (20, 20), (50, 10): control triangle 400, segment 800/3, corner triangle 800
+    const sk: CadSketch = {
+      points: [{ id: 'a', x: 10, y: 50 }, { id: 'b', x: 20, y: 20 }, { id: 'c', x: 50, y: 10 }],
+      entities: [{ id: 'sp', type: 'spline', pts: ['a', 'b', 'c'], mode: 'control', knots: [0, 0, 0, 1, 1, 1] }],
+      constraints: [],
+    };
+    const { V, errors } = run([...bracket(), ...ribOn(sk)]);
+    expect(errors).toEqual({});
+    near(V[0], BRACKET + (800 - 800 / 3) * 4, 1e-7);
+  });
+
   it('says what is wrong: inside the body, nothing to meet, closed, turning back, a circle', () => {
     const err = (sk: CadSketch, more: Partial<RibFeature> = {}) => run([...bracket(), ...ribOn(sk, more)]).errors.f2;
     expect(err(curves('q', [[2, 20, 2, 40]]))).toMatch(/lies inside the body/);

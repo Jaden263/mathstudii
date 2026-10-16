@@ -291,8 +291,11 @@ export function reproject(sk: CadSketch, f: Frame, cx: ReferenceContext): { sket
     for (const e of g.entities) entities.push({ ...e, construction: old.get(e.id)?.construction ?? true } as CadEntity);
     for (const p of g.points) pos.set(p.id, p);
   }
+  // a projection with fewer points than before leaves some of its old ones over; the
+  // sketch's own points stay, used by a curve or only by constraints
   const used = new Set(entities.flatMap(entityPts));
-  const points = [...sk.points.filter((p) => used.has(p.id)).map((p) => pos.get(p.id) ?? p), ...[...pos.values()].filter((p) => !sk.points.some((q) => q.id === p.id))];
+  const stale = (id: string) => !used.has(id) && [...fresh.keys()].some((s) => id.startsWith(`${s}.`));
+  const points = [...sk.points.filter((p) => !stale(p.id)).map((p) => pos.get(p.id) ?? p), ...[...pos.values()].filter((p) => !sk.points.some((q) => q.id === p.id))];
   const alive = new Set([...entities.map((e) => e.id), ...points.map((p) => p.id)]);
   const constraints = sk.constraints.filter((c) => c.refs.every((r) => alive.has(r)));
   return { sketch: { ...sk, points, entities, constraints }, lost };
@@ -339,7 +342,9 @@ export function withReferencesOf(stored: CadSketch, built: CadSketch): CadSketch
   const candidate: CadSketch = { ...stored, entities: [...stored.entities.filter((e) => !mine(e)), ...refs.map((e) => ({ ...e, construction: stored.entities.find((x) => x.id === e.id)?.construction ?? e.construction }))] };
   const pos = new Map(built.points.map((p) => [p.id, p]));
   const used = new Set(candidate.entities.flatMap(entityPts));
-  const points = [...stored.points.filter((p) => used.has(p.id)).map((p) => (refs.some((e) => entityPts(e).includes(p.id)) ? pos.get(p.id) ?? p : p))];
+  // as in reproject: only reference points no curve uses any more go
+  const stale = (id: string) => !used.has(id) && [...live].some((s) => id.startsWith(`${s}.`));
+  const points = [...stored.points.filter((p) => !stale(p.id)).map((p) => (refs.some((e) => entityPts(e).includes(p.id)) ? pos.get(p.id) ?? p : p))];
   for (const id of used) if (!points.some((p) => p.id === id) && pos.has(id)) points.push(pos.get(id)!);
   const alive = new Set([...candidate.entities.map((e) => e.id), ...points.map((p) => p.id)]);
   const next: CadSketch = { ...candidate, points, constraints: stored.constraints.filter((c) => c.refs.every((r) => alive.has(r))) };
