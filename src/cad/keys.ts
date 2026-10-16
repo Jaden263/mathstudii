@@ -63,3 +63,11 @@ export function stepKey(prev: string, item: DesignItem, numbers: DesignNumbers, 
     : [own, numbers.params[item.id] ?? null, numbers.errors[item.id] ?? null, sketchesOf(item).map((id) => sketchInput(sketches(id), id, numbers))];
   return hashString(`${prev}|${solidJson(input)}`);
 }
+
+/**
+ * The numbers a design result was built from: a build needs them without the errors the
+ * build itself added (`resolveErrors`; results without it have only resolve errors).
+ */
+export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string> }): DesignNumbers {
+  return { sketches: dr.sketches, frames: dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors };
+}

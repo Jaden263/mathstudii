@@ -79,10 +79,7 @@ export interface DesignResult extends DesignNumbers {
   resolveErrors?: Record<string, string>;
 }
 
-/** The numbers a design result was built from (a build needs them without the build's own errors). */
-export function designNumbers(dr: DesignResult): DesignNumbers {
-  return { sketches: dr.sketches, frames: dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors };
-}
+export { designNumbers } from './keys';
 
 const isAngle = (t: string) => t === 'angle';
 

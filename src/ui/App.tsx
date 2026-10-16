@@ -26,6 +26,7 @@ import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
 import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
 import { CadWorkspace } from './cad/CadWorkspace';
+import { exportPart } from './cad/exportPart';
 import type { CadResult, MathResult } from '../engine/evaluator';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FindBar } from './FindBar';
@@ -683,6 +684,12 @@ export function App() {
           setTimeout(() => separateRef.current(true), 300);
         },
       });
+      // the exact solids as STEP, or STL for printing (written by the kernel worker)
+      const save = (format: 'step' | 'stl') => () => {
+        setToast(`Writing ${format.toUpperCase()}…`);
+        exportPart(r, evaluation.results.get(r.id) as CadResult | undefined, format).then(() => setToast(null), (e: Error) => setToast(`Export failed: ${e.message}`));
+      };
+      items.push({ label: 'Export STEP…', icon: <Box size={14} />, onClick: save('step') }, { label: 'Export STL…', icon: <Box size={14} />, onClick: save('stl') });
     }
     if (single && ['plot', 'image', 'sketch', 'cad', 'beam', 'drawing'].includes(r.kind)) {
       items.push({ label: 'Properties…', icon: <SlidersHorizontal size={14} />, onClick: () => { setTab('properties'); setPanelOpen(true); } });

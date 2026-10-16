@@ -2,7 +2,7 @@
 // exports, answered by the B-rep kernel (and the mesh kernel's fallback), checked against
 // closed-form volumes, areas and distances.
 import { describe, expect, it } from 'vitest';
-import { rect, single, solve, withCircles } from '../occ/fixtures';
+import { circles, rect, single, solve, withCircles } from '../occ/fixtures';
 import type { CadDesign } from '../design';
 import { buildDesign } from '../design';
 import { planeToLocal } from '../inspect';
@@ -121,6 +121,22 @@ describe('kernel requests', () => {
     const n = new DataView(stl.buffer, stl.byteOffset).getUint32(80, true);
     expect(n).toBe(24);
     expect(stl.byteLength).toBe(84 + 50 * n);
+  });
+
+  it('drawing views: lines from the display mesh, dimensions from the exact box', async () => {
+    // a Ø20 × 30 cylinder: its facets lie inside the circle, the exact box does not
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: circles('c', [[0, 0, 10]]) },
+      { kind: 'extrude', id: 'f1', name: 'Pin', sketch: 's1', extent: { type: 'one', d: '30' }, op: 'new' },
+    ]);
+    const { numbers } = solve(design);
+    const v = (await ask({ op: 'views', design, numbers, specs: [{ key: 'front', view: 'front', hidden: true }, { key: 'side', view: 'left', hidden: true }, { key: 'iso', view: 'iso', hidden: false }] }))!;
+    expect(v.front.visible.length).toBeGreaterThan(0);
+    near(v.front.box.x1 - v.front.box.x0, 20, 1e-9);
+    near(v.front.box.y1 - v.front.box.y0, 30, 1e-9);
+    // seen from the left (looking along +X) the paper's x runs along −Y
+    near(v.side.box.x1 - v.side.box.x0, 20, 1e-9);
+    expect(v.iso.hidden).toEqual([]);
   });
 
   it('display data is made once per design key', () => {

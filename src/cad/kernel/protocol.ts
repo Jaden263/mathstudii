@@ -10,6 +10,7 @@ import type { Vec2 } from '../profile';
 import type { Frame } from '../solid';
 import type { ExportScope } from '../occ/exchange';
 import type { Interference, SectionBody } from '../occ/query';
+import type { ViewLines } from '../drawing';
 
 export type { Distance, EntityRef, ExportScope, Interference, SectionBody, SectionPlane };
 
@@ -26,7 +27,15 @@ export type KernelRequest =
   | ({ op: 'outline'; component: string; frame: Frame } & Built)
   | ({ op: 'export'; format: 'step' | 'stl'; scope: ExportScope; unit: CadUnit; name: string } & Built)
   | ({ op: 'distance'; a: EntityRef; b: EntityRef } & Built)
-  | ({ op: 'interference' } & Built);
+  | ({ op: 'interference' } & Built)
+  /** Drawing views (visible and hidden lines) of the visible bodies. */
+  | ({ op: 'views'; specs: ViewSpecRequest[] } & Built);
+
+export interface ViewSpecRequest {
+  key: string;
+  view: 'front' | 'top' | 'left' | 'right' | 'iso';
+  hidden: boolean;
+}
 
 /** What each request answers. */
 export interface KernelValues {
@@ -37,6 +46,8 @@ export interface KernelValues {
   export: Uint8Array;
   distance: Distance | null;
   interference: Interference[];
+  /** Null while there is nothing built to draw. */
+  views: Record<string, ViewLines> | null;
 }
 
 export type KernelOp = KernelRequest['op'];

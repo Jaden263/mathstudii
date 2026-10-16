@@ -7,13 +7,15 @@
 import type { BuildResult } from '../buildResult';
 import { meshBuildResult } from '../buildResult';
 import type { CadDesign, DesignNumbers } from '../design';
+import { drawMeshes } from '../display';
+import { projectView, STANDARD_VIEWS, type ViewLines, type ViewSpec } from '../drawing';
 import { approxDistance } from '../inspect';
 import { designKey } from '../keys';
-import { initKernel, kernel } from '../solid';
+import { cross3, dot3, initKernel, kernel, norm3, type Vec3 } from '../solid';
 import { buildDesignCached } from '../occ/build';
 import { stepFile, stlFile } from '../occ/exchange';
 import { initOcc, occ, occFailure, type OC } from '../occ/kernel';
-import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc } from '../occ/query';
+import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc, visibleBoxOcc } from '../occ/query';
 import { cachedResultOcc } from '../occ/result';
 import { interferenceMesh, meshBuilt, outlineMesh, sectionMesh, stlMesh } from './meshFallback';
 import { buffersOf, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
@@ -82,6 +84,19 @@ export function displayFor(design: CadDesign, numbers: DesignNumbers): BuildResu
   return out;
 }
 
+/** A 3-D box seen along a view: its extent across (right) and up the paper. */
+export function viewBox(b: { min: Vec3; max: Vec3 }, v: ViewSpec): ViewLines['box'] {
+  const d = norm3(v.dir), right = norm3(cross3(d, v.up)), up = cross3(right, d);
+  const out = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  for (let k = 0; k < 8; k++) {
+    const p: Vec3 = [k & 1 ? b.max[0] : b.min[0], k & 2 ? b.max[1] : b.min[1], k & 4 ? b.max[2] : b.min[2]];
+    const x = dot3(p, right), y = dot3(p, up);
+    out.x0 = Math.min(out.x0, x); out.x1 = Math.max(out.x1, x);
+    out.y0 = Math.min(out.y0, y); out.y1 = Math.max(out.y1, y);
+  }
+  return out;
+}
+
 /** Answer one request; `transfer` lists buffers nothing else holds on to. */
 export async function answer(req: KernelRequest): Promise<{ value: unknown; kernel: 'brep' | 'mesh' | 'none'; transfer: ArrayBuffer[] }> {
   const hasBrep = await ensureBrep();
@@ -92,6 +107,18 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
   const { design, numbers } = req;
   // the display data stays cached here: it travels as a copy
   if (req.op === 'display') return { value: displayFor(design, numbers), kernel: which, transfer: [] };
+  if (req.op === 'views') {
+    // hidden lines of the display meshes, off the UI thread
+    const shown = displayFor(design, numbers);
+    if (!shown) return { value: null, kernel: which, transfer: [] };
+    const meshes = drawMeshes(shown, design);
+    const views: Record<string, ViewLines> = {};
+    for (const s of req.specs) views[s.key] = projectView(meshes, STANDARD_VIEWS[s.view], { hidden: s.hidden });
+    // the views along the axes are dimensioned from the exact box, not the facets
+    const box = oc ? visibleBoxOcc(oc, buildDesignCached(oc, design, numbers), design) : null;
+    if (box) for (const s of req.specs) if (s.view !== 'iso') views[s.key].box = viewBox(box, STANDARD_VIEWS[s.view]);
+    return { value: views, kernel: which, transfer: [] };
+  }
   if (!oc && !K) throw new Error('the 3-D kernel could not load');
   switch (req.op) {
     case 'section': {

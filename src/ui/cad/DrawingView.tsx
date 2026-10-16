@@ -1,14 +1,16 @@
 // A drawing sheet of a CAD part on the page: the standard views with visible and hidden
 // lines, overall dimensions, a border and an ISO 7200-style title block. It follows the
 // part: change a dimension in the worksheet and the drawing redraws.
-import { useMemo, useRef, type Dispatch } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch } from 'react';
 import { Download, Printer, FileCode2 } from 'lucide-react';
 import type { CadRegion, DrawingRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
 import type { Action } from '../store';
 import { designOf } from '../../cad/design';
-import { drawMesh, projectView, scaleText, standardScale, STANDARD_VIEWS, type DrawMesh, type ViewLines } from '../../cad/drawing';
-import { useBuilt } from './useDesign';
+import { designNumbers } from '../../cad/keys';
+import { scaleText, standardScale, type ViewLines } from '../../cad/drawing';
+import type { ViewSpecRequest } from '../../cad/kernel/protocol';
+import { isSuperseded, kernelRequest } from './kernelClient';
 
 interface Props {
   region: DrawingRegion;
@@ -182,42 +184,43 @@ function ProjectionSymbol({ x, y, w, h, first }: { x: number; y: number; w: numb
   );
 }
 
-/** Meshes of every visible body, placed in the assembly. */
-function useMeshes(cad: CadRegion | undefined, cadResult: CadResult | undefined): DrawMesh[] | null {
-  const design = useMemo(() => (cad ? designOf(cad) : null), [cad]);
-  const built = useBuilt(cad?.id ?? '', design ?? { version: 2, components: [], occurrences: [], joints: [] }, cad ? cadResult : undefined);
-  return useMemo(() => {
-    if (!cad || !design || !built) return null;
-    const out: DrawMesh[] = [];
-    for (const occ of design.occurrences) {
-      if (occ.hidden) continue;
-      const comp = design.components.find((c) => c.id === occ.component);
-      const M = built.built.placements[occ.id]?.matrix;
-      if (!comp || !M) continue;
-      for (const b of built.built.components.get(comp.id)?.bodies ?? []) {
-        if (comp.hiddenBodies?.includes(b.id) || b.solid.isEmpty()) continue;
-        const m = b.solid.getMesh();
-        out.push(drawMesh(m.vertProperties, m.numProp, m.triVerts, M));
-      }
-    }
+/**
+ * The views of the part, drawn by the kernel worker (hidden lines take a while on a big
+ * part): the last ones stay on the sheet while new ones are on their way.
+ */
+function useViews(region: DrawingRegion, cad: CadRegion | undefined, cadResult: CadResult | undefined): { views: Record<string, ViewLines> | null; busy: boolean; failed?: string } {
+  const [state, setState] = useState<{ views: Record<string, ViewLines> | null; busy: boolean; failed?: string }>({ views: null, busy: true });
+  const dr = cadResult?.design;
+  const v = region.views;
+  const specs = useMemo(() => {
+    const out: ViewSpecRequest[] = [];
+    if (v.front) out.push({ key: 'front', view: 'front', hidden: region.hidden });
+    if (v.top) out.push({ key: 'top', view: 'top', hidden: region.hidden });
+    if (v.side) out.push({ key: 'side', view: region.projection === 'first' ? 'left' : 'right', hidden: region.hidden });
+    if (v.iso) out.push({ key: 'iso', view: 'iso', hidden: false });
     return out;
-  }, [cad, design, built]);
+  }, [v.front, v.top, v.side, v.iso, region.hidden, region.projection]);
+  const key = dr?.display;
+  useEffect(() => {
+    if (!cad || !dr || cadResult?.needsBrep) return;
+    let live = true;
+    setState((s) => ({ ...s, busy: true }));
+    kernelRequest({ op: 'views', design: designOf(cad), numbers: designNumbers(dr), specs }, `views:${region.id}`).then(
+      (views) => live && setState({ views, busy: false }),
+      (e) => live && !isSuperseded(e) && setState((s) => ({ ...s, busy: false, failed: (e as Error).message })),
+    );
+    return () => {
+      live = false;
+    };
+  }, [key, specs, region.id, !!cadResult?.needsBrep]); // eslint-disable-line react-hooks/exhaustive-deps
+  return state;
 }
 
 export function DrawingView({ region, cad, cadResult, selected, dispatch }: Props) {
-  const meshes = useMeshes(cad, cadResult);
+  const { views: all, busy, failed } = useViews(region, cad, cadResult);
   const svgRef = useRef<SVGSVGElement>(null);
-  const views = useMemo(() => {
-    if (!meshes?.length) return null;
-    const v = region.views;
-    const out: Record<string, ViewLines> = {};
-    const opts = { hidden: region.hidden };
-    if (v.front) out.front = projectView(meshes, STANDARD_VIEWS.front, opts);
-    if (v.top) out.top = projectView(meshes, STANDARD_VIEWS.top, opts);
-    if (v.side) out.side = projectView(meshes, region.projection === 'first' ? STANDARD_VIEWS.left : STANDARD_VIEWS.right, opts);
-    if (v.iso) out.iso = projectView(meshes, STANDARD_VIEWS.iso, { hidden: false });
-    return out;
-  }, [meshes, region.views, region.hidden, region.projection]);
+  // views that drew nothing (no bodies) leave the sheet empty
+  const views = useMemo(() => (all && Object.values(all).some((x) => x.visible.length) ? all : null), [all]);
   const sheet = useMemo(() => (views ? layout(region, views, cad?.unit ?? 'mm') : null), [region, views, cad?.unit]);
 
   const fileName = (region.title?.trim() || cad?.name || 'drawing').replace(/[^\w-]+/g, '_');
@@ -255,11 +258,12 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     }, 100);
   };
 
-  const status = !cad ? 'The part this drawing belongs to was deleted.' : !meshes ? 'Building the part…' : !meshes.length ? 'The part has no bodies yet.' : null;
+  const status = !cad ? 'The part this drawing belongs to was deleted.' : failed && !views ? `The drawing failed: ${failed}` : !all ? (cadResult?.needsBrep ? 'Loading the 3-D kernel…' : 'Drawing the part…') : !views ? 'The part has no bodies yet.' : null;
   return (
     <div className="drawing-region" style={{ width: region.width }}>
       <div className="dw-sheet" style={{ height: region.height }}>
         {sheet && !status ? <SheetSvg r={region} sheet={sheet} cad={cad} svgRef={svgRef} /> : <div className="dw-empty">{status ?? 'Nothing to draw'}</div>}
+        {busy && sheet && <span className="cad-busy">Redrawing…</span>}
       </div>
       {selected && sheet && (
         <div className="dw-tools" onPointerDown={(e) => e.stopPropagation()}>

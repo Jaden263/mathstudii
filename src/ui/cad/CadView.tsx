@@ -10,7 +10,8 @@ import { useSketchUI } from '../sketch/context';
 import { CadCanvas } from './CadCanvas';
 import { Scene3D } from './Scene3D';
 import { useOpenCad } from './cadWindow';
-import { buildScene, useBuilt, useKernel } from './useDesign';
+import { buildScene } from './useDesign';
+import { useBuildResult } from './kernelClient';
 import { designOf, isSketch } from '../../cad/design';
 
 interface Props {
@@ -29,13 +30,13 @@ export function CadView({ region, result, editing, selected, dispatch, onDone }:
   const split = region.mode === 'split';
   const sketchW = split ? Math.round(region.width * 0.58) : region.width;
   const design = useMemo(() => designOf(region), [region]);
-  const K = useKernel();
-  const built = useBuilt(region.id, design, res);
+  const shown = useBuildResult(region.id, design, res);
   const hasBodies = !!res?.design && Object.values(res.design.bodies).some((b) => b.length);
   const scene = useMemo(
-    () => buildScene(region, design, res, built, { active: hasBodies ? '' : design.components[0]?.id ?? '', highlight: new Set(), showPlanes: false, pickProfiles: false, size: 100 }),
-    [region, design, res, built, hasBodies],
+    () => buildScene(design, res, shown.build, { active: hasBodies ? '' : design.components[0]?.id ?? '', highlight: new Set(), showPlanes: false, pickProfiles: false, size: 100 }),
+    [design, res, shown.build, hasBodies],
   );
+  const waiting = shown.state === 'loading' || shown.state === 'rebuilding';
   // the drawing shows the first sketch of the first component
   const first = design.components[0]?.items.find(isSketch);
   const sketchRegion = useMemo<CadRegion>(() => (first ? { ...region, sketch: first.sketch, viewW: undefined } : region), [region, first]);
@@ -94,8 +95,10 @@ export function CadView({ region, result, editing, selected, dispatch, onDone }:
             <Scene3D
               width={region.width - (split ? sketchW : 0)} height={region.height} meshes={scene.meshes} lines={scene.lines}
               view={{ yaw: region.view3d.yaw, pitch: region.view3d.pitch, zoom: 1, pan: { x: 0, y: 0 } }} onView={() => {}} viewCube={false} showTriad={false}
-              message={!K ? 'Loading the 3-D kernel…' : !scene.meshes.length && !scene.lines.length ? 'Open the part and model it: Sketch, then Extrude' : undefined}
+              message={waiting && !scene.meshes.length ? (shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Building the part…') : !scene.meshes.length && !scene.lines.length ? 'Open the part and model it: Sketch, then Extrude' : undefined}
             />
+            {waiting && scene.meshes.length > 0 && <span className="cad-busy">{shown.state === 'loading' ? 'Loading 3-D kernel…' : 'Rebuilding…'}</span>}
+            {shown.notice && <span className="cad-busy warn" title={shown.notice}>Mesh kernel</span>}
           </div>
         )}
       </div>

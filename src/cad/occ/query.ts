@@ -209,3 +209,11 @@ export function interferenceOcc(oc: OC, built: OccBuiltDesign, design: CadDesign
     return rows;
   });
 }
+
+/** The exact box of the visible bodies, placed in the assembly (drawings dimension it). */
+export function visibleBoxOcc(oc: OC, built: OccBuiltDesign, design: CadDesign): { min: Vec3; max: Vec3 } | null {
+  return scratch((t) => {
+    const placed = placedBodies(built, design).filter((pb) => hasSolid(oc, pb.shape));
+    return occBox(oc, placed.map((pb) => t.add(t.add(new oc.BRepBuilderAPI_Transform(pb.shape, trsf(oc, t, pb.M), false, false)).Shape())));
+  });
+}
