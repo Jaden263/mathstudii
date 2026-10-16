@@ -763,8 +763,9 @@ selection store these names:
 - **Faces** are named after the feature and the sketch line or cap that made them
   (`f1/side:l3`, `f1/end`, `f2/hole0:wall`). Pattern and mirror copies carry a prefix
   (`f3.2.f2/hole0:wall`).
-  - A face that a cut splits keeps its name on both pieces, numbered `#1`, `#2` along its
-    own x axis. Faces that a join merges keep both names (`f1/end+f2/end`).
+  - A face that a cut splits keeps its name on both pieces, numbered `#1`, `#2` in the
+    order of their place on the face (along its own x axis, on a flat face). Faces that a
+    join merges keep both names (`f1/end+f2/end`).
   - The walls of a thin extrusion are named after the line they offset (`side:l0:out`,
     `side:l0:in`).
 - **Edges** are named after their two faces. **Vertices** are named after the faces that
