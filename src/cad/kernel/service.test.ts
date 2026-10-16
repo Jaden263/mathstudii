@@ -1,13 +1,14 @@
 // Kernel requests as the UI makes them: sections, outlines, distances, interference and
 // exports, answered by the B-rep kernel (and the mesh kernel's fallback), checked against
 // closed-form volumes, areas and distances.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { circles, rect, single, solve, withCircles } from '../occ/fixtures';
 import type { CadDesign } from '../design';
 import { buildDesign } from '../design';
 import { planeToLocal } from '../inspect';
 import { fitCircle } from '../project';
 import { kernel, m4Pose, m4Translate } from '../solid';
+import { occ } from '../occ/kernel';
 import { answer, displayFor } from './service';
 import { sectionMesh } from './meshFallback';
 import type { KernelRequest, KernelValues, SectionBody } from './protocol';
@@ -157,6 +158,32 @@ describe('kernel requests', () => {
       near(capArea(s), 600, 1e-9);
     } finally {
       built.free();
+    }
+  });
+
+  it('OpenCascade failing on a part: the mesh kernel draws it', async () => {
+    // the B-rep tessellator throws (as on a shape OCCT cannot mesh); a block of its own so
+    // no display data is cached for it yet
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 37, 23) },
+      { kind: 'extrude', id: 'f1', name: 'Block', sketch: 's1', extent: { type: 'one', d: '11' }, op: 'new' },
+    ]);
+    const { numbers } = solve(design);
+    const X = occ()!.ReplicadMeshExtractor as unknown as Record<string, unknown>;
+    const extract = X.extract;
+    X.extract = () => {
+      throw new Error('simulated meshing failure');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const b = (await ask({ op: 'display', design, numbers }))!;
+      expect(b.kernel).toBe('mesh');
+      // a box is exact in the mesh kernel too: 37 × 23 × 11
+      near(b.components.c1.bodies[0].mass.V, 37 * 23 * 11, 1e-9);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      X.extract = extract;
+      warn.mockRestore();
     }
   });
 });
