@@ -131,6 +131,20 @@ describe('Euler columns: P_cr = π² EI / (β L)²', () => {
     near(bucklingAnalysis(h, sol).modes[0].alpha * -sol.members[0].N[0], Pcr(1), 0.005);
   });
 
+  it('a big model (Lanczos path): a pinned column drawn as 30 members', () => {
+    const n = 30;
+    const st: NumStructure = {
+      nodes: Array.from({ length: n + 1 }, (_, i) => ({ id: `n${i}`, x: 0, y: (L * i) / n })),
+      members: Array.from({ length: n }, (_, i) => mem(`m${i}`, `n${i}`, `n${i + 1}`)),
+      supports: [sup('F', 'n0', 'pin'), sup('H', `n${n}`, 'roller', 90)],
+      loads: [{ id: 'P', type: 'force', at: { node: `n${n}` }, Fx: 0, Fy: -1e3 }],
+    };
+    const b = bucklingAnalysis(st, solveStructure(st));
+    near(b.modes[0].alpha * 1e3, Pcr(1), 0.005);
+    near(b.modes[1].alpha / b.modes[0].alpha, 4, 0.005);
+    near(b.modes[2].alpha / b.modes[0].alpha, 9, 0.005);
+  });
+
   it('a column in tension does not buckle', () => {
     const st = column(L, 'fixed', null, -1e3);
     expect(bucklingAnalysis(st, solveStructure(st)).modes).toEqual([]);
