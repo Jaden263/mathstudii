@@ -4,7 +4,7 @@
 // from the feature that changed, cache.ts).
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import {
-  buildInputs, runTimeline, type CadDesign, type DesignNumbers, type Placement, type TimelineBody, type TimelineTool,
+  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type TimelineBody, type TimelineTool,
 } from '../design';
 import { designKey } from '../keys';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
@@ -21,8 +21,10 @@ export interface OccComponentBuild {
   errors: Record<string, string>;
   /** Problems that did not stop an item (a lost reference). */
   warnings: Record<string, string>;
-  /** Sketch planes as built (sketches on faces). */
+  /** Sketch planes as built (sketches on faces) and construction planes. */
   frames: Record<string, Frame>;
+  /** Construction geometry and coil helices. */
+  datums: Record<string, Datum>;
   tools: Map<string, TimelineTool<OccSolid>>;
 }
 

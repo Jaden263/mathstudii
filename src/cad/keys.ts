@@ -83,6 +83,17 @@ export function sketchesOf(item: DesignItem): string[] {
     axis(item.pull);
   }
   if (item.kind === 'move') axis(item.axis);
+  if (item.kind === 'sweep' && item.path.kind === 'sketch') add(item.path.sketch);
+  // what a coil stands on and construction geometry is made from: sketch planes, points
+  // `${sketch}/${point}` and curves `${sketch}/${curve}` (construction items' own ids add nothing)
+  const picks = (v: unknown) => {
+    if (typeof v === 'string') {
+      if (v.includes('/')) axis(v);
+      else plane(v);
+    } else if (Array.isArray(v)) v.forEach(picks);
+  };
+  if (item.kind === 'coil') [item.plane, item.centre].forEach(picks);
+  if (item.kind === 'plane' || item.kind === 'axis' || item.kind === 'point') for (const [k, v] of Object.entries(item.def)) if (!['type', 'd', 'angle', 'at'].includes(k)) picks(v);
   return out;
 }
 

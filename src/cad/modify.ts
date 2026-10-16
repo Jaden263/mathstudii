@@ -70,6 +70,7 @@ export const sizeWords = (v: number, unit?: string) => `${+v.toPrecision(4)}${un
 
 const CANNOT: Partial<Record<DesignItem['kind'], string>> = {
   fillet: 'round edges', chamfer: 'chamfer edges', shell: 'hollow bodies', draft: 'draft faces', presspull: 'move faces',
+  sweep: 'sweep profiles', coil: 'make coils', thread: 'cut threads', plane: 'follow curved edges', axis: 'follow curved edges', point: 'follow curved edges',
 };
 
 /** What a feature only the B-rep kernel makes says while the mesh kernel builds the part. */

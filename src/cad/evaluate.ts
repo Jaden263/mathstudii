@@ -16,6 +16,7 @@ import {
 import { boxOf, kernel, kernelFailure, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
 import { designKey } from './keys';
 import { dimensionValue } from './dimension';
+import { parseThread, threadIn } from './threads';
 import { occ, occFailure } from './occ/kernel';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
@@ -157,6 +158,17 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
     if (!(n > 0)) throw new Error(`the ${what} must be positive`);
     return n;
   };
+  /** A plain number (a count of turns, a scale factor, a fraction). */
+  const ratio = (src: string | undefined, fallback: string, what: string) => {
+    const v = evalExpr((src ?? '').trim() || fallback);
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`the ${what} must be a plain number`);
+    return v;
+  };
+  /** The ISO dimensions of a thread designation, in part units. */
+  const thread = (size: string) => {
+    const s = threadIn(parseThread(size), unit);
+    return { P: s.P, dM: s.d, d2: s.d2, d1: s.d1, d3: s.d3, As: s.As, drill: s.drill };
+  };
   for (const comp of design.components) {
     try {
       const src = comp.density?.trim() || partDensity.trim();
@@ -197,8 +209,14 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
             break;
           }
           case 'hole': {
-            p.d = positive(value(item.d, '6', 'L', 'diameter'), 'diameter');
+            // a tapped hole is drilled to the tap drill of its thread
+            if (item.tap) Object.assign(p, thread(item.tap.size), { d: thread(item.tap.size).drill });
+            else p.d = positive(value(item.d, '6', 'L', 'diameter'), 'diameter');
             if (!item.through) p.depth = positive(value(item.depth, '10', 'L', 'depth'), 'depth');
+            if (item.tap?.depth?.trim()) {
+              p.tdepth = positive(value(item.tap.depth, '10', 'L', 'thread depth'), 'thread depth');
+              if (!item.through && p.tdepth > p.depth * (1 + 1e-9)) throw new Error('the thread is deeper than the hole');
+            }
             if (item.style === 'counterbore') {
               p.cbD = value(item.cbD, `${p.d * 1.8}`, 'L', 'counterbore diameter');
               p.cbDepth = positive(value(item.cbDepth, `${p.d * 0.6}`, 'L', 'counterbore depth'), 'counterbore depth');
@@ -244,6 +262,48 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
           case 'split':
             p.offset = item.offset?.trim() ? value(item.offset, '0', 'L', 'plane offset') : 0;
             break;
+          case 'sweep': {
+            p.twist = item.twist?.trim() ? value(item.twist, '0', 'A', 'twist angle') : 0;
+            p.scale = item.scale?.trim() ? positive(ratio(item.scale, '1', 'end scale'), 'end scale') : 1;
+            break;
+          }
+          case 'coil': {
+            p.d = positive(value(item.d, '20', 'L', 'diameter'), 'diameter');
+            p.size = positive(value(item.size, '2', 'L', 'section size'), 'section size');
+            const revs = () => positive(ratio(item.revs, '5', 'number of revolutions'), 'number of revolutions');
+            const height = () => positive(value(item.height, '50', 'L', 'height'), 'height');
+            const pitch = () => positive(value(item.pitch, '5', 'L', 'pitch'), 'pitch');
+            if (item.mode === 'revs-height') {
+              p.revs = revs();
+              p.height = height();
+              p.pitch = p.height / p.revs;
+            } else if (item.mode === 'revs-pitch') {
+              p.revs = revs();
+              p.pitch = pitch();
+              p.height = p.revs * p.pitch;
+            } else {
+              p.height = height();
+              p.pitch = pitch();
+              p.revs = p.height / p.pitch;
+            }
+            break;
+          }
+          case 'thread': {
+            Object.assign(p, thread(item.size));
+            if (item.length?.trim()) p.length = positive(value(item.length, '10', 'L', 'thread length'), 'thread length');
+            if (item.offset?.trim()) p.offset = value(item.offset, '0', 'L', 'thread offset');
+            break;
+          }
+          case 'plane': {
+            const def = item.def;
+            if (def.type === 'offset') p.d = value(def.d, '10', 'L', 'offset');
+            if (def.type === 'angle' || def.type === 'tangent') p.angle = value(def.angle, '0', 'A', 'angle');
+            if (def.type === 'path') {
+              p.at = ratio(def.at, '0', 'position along the path');
+              if (!(p.at >= 0 && p.at <= 1)) throw new Error('the position along the path is a fraction from 0 (its start) to 1 (its end)');
+            }
+            break;
+          }
           case 'move': {
             for (const k of ['dx', 'dy', 'dz'] as const) p[k] = item[k]?.trim() ? value(item[k], '0', 'L', k) : 0;
             p.angle = item.angle?.trim() ? value(item.angle, '0', 'A', 'angle') : 0;
@@ -435,6 +495,11 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
       for (const i of c.items) {
         const s = isSketch(i) ? d.sketches[i.id]?.section : undefined;
         if (s && identifier(i.name)) sub[identifier(i.name)] = section(s);
+        // ISO thread data of threads and tapped holes: part.Thread1.As, part.Hole1.P …
+        const t = d.params[i.id];
+        if ((i.kind === 'thread' || (i.kind === 'hole' && i.tap)) && t?.P && identifier(i.name)) {
+          sub[identifier(i.name)] = { d: L(t.dM), P: L(t.P), d2: L(t.d2), d1: L(t.d1), D1: L(t.d1), d3: L(t.d3), As: L(t.As, 2), drill: L(t.drill) };
+        }
       }
       if (id && design.components.length > 1 && !(id in value)) value[id] = sub;
       else if (id && design.components.length === 1) {

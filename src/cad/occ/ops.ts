@@ -16,6 +16,7 @@ import { faceName, nameToken } from '../topology';
 import { alignLoop, loopWire, regionFace, reversedLoop, wireFaces, type ProfileFace, type TaggedEdge } from './geometry';
 import { ShapeIndex, ax1, compound, dir, guard, hasSolid, listShapes, occBox, occError, pnt, scratch, shapeIndex, subShapes, trsf, vec, xyz, type OC } from './kernel';
 import { edgeInfo, faceInfo, topologyOcc } from './topology';
+import { sweepOps } from './sweep';
 
 export interface FaceTag {
   face: TopoDS_Shape;
@@ -678,6 +679,9 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     return out;
   };
 
+  // sweeps, coils and threads (sweep.ts) with the helpers they share with the rest
+  const swept = sweepOps(oc, { keep, generated, capTags, within, boolean, featureOf, sound, volume: (s) => shapeVolume(oc, s) });
+
   const ops: SolidOps<OccSolid> = {
     extrude(regions, f, z0, z1, tag) {
       checkExtent(z0, z1);
@@ -1013,6 +1017,10 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
         }
       });
     },
+
+    sweep: swept.sweep,
+    thread: swept.thread,
+    edgeAt: swept.edgeAt,
 
     union,
     // a compound: booleans take its solids as separate tools

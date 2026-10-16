@@ -114,7 +114,7 @@ export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
         if (!r) shown.set(b.solid.shape, (r = bodyResultOcc(oc, b)));
         return { ...r, id: b.id, name: b.name, feature: b.feature };
       }),
-      errors: cb.errors, warnings: cb.warnings, frames: cb.frames,
+      errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums,
     };
   }
   return out;
@@ -123,7 +123,7 @@ export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
 /** BuildResult of a built design (it stays built; free it yourself). */
 export function builtResultOcc(oc: OC, built: OccBuiltDesign, o: MeshOptions = {}): BuildResult {
   const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
-  for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map((b) => bodyResultOcc(oc, b, o)), errors: cb.errors, warnings: cb.warnings, frames: cb.frames };
+  for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map((b) => bodyResultOcc(oc, b, o)), errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
   return out;
 }
 

@@ -7,7 +7,7 @@
 // kernel is the fallback (meshTopology.ts): its "faces" are smooth patches of the triangle
 // mesh and its edges the creases between them, so they look right but carry no exact
 // geometry beyond planes, and no names.
-import { buildDesign, type CadDesign, type DesignNumbers, type Placement } from './design';
+import { buildDesign, type CadDesign, type Datum, type DesignNumbers, type Placement } from './design';
 import { meshBody, polylineMid } from './meshTopology';
 import type { Frame, ManifoldToplevel, Mass3, Vec3 } from './solid';
 import { edgeKey } from './topology';
@@ -42,6 +42,8 @@ export interface FaceInfo {
   minorRadius?: number;
   /** Cone half angle (radians). */
   angle?: number;
+  /** Cylinders and cones: the face looks away from its axis (a shaft) rather than towards it (a hole). */
+  outward?: boolean;
 }
 
 export interface EdgeInfo {
@@ -100,8 +102,10 @@ export interface BuildResult {
     errors: Record<string, string>;
     /** Problems that did not stop a feature (a lost reference). */
     warnings?: Record<string, string>;
-    /** Sketch planes as built (a sketch on a face follows it). */
+    /** Sketch planes as built (a sketch on a face follows it) and construction planes. */
     frames?: Record<string, Frame>;
+    /** Construction planes, axes and points and the helices of coils. */
+    datums?: Record<string, Datum>;
   }>;
   placements: Record<string, Placement>;
   /** Joint and occurrence problems. */
@@ -114,7 +118,7 @@ export function meshBuildResult(K: ManifoldToplevel, design: CadDesign, numbers:
   const built = buildDesign(K, design, numbers);
   try {
     const out: BuildResult = { kernel: 'mesh', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
-    for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map(meshBody), errors: cb.errors, warnings: cb.warnings, frames: cb.frames };
+    for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map(meshBody), errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
     return out;
   } finally {
     built.free();

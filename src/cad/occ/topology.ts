@@ -19,6 +19,18 @@ export function props(oc: OC, t: Arena, s: TopoDS_Shape, kind: 'surface' | 'line
   return p;
 }
 
+/** Whether a face round an axis looks away from it (its normal, out of the material, at the middle of its parameters). */
+function looksOut(oc: OC, t: Arena, a: InstanceType<OC['BRepAdaptor_Surface']>, face: TopoDS_Face, axis: { p: Vec3; d: Vec3 }): boolean {
+  const { UMin, UMax, VMin, VMax } = oc.BRepTools.UVBounds(face);
+  const P = t.add(new oc.gp_Pnt(0, 0, 0)), DU = t.add(new oc.gp_Vec(0, 0, 0)), DV = t.add(new oc.gp_Vec(0, 0, 0));
+  a.D1((UMin + UMax) / 2, (VMin + VMax) / 2, P, DU, DV);
+  let n = cross3(xyz(DU), xyz(DV));
+  if (face.Orientation() === oc.TopAbs_Orientation.TopAbs_REVERSED) n = scale3(n, -1);
+  const p = xyz(P), d = norm3(axis.d);
+  const w = sub3(p, axis.p);
+  return dot3(n, sub3(w, scale3(d, dot3(w, d)))) > 0;
+}
+
 export function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): FaceInfo {
   const S = oc.GeomAbs_SurfaceType;
   const a = t.add(new oc.BRepAdaptor_Surface(face, true));
@@ -40,6 +52,7 @@ export function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): Fa
     const c = t.add(a.Cylinder()), ax = t.add(c.Axis());
     info.axis = { p: xyz(t.add(ax.Location())), d: xyz(t.add(ax.Direction())) };
     info.radius = c.Radius();
+    info.outward = looksOut(oc, t, a, face, info.axis);
   } else if (type === 'sphere') {
     const sp = t.add(a.Sphere());
     const c = xyz(t.add(sp.Location()));
@@ -59,6 +72,7 @@ export function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): Fa
       info.radius = g.RefRadius();
       info.angle = Math.abs(g.SemiAngle());
     }
+    if (info.axis) info.outward = looksOut(oc, t, a, face, info.axis);
   } else if (type === 'torus') {
     // neither gp_Torus nor Geom_ToroidalSurface is bound: read them off the surface,
     // P(u, v) = C + (R + r cos v)(cos u X + sin u Y) + r sin v Z

@@ -26,6 +26,15 @@ import {
 import { chamferFace, chamferLimit, filletLimit, needsBrep, sizeWords } from './modify';
 import type { FaceInfo } from './buildResult';
 import { snapPlace, type SnapOrigin } from './snaps';
+import { datumOf, type ConstructContext, type CurveAt } from './construct';
+import {
+  chainEdges, coilGeometry, sketchPath, startNear, threadFace, threadGeometry,
+  type Helix, type PathGeom, type SweepOptions, type ThreadGeom,
+} from './sweep';
+import { parseThread, threadIn } from './threads';
+import { loopPolygon } from './profile';
+
+export type { Helix };
 
 // ------------------------------------------------------------ document
 
@@ -47,8 +56,9 @@ export type SketchPlane =
    * bodies built before the sketch) and moves the frame onto it; without a reference
    * (older documents), or when the face is gone, the captured frame stays. When the origin
    * sits on a vertex or circle centre of the face (`anchor`), it moves with that point.
+   * A sketch on a construction plane (`datum`, its id) takes that plane as built instead.
    */
-  | { frame: { o: Vec3; u: Vec3; v: Vec3 }; face?: TopoRef; anchor?: FaceAnchor; label?: string; offset?: string };
+  | { frame: { o: Vec3; u: Vec3; v: Vec3 }; face?: TopoRef; anchor?: FaceAnchor; datum?: string; label?: string; offset?: string };
 
 export interface DesignSketch {
   kind: 'sketch';
@@ -72,7 +82,7 @@ export type Extent =
   | { type: 'two'; d: string; d2: string }
   | { type: 'all'; dir?: Direction; both?: boolean };
 
-/** Origin axis, or a sketch line as `${sketchId}/${entityId}`. */
+/** Origin axis, a sketch line as `${sketchId}/${entityId}`, or a construction axis (its id). */
 export type AxisRef = string;
 
 interface FeatureBase {
@@ -138,6 +148,8 @@ export interface HoleFeature extends FeatureBase {
   csD?: string;
   csAngle?: string;
   targets?: string[];
+  /** Tapped: drilled to the tap drill of an ISO thread (its diameter replaces `d`), threaded to a depth. */
+  tap?: { size: string; depth?: string; modeled?: boolean };
 }
 
 export interface PatternFeature extends FeatureBase {
@@ -180,7 +192,7 @@ export interface CombineFeature extends FeatureBase {
 // bodies built before them. They store references (topology.ts), so a base made longer
 // keeps its rounded edge rounded.
 
-/** A plane: an origin plane or a sketch's plane (as a mirror's `plane`), or a flat face picked on a body. */
+/** A plane: an origin plane, a sketch's or construction plane (its id, as a mirror's `plane`), or a flat face picked on a body. */
 export type PlanePick = string | TopoRef;
 /** An axis: an origin axis or a sketch line (AxisRef), or a straight edge, circle or round face picked on a body. */
 export type AxisPick = AxisRef | TopoRef;
@@ -265,7 +277,150 @@ export interface MoveFeature extends FeatureBase {
 
 export type ModifyFeature = FilletFeature | ChamferFeature | ShellFeature | DraftFeature | PressPullFeature | SplitFeature | MoveFeature;
 
-export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature;
+// ------------------------------------------------------------ sweeps, coils, threads
+
+/**
+ * A point: a sketch point `${sketch}/${point}`, a construction point (its id), or a vertex,
+ * circle or sphere picked on a body (a circle or sphere stands for its centre).
+ */
+export type PointPick = string | TopoRef;
+/** A curve: a sketch line, arc or circle `${sketch}/${entity}`, or an edge picked on a body. */
+export type CurvePick = string | TopoRef;
+
+/** Where a sweep goes: curves of a sketch joined end to end, edges picked on the bodies, or the helix of a coil. */
+export type SweepPath =
+  /** `curves` missing = every curve of the sketch that is not construction geometry. */
+  | { kind: 'sketch'; sketch: string; curves?: string[] }
+  | { kind: 'edges'; edges: TopoRef[] }
+  | { kind: 'coil'; coil: string };
+
+export interface SweepFeature extends FeatureBase {
+  kind: 'sweep';
+  sketch: string;
+  /** Profile key; missing = the first profile of the sketch. */
+  profile?: string;
+  path: SweepPath;
+  /** Perpendicular: the profile turns with the path (corrected Frenet); parallel: it keeps its orientation. */
+  orientation?: 'perpendicular' | 'parallel';
+  /** The profile turns this far about the path from its start to its end. */
+  twist?: string;
+  /** Size of the profile at the end of the path as a factor of its size at the start (taper). */
+  scale?: string;
+  op: FeatureOp;
+  targets?: string[];
+}
+
+/** Fusion's coil: a section swept along a helix standing on a plane. */
+export interface CoilFeature extends FeatureBase {
+  kind: 'coil';
+  /** The plane it stands on (origin, sketch or construction plane, or a flat face); its axis is the normal through `centre`. */
+  plane: PlanePick;
+  /** Missing: the plane's origin (a face: its centre). */
+  centre?: PointPick;
+  /** Grow against the plane's normal. */
+  flip?: boolean;
+  /** Which two of revolutions, height and pitch give its size. */
+  mode: 'revs-height' | 'revs-pitch' | 'height-pitch';
+  /** Diameter of the helix the section follows. */
+  d: string;
+  revs?: string;
+  height?: string;
+  pitch?: string;
+  /** Right-hand turns anticlockwise seen from the top (looking down its axis). */
+  hand?: 'right' | 'left';
+  /** Triangles with the point outwards or inwards. */
+  section: 'circle' | 'square' | 'triangle-out' | 'triangle-in';
+  /** The section's diameter (circle) or side, square to the helix. */
+  size: string;
+  /** Where the section lies against the diameter: centred on it, inside or outside it. */
+  position?: 'center' | 'inside' | 'outside';
+  /** Only the helix, as a path for a sweep: no body. */
+  pathOnly?: boolean;
+  op: FeatureOp;
+  targets?: string[];
+}
+
+/** ISO metric threads on cylindrical faces: shafts get external threads, holes internal ones. */
+export interface ThreadFeature extends FeatureBase {
+  kind: 'thread';
+  faces: TopoRef[];
+  /** ISO 262 designation: M12, M12x1.25. */
+  size: string;
+  /** Threaded length from the start end; empty = the whole face. */
+  length?: string;
+  /** Distance of the thread's start from the end of the face. */
+  offset?: string;
+  /** Start at the other end of the face (the default is an end the thread can run out of). */
+  flip?: boolean;
+  /** True helical geometry; otherwise cosmetic (an attribute the inspector and drawings show). */
+  modeled?: boolean;
+  hand?: 'right' | 'left';
+}
+
+// ------------------------------------------------------------ construction geometry
+//
+// Planes, axes and points made from origin geometry, sketches and what is picked on the
+// bodies before them (references), so they follow edits. They make no body; sketches,
+// mirrors, patterns, splits, coils, joints and sweeps can use them.
+
+export type PlaneDef =
+  /** Parallel to a plane (or flat face), at a distance along its normal. */
+  | { type: 'offset'; plane: PlanePick; d: string }
+  /** Through an axis (line, edge), turned by the angle from a plane (default: one the axis lies in). */
+  | { type: 'angle'; axis: AxisPick; angle: string; plane?: PlanePick }
+  /** Halfway between two planes (or flat faces); between planes that meet, the bisector between them. */
+  | { type: 'midplane'; a: PlanePick; b: PlanePick }
+  | { type: 'points'; points: PointPick[] }
+  /** Tangent to a cylinder or cone, where it is turned by the angle about the axis from a plane's normal. */
+  | { type: 'tangent'; face: TopoRef; angle: string; plane?: PlanePick }
+  /** Square to a curve at a fraction of its length (0 its start, 1 its end), the curve's point its origin. */
+  | { type: 'path'; curve: CurvePick; at: string };
+
+export type AxisDef =
+  | { type: 'points'; a: PointPick; b: PointPick }
+  /** A straight edge or sketch line; a circle or arc gives its axis. */
+  | { type: 'edge'; edge: CurvePick }
+  /** The axis of a cylinder, cone or torus. */
+  | { type: 'cylinder'; face: TopoRef }
+  /** Square to a flat, cylindrical or spherical face through a point (default: the face's centre). */
+  | { type: 'normal'; face: TopoRef; point?: PointPick };
+
+export type PointDef =
+  | { type: 'vertex'; vertex: TopoRef }
+  /** The centre of a circle or arc (edge or sketch curve) or of a sphere. */
+  | { type: 'centre'; of: CurvePick }
+  /** Where a curve crosses a plane (the first crossing along the curve). */
+  | { type: 'edgePlane'; curve: CurvePick; plane: PlanePick };
+
+export interface ConstructPlane extends FeatureBase {
+  kind: 'plane';
+  def: PlaneDef;
+  hidden?: boolean;
+}
+
+export interface ConstructAxis extends FeatureBase {
+  kind: 'axis';
+  def: AxisDef;
+  hidden?: boolean;
+}
+
+export interface ConstructPoint extends FeatureBase {
+  kind: 'point';
+  def: PointDef;
+  hidden?: boolean;
+}
+
+export type ConstructItem = ConstructPlane | ConstructAxis | ConstructPoint;
+
+/** A construction plane, axis or point as built, or the helix of a coil (component coordinates). */
+export type Datum =
+  | { kind: 'plane'; frame: Frame }
+  | { kind: 'axis'; p: Vec3; d: Vec3 }
+  | { kind: 'point'; p: Vec3 }
+  | { kind: 'helix'; helix: Helix };
+
+export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature
+  | SweepFeature | CoilFeature | ThreadFeature | ConstructItem;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -300,7 +455,9 @@ export type JointOrigin =
   /** A picked spot (component coordinates). */
   | { kind: 'frame'; o: Vec3; z: Vec3; x?: Vec3 }
   /** A snap point on a body's geometry (snaps.ts): it follows the face, edge or vertex. */
-  | SnapOrigin;
+  | SnapOrigin
+  /** Construction geometry of the component: a point (Z up), an axis (Z along it) or a plane (Z its normal). */
+  | { kind: 'datum'; id: string };
 
 export type JointType = 'rigid' | 'revolute' | 'slider' | 'cylindrical';
 
@@ -332,11 +489,15 @@ export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch
 export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
   sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine', loft: 'Loft',
   fillet: 'Fillet', chamfer: 'Chamfer', shell: 'Shell', draft: 'Draft', presspull: 'Press pull', split: 'Split', move: 'Move',
+  sweep: 'Sweep', coil: 'Coil', thread: 'Thread', plane: 'Plane', axis: 'Axis', point: 'Point',
 };
 
 /** Features that work on what is picked on the bodies: they are edited with the timeline rolled back to them. */
 export const MODIFY_KINDS = new Set<DesignItem['kind']>(['fillet', 'chamfer', 'shell', 'draft', 'presspull', 'split', 'move']);
 export const isModify = (i: DesignItem): i is ModifyFeature => MODIFY_KINDS.has(i.kind);
+
+export const CONSTRUCT_KINDS = new Set<DesignItem['kind']>(['plane', 'axis', 'point']);
+export const isConstruct = (i: DesignItem): i is ConstructItem => CONSTRUCT_KINDS.has(i.kind);
 
 /** Profiles are identified by the entities of their outer loop. */
 export function profileKey(r: ProfileRegion): string {
@@ -501,6 +662,7 @@ export interface ComponentBuild {
   warnings: Record<string, string>;
   /** Sketch planes as built (sketches on faces). */
   frames: Record<string, Frame>;
+  datums: Record<string, Datum>;
   /** Tool solid of every feature that made one (previews, patterns). */
   tools: Map<string, ToolRec>;
 }
@@ -517,11 +679,16 @@ function frameIn(inp: BuildInputs, sketchId: string, built?: Record<string, Fram
   return f;
 }
 
-/** Axis in component coordinates: origin axis or a sketch line. */
-export function axisOf(design: CadDesign, inp: BuildInputs, ref: AxisRef, built?: Record<string, Frame>): { p: Vec3; d: Vec3 } {
+/** Axis in component coordinates: origin axis, a sketch line or a construction axis (as built). */
+export function axisOf(design: CadDesign, inp: BuildInputs, ref: AxisRef, built?: Record<string, Frame>, datums?: Record<string, Datum>): { p: Vec3; d: Vec3 } {
   if (ref === 'X') return { p: [0, 0, 0], d: [1, 0, 0] };
   if (ref === 'Y') return { p: [0, 0, 0], d: [0, 1, 0] };
   if (ref === 'Z') return { p: [0, 0, 0], d: [0, 0, 1] };
+  if (!ref.includes('/')) {
+    const dt = datums?.[ref];
+    if (dt?.kind === 'axis') return { p: dt.p, d: norm3(dt.d) };
+    throw new Error(itemName(design, ref) ? `the axis ${itemName(design, ref)} failed` : 'the axis is missing: its construction axis is gone');
+  }
   const [sid, eid] = ref.split('/');
   const sk = findSketch(design, sid);
   const e = sk?.sketch.entities.find((q) => q.id === eid);
@@ -645,6 +812,12 @@ export interface SolidOps<S> {
   pressPull(s: S, faces: number[], d: number, tag: string): S;
   /** The pieces on either side of a plane, those behind it first. */
   split(s: S, plane: PlaneAt, tag: string): S[];
+  /** A profile region swept along a path (component coordinates); its holes are swept too and cut out. */
+  sweep(region: ProfileRegion, f: Frame, path: PathGeom<S>, o: SweepOptions, tag: string): S;
+  /** The groove of a screw thread, a tool to cut. */
+  thread(g: ThreadGeom, tag: string): S;
+  /** The point and unit tangent at a fraction t of an edge's length (its index in the body's topology). */
+  edgeAt(s: S, edge: number, t: number): { p: Vec3; d: Vec3 };
 }
 
 export interface TimelineBody<S> {
@@ -666,8 +839,10 @@ export interface Timeline<S> {
   errors: Record<string, string>;
   /** Problems that did not stop an item (a sketch whose face is gone keeps its old plane). */
   warnings: Record<string, string>;
-  /** Sketch planes found on the bodies (sketches on faces), by sketch id. */
+  /** Sketch planes found on the bodies (sketches on faces) and construction planes, by item id. */
   frames: Record<string, Frame>;
+  /** Construction planes, axes and points and the helices of coils, by item id. */
+  datums: Record<string, Datum>;
   /** Tool solid of every feature that made one (previews, patterns). */
   tools: Map<string, TimelineTool<S>>;
 }
@@ -705,7 +880,7 @@ function reach<S>(ops: SolidOps<S>, f: Frame, solids: S[]): number {
 }
 
 /** Copies a pattern or mirror makes (transforms in component coordinates). */
-function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | MirrorFeature, built: Record<string, Frame>): M4[] {
+function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | MirrorFeature, built: Record<string, Frame>, datums: Record<string, Datum>): M4[] {
   const p = inp.numbers.params[f.id] ?? {};
   if (f.kind === 'mirror') {
     let fr: Frame;
@@ -716,9 +891,9 @@ function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | M
   const out: M4[] = [];
   const n = Math.round(p.count ?? 0);
   if (f.type === 'rect') {
-    const a = axisOf(design, inp, f.axis, built);
+    const a = axisOf(design, inp, f.axis, built, datums);
     const n2 = f.axis2 ? Math.round(p.count2 ?? 1) : 1;
-    const a2 = f.axis2 ? axisOf(design, inp, f.axis2, built) : null;
+    const a2 = f.axis2 ? axisOf(design, inp, f.axis2, built, datums) : null;
     for (let i = 0; i < n; i++) for (let j = 0; j < n2; j++) {
       if (!i && !j) continue;
       let t = scale3(a.d, i * (p.spacing ?? 0));
@@ -726,7 +901,7 @@ function copyMatrices(design: CadDesign, inp: BuildInputs, f: PatternFeature | M
       out.push(m4Translate(t));
     }
   } else {
-    const a = axisOf(design, inp, f.axis, built);
+    const a = axisOf(design, inp, f.axis, built, datums);
     const total = p.spacing ?? 2 * Math.PI;
     const full = Math.abs(Math.abs(total) - 2 * Math.PI) < 1e-9;
     const step = n > 1 ? total / (full ? n : n - 1) : 0;
@@ -744,13 +919,15 @@ export interface TimelineState<S> {
   tools: Map<string, TimelineTool<S>>;
   errors: Record<string, string>;
   warnings: Record<string, string>;
-  /** Planes of the sketches on faces, found on the bodies built before them. */
+  /** Planes of the sketches on faces, found on the bodies built before them, and of construction planes. */
   frames: Record<string, Frame>;
+  /** Construction geometry and coil helices built so far. */
+  datums: Record<string, Datum>;
   /** Ids of every body made so far, in order (default names count them). */
   made: string[];
 }
 
-export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, made: [] });
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [] });
 
 /** The face a sketch follows, if it does (sketches made on faces before references existed do not). */
 export const sketchFace = (s: DesignSketch): TopoRef | undefined => ('frame' in s.plane ? s.plane.face : undefined);
@@ -789,6 +966,164 @@ function sketchOnFace<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
         : `reference lost: ${words}, which the sketch is on, is gone; the sketch stays where the face was when it was made`;
   }
   return { ...prev, frames, warnings };
+}
+
+/** The construction plane a sketch is on, as built before it; the captured plane with a warning when it failed or is gone. */
+function sketchOnDatum<S>(design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignSketch, datum: string): TimelineState<S> {
+  const captured = inp.numbers.frames[item.id];
+  if (!captured || inp.numbers.errors[item.id]) return prev;
+  const d = prev.datums[datum];
+  const warnings = { ...prev.warnings };
+  delete warnings[item.id];
+  const name = itemName(design, datum);
+  if (d?.kind !== 'plane') {
+    warnings[item.id] = name
+      ? `${name} failed (${prev.errors[datum] ?? 'it is rolled back or suppressed'}); the sketch stays where the plane was when it was made`
+      : 'reference lost: the construction plane the sketch is on is gone; the sketch stays where it was when it was made';
+  }
+  const f = d?.kind === 'plane' ? offsetFrame(d.frame, inp.numbers.params[item.id]?.offset ?? 0) : captured;
+  return { ...prev, frames: { ...prev.frames, [item.id]: f }, warnings };
+}
+
+// ------------------------------------------------------------ picks of construction geometry, sweeps, coils and threads
+
+/**
+ * What construction geometry, sweeps, coils and threads pick, found on the bodies built
+ * before them: planes, axes, points and curves of origin geometry, sketches, construction
+ * items and bodies (by reference), and faces. Each throws with a message saying what is
+ * gone or of the wrong kind.
+ */
+function picksIn<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, datums: Record<string, Datum>): ConstructContext & { topo(): BodyTopology[] } {
+  let topo: BodyTopology[] | null = null;
+  const topoNow = () => (topo ??= bodies.map((b) => ops.topology(b.solid, b.id)));
+  const entity = <K extends 'face' | 'edge' | 'vertex'>(ref: TopoRef, kind: K, what: string) => {
+    const t = topoNow();
+    const r = resolveRef(ref, t);
+    const e = resolvedEntity(t, kind, r);
+    if (!e || !r.ok) throw lostPick(design, ref, what, t.some((b) => b.named === false));
+    return { e, body: r.body };
+  };
+  const failed = (id: string, what: string) => new Error(itemName(design, id) ? `the ${what}, ${itemName(design, id)}, failed` : `the ${what} is missing`);
+  const sketchPoint = (pick: string, what: string): Vec3 => {
+    const [sid, pid] = pick.split('/');
+    const q = inp.numbers.sketches[sid]?.points[pid];
+    if (!q) throw new Error(`the ${what} is gone: its sketch point no longer exists`);
+    return framePoint(frameIn(inp, sid, built), { x: q[0], y: q[1] });
+  };
+  const sketchCurve = (pick: string, what: string): CurveAt => {
+    const [sid, eid] = pick.split('/');
+    const sk = findSketch(design, sid), sol = inp.numbers.sketches[sid];
+    const e = sk?.sketch.entities.find((q) => q.id === eid);
+    if (!sk || !sol || !e || e.type === 'point') throw new Error(`the ${what} is gone: its sketch curve no longer exists`);
+    const f = frameIn(inp, sid, built);
+    const P = (id: string) => framePoint(f, { x: sol.points[id][0], y: sol.points[id][1] });
+    if (e.type === 'line') {
+      const a = P(e.p1), b = P(e.p2), d = norm3(sub3(b, a));
+      return { at: (t) => ({ p: add3(a, scale3(sub3(b, a), t)), d }), line: { a, b } };
+    }
+    const c = sol.points[e.c];
+    const r = e.type === 'circle' ? sol.radii[e.id] ?? e.r : Math.hypot(sol.points[e.p1][0] - c[0], sol.points[e.p1][1] - c[1]);
+    let a0 = 0, a1 = 2 * Math.PI;
+    if (e.type === 'arc') {
+      a0 = Math.atan2(sol.points[e.p1][1] - c[1], sol.points[e.p1][0] - c[0]);
+      a1 = Math.atan2(sol.points[e.p2][1] - c[1], sol.points[e.p2][0] - c[0]);
+      while (a1 <= a0 + 1e-12) a1 += 2 * Math.PI;
+    }
+    return {
+      at: (t) => {
+        const a = a0 + (a1 - a0) * t;
+        return { p: framePoint(f, { x: c[0] + r * Math.cos(a), y: c[1] + r * Math.sin(a) }), d: norm3(frameDir(f, { x: -Math.sin(a), y: Math.cos(a) })) };
+      },
+      circle: { c: framePoint(f, { x: c[0], y: c[1] }), axis: f.n, r },
+    };
+  };
+  return {
+    topo: topoNow,
+    plane(pick, what) {
+      if (typeof pick === 'string') {
+        if (pick in ORIGIN_FRAMES) return ORIGIN_FRAMES[pick as PlaneRef];
+        if (!findSketch(design, pick) && !built[pick]) throw failed(pick, what);
+        return frameIn(inp, pick, built);
+      }
+      const { e } = entity(pick as TopoRef, 'face', what);
+      if (!e.frame) throw new Error(`the ${what} must be a flat face`);
+      return { ...e.frame, n: norm3(e.frame.n), face: true };
+    },
+    axis: (pick) => axisAt(ops, design, inp, bodies, built, pick as AxisPick, datums),
+    axisPlane(pick) {
+      if (pick === 'X' || pick === 'Y') return ORIGIN_FRAMES.XY.n;
+      if (pick === 'Z') return ORIGIN_FRAMES.XZ.n;
+      if (typeof pick === 'string') return pick.includes('/') ? frameIn(inp, pick.split('/')[0], built).n : null;
+      const ref = pick as TopoRef;
+      if (ref.kind !== 'edge') return null;
+      const { e, body } = entity(ref, 'edge', 'axis');
+      const b = topoNow().find((q) => q.id === body)!;
+      return e.faces.map((i) => b.faces[i]?.frame?.n).find((n): n is Vec3 => !!n) ?? null;
+    },
+    point(pick, what) {
+      if (typeof pick === 'string') {
+        if (pick.includes('/')) return sketchPoint(pick, what);
+        const d = datums[pick];
+        if (d?.kind !== 'point') throw failed(pick, what);
+        return d.p;
+      }
+      const ref = pick as TopoRef;
+      if (ref.kind === 'vertex') return entity(ref, 'vertex', what).e.p;
+      if (ref.kind === 'edge') {
+        const { e } = entity(ref, 'edge', what);
+        return e.circle ? e.circle.c : e.mid;
+      }
+      const { e } = entity(ref, 'face', what);
+      return e.type === 'sphere' && e.axis ? e.axis.p : e.c;
+    },
+    curve(pick, what) {
+      if (typeof pick === 'string') return sketchCurve(pick, what);
+      const { e, body } = entity(pick as TopoRef, 'edge', what);
+      const b = bodies.find((q) => q.id === body)!;
+      return { at: (t) => ops.edgeAt(b.solid, e.index, t), ...(e.line ? { line: e.line } : {}), ...(e.circle ? { circle: e.circle } : {}) };
+    },
+    face: (pick, what) => entity(pick as TopoRef, 'face', what).e,
+  };
+}
+
+/** Points of the outline of a profile region in its frame (for the checks on a sweep). */
+const outlinePoints = (r: ProfileRegion, f: Frame): Vec3[] => loopPolygon(r.outer, Math.PI / 36).map((q) => framePoint(f, q));
+
+/** The path of a sweep as the kernel takes it: sketch curves (run from the end nearer the profile), body edges in order, or a coil's helix. */
+function sweepPath<S>(design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, datums: Record<string, Datum>, cx: ReturnType<typeof picksIn<S>>, item: SweepFeature, near: Vec3): PathGeom<S> {
+  const path = item.path;
+  if (path.kind === 'sketch') {
+    const sk = findSketch(design, path.sketch), sol = inp.numbers.sketches[path.sketch];
+    if (!sk || !sol) throw new Error(inp.numbers.errors[path.sketch] ?? 'the path sketch is missing');
+    const { segs, closed } = sketchPath(sk.sketch, sol, frameIn(inp, path.sketch, built), path.curves);
+    return { kind: 'segs', segs: startNear(segs, closed, near) };
+  }
+  if (path.kind === 'coil') {
+    const d = datums[path.coil];
+    if (d?.kind !== 'helix') throw new Error(itemName(design, path.coil) ? `the coil ${itemName(design, path.coil)} failed or comes after the sweep` : 'the coil of the path is gone');
+    return { kind: 'helix', helix: d.helix };
+  }
+  if (!path.edges.length) throw new Error('pick the edges of the path');
+  const topo = cx.topo();
+  if (topo.some((b) => b.named === false)) throw new Error(needsBrep('sweep'));
+  const found = path.edges.map((ref) => {
+    const r = resolveRef(ref, topo);
+    if (!r.ok) throw lostPick(design, ref, 'path', false);
+    return r;
+  });
+  const body = found[0].body;
+  if (found.some((r) => r.body !== body)) throw new Error('the path edges must all be on one body');
+  const { edges } = chainEdges(topo.find((b) => b.id === body)!, found.map((r) => r.index));
+  return { kind: 'edges', body: bodies.find((b) => b.id === body)!.solid, edges };
+}
+
+/** The coil: where it stands (centre, axis and start direction from its plane) and its helix and section. */
+function coilOf<S>(cx: ReturnType<typeof picksIn<S>>, item: CoilFeature, p: Record<string, number>, unit?: string) {
+  const pl = cx.plane(item.plane, 'plane');
+  const n = item.flip ? scale3(pl.n, -1) : pl.n;
+  const c0 = item.centre !== undefined ? cx.point(item.centre, 'centre point') : pl.o;
+  const c = sub3(c0, scale3(n, dot3(sub3(c0, pl.o), n)));
+  return coilGeometry({ c, axis: n, x: pl.u }, p.d, p.pitch, p.revs, p.size, item.section, item.position ?? 'center', item.hand === 'left', unit);
 }
 
 // ------------------------------------------------------------ modify features
@@ -850,8 +1185,8 @@ function planeAt<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodie
 }
 
 /** An axis a feature picked (origin axis, sketch line, straight edge, circle or round face), in component coordinates. */
-function axisAt<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, pick: AxisPick): { p: Vec3; d: Vec3 } {
-  if (typeof pick === 'string') return axisOf(design, inp, pick, built);
+function axisAt<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, pick: AxisPick, datums?: Record<string, Datum>): { p: Vec3; d: Vec3 } {
+  if (typeof pick === 'string') return axisOf(design, inp, pick, built, datums);
   const kind = pick.kind === 'face' ? 'face' : 'edge';
   const { entity: e, mesh } = pickedEntity(ops, bodies, pick, kind);
   if (!e) throw lostPick(design, pick, 'axis', mesh);
@@ -870,7 +1205,7 @@ function axisAt<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies
  * each body they are on made anew by the kernel. A rounding that does not fit says which
  * edge and about how large it may be.
  */
-function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, item: FilletFeature | ChamferFeature | ShellFeature | DraftFeature | PressPullFeature, p: Record<string, number>, warn: (w: string) => void): [TimelineBody<S>, S][] {
+function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, bodies: TimelineBody<S>[], built: Record<string, Frame>, datums: Record<string, Datum>, item: FilletFeature | ChamferFeature | ShellFeature | DraftFeature | PressPullFeature, p: Record<string, number>, warn: (w: string) => void): [TimelineBody<S>, S][] {
   const unit = inp.numbers.unit;
   const named = (id: string) => itemName(design, id);
   const topo = bodies.map((b) => ops.topology(b.solid, b.id));
@@ -888,7 +1223,7 @@ function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
   const still = { fillet: 'rounded', chamfer: 'chamfered', shell: 'open', draft: 'drafted', presspull: 'moved' }[item.kind];
   const on = findPicks(ops, design, bodies, refs, `the other ${what} are still ${still}`, warn);
   const plane = item.kind === 'draft' ? planeAt(ops, design, inp, bodies, built, item.plane, 'neutral plane') : null;
-  let pull = item.kind === 'draft' ? (item.pull ? axisAt(ops, design, inp, bodies, built, item.pull).d : plane!.n) : null;
+  let pull = item.kind === 'draft' ? (item.pull ? axisAt(ops, design, inp, bodies, built, item.pull, datums).d : plane!.n) : null;
   if (item.kind === 'draft' && item.flip) pull = scale3(pull!, -1);
   for (const [id, g] of on) {
     const b = bodyOf(id);
@@ -955,8 +1290,11 @@ function shellOf<S>(ops: SolidOps<S>, s: S, topo: BodyTopology, faces: number[],
  */
 export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignItem): TimelineState<S> {
   if (item.kind === 'sketch') {
+    if (item.suppressed) return prev;
+    const datum = 'frame' in item.plane ? item.plane.datum : undefined;
+    if (datum) return sketchOnDatum(design, inp, prev, item, datum);
     const face = sketchFace(item);
-    return face && !item.suppressed ? sketchOnFace(ops, design, inp, prev, item, face) : prev;
+    return face ? sketchOnFace(ops, design, inp, prev, item, face) : prev;
   }
   if (item.suppressed) return prev;
   // copy on write: bodies change their solid in place below
@@ -966,6 +1304,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
   const warnings = { ...prev.warnings };
   const made = [...prev.made];
   const built = prev.frames;
+  // construction items and coils add planes and datums
+  let frames = prev.frames, datums = prev.datums;
   const frameOf = (sketchId: string) => frameIn(inp, sketchId, built);
   const P = inp.numbers.params;
   const created = (id: string, feature: string, solid: S) => {
@@ -1062,7 +1402,23 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         const dir = item.dir ?? 'auto';
         const opts: HoleOptions = { d: p.d, depth, style: item.style, cbD: p.cbD, cbDepth: p.cbDepth, csD: p.csD, csAngle: p.csAngle };
         const make = (sg: number) => ops.hole(centres.map(([x, y]) => framePoint(f, { x, y })), scale3(f.n, sg), opts, item.id);
-        const tool = make(dir === '+' ? 1 : dir === '-' ? -1 : bestSide(ops, make, tgt));
+        const sg = dir === '+' ? 1 : dir === '-' ? -1 : bestSide(ops, make, tgt);
+        let tool = make(sg);
+        if (item.tap?.modeled) {
+          // the thread's groove cut with the drill, from outside the hole's mouth
+          const size = threadIn(parseThread(item.tap.size), inp.numbers.unit);
+          const grooves: S[] = [];
+          try {
+            centres.forEach(([x, y], i) => {
+              const tf = { o: framePoint(f, { x, y }), axis: scale3(f.n, sg), radius: p.d / 2, length: depth, internal: true, openStart: true, openEnd: !!item.through };
+              grooves.push(ops.thread(threadGeometry(size, tf, { length: p.tdepth }, inp.numbers.unit), `${item.id}/hole${i}:thread`));
+            });
+            tool = ops.group([tool, ...grooves]);
+          } catch (e) {
+            if (!/needs the B-rep kernel/.test(msg(e))) throw e;
+            warnings[item.id] = 'the thread is modeled once OpenCascade has loaded: until then the hole is drilled to its tap drill';
+          }
+        }
         const rec: TimelineTool<S> = { tool, op: 'cut', targets: item.targets };
         tools.set(item.id, rec);
         apply(item.id, rec);
@@ -1070,7 +1426,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
       }
       case 'pattern':
       case 'mirror': {
-        const Ms = copyMatrices(design, inp, item, built);
+        const Ms = copyMatrices(design, inp, item, built, prev.datums);
         if (!item.refs.length) throw new Error(`pick the ${item.of} to ${item.kind}`);
         if (item.of === 'features') {
           for (const ref of item.refs) {
@@ -1093,6 +1449,60 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         }
         break;
       }
+      case 'plane':
+      case 'axis':
+      case 'point': {
+        const d = datumOf(item, p, picksIn(ops, design, inp, bodies, built, datums));
+        datums = { ...datums, [item.id]: d };
+        if (d.kind === 'plane') frames = { ...frames, [item.id]: d.frame };
+        break;
+      }
+      case 'sweep': {
+        const f = frameOf(item.sketch);
+        const region = selectedProfiles(inp, item.sketch, item.profile ? [item.profile] : undefined)[0];
+        if (p.twist && Math.abs((p.scale ?? 1) - 1) > 1e-12) throw new Error('a sweep cannot twist and taper at once: use one or the other');
+        const cx = picksIn(ops, design, inp, bodies, built, datums);
+        const pts = outlinePoints(region, f);
+        const centre = scale3(pts.reduce((a, q) => add3(a, q), [0, 0, 0] as Vec3), 1 / pts.length);
+        const path = sweepPath(design, inp, bodies, built, datums, cx, item, centre);
+        const o: SweepOptions = { orientation: item.orientation ?? 'perpendicular', twist: p.twist ?? 0, scale: p.scale ?? 1, unit: inp.numbers.unit };
+        const rec = { tool: ops.sweep(region, f, path, o, item.id), op: item.op, targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
+      }
+      case 'coil': {
+        const g = coilOf(picksIn(ops, design, inp, bodies, built, datums), item, p, inp.numbers.unit);
+        // the helix is there for sweeps even when the coil makes no body
+        datums = { ...datums, [item.id]: { kind: 'helix', helix: g.helix } };
+        if (item.pathOnly) break;
+        const tool = ops.sweep(g.region, g.frame, { kind: 'helix', helix: g.helix }, { orientation: 'axis', axis: g.helix.axis, twist: 0, scale: 1 }, item.id);
+        const rec = { tool, op: item.op, targets: item.targets };
+        tools.set(item.id, rec);
+        apply(item.id, rec);
+        break;
+      }
+      case 'thread': {
+        const size = threadIn(parseThread(item.size), inp.numbers.unit);
+        if (!item.faces.length) throw new Error('pick the cylindrical faces to thread');
+        const topo = bodies.map((b) => ops.topology(b.solid, b.id));
+        if (topo.some((b) => b.named === false)) throw new Error(needsBrep('thread'));
+        const on = findPicks(ops, design, bodies, item.faces.map((ref) => ({ ref, set: 0 })), 'the other faces are still threaded', (w) => (warnings[item.id] = w));
+        let k = 0;
+        for (const [id, g] of on) {
+          const grooves: S[] = [];
+          for (const q of g.picks) {
+            // cosmetic threads change nothing, but the face must take the size
+            const tf = threadFace(g.topo, g.topo.faces[q.index], item.flip);
+            const geom = threadGeometry(size, tf, { length: p.length, offset: p.offset, left: item.hand === 'left' }, inp.numbers.unit);
+            if (item.modeled) grooves.push(ops.thread(geom, `${item.id}/thread${k++}`));
+          }
+          if (!grooves.length) continue;
+          const b = bodies.find((x) => x.id === id)!;
+          b.solid = ops.cut(b.solid, ops.group(grooves));
+        }
+        break;
+      }
       case 'combine': {
         const t = bodies.find((b) => b.id === item.target);
         const ts = bodies.filter((b) => item.tools.includes(b.id) && b !== t);
@@ -1109,7 +1519,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
       case 'draft':
       case 'presspull': {
         // every body changes or none does
-        const next = modifyBodies(ops, design, inp, bodies, built, item, p, (w) => (warnings[item.id] = w));
+        const next = modifyBodies(ops, design, inp, bodies, built, prev.datums, item, p, (w) => (warnings[item.id] = w));
         for (const [b, solid] of next) b.solid = solid;
         break;
       }
@@ -1128,7 +1538,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
         if (!item.bodies.length) throw new Error('pick the bodies to move');
         let M = m4Translate([p.dx ?? 0, p.dy ?? 0, p.dz ?? 0]);
         if (item.axis && p.angle) {
-          const a = axisAt(ops, design, inp, bodies, built, item.axis);
+          const a = axisAt(ops, design, inp, bodies, built, item.axis, prev.datums);
           M = m4Mul(M, m4Rotate(a.p, a.d, p.angle));
         }
         const moving = item.bodies.map((id) => bodies.find((q) => q.id === id));
@@ -1144,7 +1554,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildI
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { ...prev, bodies, tools, errors, warnings, made };
+  return { ...prev, bodies, tools, errors, warnings, made, frames, datums };
 }
 
 /**
@@ -1162,7 +1572,7 @@ export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): Timeli
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, tools: st.tools };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */
@@ -1170,7 +1580,7 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
   const t = runTimeline(meshOps(K, arena), design, comp, inp);
   return {
     bodies: t.bodies.map((b) => ({ id: b.id, name: b.name, feature: b.feature, solid: b.solid.m, exact: b.solid.exact })),
-    errors: t.errors, warnings: t.warnings, frames: t.frames,
+    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums,
     tools: new Map([...t.tools].map(([id, r]) => [id, { tool: r.tool.m, exact: r.tool.exact, op: r.op, targets: r.targets }])),
   };
 }
@@ -1181,8 +1591,9 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
  * on a body first. Null otherwise.
  */
 export function exactComponent(design: CadDesign, comp: CadComponent, inp: BuildInputs): { bodies: { id: string; name: string; feature: string; mass: Mass3 }[]; errors: Record<string, string> } | null {
-  if (activeItems(comp).some((i) => isSketch(i) && sketchFace(i))) return null;
-  const all = activeItems(comp).filter((i): i is DesignFeature => i.kind !== 'sketch' && !i.suppressed);
+  if (activeItems(comp).some((i) => isSketch(i) && (sketchFace(i) || ('frame' in i.plane && i.plane.datum)))) return null;
+  // construction geometry makes no body
+  const all = activeItems(comp).filter((i): i is DesignFeature => i.kind !== 'sketch' && !isConstruct(i) && !i.suppressed);
   const feats = all.filter((f): f is ExtrudeFeature | RevolveFeature => (f.kind === 'extrude' && f.op === 'new' && f.extent.type !== 'all') || (f.kind === 'revolve' && f.op === 'new'));
   if (feats.length < all.length) return null;
   const bodies: { id: string; name: string; feature: string; mass: Mass3 }[] = [];
@@ -1223,11 +1634,22 @@ export function exactComponent(design: CadDesign, comp: CadComponent, inp: Build
 export interface PlacementGeometry {
   frames: Record<string, Frame>;
   bodies(componentId: string): BodyTopology[];
+  /** Construction geometry of a component as built. */
+  datums?(componentId: string): Record<string, Datum>;
 }
 
 /** Joint origin as a frame matrix in its component; `lost` says why a snap point stays where it was picked. */
-export function jointFrame(numbers: DesignNumbers, o: JointOrigin, bodies?: BodyTopology[], frames?: Record<string, Frame>, lost?: (why: string) => void): M4 {
+export function jointFrame(numbers: DesignNumbers, o: JointOrigin, bodies?: BodyTopology[], frames?: Record<string, Frame>, lost?: (why: string) => void, datums?: Record<string, Datum>): M4 {
   if (o.kind === 'origin') return IDENTITY;
+  if (o.kind === 'datum') {
+    const d = datums?.[o.id];
+    if (!datums) throw new Error('the joint is on construction geometry, which the 3-D kernel builds: it has not loaded');
+    if (!d || d.kind === 'helix') throw new Error('the construction geometry of the joint failed or is gone');
+    if (d.kind === 'plane') return m4Frame(d.frame.o, d.frame.u, d.frame.v, d.frame.n);
+    const z = d.kind === 'axis' ? norm3(d.d) : [0, 0, 1] as Vec3;
+    const x = frameFromNormal(d.p, z).u;
+    return m4Frame(d.p, x, cross3(z, x), z);
+  }
   if (o.kind === 'frame' || o.kind === 'snap') {
     let at = { o: o.o, z: o.z };
     if (o.kind === 'snap' && bodies) {
@@ -1290,9 +1712,10 @@ export function placeOccurrences(design: CadDesign, numbers: DesignNumbers, geo?
       const p = numbers.params[j.id] ?? {};
       if (numbers.errors[j.id]) throw new Error(numbers.errors[j.id]);
       const lost = (why: string) => (warnings[j.id] ??= why);
+      const datumsOf = (occ: string) => geo?.datums?.(compOf(occ));
       frames.set(j.id, {
-        Fa: jointFrame(numbers, j.a.origin, bodiesOf(j.a.occ), geo?.frames, lost),
-        Fb: jointFrame(numbers, j.b.origin, bodiesOf(j.b.occ), geo?.frames, lost),
+        Fa: jointFrame(numbers, j.a.origin, bodiesOf(j.a.occ), geo?.frames, lost, datumsOf(j.a.occ)),
+        Fb: jointFrame(numbers, j.b.origin, bodiesOf(j.b.occ), geo?.frames, lost, datumsOf(j.b.occ)),
         M: jointMotion(j, p.angle ?? 0, p.offset ?? 0),
       });
     } catch (e) {
@@ -1374,12 +1797,13 @@ export function buildDesign(K: ManifoldToplevel, design: CadDesign, numbers: Des
     try {
       components.set(c.id, buildComponent(K, arena, design, c, inp));
     } catch (e) {
-      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, tools: new Map() });
+      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map() });
     }
   }
   const { placements, errors, warnings } = placeOccurrences(design, numbers, {
     frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
     bodies: (cid) => (components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)),
+    datums: (cid) => components.get(cid)?.datums ?? {},
   });
   return { arena, components, placements, errors, warnings, free: () => arena.free() };
 }
