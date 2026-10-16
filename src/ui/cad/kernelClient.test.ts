@@ -2,7 +2,8 @@
 // worker that went away fails what it was asked instead of leaving it hanging.
 import { describe, expect, it } from 'vitest';
 import type { KernelCall, KernelReply } from '../../cad/kernel/protocol';
-import { isSuperseded, kernelHostStopped, kernelRequest, setKernelHost } from './kernelClient';
+import type { CadResult } from '../../cad/evaluate';
+import { isSuperseded, kernelHostStopped, kernelRequest, setKernelHost, waitingFor } from './kernelClient';
 
 /** A stand-in worker that answers section requests with their offset after `ms`. */
 function fakeWorker(ms = 5) {
@@ -64,5 +65,20 @@ describe('kernel requests from the UI', () => {
     expect(await next).toBe(2);
     expect(b.asked).toEqual([2]);
     setKernelHost(null);
+  });
+
+  it('a view without display data says what it waits for', () => {
+    const res = (extra: Partial<CadResult> = {}) => ({ kind: 'cad', points: {}, radii: {}, ok: true, dof: 0, determined: [], determinedRadii: [], conflicting: [], redundant: [], values: {}, dimErrors: {}, issues: [], ...extra }) as CadResult;
+    const up = { missing: false, kernelUp: true };
+    // the worksheet is still evaluating, or built without OpenCascade while it loads
+    expect(waitingFor(undefined, undefined, up)).toBe('loading');
+    expect(waitingFor(res({ needsBrep: true }), 'd1', up)).toBe('loading');
+    expect(waitingFor(res({ needsKernel: true }), 'd1', up)).toBe('loading');
+    // a CAD window whose own kernel worker has not answered yet: it is loading OpenCascade
+    expect(waitingFor(res(), 'd1', { missing: false, kernelUp: false })).toBe('loading');
+    expect(waitingFor(res(), 'd1', up)).toBe('rebuilding');
+    // nothing could build it: no build is coming
+    expect(waitingFor(res(), 'd1', { missing: true, kernelUp: true })).toBe('none');
+    expect(waitingFor(res(), undefined, up)).toBe('none');
   });
 });

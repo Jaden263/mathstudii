@@ -46,6 +46,9 @@ export function kernelHostStopped() {
   if (link && link.worker !== own) unlink();
 }
 
+/** The worker of our own has answered: it loads OpenCascade before its first answer. */
+let ownUp = false;
+
 function port(): MessagePort {
   const w = host ? host() : (own ??= new Worker(new URL('../../cad/kernel/worker.ts', import.meta.url), { type: 'module' }));
   if (link?.worker === w) return link.port;
@@ -53,6 +56,10 @@ function port(): MessagePort {
   unlink();
   const ch = new MessageChannel();
   ch.port1.onmessage = (e: MessageEvent<KernelReply>) => {
+    if (w === own && !ownUp) {
+      ownUp = true;
+      changed();
+    }
     const r = e.data, p = waiting.get(r.rid);
     if (!p) return;
     waiting.delete(r.rid);
@@ -156,6 +163,15 @@ export interface Shown {
 /** The last display data each part showed, kept on screen while a new build is on its way. */
 const lastShown = new Map<string, BuildResult>();
 
+/**
+ * What a view without display data waits for: the kernel (still loading, or the worksheet
+ * still evaluating), a rebuild of its part, or nothing (no build is coming).
+ */
+export function waitingFor(result: CadResult | undefined, key: string | undefined, o: { missing: boolean; kernelUp: boolean }): 'loading' | 'rebuilding' | 'none' {
+  if (!result || result.needsBrep || result.needsKernel || !o.kernelUp) return 'loading';
+  return key && !o.missing ? 'rebuilding' : 'none';
+}
+
 /** The display data of a part for its latest result; asks the kernel when nobody sent it. */
 export function useBuildResult(regionId: string, design: CadDesign, result: CadResult | undefined): Shown {
   useSyncExternalStore(subscribe, () => version);
@@ -190,7 +206,7 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
   const notice = dr?.brepError ? 'Mesh kernel: OpenCascade did not load, so faces, edges and values are approximate'
     : build?.kernel === 'mesh' ? 'Mesh kernel: OpenCascade could not build this part, so its faces and edges are approximate' : undefined;
   if (build) return { build, state: 'ready', notice };
-  const stale = lastShown.get(regionId) ?? null;
-  if (!result || result.needsBrep || result.needsKernel) return { build: stale, state: 'loading', notice };
-  return { build: stale, state: key && !missing.has(key) ? 'rebuilding' : 'none', notice };
+  // a CAD window's own kernel worker is loading OpenCascade until it first answers
+  const state = waitingFor(result, key, { missing: !!key && missing.has(key), kernelUp: !!host || ownUp });
+  return { build: lastShown.get(regionId) ?? null, state, notice };
 }
