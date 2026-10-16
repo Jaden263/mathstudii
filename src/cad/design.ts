@@ -7,7 +7,7 @@
 // CAD window can share it: `resolve` turns expressions into numbers and solves the
 // sketches (serialisable, no kernel), `build` makes the solids from those numbers.
 import type { CadRegion } from '../model/types';
-import type { CadSketch, CadView } from './model';
+import { sketchSig, type CadSketch, type CadView } from './model';
 import { findProfiles, type ProfileRegion, type Vec2 } from './profile';
 import { extrudeProps, revolveProps, type MassProps } from './features';
 import {
@@ -33,6 +33,9 @@ import {
 } from './sweep';
 import { parseThread, threadIn } from './threads';
 import { ribCurve, ribRegion, type RibCurve } from './rib';
+import { reproject, sameReferences, type ReferenceContext, type RefCurve3 } from './reference';
+import { sketchSolution } from './sketchSolve';
+import type { CadResult } from './evaluate';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
 
@@ -691,6 +694,8 @@ export interface ComponentBuild {
   datums: Record<string, Datum>;
   /** Tool solid of every feature that made one (previews, patterns). */
   tools: Map<string, ToolRec>;
+  /** Sketches the timeline solved again (their projected references moved). */
+  sketches: Record<string, RebuiltSketch>;
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -846,6 +851,8 @@ export interface SolidOps<S> {
   thread(g: ThreadGeom, tag: string): S;
   /** The point and unit tangent at a fraction t of an edge's length (its index in the body's topology). */
   edgeAt(s: S, edge: number, t: number): { p: Vec3; d: Vec3 };
+  /** The curves the plane f cuts from a solid (component coordinates): lines, circles and ellipses exactly, other curves as points along them. */
+  section(s: S, f: Frame): RefCurve3[];
 }
 
 export interface TimelineBody<S> {
@@ -873,6 +880,8 @@ export interface Timeline<S> {
   datums: Record<string, Datum>;
   /** Tool solid of every feature that made one (previews, patterns). */
   tools: Map<string, TimelineTool<S>>;
+  /** Sketches the timeline solved again (their projected references moved). */
+  sketches: Record<string, RebuiltSketch>;
 }
 
 /** z-range of a box in a sketch frame. */
@@ -953,9 +962,18 @@ export interface TimelineState<S> {
   datums: Record<string, Datum>;
   /** Ids of every body made so far, in order (default names count them). */
   made: string[];
+  /** Sketches whose projected references moved: projected again on the bodies before them and solved again. */
+  sketches: Record<string, RebuiltSketch>;
 }
 
-export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [] });
+/** A sketch as its timeline rebuilt it (its reference geometry projected again). */
+export interface RebuiltSketch {
+  sketch: CadSketch;
+  solved: SolvedSketch;
+  result: CadResult;
+}
+
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {} });
 
 /** The face a sketch follows, if it does (sketches made on faces before references existed do not). */
 export const sketchFace = (s: DesignSketch): TopoRef | undefined => ('frame' in s.plane ? s.plane.face : undefined);
@@ -1011,6 +1029,59 @@ function sketchOnDatum<S>(design: CadDesign, inp: BuildInputs, prev: TimelineSta
   }
   const f = d?.kind === 'plane' ? offsetFrame(d.frame, inp.numbers.params[item.id]?.offset ?? 0) : captured;
   return { ...prev, frames: { ...prev.frames, [item.id]: f }, warnings };
+}
+
+// ------------------------------------------------------------ projected references
+
+/**
+ * A sketch's reference geometry projected again on the bodies built before it (and the
+ * construction geometry so far). When it moved, the sketch is solved again with the values
+ * its dimensions resolved to, and the features after it use that solution.
+ */
+function sketchReferences<S>(ops: SolidOps<S>, inp: BuildInputs, prev: TimelineState<S>, item: DesignSketch): TimelineState<S> {
+  const f = prev.frames[item.id] ?? inp.numbers.frames[item.id];
+  if (!f || inp.numbers.errors[item.id]) return prev;
+  let topo: BodyTopology[] | null = null;
+  const box = ops.box(prev.bodies.map((b) => b.solid));
+  const size = box ? Math.max(...[0, 1, 2].map((i) => box.max[i] - box.min[i])) : 100;
+  const cx: ReferenceContext = {
+    get bodies() {
+      return (topo ??= prev.bodies.map((b) => ops.topology(b.solid, b.id)));
+    },
+    edgeAt: (bi, ei, t) => ops.edgeAt(prev.bodies[bi].solid, ei, t),
+    section: (fr, ids) => prev.bodies.filter((b) => !ids?.length || ids.includes(b.id)).flatMap((b) => ops.section(b.solid, fr)),
+    datums: prev.datums,
+    size,
+  };
+  const { sketch, lost } = reproject(item.sketch, f, cx);
+  const warnings = { ...prev.warnings };
+  delete warnings[`${item.id}:refs`];
+  if (lost.length) warnings[item.id] = [warnings[item.id], ...lost].filter(Boolean).join('; ');
+  let scale = 1;
+  for (const p of sketch.points) scale = Math.max(scale, Math.abs(p.x), Math.abs(p.y));
+  const sketches = { ...prev.sketches };
+  delete sketches[item.id];
+  if (sameReferences(item.sketch, sketch, 1e-9 * scale)) return { ...prev, warnings, sketches: Object.keys(prev.sketches).includes(item.id) ? sketches : prev.sketches };
+  const p = inp.numbers.params[item.id] ?? {};
+  const values = new Map(Object.entries(p).filter(([k]) => k.startsWith('v:')).map(([k, v]) => [k.slice(2), v]));
+  const sol = sketchSolution(sketch, values, (inp.numbers.sketches[item.id] as Partial<CadResult> | undefined)?.dimErrors ?? {}, sketchSig(item.sketch));
+  sketches[item.id] = { sketch, solved: { points: sol.result.points, radii: sol.result.radii }, result: sol.result };
+  return { ...prev, warnings, sketches };
+}
+
+const views = new WeakMap<Record<string, RebuiltSketch>, { design: CadDesign; numbers: DesignNumbers; view: { design: CadDesign; inp: BuildInputs } }>();
+
+/** The design and inputs with the rebuilt sketches in place of the stored ones. */
+function withRebuilt(design: CadDesign, inp: BuildInputs, rebuilt: Record<string, RebuiltSketch>): { design: CadDesign; inp: BuildInputs } {
+  if (!rebuilt || !Object.keys(rebuilt).length) return { design, inp };
+  const hit = views.get(rebuilt);
+  if (hit && hit.design === design && hit.numbers === inp.numbers) return hit.view;
+  const d2: CadDesign = { ...design, components: design.components.map((c) => ({ ...c, items: c.items.map((i) => (isSketch(i) && rebuilt[i.id] ? { ...i, sketch: rebuilt[i.id].sketch } : i)) })) };
+  const solved: Record<string, SolvedSketch> = {};
+  for (const [id, r] of Object.entries(rebuilt)) solved[id] = r.result;
+  const view = { design: d2, inp: buildInputs(d2, { ...inp.numbers, sketches: { ...inp.numbers.sketches, ...solved } }) };
+  views.set(rebuilt, { design, numbers: inp.numbers, view });
+  return view;
 }
 
 // ------------------------------------------------------------ picks of construction geometry, sweeps, coils and threads
@@ -1399,15 +1470,17 @@ function shellOf<S>(ops: SolidOps<S>, s: S, topo: BodyTopology, faces: number[],
  * feature (extents, automatic cut sides, targets, patterns, booleans) lives here, so the
  * mesh and the B-rep kernel build the same design. A failing feature records its error.
  */
-export function timelineStep<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignItem): TimelineState<S> {
+export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: BuildInputs, prev: TimelineState<S>, item: DesignItem): TimelineState<S> {
   if (item.kind === 'sketch') {
     if (item.suppressed) return prev;
     const datum = 'frame' in item.plane ? item.plane.datum : undefined;
-    if (datum) return sketchOnDatum(design, inp, prev, item, datum);
     const face = sketchFace(item);
-    return face ? sketchOnFace(ops, design, inp, prev, item, face) : prev;
+    const placed = datum ? sketchOnDatum(design0, inp0, prev, item, datum) : face ? sketchOnFace(ops, design0, inp0, prev, item, face) : prev;
+    return item.sketch.sources?.length ? sketchReferences(ops, inp0, placed, item) : placed;
   }
   if (item.suppressed) return prev;
+  // the features see the sketches as the timeline rebuilt them
+  const { design, inp } = withRebuilt(design0, inp0, prev.sketches);
   // copy on write: bodies change their solid in place below
   const bodies = prev.bodies.map((b) => ({ ...b }));
   const tools = new Map(prev.tools);
@@ -1699,7 +1772,7 @@ export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): Timeli
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */
@@ -1707,7 +1780,7 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
   const t = runTimeline(meshOps(K, arena), design, comp, inp);
   return {
     bodies: t.bodies.map((b) => ({ id: b.id, name: b.name, feature: b.feature, solid: b.solid.m, exact: b.solid.exact })),
-    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums,
+    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums, sketches: t.sketches,
     tools: new Map([...t.tools].map(([id, r]) => [id, { tool: r.tool.m, exact: r.tool.exact, op: r.op, targets: r.targets }])),
   };
 }
@@ -1924,7 +1997,7 @@ export function buildDesign(K: ManifoldToplevel, design: CadDesign, numbers: Des
     try {
       components.set(c.id, buildComponent(K, arena, design, c, inp));
     } catch (e) {
-      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map() });
+      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map(), sketches: {} });
     }
   }
   const { placements, errors, warnings } = placeOccurrences(design, numbers, {

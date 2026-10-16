@@ -4,13 +4,15 @@
 import type { SolidOps } from './design';
 import { extrudeProps, revolveProps } from './features';
 import {
-  add3, boxOf, cross3, dot3, extrudeSolid, frameMatrix, holeTool, m4Point, m4Rotate, massFromProps, norm3, revolveSolid, scale3, sharedVolume, sub3,
+  add3, boxOf, cross3, dot3, extrudeSolid, frameMatrix, holeTool, m4Point, m4Rotate, massFromProps, norm3, revolveSolid, scale3, sectionInPlane, sharedVolume, sub3,
   transformMass, transformSolid,
   type Arena, type Manifold, type ManifoldToplevel, type Mass3, type Vec3,
 } from './solid';
 import { loftSolid, shapedExtrude, thinExtrude } from './shaping';
 import { meshTopology } from './meshTopology';
 import { needsBrep } from './modify';
+import { fitCircle } from './project';
+import type { RefCurve3 } from './reference';
 
 export interface MeshSolid {
   m: Manifold;
@@ -71,6 +73,20 @@ export function meshOps(K: ManifoldToplevel, arena: Arena): SolidOps<MeshSolid> 
       if (e.v[0] !== e.v[1] && Math.abs(total) < 1e-12) total = 2 * Math.PI;
       const R = m4Rotate(c, axis, total * t);
       return { p: m4Point(R, p0), d: norm3(scale3(cross3(norm3(axis), sub3(m4Point(R, p0), c)), Math.sign(total))) };
+    },
+    // the mesh's section polygons: circles found among them, the rest as lines (merged where straight)
+    section(s, f) {
+      const out: RefCurve3[] = [];
+      for (const poly of sectionInPlane(s.m, f)) {
+        const P3 = (q: { x: number; y: number }): Vec3 => add3(f.o, add3(scale3(f.u, q.x), scale3(f.v, q.y)));
+        const circ = fitCircle(poly);
+        if (circ && poly.length >= 12) {
+          out.push({ kind: 'circle', c: P3(circ.c), axis: f.n, r: circ.r });
+          continue;
+        }
+        poly.forEach((q, i) => out.push({ kind: 'line', a: P3(q), b: P3(poly[(i + 1) % poly.length]) }));
+      }
+      return out;
     },
     pieces: (s) => s.m.decompose().map((q) => ({ m: arena.add(q) })),
     split(s, pl) {

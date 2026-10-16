@@ -64,6 +64,8 @@ export interface CadSpline extends EntityBase {
   /** Fit splines: tangent handles at the start and the end (the second and last-but-one pole). */
   h1?: string;
   h2?: string;
+  /** Control splines: a clamped knot vector of their own (a piece of a split one); uniform when missing. */
+  knots?: number[];
 }
 
 /**
@@ -139,7 +141,11 @@ export interface CadConstraint {
    * about the point `about` (circ: value is the total angle; 360° spreads them evenly).
    * Patterns made together share a `group` (both directions of a rectangular one).
    */
-  pattern?: { kind: 'rect' | 'circ'; n: number; count: number; dir?: 'x' | 'y'; along?: string; about?: string; group?: string };
+  pattern?: {
+    kind: 'rect' | 'circ'; n: number; count: number; dir?: 'x' | 'y'; along?: string; about?: string; group?: string;
+    /** The entities patterned and the copies made (to make them again for another count). */
+    of?: string[]; made?: string[];
+  };
 }
 
 /**
@@ -198,6 +204,9 @@ export const MATERIALS: { name: string; density: string }[] = [
 export const isDimension = (t: ConstraintType): t is DimensionConstraint =>
   t === 'distance' || t === 'distanceX' || t === 'distanceY' || t === 'length' || t === 'angle' || t === 'radius' || t === 'diameter'
   || t === 'majorRadius' || t === 'minorRadius' || t === 'offset' || t === 'pattern';
+
+/** Dimensions measured in degrees: angles, and the total angle of a circular pattern. */
+export const isAngleDim = (c: CadConstraint) => c.type === 'angle' || (c.type === 'pattern' && c.pattern?.kind === 'circ');
 
 export function emptySketch(): CadSketch {
   return { points: [], entities: [], constraints: [] };

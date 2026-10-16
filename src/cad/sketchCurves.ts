@@ -3,7 +3,7 @@
 // kernels, the 2-D and 3-D views, hit testing and the sketch tools all go through here,
 // so they all see the same curve.
 import type { CadEllipse, CadEntity, CadSpline } from './model';
-import type { Loop, Seg, Vec2 } from './profile';
+import { segBreaks, segDeriv, segPoint, type Loop, type Seg, type Vec2 } from './profile';
 import { controlSpline, ellipseParam, interpolate, sweepCCW, type BSpline, type Ellipse } from './curves';
 import { textLoops } from './text';
 
@@ -18,7 +18,11 @@ export function splineOf(e: CadSpline, P: PointAt): BSpline | null {
     if (!p) return null;
     Q.push(p);
   }
-  if (e.mode === 'control') return controlSpline(Q, e.closed);
+  if (e.mode === 'control') {
+    const deg = e.knots ? e.knots.length - Q.length - 1 : 0;
+    if (e.knots && !e.closed && deg >= 1 && deg <= 3) return { deg, poles: Q.map((q) => ({ ...q })), knots: e.knots };
+    return controlSpline(Q, e.closed);
+  }
   const h0 = e.h1 ? P(e.h1) : undefined, h1 = e.h2 ? P(e.h2) : undefined;
   return interpolate(Q, { closed: e.closed, h0: e.closed ? undefined : h0, h1: e.closed ? undefined : h1 })?.curve ?? null;
 }
@@ -104,3 +108,59 @@ export const curvePoints = (e: CadEntity): string[] => {
     case 'point': return [e.p];
   }
 };
+
+// ------------------------------------------------------------ crossings of curves
+
+const { abs, max, min, hypot, PI } = Math;
+const sub = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x - b.x, y: a.y - b.y });
+const len = (v: Vec2) => hypot(v.x, v.y);
+const cross = (a: Vec2, b: Vec2) => a.x * b.y - a.y * b.x;
+
+/** Points along a segment with their parameters (fine enough to find crossings between them). */
+function sampled(s: Seg): { t: number; p: Vec2 }[] {
+  if (s.kind === 'line') return [{ t: 0, p: s.a }, { t: 1, p: s.b }];
+  const br = segBreaks(s, PI / 16);
+  const out: { t: number; p: Vec2 }[] = [];
+  for (let k = 0; k + 1 < br.length; k++) {
+    const n = s.kind === 'bspline' ? 48 : 12;
+    for (let i = 0; i < n; i++) {
+      const t = br[k] + ((br[k + 1] - br[k]) * i) / n;
+      out.push({ t, p: segPoint(s, t) });
+    }
+  }
+  out.push({ t: 1, p: segPoint(s, 1) });
+  return out;
+}
+
+/** Where two segments cross: polylines first, then Newton on the curves themselves. */
+export function segCrossings(A: Seg, B: Seg): { p: Vec2; s: number; t: number }[] {
+  const a = sampled(A), b = sampled(B);
+  const out: { p: Vec2; s: number; t: number }[] = [];
+  let size = 1;
+  for (const q of [...a, ...b]) size = max(size, abs(q.p.x), abs(q.p.y));
+  for (let i = 0; i + 1 < a.length; i++) {
+    const p0 = a[i].p, p1 = a[i + 1].p, r = sub(p1, p0);
+    for (let j = 0; j + 1 < b.length; j++) {
+      const q0 = b[j].p, q1 = b[j + 1].p, w = sub(q1, q0);
+      const den = cross(r, w);
+      if (abs(den) < 1e-14 * len(r) * len(w)) continue;
+      const u = cross(sub(q0, p0), w) / den, v = cross(sub(q0, p0), r) / den;
+      if (u < -1e-9 || u > 1 + 1e-9 || v < -1e-9 || v > 1 + 1e-9) continue;
+      let s = a[i].t + (a[i + 1].t - a[i].t) * u, t = b[j].t + (b[j + 1].t - b[j].t) * v;
+      for (let it = 0; it < 30; it++) {
+        const F = sub(segPoint(A, s), segPoint(B, t)), da = segDeriv(A, s), db = segDeriv(B, t);
+        const det = -da.x * db.y + db.x * da.y;
+        if (!(abs(det) > 0)) break;
+        const ds = (-F.x * -db.y + db.x * -F.y) / det, dt = (da.x * -F.y - -F.x * da.y) / det;
+        s = min(1, max(0, s + ds));
+        t = min(1, max(0, t + dt));
+        if (abs(ds) + abs(dt) < 1e-15) break;
+      }
+      const p = segPoint(A, s);
+      if (len(sub(p, segPoint(B, t))) > 1e-7 * size) continue;
+      if (!out.some((x) => len(sub(x.p, p)) < 1e-9 * size)) out.push({ p, s, t });
+    }
+  }
+  return out;
+}
+

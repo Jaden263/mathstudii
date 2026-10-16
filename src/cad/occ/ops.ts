@@ -10,6 +10,7 @@
 import type { NCollection_List_TopoDS_Shape, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire } from 'replicad-opencascadejs';
 import type { HoleOptions, ModifyPick, SolidOps } from '../design';
 import type { ProfileRegion } from '../profile';
+import type { RefCurve3 } from '../reference';
 import type { EdgeOptions } from '../shaping';
 import { Arena, add3, cross3, dot3, frameDir, frameFromNormal, framePoint, m4Point, m4Rotate, norm3, revolveSide, sub3, type Frame, type Vec3 } from '../solid';
 import { faceName, nameToken } from '../topology';
@@ -64,6 +65,18 @@ export function shapeVolume(oc: OC, s: TopoDS_Shape): number {
 }
 
 const scale = (v: Vec3, k: number): Vec3 => [v[0] * k, v[1] * k, v[2] * k];
+
+/** A section curve moved by d. */
+function shiftCurve(c: RefCurve3, d: Vec3): RefCurve3 {
+  const m = (p: Vec3): Vec3 => add3(p, d);
+  switch (c.kind) {
+    case 'line': return { ...c, a: m(c.a), b: m(c.b) };
+    case 'circle': return { ...c, c: m(c.c), ...(c.a && c.b ? { a: m(c.a), b: m(c.b) } : {}) };
+    case 'ellipse': return { ...c, c: m(c.c) };
+    case 'poly': return { ...c, pts: c.pts.map(m) };
+    case 'point': return { ...c, p: m(c.p) };
+  }
+}
 
 /** The kernel operations; every shape they return lives in `arena`. */
 export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
@@ -1032,6 +1045,51 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     sweep: swept.sweep,
     thread: swept.thread,
     edgeAt: swept.edgeAt,
+
+    section(s, f) {
+      // at the plane, else a hair behind or in front of it (a sketch on a face cuts the face's own outline)
+      const box = occBox(oc, [s.shape]);
+      const size = box ? Math.max(...[0, 1, 2].map((i) => box.max[i] - box.min[i]), 1e-9) : 1;
+      for (const h of [0, -1e-5 * size, 1e-5 * size]) {
+        const got = scratch((t) => {
+          const o = add3(f.o, [f.n[0] * h, f.n[1] * h, f.n[2] * h]);
+          const pln = t.add(new oc.gp_Pln(t.add(new oc.gp_Ax3(pnt(oc, t, o), dir(oc, t, f.n), dir(oc, t, f.u)))));
+          const op = t.add(new oc.BRepAlgoAPI_Section(s.shape, pln, false));
+          try {
+            guard(oc, 'the section failed', () => op.Build(progress(t)));
+            if (op.HasErrors()) return [];
+            const C = oc.GeomAbs_CurveType, out: RefCurve3[] = [];
+            for (const e of subShapes(oc, t, t.add(op.Shape()), EDGE)) {
+              const a = t.add(new oc.BRepAdaptor_Curve(t.add(oc.TopoDS.Edge(e))));
+              const u0 = a.FirstParameter(), u1 = a.LastParameter(), ty = a.GetType();
+              const at = (u: number) => xyz(t.add(a.EvalD0(u)));
+              const whole = Math.abs(u1 - u0 - 2 * Math.PI) < 1e-9;
+              if (ty === C.GeomAbs_Line) out.push({ kind: 'line', a: at(u0), b: at(u1) });
+              else if (ty === C.GeomAbs_Circle) {
+                const c = t.add(a.Circle()), ax = t.add(c.Axis());
+                const circ = { kind: 'circle' as const, c: xyz(t.add(c.Location())), axis: xyz(t.add(ax.Direction())), r: c.Radius() };
+                out.push(whole ? circ : { ...circ, a: at(u0), b: at(u1) });
+              } else if (ty === C.GeomAbs_Ellipse) {
+                const el = t.add(a.Ellipse());
+                const x = xyz(t.add(t.add(el.XAxis()).Direction())), y = xyz(t.add(t.add(el.YAxis()).Direction()));
+                const base = { kind: 'ellipse' as const, c: xyz(t.add(el.Location())), x, y, ra: el.MajorRadius(), rb: el.MinorRadius() };
+                out.push(whole ? base : { ...base, t0: u0, t1: u1 });
+              } else out.push({ kind: 'poly', pts: Array.from({ length: 25 }, (_, i) => at(u0 + ((u1 - u0) * i) / 24)) });
+            }
+            return out;
+          } finally {
+            try {
+              op.Clear();
+            } catch (e) {
+              occError(oc, e, 'clearing a boolean failed');
+            }
+          }
+        });
+        // a cut exactly in a face's plane says nothing of its points: the shifted ones are put back in the plane
+        if (got.length) return h ? got.map((c) => shiftCurve(c, scale(f.n, -h))) : got;
+      }
+      return [];
+    },
 
     union,
     // a compound: booleans take its solids as separate tools

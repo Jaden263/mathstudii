@@ -8,7 +8,7 @@
 // Every OCCT object lives in WASM memory and must be deleted. Builds collect what they
 // make in an Arena (solid.ts) and free it at the end; short-lived helpers use their own.
 import type {
-  GProp_GProps, NCollection_List_TopoDS_Shape, OpenCascadeInstance, TopAbs_ShapeEnum, TopoDS_Shape, gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec,
+  GProp_GProps, GeomAbs_SurfaceType, NCollection_List_TopoDS_Shape, OpenCascadeInstance, TopAbs_ShapeEnum, TopoDS_Shape, gp_Ax1, gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec,
 } from 'replicad-opencascadejs';
 import { Arena, norm3, type Frame, type M4, type Vec3 } from '../solid';
 
@@ -240,8 +240,8 @@ export function listShapes(t: Arena, list: NCollection_List_TopoDS_Shape): TopoD
  */
 export function volumeProperties(oc: OC, s: TopoDS_Shape, p: GProp_GProps): void {
   const S = oc.GeomAbs_SurfaceType;
-  const analytic = [S.GeomAbs_Plane, S.GeomAbs_Cylinder, S.GeomAbs_Cone, S.GeomAbs_Sphere, S.GeomAbs_Torus];
-  const swept = [S.GeomAbs_SurfaceOfExtrusion, S.GeomAbs_SurfaceOfRevolution];
+  const analytic: GeomAbs_SurfaceType[] = [S.GeomAbs_Plane, S.GeomAbs_Cylinder, S.GeomAbs_Cone, S.GeomAbs_Sphere, S.GeomAbs_Torus];
+  const swept: GeomAbs_SurfaceType[] = [S.GeomAbs_SurfaceOfExtrusion, S.GeomAbs_SurfaceOfRevolution];
   const adaptive = scratch((t) => {
     let any = false;
     const ex = t.add(new oc.TopExp_Explorer(s, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));

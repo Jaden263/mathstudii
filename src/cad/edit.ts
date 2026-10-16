@@ -1,7 +1,7 @@
 // Editing operations on CAD sketches, kept free of React so they can be tested:
 // hit testing, constraints and dimensions from a selection, local dimension values.
 import { math } from '../engine/math';
-import { cadId, entityPoints, hasRadius, isDimension, nextDimName, type CadConstraint, type CadEntity, type CadSketch, type ConstraintType } from './model';
+import { cadId, entityPoints, hasRadius, isAngleDim, isDimension, nextDimName, type CadConstraint, type CadEntity, type CadSketch, type ConstraintType } from './model';
 import { segPolyline } from './profile';
 import { entitySegs, splineOf } from './sketchCurves';
 import { measure, solveSketch } from './solver';
@@ -338,7 +338,7 @@ export function localValues(sk: CadSketch, unit: string, known: Record<string, n
   for (const c of sk.constraints) {
     if (!isDimension(c.type) || c.driving === false) continue;
     try {
-      const v = dimensionValue(math.evaluate(c.value?.trim() || '0'), unit, c.type === 'angle');
+      const v = dimensionValue(math.evaluate(c.value?.trim() || '0'), unit, isAngleDim(c));
       if (Number.isFinite(v)) { out.set(c.id, v); continue; }
     } catch {
       /* uses worksheet variables */

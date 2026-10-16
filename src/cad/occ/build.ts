@@ -4,7 +4,7 @@
 // from the feature that changed, cache.ts).
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import {
-  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type TimelineBody, type TimelineTool,
+  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type RebuiltSketch, type TimelineBody, type TimelineTool,
 } from '../design';
 import { designKey } from '../keys';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
@@ -26,6 +26,8 @@ export interface OccComponentBuild {
   /** Construction geometry and coil helices. */
   datums: Record<string, Datum>;
   tools: Map<string, TimelineTool<OccSolid>>;
+  /** Sketches the timeline solved again (their projected references moved). */
+  sketches?: Record<string, RebuiltSketch>;
 }
 
 export interface OccBuiltDesign {
@@ -114,6 +116,8 @@ export interface MeasuredDesign {
   warnings: Record<string, string>;
   /** Sketch planes as built (a sketch on a face follows it). */
   frames: Record<string, Frame>;
+  /** Sketches whose projected references moved, as the timeline solved them again. */
+  sketches?: Record<string, RebuiltSketch>;
   placements: Record<string, Placement>;
   /** Bounding box of the visible occurrences (assembly coordinates). */
   box?: { min: Vec3; max: Vec3 };
@@ -146,6 +150,7 @@ export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbe
       Object.assign(out.errors, cb.errors);
       Object.assign(out.warnings, cb.warnings);
       Object.assign(out.frames, cb.frames);
+      if (cb.sketches && Object.keys(cb.sketches).length) Object.assign((out.sketches ??= {}), cb.sketches);
       out.bodies[c.id] = cb.bodies.map((b) => (isEmptyShape(oc, b.solid.shape)
         ? { id: b.id, name: b.name, feature: b.feature, empty: true }
         : { id: b.id, name: b.name, feature: b.feature, mass: shapeMass(oc, b.solid.shape) }));

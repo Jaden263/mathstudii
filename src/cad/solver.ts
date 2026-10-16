@@ -182,12 +182,12 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       case 'equal': {
         const e0 = ents.get(r0), e1 = ents.get(r1);
         if (e0?.type === 'ellipse' && e1?.type === 'ellipse') {
-          // both semi-axes
-          const g0 = ellipseVars(r0), g1 = ellipseVars(r1);
-          return add(c.id, 2, [...g0.vars, ...g1.vars], (q, o, k) => {
+          // both semi-axes (only the minor one when they share their axis: the pieces of a broken arc)
+          const g0 = ellipseVars(r0), g1 = ellipseVars(r1), shared = e0.c === e1.c && e0.a === e1.a;
+          return add(c.id, shared ? 1 : 2, [...g0.vars, ...g1.vars], (q, o, k) => {
             const a = g0.geo(q), b = g1.geo(q);
-            o[k] = a.ra - b.ra;
-            o[k + 1] = a.rb - b.rb;
+            o[k] = a.rb - b.rb;
+            if (!shared) o[k + 1] = a.ra - b.ra;
           });
         }
         if (e0?.type === 'line' && e1?.type === 'line') {
