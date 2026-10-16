@@ -1,7 +1,7 @@
 // Exchange files from the exact shapes, as pure functions (they run in a worker as well
 // as anywhere else): STEP AP214 with names, colours and the assembly structure, and
 // binary STL tessellated from the B-rep at a chosen accuracy.
-import type { TDF_Label } from 'replicad-opencascadejs';
+import type { TDF_Label, TDocStd_Document } from 'replicad-opencascadejs';
 import type { CadUnit } from '../model';
 import type { CadDesign } from '../design';
 import { meshToStl } from '../stl';
@@ -65,60 +65,62 @@ export function stepFile(oc: OC, built: OccBuiltDesign, design: CadDesign, scope
     const writer = t.add(new oc.STEPCAFControl_Writer());
     const restore = stepParameters(oc, unit);
     try {
-      return writeStep(t, writer);
+      writer.SetNameMode(true);
+      writer.SetColorMode(true);
+      const doc = stepDocument(oc, t, built, design, scope, o);
+      const path = `/export-${++files}.step`;
+      const ok = guard(oc, 'the STEP file could not be written', () => writer.Perform(doc, path, t.add(new oc.Message_ProgressRange())));
+      if (!ok) throw new Error('the STEP file could not be written');
+      try {
+        return oc.FS.readFile(path, { encoding: 'utf8' }) as string;
+      } finally {
+        oc.FS.unlink(path);
+      }
     } finally {
       restore();
     }
   });
+}
 
-  function writeStep(t: Arena, writer: InstanceType<OC['STEPCAFControl_Writer']>): string {
-    writer.SetNameMode(true);
-    writer.SetColorMode(true);
-    const doc = t.add(new oc.TDocStd_Document(t.add(new oc.TCollection_ExtendedString('XmlOcaf', true))));
-    oc.XCAFDoc_DocumentTool.SetLengthUnit(doc, METRES[unit]);
-    oc.XCAFDoc_ShapeTool.SetAutoNaming(false);
-    const main = t.add(doc.Main());
-    const shapes = t.add(oc.XCAFDoc_DocumentTool.ShapeTool(main));
-    const colors = t.add(oc.XCAFDoc_DocumentTool.ColorTool(main));
-    const name = (label: TDF_Label, s: string) => t.add(oc.TDataStd_Name.Set(label, t.add(new oc.TCollection_ExtendedString(s, true))));
-    const addPart = (p: Part) => {
-      const label = t.add(shapes.AddShape(compound(oc, t, p.shapes), false, true));
-      name(label, p.name);
-      if (p.color) colors.SetColor(label, t.add(new oc.Quantity_ColorRGBA(p.color[0], p.color[1], p.color[2], 1)), oc.XCAFDoc_ColorType.XCAFDoc_ColorSurf);
-      return label;
-    };
-    if (scope.kind === 'assembly') {
-      const asm = t.add(shapes.NewShape());
-      name(asm, o.name?.trim() || 'Assembly');
-      const parts = new Map<string, TDF_Label | null>();
-      let n = 0;
-      for (const occ of placed(built, design)) {
-        if (!parts.has(occ.component)) {
-          const p = partOf(built, design, occ.component);
-          parts.set(occ.component, p && addPart(p));
-        }
-        const part = parts.get(occ.component);
-        if (!part) continue;
-        const inst = t.add(shapes.AddComponent(asm, part, t.add(new oc.TopLoc_Location(trsf(oc, t, occ.M)))));
-        name(inst, occ.name);
-        n++;
+/** An XCAF document of the scope: parts with names and colours, an assembly placing them. */
+function stepDocument(oc: OC, t: Arena, built: OccBuiltDesign, design: CadDesign, scope: ExportScope, o: StepOptions): TDocStd_Document {
+  const doc = t.add(new oc.TDocStd_Document(t.add(new oc.TCollection_ExtendedString('XmlOcaf', true))));
+  oc.XCAFDoc_DocumentTool.SetLengthUnit(doc, METRES[o.unit ?? 'mm']);
+  oc.XCAFDoc_ShapeTool.SetAutoNaming(false);
+  const main = t.add(doc.Main());
+  const shapes = t.add(oc.XCAFDoc_DocumentTool.ShapeTool(main));
+  const colors = t.add(oc.XCAFDoc_DocumentTool.ColorTool(main));
+  const name = (label: TDF_Label, s: string) => t.add(oc.TDataStd_Name.Set(label, t.add(new oc.TCollection_ExtendedString(s, true))));
+  const addPart = (p: Part) => {
+    const label = t.add(shapes.AddShape(compound(oc, t, p.shapes), false, true));
+    name(label, p.name);
+    if (p.color) colors.SetColor(label, t.add(new oc.Quantity_ColorRGBA(p.color[0], p.color[1], p.color[2], 1)), oc.XCAFDoc_ColorType.XCAFDoc_ColorSurf);
+    return label;
+  };
+  if (scope.kind === 'assembly') {
+    const asm = t.add(shapes.NewShape());
+    name(asm, o.name?.trim() || 'Assembly');
+    // each component once, placed by every occurrence of it
+    const parts = new Map<string, TDF_Label | null>();
+    let n = 0;
+    for (const occ of placed(built, design)) {
+      if (!parts.has(occ.component)) {
+        const p = partOf(built, design, occ.component);
+        parts.set(occ.component, p && addPart(p));
       }
-      if (!n) throw new Error('there is no solid to export');
-      shapes.UpdateAssemblies();
-    } else {
-      const p = partOf(built, design, scope.component, scope.kind === 'body' ? scope.body : undefined);
-      if (!p) throw new Error('there is no solid to export');
-      addPart(p);
+      const part = parts.get(occ.component);
+      if (!part) continue;
+      name(t.add(shapes.AddComponent(asm, part, t.add(new oc.TopLoc_Location(trsf(oc, t, occ.M))))), occ.name);
+      n++;
     }
-    const path = `/export-${++files}.step`;
-    const ok = guard(oc, 'the STEP file could not be written', () => writer.Perform(doc, path, t.add(new oc.Message_ProgressRange())));
-    if (!ok) throw new Error('the STEP file could not be written');
-    try {
-      return oc.FS.readFile(path, { encoding: 'utf8' }) as string;
-    } finally {
-      oc.FS.unlink(path);
-    }
+    if (!n) throw new Error('there is no solid to export');
+    shapes.UpdateAssemblies();
+  } else {
+    const p = partOf(built, design, scope.component, scope.kind === 'body' ? scope.body : undefined);
+    if (!p) throw new Error('there is no solid to export');
+    addPart(p);
   }
+  return doc;
 }
 
 /**

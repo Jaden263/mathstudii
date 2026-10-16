@@ -200,6 +200,35 @@ describe('B-rep revolve and holes', () => {
   });
 });
 
+describe('B-rep revolve about a sketch line', () => {
+  it('turns by the right-hand rule, the other way when flipped', () => {
+    // a 10 × 30 rectangle 10 to 20 from a construction line along sketch y (world Y on XY)
+    const sk = poly('a', [[10, 0], [20, 0], [20, 30], [10, 30]]);
+    sk.points.push({ id: 'x0', x: 0, y: 0 }, { id: 'x1', x: 0, y: 30 });
+    sk.entities.push({ id: 'ax', type: 'line', p1: 'x0', p2: 'x1', construction: true });
+    const quarter = (flip: boolean) => solve(single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: sk },
+      { kind: 'revolve', id: 'f1', name: 'R', sketch: 's1', axis: 'ax', angle: '90 deg', flip, op: 'new' },
+    ])).res.design!.bodies.c1[0].mass!;
+    // V = φ ∫ r dA; the centroid sits (1 − cos φ) ∫ r² dA / V off the plane, and turning +x
+    // about +Y by +90° heads for −Z
+    const Mr = 30 * (20 ** 2 - 10 ** 2) / 2, Mrr = 30 * (20 ** 3 - 10 ** 3) / 3;
+    const a = quarter(false), b = quarter(true);
+    near(a.V, (PI / 2) * Mr);
+    near(a.zg, -Mrr / ((PI / 2) * Mr));
+    near(b.zg, Mrr / ((PI / 2) * Mr));
+    near(a.xg, Mrr / ((PI / 2) * Mr));
+  });
+
+  it('refuses a profile across the axis', () => {
+    const { res } = solve(single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', -5, 0, 5, 10) },
+      { kind: 'revolve', id: 'f1', name: 'R', sketch: 's1', axis: 'y', angle: '360', op: 'new' },
+    ]));
+    expect(res.featureError).toMatch(/crosses the axis/);
+  });
+});
+
 describe('B-rep patterns, mirrors and combines', () => {
   it('patterns holes round an axis and bodies along two directions', () => {
     const { res } = solve(single([
@@ -257,6 +286,58 @@ describe('B-rep patterns, mirrors and combines', () => {
     expect(res.featureError).toBeUndefined();
     near(volumes(res)[0], 100 * 40 * 8 - 2 * 20 * 20 * 3);
     near(res.design!.bodies.c1[0].mass!.xg, 50);
+  });
+});
+
+describe('B-rep extents, directions and combines', () => {
+  const block = (extra: DesignItem[]) => single([
+    { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 40, 40) },
+    { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'symmetric', d: '20' }, op: 'new' },
+    ...extra,
+  ]);
+
+  it('cuts through all to both sides from a mid plane', () => {
+    const { res } = solve(block([
+      { kind: 'sketch', id: 's2', name: 'M', plane: { ref: 'XY' }, sketch: circles('c', [[20, 20, 5]]) },
+      { kind: 'extrude', id: 'f2', name: 'Thru', sketch: 's2', extent: { type: 'all', both: true }, op: 'cut' },
+    ]));
+    near(volumes(res)[0], 40 * 40 * 20 - PI * 25 * 20);
+  });
+
+  it('drills only the way it is told', () => {
+    const hole = (dir: '+' | '-') => volumes(solve(block([
+      { kind: 'sketch', id: 's2', name: 'T', plane: { ref: 'XY', offset: '10' }, sketch: points('h', [[20, 20]]) },
+      { kind: 'hole', id: 'f2', name: 'H', sketch: 's2', d: '8', depth: '6', dir, style: 'simple' },
+    ])).res)[0];
+    // up from the top face meets only the skin the tool starts behind (10⁻³ d, so a cut
+    // never leaves one); down takes a Ø8 × 6 bore
+    near(hole('+'), 40 * 40 * 20 - PI * 16 * 8e-3);
+    near(hole('-'), 40 * 40 * 20 - PI * 16 * 6);
+  });
+
+  it('intersects bodies and keeps or drops the tools', () => {
+    const two = (keepTools: boolean) => solve(block([
+      { kind: 'sketch', id: 's2', name: 'B', plane: { ref: 'XY' }, sketch: rect('b', 30, 30, 60, 60) },
+      { kind: 'extrude', id: 'f2', name: 'B', sketch: 's2', extent: { type: 'one', d: '5' }, op: 'new' },
+      { kind: 'combine', id: 'f3', name: 'C', target: 'f1', tools: ['f2'], op: 'intersect', keepTools },
+    ])).res;
+    // the overlap: 10 × 10 × 5
+    const kept = two(true);
+    expect(kept.featureError).toBeUndefined();
+    expect(volumes(kept)).toHaveLength(2);
+    near(volumes(kept)[0], 500);
+    near(volumes(kept)[1], 30 * 30 * 5);
+    expect(volumes(two(false))).toHaveLength(1);
+  });
+
+  it('joins patterned copies into one body', () => {
+    const { res } = solve(block([
+      { kind: 'pattern', id: 'f2', name: 'P', of: 'bodies', refs: ['f1'], type: 'circ', axis: 'Z', count: '4', spacing: '360 deg', join: true },
+    ]));
+    // four 40 × 40 blocks round Z, overlapping only at the origin corner: none
+    expect(volumes(res)).toHaveLength(1);
+    near(volumes(res)[0], 4 * 40 * 40 * 20);
+    expect(Math.abs(res.design!.bodies.c1[0].mass!.xg)).toBeLessThan(1e-9);
   });
 });
 

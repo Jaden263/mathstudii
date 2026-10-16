@@ -124,17 +124,19 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     for (const s of tools) t.add(tl.Append(s.shape));
     op.SetArguments(args);
     op.SetTools(tl);
-    guard(oc, what, () => op.Build(progress(t)));
-    if (op.HasErrors()) throw new Error(what);
     try {
-      op.SimplifyResult(true, true, 1e-9);
-    } catch (e) {
-      occError(oc, e, 'merging faces failed'); // cosmetic: keep the plain result
+      guard(oc, what, () => op.Build(progress(t)));
+      if (op.HasErrors()) throw new Error(what);
+      try {
+        op.SimplifyResult(true, true, 1e-9);
+      } catch (e) {
+        occError(oc, e, 'merging faces failed'); // cosmetic: keep the plain result
+      }
+      const shape = arena.add(op.Shape());
+      return { shape, tags: carry(op, [...a.tags, ...tools.flatMap((s) => s.tags)], shape) };
+    } finally {
+      release(op);
     }
-    const shape = arena.add(op.Shape());
-    const tags = carry(op, [...a.tags, ...tools.flatMap((s) => s.tags)], shape);
-    release(op);
-    return { shape, tags };
   });
 
   const union = (parts: OccSolid[]): OccSolid => (parts.length === 1 ? parts[0] : boolean('fuse', parts[0], parts.slice(1), 'the bodies cannot be joined'));

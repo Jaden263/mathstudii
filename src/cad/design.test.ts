@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { initKernel, m4Point } from './solid';
+import { setOccEnabled } from './occ/kernel';
 import { evaluateWorksheet, type CadResult, type MathResult } from '../engine/evaluator';
 import { createRegion, emptyWorksheet, type CadRegion } from '../model/types';
 import type { CadSketch } from './model';
@@ -53,7 +54,11 @@ beforeAll(async () => {
   await initKernel();
 });
 
-describe('designs', () => {
+// every design builds the same with the B-rep kernel and with the mesh fallback
+for (const brep of [true, false]) describe(`designs (${brep ? 'B-rep' : 'mesh'} kernel)`, () => {
+  beforeAll(() => setOccEnabled(brep));
+  afterAll(() => setOccEnabled(true));
+
   it('cuts holes and patterns them around an axis', () => {
     const items: DesignItem[] = [
       { kind: 'sketch', id: 's1', name: 'Base', plane: { ref: 'XY' }, sketch: rect('a', -50, -50, 50, 50) },

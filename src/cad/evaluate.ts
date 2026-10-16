@@ -257,6 +257,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   const compMass = new Map<string, Mass3[]>();
   const oc = occ();
   const K = kernel();
+  // without the B-rep kernel the values are approximate (or missing): evaluate again once it is there
+  if (!oc) result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed)) || undefined;
   if (oc) {
     const m = measureDesignOcc(oc, design, numbers);
     dr.kernel = dr.brep = true;
@@ -273,7 +275,6 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     dr.placements = m.placements;
     dr.box = m.box;
   } else if (K) {
-    result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed));
     const built = buildDesign(K, design, numbers);
     try {
       dr.kernel = true;
@@ -296,7 +297,6 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       built.free();
     }
   } else {
-    result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed));
     const inp = buildInputs(design, numbers);
     for (const c of design.components) {
       const ex = exactComponent(design, c, inp);
