@@ -663,6 +663,8 @@ export function influenceAnalysis(st: NumStructure, path: PathSeg[], step: numbe
   const specs = trains.map((t) => ({ spec: t, stops: t.P.length ? trainStops(xs, t, tol) : null }));
   type Bound = { hi: number; lo: number; ihi: number; ilo: number };
   const bound = (l: Line, t: (typeof specs)[number]): Bound => {
+    // (N and the sideways deflection of a horizontal deck are exactly nil: nothing to sweep)
+    if (!l.left && !l.right && !l.v.some(Boolean)) return { hi: 0, lo: 0, ihi: -1, ilo: -1 };
     const b = t.stops ? sweep(l, t.stops) : { hi: 0, lo: 0, ihi: -1, ilo: -1 };
     if (t.spec.q) {
       const [pos, neg] = areas(l, xs, joint);
