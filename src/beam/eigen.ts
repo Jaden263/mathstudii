@@ -21,8 +21,9 @@ export function cholesky(A: number[][]): Cholesky | null {
     return j;
   });
   const L = Array.from({ length: n }, () => new Array<number>(n).fill(0));
-  let scale = 1e-300;
-  for (let i = 0; i < n; i++) scale = Math.max(scale, Math.abs(A[i][i]));
+  // each pivot against its own diagonal (what is left of it once the rows before are taken
+  // out): stiffnesses in one structure can differ by many orders, so a pivot small next to
+  // the stiffest unknown is not yet a mechanism
   for (let i = 0; i < n; i++) {
     const Li = L[i];
     for (let j = first[i]; j <= i; j++) {
@@ -31,7 +32,7 @@ export function cholesky(A: number[][]): Cholesky | null {
       for (let k = Math.max(first[i], first[j]); k < j; k++) s -= Li[k] * Lj[k];
       if (j < i) Li[j] = s / Lj[j];
       else {
-        if (!(s > 1e-12 * scale)) return null;
+        if (!(s > 1e-12 * A[i][i])) return null;
         Li[i] = Math.sqrt(s);
       }
     }

@@ -63,8 +63,7 @@ export function skylineCholesky(K: SparseSym): Skyline | null {
     for (const j of K.rows[order[i]].keys()) f = Math.min(f, inv[j]);
     first[i] = f;
   }
-  let scale = 1e-300;
-  for (let i = 0; i < n; i++) scale = Math.max(scale, Math.abs(K.rows[i].get(i) ?? 0));
+  // (each pivot is judged against its own diagonal, as in eigen.ts cholesky)
   const L: Float64Array[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const fi = first[i];
@@ -80,7 +79,7 @@ export function skylineCholesky(K: SparseSym): Skyline | null {
       for (let k = Math.max(fi, fj); k < j; k++) s -= Li[k - fi] * Lj[k - fj];
       if (j < i) Li[j - fi] = s / Lj[j - fj];
       else {
-        if (!(s > 1e-12 * scale)) return null;
+        if (!(s > 1e-12 * (row.get(order[i]) ?? 0))) return null;
         Li[i - fi] = Math.sqrt(s);
       }
     }

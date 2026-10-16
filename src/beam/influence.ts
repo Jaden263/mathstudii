@@ -15,7 +15,7 @@
 // passes a section V and N jump by the load's components; both sides are kept.
 import { reducedDofs } from './buckling';
 import {
-  frameMesh, localK, shearStiffness, StructureError, toGlobal,
+  frameMesh, localK, pointFixedEnd, shearStiffness, StructureError, toGlobal,
   type BeamSolution, type Extreme, type MemberResult, type NumLoad, type NumStructure, type PiecePoly, type Reaction,
 } from './solve';
 import { SparseSym, skylineCholesky, skylineSolve } from './sparse';
@@ -398,23 +398,6 @@ export function boundExtremes(hi: BeamSolution, lo: BeamSolution): void {
   });
   if (w) hi.max.w = lo.max.w = w;
   if (sig) hi.max.sigma = lo.max.sigma = sig;
-}
-
-/**
- * Equivalent nodal loads (local axes, both ends fixed) of a point load (Fx, Fy) at a
- * along an element: with M(x) = M₀ + V₀x + F_y (x − a)₊ the two end conditions of a
- * clamped member, no end rotation (∫M dx = 0) and no end deflection
- * (∫(L − x) M/EI dx − ΔM/GA_v = 0), as for line loads in solve.ts. Without shear these
- * are the handbook values F_y b²(3a + b)/L³, F_y a b²/L² ….
- */
-export function pointFixedEnd(L: number, a: number, Fx: number, Fy: number, EI: number, GAv = Infinity): number[] {
-  const b = L - a, psi = Number.isFinite(GAv) ? EI / GAv : 0;
-  const a11 = L, a12 = (L * L) / 2, r1 = (-Fy * b * b) / 2;
-  const a21 = (L * L) / 2, a22 = L ** 3 / 6 - psi * L, r2 = -Fy * (b ** 3 / 6 - psi * b);
-  const det = a11 * a22 - a12 * a21;
-  const M0 = (r1 * a22 - a12 * r2) / det, V0 = (a11 * r2 - a21 * r1) / det;
-  const ML = M0 + V0 * L + Fy * b;
-  return [(Fx * b) / L, -V0, M0, (Fx * a) / L, Fy + V0, -ML];
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { solveStructure, type NumLoad, type NumMember, type NumStructure, type NumSupport } from './solve';
+import { memberAt, solveStructure, type NumLoad, type NumMember, type NumStructure, type NumSupport } from './solve';
 
 const E = 210e9, I = 8356e-8, A = 53.8e-4;
 const mem = (id: string, a: string, b: string, extra: Partial<NumMember> = {}): NumMember => ({ id, a, b, E, A, I, ...extra });
@@ -175,5 +175,116 @@ describe('springs and settlements', () => {
     });
     expect(-sol.nodes.b.dy).toBeCloseTo((P * L ** 3) / (3 * EI) + (P * L * L) / kr, 9);
     expect(sol.reactions[0].M).toBeCloseTo(P * L, 6);
+  });
+});
+
+describe('loads anywhere along a member', () => {
+  const EI = E * I;
+
+  it('a point load 1 mm from a node on a long member is no mechanism', () => {
+    // it used to split the member there: a 1 mm piece (L/h)³ = 1e12 times stiffer in
+    // bending than the 10 m one, which the solver took for a mechanism (and lost 12 digits)
+    const P = 10e3, L = 10, a = 0.001;
+    const ss = solveStructure(beam([0, L], [sup('A', 'n0', 'pin'), sup('B', 'n1', 'roller')], [{ id: 'P', type: 'force', at: { member: 'm0', t: a / L }, Fx: 0, Fy: -P }]));
+    // R_A = P (L − a)/L, R_B = P a/L, M under the load P a (L − a)/L
+    expect(ss.reactions[0].Ry).toBeCloseTo((P * (L - a)) / L, 9);
+    expect(ss.reactions[1].Ry).toBeCloseTo((P * a) / L, 9);
+    expect(memberAt(ss.members[0], a).M).toBeCloseTo((P * a * (L - a)) / L, 9);
+    // cantilever, the load a from the clamp: δ_tip = P a² (3L − a)/6EI, M_A = P a
+    const c = solveStructure(beam([0, L], [sup('A', 'n0', 'fixed')], [{ id: 'P', type: 'force', at: { member: 'm0', t: a / L }, Fx: 0, Fy: -P }]));
+    // (the tip moves 3e-9 m, 1e-7 of what a load at the tip would do: round-off sits at 1e-8 of it)
+    expect(c.nodes.n1.dy / ((-P * a * a * (3 * L - a)) / (6 * EI))).toBeCloseTo(1, 6);
+    expect(c.reactions[0].M).toBeCloseTo(P * a, 9);
+    // a portal with the load next to a corner, in first and second order
+    const portal: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 0, y: 4 }, { id: 'c', x: L, y: 4 }, { id: 'd', x: L, y: 0 }],
+      members: [mem('m1', 'a', 'b'), mem('m2', 'b', 'c'), mem('m3', 'd', 'c')],
+      supports: [sup('A', 'a', 'pin'), sup('D', 'd', 'pin')],
+      loads: [{ id: 'P', type: 'force', at: { member: 'm2', t: 1 - 1e-5 }, Fx: 0, Fy: -P }],
+    };
+    const r = solveStructure(portal);
+    expect(r.reactions[0].Ry).toBeCloseTo(P * 1e-5, 9);
+    expect(r.reactions[1].Ry).toBeCloseTo(P * (1 - 1e-5), 9);
+    // second order: the lever arms grow by the sway (a few hundredths of a newton here)
+    const r2 = solveStructure(portal, { secondOrder: true });
+    expect(r2.reactions[0].Ry + r2.reactions[1].Ry).toBeCloseTo(P, 6);
+    expect(Math.abs(r2.reactions[0].Ry - P * 1e-5)).toBeLessThan(0.05);
+  });
+
+  // the same load on a member, and on a node put where it sits: fixed-end forces against
+  // the stiffness method itself, with and without shear deformation
+  const pair = (loadOn: (m: string, t: number) => NumLoad[], loadAt: (n: string) => NumLoad[], shear: boolean) => {
+    const extra = shear ? { G: 81e9, Av: 25.7e-4 } : {};
+    const whole: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 3, y: 4 }],
+      members: [mem('m', 'a', 'b', extra)],
+      supports: [sup('A', 'a', 'fixed'), sup('B', 'b', 'pin')],
+      loads: loadOn('m', 0.3),
+    };
+    const split: NumStructure = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'k', x: 0.9, y: 1.2 }, { id: 'b', x: 3, y: 4 }],
+      members: [mem('m1', 'a', 'k', extra), mem('m2', 'k', 'b', extra)],
+      supports: whole.supports,
+      loads: loadAt('k'),
+    };
+    return [solveStructure(whole), solveStructure(split)];
+  };
+
+  for (const shear of [false, true]) {
+    it(`point force and concentrated moment along a member${shear ? ' (Timoshenko)' : ''}`, () => {
+      for (const [on, at] of [
+        [(m: string, t: number): NumLoad[] => [{ id: 'P', type: 'force', at: { member: m, t }, Fx: 3e3, Fy: -8e3 }], (n: string): NumLoad[] => [{ id: 'P', type: 'force', at: { node: n }, Fx: 3e3, Fy: -8e3 }]],
+        [(m: string, t: number): NumLoad[] => [{ id: 'C', type: 'moment', at: { member: m, t }, M: 12e3 }], (n: string): NumLoad[] => [{ id: 'C', type: 'moment', at: { node: n }, M: 12e3 }]],
+      ] as const) {
+        const [w, s] = pair(on, at, shear);
+        for (const k of [0, 1]) {
+          expect(w.reactions[k].Rx).toBeCloseTo(s.reactions[k].Rx, 6);
+          expect(w.reactions[k].Ry).toBeCloseTo(s.reactions[k].Ry, 6);
+          expect(w.reactions[k].M).toBeCloseTo(s.reactions[k].M, 6);
+        }
+        // along the member: just before and after the load, and the deflection
+        for (const x of [0.4, 1.5 - 1e-9, 1.5 + 1e-9, 3.7]) {
+          const p = memberAt(w.members[0], x), q = x < 1.5 ? memberAt(s.members[0], x) : memberAt(s.members[1], x - 1.5);
+          expect(p.M).toBeCloseTo(q.M, 4);
+          expect(p.V).toBeCloseTo(q.V, 4);
+          expect(p.N).toBeCloseTo(q.N, 4);
+          expect(p.dy).toBeCloseTo(q.dy, 12);
+        }
+      }
+    });
+  }
+
+  it('a moment on a simple beam: R = C/L, and M jumps by C (−C (L − a)/L after it)', () => {
+    const C = 10e3, L = 5, a = 2;
+    const r = solveStructure(beam([0, L], [sup('A', 'n0', 'pin'), sup('B', 'n1', 'roller')], [{ id: 'C', type: 'moment', at: { member: 'm0', t: a / L }, M: C }]));
+    expect(r.reactions[0].Ry).toBeCloseTo(C / L, 8);
+    expect(r.reactions[1].Ry).toBeCloseTo(-C / L, 8);
+    expect(memberAt(r.members[0], a - 1e-9).M).toBeCloseTo((C * a) / L, 4);
+    expect(memberAt(r.members[0], a).M).toBeCloseTo((-C * (L - a)) / L, 4);
+    // fixed at both ends with C at midspan: C/4 at each end, 3C/2L across
+    const f = solveStructure(beam([0, L], [sup('A', 'n0', 'fixed'), sup('B', 'n1', 'fixed')], [{ id: 'C', type: 'moment', at: { member: 'm0', t: 0.5 }, M: C }]));
+    expect(Math.abs(f.reactions[0].M)).toBeCloseTo(C / 4, 6);
+    expect(Math.abs(f.reactions[0].Ry)).toBeCloseTo((3 * C) / (2 * L), 6);
+  });
+
+  it('a partial trapezoidal line load against nodes at its ends', () => {
+    // q from 2 kN/m at 1.2 m to 6 kN/m at 4.2 m on a 6 m simple beam: R_B = Σ q·x / L
+    const L = 6, t1 = 0.2, t2 = 0.7, q1 = 2e3, q2 = 6e3;
+    const r = solveStructure(beam([0, L], [sup('A', 'n0', 'pin'), sup('B', 'n1', 'roller')], [{ id: 'q', type: 'line', member: 'm0', t1, t2, q1, q2, dir: 'global' }]));
+    const a = t1 * L, len = (t2 - t1) * L, Q = (len * (q1 + q2)) / 2, xc = a + (len * (q1 + 2 * q2)) / (3 * (q1 + q2));
+    expect(r.reactions[1].Ry).toBeCloseTo((Q * xc) / L, 6);
+    expect(r.reactions[0].Ry).toBeCloseTo(Q - (Q * xc) / L, 6);
+    // the same with nodes at 1.2 and 4.2 m: equal deflection everywhere
+    const s = solveStructure({
+      nodes: [0, a, a + len, L].map((x, i) => ({ id: `k${i}`, x, y: 0 })),
+      members: [mem('p0', 'k0', 'k1'), mem('p1', 'k1', 'k2'), mem('p2', 'k2', 'k3')],
+      supports: [sup('A', 'k0', 'pin'), sup('B', 'k3', 'roller')],
+      loads: [{ id: 'q', type: 'line', member: 'p1', t1: 0, t2: 1, q1, q2, dir: 'global' }],
+    });
+    for (const x of [0.7, 2, 3.3, 5]) {
+      const seg = x < a ? 0 : x < a + len ? 1 : 2, x0 = [0, a, a + len][seg];
+      expect(memberAt(r.members[0], x).dy).toBeCloseTo(memberAt(s.members[seg], x - x0).dy, 12);
+      expect(memberAt(r.members[0], x).M).toBeCloseTo(memberAt(s.members[seg], x - x0).M, 5);
+    }
   });
 });
