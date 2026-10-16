@@ -112,14 +112,27 @@ export function solvePlate(p: NumPlate): PlateSolution {
   const supportNodes: SupportNodes[] = [];
   const bedded: { e: number; c: number; s: number }[] = [];
   const lines: SupportData['lines'] = [];
+  // element edges: a line's stretch between two nodes lies on the plate only along one
+  let edges: Set<number> | null = null;
+  const isEdge = (a: number, b: number) => {
+    if (!edges) {
+      edges = new Set();
+      for (let e = 0; e < ne; e++) for (let k = 0; k < 4; k++) {
+        const u = mesh.quads[4 * e + k], v = mesh.quads[4 * e + ((k + 1) % 4)];
+        edges.add(Math.min(u, v) * nn + Math.max(u, v));
+      }
+    }
+    return edges.has(Math.min(a, b) * nn + Math.max(a, b));
+  };
   p.supports.forEach((s, si) => {
     if (s.kind === 'line') {
       const on = nodesOnSegment(mesh, s.a, s.b, tol);
       const L = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1]);
       if (on.length < 2) throw new PlateError(`A support line (${fmtPt(s.a)} – ${fmtPt(s.b)}) is not on the plate`);
       const sx = (s.b[0] - s.a[0]) / L, sy = (s.b[1] - s.a[1]) / L;
-      // shares of the line between the nodes (along the curve where they sit on one)
-      const gap = on.map((q, i) => (i + 1 < on.length ? Math.hypot(mesh.x[on[i + 1].node] - mesh.x[q.node], mesh.y[on[i + 1].node] - mesh.y[q.node]) : 0));
+      // shares of the line between the nodes (along the curve where they sit on one); none
+      // across an opening or a notch, where the line holds no plate
+      const gap = on.map((q, i) => (i + 1 < on.length && isEdge(q.node, on[i + 1].node) ? Math.hypot(mesh.x[on[i + 1].node] - mesh.x[q.node], mesh.y[on[i + 1].node] - mesh.y[q.node]) : 0));
       const trib = on.map((_, i) => ((i > 0 ? gap[i - 1] : 0) + gap[i]) / 2);
       // the direction of the line at each node: the curve's on a curved run
       const tan = on.map(({ node: q }): Pt => (mesh.tangent && (mesh.tangent[2 * q] || mesh.tangent[2 * q + 1]) ? [mesh.tangent[2 * q], mesh.tangent[2 * q + 1]] : [sx, sy]));
@@ -129,6 +142,7 @@ export function solvePlate(p: NumPlate): PlateSolution {
         const nrm = [sy, -sx];
         for (let i = 0; i + 1 < on.length; i++) {
           const l = gap[i], Ks = new Float64Array(36);
+          if (!l) continue;
           for (const [r, c, f] of [[0, 0, 2], [1, 1, 2], [0, 1, 1], [1, 0, 1]]) {
             Ks[6 * 3 * r + 3 * c] = ((s.k ?? 0) * l * f) / 6;
             for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) Ks[6 * (3 * r + 1 + a) + 3 * c + 1 + b] = ((s.kr ?? 0) * l * f * nrm[a] * nrm[b]) / 6;
@@ -138,7 +152,14 @@ export function solvePlate(p: NumPlate): PlateSolution {
         for (const q of on) if (owner[q.node] < 0 && !wFixed[q.node]) owner[q.node] = si;
         return;
       }
-      lines.push({ si, nodes: on.map((q) => q.node), trib, s: tan, clamped: s.fix === 'clamped' });
+      // each stretch on the plate is a line of its own (its twisting couples end at its ends)
+      for (let i = 0; i < on.length;) {
+        let j = i;
+        while (j + 1 < on.length && gap[j]) j++;
+        const run = on.slice(i, j + 1).map((_, k) => i + k);
+        lines.push({ si, nodes: run.map((k) => on[k].node), trib: run.map((k) => trib[k]), s: run.map((k) => tan[k]), clamped: s.fix === 'clamped' });
+        i = j + 1;
+      }
       on.forEach((q, i) => {
         if (!wFixed[q.node]) owner[q.node] = si;
         wFixed[q.node] = 1;
@@ -524,12 +545,32 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
     return extrapolatedMoments(elementXY(m, e), rig, ux).subarray(3 * k, 3 * k + 3);
   });
 
-  // reactions, upwards: F − f_int at held w, k w at springs and under the bedding
+  // reactions, upwards: K u of the springs and the bedding on their w, and F − f_int at
+  // held w less what springs or bedding at the same node carry (f_int is the plate's alone)
+  const elastic: { node: number; s: number; f: number }[] = [];
+  for (const sp of s.springs) {
+    // (rotational springs give moments, not reactions)
+    const m3 = 3 * sp.nodes.length;
+    sp.nodes.forEach((a, r) => {
+      let f = 0;
+      for (let c = 0; c < m3; c++) f += sp.K[m3 * 3 * r + c] * u[3 * sp.nodes[Math.floor(c / 3)] + (c % 3)];
+      elastic.push({ node: a, s: sp.s, f });
+    });
+  }
+  s.bedded.forEach(({ e, s: si }, k) => {
+    const Kb = s.bedK[k];
+    for (let r = 0; r < 4; r++) {
+      let f = 0;
+      for (let c = 0; c < 4; c++) f += Kb[12 * 3 * r + 3 * c] * u[3 * m.quads[4 * e + c]];
+      elastic.push({ node: m.quads[4 * e + r], s: si, f });
+    }
+  });
   const R = new Float64Array(nn), support = new Float64Array(nSupports);
   for (let i = 0; i < nn; i++) {
     if (!s.wFixed[i]) continue;
     R[i] = F[3 * i] - fint[3 * i];
   }
+  for (const { node, f } of elastic) if (s.wFixed[node]) R[node] -= f;
   // a hard support also holds the twisting couples g along it (the generalized force of
   // β_s): Kelvin–Tait turns them into forces dg/ds along the line and ∓g at its ends, so
   // the reactions per length are Kirchhoff's V_n = q_n + ∂m_ns/∂s with the corner forces.
@@ -560,7 +601,7 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
     return (cx * own[0] + cy * own[1]) / ls.length;
   };
   for (const [li, l] of s.lines.entries()) {
-    if (l.clamped) continue;
+    if (l.clamped || l.nodes.length < 2) continue;
     const g = l.nodes.map((q, k) => couple(li, q) / l.trib[k]);
     const last = g.length - 1;
     l.nodes.forEach((q, k) => {
@@ -572,25 +613,10 @@ function fields(m: PlateMesh, rig: PlateRigidity, elemK: Float64Array[], elemS: 
   const column = (q: number) => s.owner[q] >= 0 && s.kinds[s.owner[q]] === 'point';
   for (let i = 0; i < nn; i++) if (s.wFixed[i] && column(i)) support[s.owner[i]] += R[i];
   for (const l of s.lines) for (const q of l.nodes) if (!column(q)) support[l.si] += R[q] / through.get(q)!.length;
-  // a spring's force on its w DOFs (rotational springs give moments, not reactions)
-  for (const sp of s.springs) {
-    const m3 = 3 * sp.nodes.length;
-    sp.nodes.forEach((a, r) => {
-      let f = 0;
-      for (let c = 0; c < m3; c++) f += sp.K[m3 * 3 * r + c] * u[3 * sp.nodes[Math.floor(c / 3)] + (c % 3)];
-      R[a] += f;
-      support[sp.s] += f;
-    });
+  for (const { node, s: si, f } of elastic) {
+    R[node] += f;
+    support[si] += f;
   }
-  s.bedded.forEach(({ e, s: si }, k) => {
-    const Kb = s.bedK[k];
-    for (let r = 0; r < 4; r++) {
-      let f = 0;
-      for (let c = 0; c < 4; c++) f += Kb[12 * 3 * r + 3 * c] * u[3 * m.quads[4 * e + c]];
-      R[m.quads[4 * e + r]] += f;
-      support[si] += f;
-    }
-  });
   let load = 0;
   for (let i = 0; i < nn; i++) load += F[3 * i];
   return { w, bx, by, mx, my, mxy, vx, vy, R, support, load };

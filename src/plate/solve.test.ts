@@ -288,6 +288,43 @@ describe('plates against beam theory and Navier series', () => {
     }
   });
 
+  it('a wall across an opening holds the plate only where there is plate', () => {
+    // a rigid plate, symmetric about its centre, on springs k along its 16 m of edges and a
+    // spring wall along y = 2 that crosses a 2 m opening: 2 m of the wall are under the plate,
+    // so it settles by w = F / (k · 18 m) and the wall takes F · 2/18 (the stretch across
+    // the opening counted as a spring made that 20 m and 4/20)
+    const a = 4, q = 5e3, k = 2e6;
+    const outline = square(a), hole: Pt[] = [[1, 1.5], [3, 1.5], [3, 2.5], [1, 2.5]], wall: [Pt, Pt] = [[0, 2], [4, 2]];
+    const mesh = meshPlate({ outline, openings: [hole], lines: [wall], points: [], softLines: [], softPoints: [], size: 0.25 });
+    const supports: NumPlateSupport[] = outline.map((p, i) => ({ id: `e${i}`, kind: 'line', a: p, b: outline[(i + 1) % 4], fix: 'spring', k }));
+    supports.push({ id: 'w', kind: 'line', a: wall[0], b: wall[1], fix: 'spring', k });
+    const sol = solvePlate({ mesh, E: 1e3 * E, nu, t: 0.2, supports, loads: [uniform(q)], cases: ['A'] });
+    const F = q * (a * a - 2);
+    near(sol.cases[0].support[4], (F * 2) / 18, 1e-3);
+    near(sol.cases[0].w[nearestNode(mesh, [0.5, 3.5]).node], F / (k * 18), 1e-3);
+    // a rigid wall: its nodes' shares of the line add up to the 2 m under the plate
+    const rigid = solvePlate({ mesh, E, nu, t: 0.2, supports: [...supports.slice(0, 4), { id: 'w', kind: 'line', a: wall[0], b: wall[1], fix: 'simple' }], loads: [uniform(q)], cases: ['A'] });
+    expect(rigid.supports[4].trib!.reduce((s, v) => s + v, 0)).toBeCloseTo(2, 9);
+    expect(rigid.cases[0].support.reduce((s, r) => s + r, 0)).toBeCloseTo(F, 3);
+  });
+
+  it('springs and bedding next to rigid supports: every newton once', () => {
+    // a spring edge, a column head on a bedding and a point spring each meet simple edges;
+    // at a held node F − f_int is what all its supports carry together (with a spring's or the
+    // bedding's force there counted twice, this plate's reactions came to 166 kN of 160 kN)
+    const a = 4, q = 10e3;
+    const head: Pt[] = [[1.8, 3.6], [2.2, 3.6], [2.2, 4], [1.8, 4]];
+    const outline = square(a);
+    const extra: NumPlateSupport[] = [
+      { id: 'spring', kind: 'line', a: outline[0], b: outline[1], fix: 'spring', k: 5e6, kr: 2e5 },
+      { id: 'head', kind: 'area', polygon: head, c: 33e9 / 3 },
+      { id: 'col', kind: 'point', at: [0, 2], k: 1e7 },
+    ];
+    const { f } = plate(outline, ['free', 'simple', 'simple', 'simple'], [uniform(q)], { size: 0.2, t: 0.2, lines: head.map((p, i) => [p, head[(i + 1) % 4]] as [Pt, Pt]), points: [[0, 2]], extra });
+    near(f.support.reduce((s, r) => s + r, 0), q * a * a, 1e-9);
+    near(f.R.reduce((s, r) => s + r, 0), q * a * a, 1e-9);
+  });
+
   it('clamped edges keep their own reactions (an L with clamped re-entrant edges)', () => {
     // Kirchhoff: m_ns = 0 along a clamped edge, so V = q_n there and a corner where a clamped
     // edge meets a simple one has no corner force; each edge's total converges with the mesh
