@@ -1,6 +1,10 @@
 import { useCallback, useLayoutEffect, useRef, useState, type Dispatch } from 'react';
+import { Lock } from 'lucide-react';
 import type { Region, ReportSettings, Worksheet as WS, WorksheetFormat } from '../model/types';
 import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
+import { AREA_BAR, hiddenIds, isArea, withContents } from '../model/areas';
+import { canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
+import { AreaBar, areaWidth, useAreaFit, usePrintLayout } from './AreaBar';
 import type { RegionResult } from '../engine/evaluator';
 import type { Action } from './store';
 import type { EditorHandle } from './editing';
@@ -31,6 +35,8 @@ interface Props {
   /** Regions matching the find bar, and the current match. */
   hits?: Set<string>;
   currentHit?: string | null;
+  /** Tell the user why something did not happen (a locked region did not move). */
+  notify?: (msg: string) => void;
 }
 
 export const snap = (v: number) => Math.round(v / GRID) * GRID;
@@ -92,6 +98,13 @@ function PageFrame({ index, count, report, title }: { index: number; count: numb
 
 export function Worksheet(p: Props) {
   const sheetRef = useRef<HTMLDivElement>(null);
+  // printing shows each area collapsed or expanded as it asks; on screen as it is
+  const view = usePrintLayout(p.ws);
+  useAreaFit(sheetRef, p.ws, p.editingId, p.dispatch);
+  const hidden = hiddenIds(view.regions);
+  const shown = view.regions.filter((r) => !hidden.has(r.id));
+  const locked = lockedIds(p.ws);
+  const protectedWs = isProtected(p.ws);
   // pages that hold something (printing leaves out the empty paper after the last region)
   const [contentBottom, setContentBottom] = useState(0);
   useLayoutEffect(() => {
@@ -101,10 +114,10 @@ export function Worksheet(p: Props) {
     });
     if (Math.abs(bottom - contentBottom) > 1) setContentBottom(bottom);
   });
-  const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
+  const [drag, setDrag] = useState<{ dx: number; dy: number; ids: Set<string> } | null>(null);
   const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
-  const maxY = p.ws.regions.reduce((m, r) => Math.max(m, r.y + 400), 0);
+  const maxY = shown.reduce((m, r) => Math.max(m, r.y + 400), 0);
   const pages = Math.max(1, Math.ceil((maxY + PAGE_HEIGHT / 2) / PAGE_HEIGHT));
   const height = pages * PAGE_HEIGHT;
   const contentPages = Math.max(1, Math.ceil((contentBottom + 1) / PAGE_HEIGHT));
@@ -164,6 +177,8 @@ export function Worksheet(p: Props) {
     let ids = p.selected.has(r.id) ? [...p.selected] : [r.id];
     let moved = false;
     let cancelled = false;
+    // locked regions, and areas with something locked inside, stay where they are
+    let free = new Set<string>();
     const move = (ev: PointerEvent) => {
       const dx = (ev.clientX - start.x) / p.zoom;
       const dy = (ev.clientY - start.y) / p.zoom;
@@ -179,8 +194,10 @@ export function Worksheet(p: Props) {
           ids = additive ? [...p.selected, r.id] : [r.id];
           p.setSelected(new Set(ids));
         }
+        free = movableIds(p.ws, ids);
+        if (free.size < withContents(p.ws.regions, ids).size) p.notify?.(protectedWs ? 'The worksheet is protected: regions do not move' : 'Locked regions do not move');
       }
-      setDrag({ dx: snap(dx), dy: snap(dy) });
+      setDrag({ dx: snap(dx), dy: snap(dy), ids: free });
     };
     const up = (ev: PointerEvent) => {
       window.removeEventListener('pointermove', move);
@@ -191,7 +208,8 @@ export function Worksheet(p: Props) {
       if (moved) {
         const dx = snap((ev.clientX - start.x) / p.zoom);
         const dy = snap((ev.clientY - start.y) / p.zoom);
-        if (dx || dy) p.dispatch({ type: 'move', ids, dx, dy });
+        const go = ids.filter((id) => free.has(id));
+        if ((dx || dy) && go.length) p.dispatch({ type: 'move', ids: go, dx, dy });
         return;
       }
       p.setCursor(null);
@@ -205,7 +223,9 @@ export function Worksheet(p: Props) {
       if (viaGrip) return;
       if (p.editingId && p.editingId !== r.id) p.finishEditing(p.editingId, false);
       p.setSelected(new Set([r.id]));
-      if (EDITABLE.has(r.kind) && !r.disabled) p.setEditingId(r.id);
+      if (!EDITABLE.has(r.kind) || r.disabled) return;
+      if (canEdit(p.ws, r, locked)) p.setEditingId(r.id);
+      else p.notify?.(protectedWs && !locked.has(r.id) ? 'The worksheet is protected: only inputs can be edited' : 'This region is locked (right-click → Unlock to edit it)');
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -241,7 +261,22 @@ export function Worksheet(p: Props) {
         const cad = p.ws.regions.find((q) => q.id === r.cad);
         return <DrawingRegionView {...(props as RegionViewProps<typeof r>)} cad={cad?.kind === 'cad' ? cad : undefined} cadResult={cad ? p.results.get(cad.id) : undefined} />;
       }
+      case 'area':
+        return (
+          <AreaBar
+            region={r} count={withContents(view.regions, [r.id]).size - 1} locked={locked.has(r.id)} renaming={editing}
+            dispatch={p.dispatch} onRename={() => { p.setSelected(new Set([r.id])); p.setEditingId(r.id); }} onDone={() => p.finishEditing(r.id, false)}
+          />
+        );
     }
+  };
+
+  /** A collapsed area holding a match of the find bar shows it on its bar. */
+  const hitInside = (r: Region) => {
+    if (!p.hits?.size || !isArea(r) || !r.collapsed) return null;
+    const inside = withContents(view.regions, [r.id]);
+    if (p.currentHit && inside.has(p.currentHit)) return ' find-current';
+    return [...p.hits].some((h) => inside.has(h)) ? ' find-hit' : null;
   };
 
   return (
@@ -269,15 +304,27 @@ export function Worksheet(p: Props) {
             <span>Page {i + 2}</span>
           </div>
         ))}
-        {p.ws.regions.map((r) => {
+        {shown.map((r) => {
+          // the band of an open area: a rule down its left side to the end line
+          if (!isArea(r) || r.collapsed) return null;
+          const offset = drag?.ids.has(r.id) ? drag : null;
+          return (
+            <div
+              key={`band-${r.id}`} className="area-band" aria-hidden
+              style={{ left: r.x, top: r.y + AREA_BAR, width: areaWidth(r), height: Math.max(0, r.height - AREA_BAR), transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined }}
+            />
+          );
+        })}
+        {shown.map((r) => {
           const sel = p.selected.has(r.id);
-          const offset = drag && sel ? drag : null;
+          const offset = drag?.ids.has(r.id) ? drag : null;
           const res = p.results.get(r.id);
+          const input = protectedWs && r.input && !locked.has(r.id);
           return (
             <div
               key={r.kind === 'plot' ? `${r.id}|${p.ws.settings.format?.fontScale ?? 1}|${p.ws.settings.format?.lineScale ?? 1}` : r.id}
               data-region-id={r.id}
-              className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}${checkClass(res)}${p.hits?.has(r.id) ? (p.currentHit === r.id ? ' find-current' : ' find-hit') : ''}`}
+              className={`region kind-${r.kind}${sel ? ' selected' : ''}${p.editingId === r.id ? ' is-editing' : ''}${r.disabled ? ' disabled' : ''}${hasError(res) ? ' error' : ''}${checkClass(res)}${p.hits?.has(r.id) ? (p.currentHit === r.id ? ' find-current' : ' find-hit') : hitInside(r) ?? ''}${input ? ' protect-input' : ''}`}
               style={{ left: r.x, top: r.y, transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined, ...regionLook(r, p.ws.settings.format) }}
               onPointerDown={(e) => onRegionPointerDown(e, r)}
               onContextMenu={(e) => {
@@ -291,6 +338,7 @@ export function Worksheet(p: Props) {
               }}
             >
               {renderRegion(r)}
+              {r.locked && !isArea(r) && <span className="lock-badge" title="Locked" aria-label="Locked"><Lock size={11} /></span>}
               {(sel || p.editingId === r.id) && (
                 <div className="grip" title="Drag to move" aria-hidden onPointerDown={(e) => onRegionPointerDown(e, r, true)} />
               )}

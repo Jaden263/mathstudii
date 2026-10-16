@@ -3,6 +3,8 @@ import { ChevronDown, ChevronUp, X, Replace } from 'lucide-react';
 import type { Worksheet } from '../model/types';
 import type { Action } from './store';
 import { findInWorksheet, replaceInRegion, type SearchOptions } from '../model/search';
+import { areasOf, hiddenIds } from '../model/areas';
+import { canEdit, lockedIds } from '../model/protect';
 
 interface Props {
   ws: Worksheet;
@@ -14,16 +16,20 @@ interface Props {
   /** Regions with matches and the current one, for highlighting. */
   onHits: (ids: Set<string>, current: string | null) => void;
   toast: (msg: string) => void;
+  /** Expand the collapsed areas that hide a region. */
+  reveal?: (id: string) => void;
 }
 
 /** Ctrl+F: find (and replace) in every region of the worksheet. */
-export function FindBar({ ws, dispatch, replace: startReplace, initial = '', onClose, onHits, toast }: Props) {
+export function FindBar({ ws, dispatch, replace: startReplace, initial = '', onClose, onHits, toast, reveal }: Props) {
   const [query, setQuery] = useState(initial);
   const [repl, setRepl] = useState('');
   const [showReplace, setShowReplace] = useState(startReplace);
   const [opts, setOpts] = useState<SearchOptions>({ caseSensitive: true, wholeName: false });
   const [index, setIndex] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  // stepping to a match opens the areas it is in; typing only shows the area's bar
+  const stepped = useRef(false);
 
   const hits = useMemo(() => findInWorksheet(ws, query, opts), [ws, query, opts]);
   const total = hits.reduce((n, h) => n + h.count, 0);
@@ -40,30 +46,56 @@ export function FindBar({ ws, dispatch, replace: startReplace, initial = '', onC
   useEffect(() => () => onHits(new Set(), null), [onHits]);
   useEffect(() => {
     if (!cur) return;
-    document.querySelector(`[data-region-id="${cur.id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const explicit = stepped.current;
+    stepped.current = false;
+    let id = cur.id;
+    if (hiddenIds(ws.regions).has(id)) {
+      if (explicit && reveal) {
+        // scrolled to once the areas have opened (this runs again with the new worksheet)
+        reveal(id);
+        return;
+      }
+      id = areasOf(ws.regions, id).find((a) => !hiddenIds(ws.regions).has(a.id))?.id ?? id;
+    }
+    document.querySelector(`[data-region-id="${id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cur]);
 
-  const step = (d: number) => hits.length && setIndex((i) => (Math.min(i, hits.length - 1) + d + hits.length) % hits.length);
+  const step = (d: number) => {
+    if (!hits.length) return;
+    stepped.current = true;
+    const next = (Math.min(index, hits.length - 1) + d + hits.length) % hits.length;
+    // the same match again (a single hit) still opens its area
+    if (next === Math.min(index, hits.length - 1) && hiddenIds(ws.regions).has(hits[next].id)) reveal?.(hits[next].id);
+    setIndex(next);
+  };
 
   const replaceOne = () => {
     if (!cur) return;
     const r = ws.regions.find((q) => q.id === cur.id);
     const res = r && replaceInRegion(r, query, repl, opts);
     if (!res) return;
+    if (!canEdit(ws, r!)) return toast('That region is locked: nothing replaced');
     dispatch({ type: 'update', id: r!.id, patch: res.region });
   };
   const replaceAll = () => {
-    let n = 0, regions = 0;
+    let n = 0, regions = 0, skipped = 0;
+    const locked = lockedIds(ws);
     for (const h of hits) {
       const r = ws.regions.find((q) => q.id === h.id);
       const res = r && replaceInRegion(r, query, repl, opts);
       if (!res) continue;
+      if (!canEdit(ws, r!, locked)) {
+        skipped++;
+        continue;
+      }
       // one undo step for the whole replace
       dispatch({ type: 'update', id: r!.id, patch: res.region, coalesce: `replace-all:${query}` });
       n += res.count;
       regions++;
     }
-    toast(n ? `Replaced ${n} match${n > 1 ? 'es' : ''} in ${regions} region${regions > 1 ? 's' : ''}` : 'Nothing to replace');
+    const left = skipped ? ` — ${skipped} locked region${skipped > 1 ? 's' : ''} left as ${skipped > 1 ? 'they are' : 'it is'}` : '';
+    toast((n ? `Replaced ${n} match${n > 1 ? 'es' : ''} in ${regions} region${regions > 1 ? 's' : ''}` : 'Nothing replaced') + left);
   };
 
   return (

@@ -5555,3 +5555,196 @@ div.pl-cutplot {
 .cadd-pickfield .btn {
   margin-bottom: 4px;
 }
+
+/* ---------------------------------------------------------------- areas and protection */
+
+.region.kind-area {
+  padding: 0;
+  min-height: 0;
+  border: none;
+  background: none;
+}
+
+.region.kind-area.selected .area-bar {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.area-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px 0 2px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--page));
+  font: 600 13px var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.area-bar.collapsed {
+  background: color-mix(in srgb, var(--accent) 14%, var(--page));
+}
+
+.area-toggle {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--accent);
+}
+
+.area-toggle:hover {
+  background: var(--accent-soft);
+}
+
+.area-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.area-title-input {
+  font: inherit;
+  padding: 0 4px;
+  height: 20px;
+  min-width: 200px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--page);
+}
+
+.area-count {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.area-spacer {
+  flex: 1;
+}
+
+.area-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-muted);
+  font: 500 11px var(--font);
+}
+
+/* the band of an open area: a rule down the left to the end line */
+.area-band {
+  position: absolute;
+  pointer-events: none;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-bottom-left-radius: 5px;
+}
+
+.lock-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.region.protect-input {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-style: dashed;
+}
+
+.dialog.protect {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.dialog.protect h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialog.protect p {
+  margin: 8px 0;
+}
+
+.protect-note {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.protect-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  font-weight: 550;
+}
+
+.protect-field input {
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--page);
+  font-weight: 400;
+}
+
+.protect-error {
+  color: var(--error);
+}
+
+.protect-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dialog.protect .btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  font-weight: 550;
+}
+
+.dialog.protect .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+@media print {
+  .area-toggle,
+  .area-badge,
+  .lock-badge {
+    display: none !important;
+  }
+
+  .area-bar {
+    padding-left: 6px;
+    background: none !important;
+    border-color: #999 !important;
+    box-shadow: none !important;
+  }
+
+  .area-band {
+    border-color: #bbb;
+  }
+
+  .region.protect-input {
+    border-color: transparent !important;
+  }
+}

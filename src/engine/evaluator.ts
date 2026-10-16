@@ -2,7 +2,7 @@
 // with global definitions (≡) evaluated first.
 import type { Unit } from 'mathjs';
 import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, PlateRegion, SolveRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
-import { readingOrder } from '../model/types';
+import { evaluationOrder } from '../model/areas';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { compileExpr, parseExpr, freeSymbols } from './compile';
@@ -160,7 +160,8 @@ class Evaluator {
     math.Unit.setUnitSystem(this.ws.settings.unitSystem ?? 'si');
     texCtx.defined = new Set(this.global.keys());
     if (pythonReady()) resetPython();
-    const ordered = readingOrder(this.ws.regions).filter((r) => !r.disabled);
+    // collapsed areas do not change the order: it is that of the expanded worksheet
+    const ordered = evaluationOrder(this.ws).filter((r) => !r.disabled);
     // pass 1: global definitions
     for (const r of ordered) {
       if (r.kind !== 'math') continue;

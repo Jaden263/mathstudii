@@ -7,7 +7,7 @@ import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate' | 'area';
 
 interface RegionBase {
   id: string;
@@ -19,6 +19,10 @@ interface RegionBase {
   disabled?: boolean;
   /** Look of this region (on top of the worksheet's format). */
   style?: RegionStyle;
+  /** Locked regions cannot be edited, moved or deleted (Mathcad "Lock"). */
+  locked?: boolean;
+  /** Stays editable while the worksheet is protected (an input of a protected calculation). */
+  input?: boolean;
 }
 
 /** Text and line formatting; scales multiply the worksheet's. */
@@ -283,7 +287,23 @@ export interface PlateRegion extends RegionBase, PlateData {
   loadCases?: BeamCases;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion | PlateRegion;
+/**
+ * A collapsible area (Mathcad "Area"): a title bar over a band of the page. The regions whose
+ * top lies in the band belong to it; collapsed, they are hidden and what is below moves up.
+ */
+export interface AreaRegion extends RegionBase {
+  kind: 'area';
+  title: string;
+  /** Height of the band from the top of the title bar to the end line, px (as expanded). */
+  height: number;
+  collapsed?: boolean;
+  /** Regions hidden while collapsed (at the places they have when expanded). */
+  hidden?: string[];
+  /** Printed as on screen (absent), or always collapsed or expanded. */
+  print?: 'collapsed' | 'expanded';
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion | PlateRegion | AreaRegion;
 
 /** Page header and footer for printed calculation sheets. */
 export interface ReportSettings {
@@ -323,6 +343,16 @@ export interface WorksheetSettings {
   format?: WorksheetFormat;
   /** Header and footer on every page. */
   report?: ReportSettings;
+  /** Protected worksheet: only regions marked as inputs can be edited (absent: not protected). */
+  protect?: WorksheetProtection;
+}
+
+/** Protection of a worksheet, with an optional password kept as a salted SHA-256 hash. */
+export interface WorksheetProtection {
+  /** Hex SHA-256 of salt + password; absent when no password is needed to unprotect. */
+  hash?: string;
+  /** Random hex salt. */
+  salt?: string;
 }
 
 export interface Worksheet {
@@ -411,6 +441,8 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
         ...base, kind, name: '', width: 640, height: 460, lengthUnit: 'm', forceUnit: 'kN', thickness: '200', material: 'C30/37', show: 'model',
         ...newPlate(), ...(init as Partial<PlateRegion>),
       };
+    case 'area':
+      return { ...base, kind, title: 'Area', height: 96, ...(init as Partial<AreaRegion>) };
   }
 }
 
