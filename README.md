@@ -608,23 +608,29 @@ base made longer keeps its rounded edge rounded. Every size is a worksheet expre
   changes linearly along the chain (from its end with the smaller x, then y, z). A face adds
   all its edges; clicking a rounding takes its edge out. A radius too large says so:
   *radius 12 mm is too large for the edge between the end face and the side face of
-  Extrude1 (max ≈ 10 mm)* (the estimate is for straight edges between flat faces).
+  Extrude1 (max ≈ 10 mm)* (the estimate is for straight edges between flat faces). Two
+  sets with different radii on one tangent chain are refused (the chain takes one radius).
 - **Chamfer:** equal distances, two distances, or a distance and an angle. The first
   distance (and the angle) is measured on the face of each edge that comes first by name;
   Flip takes the other one.
 - **Shell:** walls of a thickness inside or outside, with the picked faces open, or with
-  none picked a closed void inside the body.
+  none picked a closed void inside the body. A rounding thinner than the wall vanishes
+  inside: the inner walls meet at a sharp edge, as in Fusion.
 - **Draft:** faces tilted about where they meet a neutral plane (origin plane, sketch plane
   or a picked face), pulled along its normal or along an axis; a positive angle narrows the
   part towards the pull direction.
 - **Press pull (Q):** flat faces moved along their normal (out adds material, a negative
   distance removes it), cylinders grown or shrunk (a hole's wall pulled out makes the hole
-  smaller). The face keeps its name, so a sketch on it follows.
+  smaller). The face keeps its name, so a sketch on it follows. Flat faces that meet move
+  as an offset: pulling the top and a side of a box gives the larger box, the corner
+  between them filled up to where the moved planes meet.
 - **Split body:** by an origin plane with an offset, a sketch plane or a flat face. The piece
   behind the plane stays the body; the others become new bodies.
 - **Move/Copy:** bodies turned about an axis (origin axis, sketch line, a picked edge or
   cylinder), then moved by ΔX, ΔY, ΔZ; Copy keeps the original.
-- Editing one from the timeline rolls the timeline back to it while the dialog is open.
+- Sizes preview while you type (after a short pause, at once on Enter).
+- Editing one from the timeline rolls the timeline back to it while the dialog is open; OK,
+  another dialog or closing the window rolls it forward again.
 
 **Assemblies** (Assemble tab):
 
@@ -843,12 +849,16 @@ What it is not, honestly:
 - **Modify features, the limits:**
   - OpenCascade always rounds and chamfers along the whole tangent chain of a picked edge.
     With Tangent chain off, an edge whose chain goes on is refused rather than rounded alone.
-  - Press-pull moves a flat face straight along its normal: neighbours that are not square
-    to it get a step instead of being extended (Fusion extends them). Cylinders grow or
-    shrink between their two ends; other curved faces cannot be press-pulled.
+  - Press-pull moves a flat face straight along its normal: neighbours that are not moved
+    and not square to it get a step instead of being extended (Fusion extends them). Moved
+    faces that meet are joined where their planes meet (at a corner only where three square
+    faces meet). Cylinders grow or shrink between their two ends; other curved faces cannot
+    be press-pulled.
   - A shell whose opening is tangent to a face it keeps (the top of a box with a rounded
     rim) is made as the body less its offset inside and the opening pushed through: the
     rounding stays as a lip curving in. Outside shells with such an opening are refused.
+  - A wall exactly as thick as the radius of a rounding is refused (its offset would shrink
+    to an edge, which OpenCascade cannot make): make it a little thinner or thicker.
   - There is no Delete face: this OpenCascade build has no defeaturing algorithm.
   - The mesh kernel (only while OpenCascade loads, or if it cannot) makes no fillets,
     chamfers, shells, drafts or press-pulls; it splits and moves bodies.

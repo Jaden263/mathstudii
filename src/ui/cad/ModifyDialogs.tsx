@@ -2,6 +2,7 @@
 // move/copy. Edges, faces and bodies are picked in the 3-D view (CadWorkspace sends the
 // clicks to the feature); a plane or an axis field takes the next click when its Pick
 // button is pressed. Every size is a worksheet expression.
+import { useEffect, useRef, useState } from 'react';
 import { Crosshair, Plus, X } from 'lucide-react';
 import type { CadResult } from '../../cad/evaluate';
 import {
@@ -9,7 +10,7 @@ import {
   type AxisPick, type CadComponent, type CadDesign, type FilletSet, type ModifyFeature, type PlanePick,
 } from '../../cad/design';
 import { refWords, type TopoRef } from '../../cad/topology';
-import { Expr, Pick, axisOptions, bodyOptions } from './FeatureDialogs';
+import { Pick, axisOptions, bodyOptions } from './FeatureDialogs';
 
 /** What the next click in the view picks for a modify dialog's plane or axis field. */
 export type PickTarget = 'plane' | 'axis';
@@ -26,6 +27,46 @@ export interface ModifyProps {
   set: number;
   onSet: (i: number) => void;
   onChange: (patch: Partial<ModifyFeature>, coalesce?: string) => void;
+}
+
+/**
+ * A size field (a worksheet expression) that previews while typing: what is typed is taken
+ * after a short pause, and at once on Enter or when leaving the field; Esc puts it back.
+ */
+function Expr({ label, value, onChange, hint, placeholder }: { label: string; value: string; onChange: (v: string) => void; hint?: string; placeholder?: string }) {
+  const [v, setV] = useState(value);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => setV(value), [value]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const commit = (text: string) => {
+    window.clearTimeout(timer.current);
+    if (text.trim() !== value) onChange(text.trim());
+  };
+  return (
+    <label className="field" title={hint ?? 'A number in the part unit (degrees for angles), a value with a unit, or a worksheet expression'}>
+      <span>{label}</span>
+      <input
+        className="mono" value={v} placeholder={placeholder} aria-label={label} spellCheck={false}
+        onChange={(e) => {
+          const text = e.target.value;
+          setV(text);
+          window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => commit(text), 600);
+        }}
+        onBlur={() => commit(v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit(v);
+            (e.target as HTMLInputElement).blur();
+          }
+          if (e.key === 'Escape') {
+            window.clearTimeout(timer.current);
+            setV(value);
+          }
+        }}
+      />
+    </label>
+  );
 }
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

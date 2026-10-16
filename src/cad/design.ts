@@ -526,7 +526,7 @@ export function axisOf(design: CadDesign, inp: BuildInputs, ref: AxisRef, built?
   const sk = findSketch(design, sid);
   const e = sk?.sketch.entities.find((q) => q.id === eid);
   const sol = inp.numbers.sketches[sid];
-  if (!sk || e?.type !== 'line' || !sol) throw new Error('the pattern axis is missing');
+  if (!sk || e?.type !== 'line' || !sol) throw new Error('the axis is missing: its sketch line is gone');
   const f = frameIn(inp, sid, built);
   const [ax, ay] = sol.points[e.p1], [bx, by] = sol.points[e.p2];
   return { p: framePoint(f, { x: ax, y: ay }), d: norm3(frameDir(f, { x: bx - ax, y: by - ay })) };
@@ -880,7 +880,7 @@ function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
   if (item.kind === 'shell' && !item.faces.length) {
     const b = bodies.find((q) => q.id === item.body);
     if (!b) throw new Error(item.body ? 'the body to hollow no longer exists' : 'pick the faces to open (or a body to hollow out)');
-    return [[b, shellOf(ops, b.solid, [], p.t, item, unit)]];
+    return [[b, shellOf(ops, b.solid, topo[bodies.indexOf(b)], [], p.t, item, unit)]];
   }
   const refs = item.kind === 'fillet' ? item.sets.flatMap((s, set) => s.edges.map((ref) => ({ ref, set }))) : (item.kind === 'chamfer' ? item.edges : item.faces).map((ref) => ({ ref, set: 0 }));
   const what = item.kind === 'fillet' || item.kind === 'chamfer' ? 'edges' : 'faces';
@@ -925,7 +925,7 @@ function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
         throw new Error('the chamfer does not fit: the faces at the edges are too narrow — try a smaller distance');
       }
     } else if (item.kind === 'shell') {
-      out.push([b, shellOf(ops, b.solid, g.picks.map((q) => q.index), p.t, item, unit)]);
+      out.push([b, shellOf(ops, b.solid, g.topo, g.picks.map((q) => q.index), p.t, item, unit)]);
     } else if (item.kind === 'draft') {
       out.push([b, ops.draft(b.solid, g.picks.map((q) => q.index), pull!, p.angle, plane!, item.id)]);
     } else {
@@ -935,11 +935,15 @@ function modifyBodies<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, 
   return out;
 }
 
-function shellOf<S>(ops: SolidOps<S>, s: S, faces: number[], t: number, item: ShellFeature, unit?: string): S {
+function shellOf<S>(ops: SolidOps<S>, s: S, topo: BodyTopology, faces: number[], t: number, item: ShellFeature, unit?: string): S {
   try {
     return ops.shell(s, faces, t, item.side === 'outside', item.id);
   } catch (e) {
     if (!/does not fit/.test(msg(e))) throw e;
+    // the offset of a rounding as thick as the wall shrinks to an edge, which OpenCascade cannot make
+    const radius = (f: FaceInfo) => (f.type === 'torus' ? f.minorRadius : f.type === 'cylinder' || f.type === 'sphere' ? f.radius : undefined);
+    const round = topo.faces.some((f) => Math.abs((radius(f) ?? Infinity) - t) <= 1e-6 * t);
+    if (round && item.side === 'inside') throw new Error(`a wall of ${sizeWords(t, unit)} as thick as the radius of a rounding cannot be made — make it a little thinner or thicker`);
     throw new Error(`a wall of ${sizeWords(t, unit)} does not fit this body — try a thinner one`);
   }
 }

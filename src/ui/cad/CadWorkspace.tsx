@@ -328,6 +328,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   }, [ds?.id, sketchComp?.id, dr?.display]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const enterSketch = (id: string) => {
+    finishRollback();
     setDialog(null);
     setSketchId(id);
     setTab('sketch');
@@ -405,6 +406,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   const startFeature = (kind: DesignFeature['kind']) => {
     if (!comp) return;
+    // a feature edited with the timeline rolled back is done: the new one goes at the end
+    finishRollback();
     // "Press pull" names its features PressPull1 …
     const name = nextName(cur(), FEATURE_LABEL[kind].replace(/ (\w)/g, (_, c: string) => c.toUpperCase()));
     const id = cadId('f');
@@ -452,6 +455,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
 
   const editItem = (cid: string, item: DesignItem) => {
+    finishRollback();
     setActive(cid);
     if (isSketch(item)) return enterSketch(item.id);
     seal();
@@ -504,20 +508,27 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     seal();
     const m = mark();
     setDesign({ ...d, joints: [...d.joints, { id, name: nextName(d, 'Joint'), type: 'rigid', a: { occ: ground.id, origin: { kind: 'origin' } }, b: { occ: other.id, origin: { kind: 'origin' } }, angle: '0', offset: '0' }] });
-    setDialog({ kind: 'joint', id, mark: m, isNew: true, picking: 'b' });
+    openDialog({ kind: 'joint', id, mark: m, isNew: true, picking: 'b' });
   };
 
   useEffect(() => {
     if (dialog) setShowProps(true);
   }, [dialog]);
+  /** The timeline a feature's dialog rolled back rolls forward again, and the edit with it is one undo step. */
+  const finishRollback = () => {
+    if (dialog?.kind !== 'feature' || !dialog.rollback) return;
+    patchComp(dialog.cid, { marker: dialog.rollback.marker });
+    squash(dialog.mark);
+  };
+  /** Another dialog (or window) taking over keeps the edits of the open one, as OK does. */
+  const openDialog = (d: Dlg) => {
+    finishRollback();
+    setDialog(d);
+  };
   const closeDialog = (ok: boolean) => {
     if (!dialog) return;
     if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint')) revertTo(dialog.mark);
-    // the timeline rolled forward again, and the edit with it one undo step
-    if (ok && dialog.kind === 'feature' && dialog.rollback) {
-      patchComp(dialog.cid, { marker: dialog.rollback.marker });
-      squash(dialog.mark);
-    }
+    if (ok) finishRollback();
     seal();
     setDialog(null);
   };
@@ -752,7 +763,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   const runInterference = () => {
     if (!dr) return setMsg('The part is still being evaluated');
-    setDialog({ kind: 'interference', rows: null });
+    openDialog({ kind: 'interference', rows: null });
     kernelRequest({ op: 'interference', design: cur(), numbers: designNumbers(dr) }, 'interference').then(
       (rows) => setDialog((d) => (d?.kind === 'interference' ? { kind: 'interference', rows } : d)),
       (e) => !isSuperseded(e) && setDialog((d) => (d?.kind === 'interference' ? { kind: 'interference', rows: [], error: (e as Error).message } : d)),
@@ -1268,7 +1279,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           </div>
           <p className="hint">In the worksheet: <code>{region.name || 'part'}.{j.name}</code> {j.type === 'rigid' ? '(rigid joints export nothing)' : ''}</p>
           <div className="cadd-actions">
-            <button className="btn primary" onClick={() => { seal(); setDialog({ kind: 'joint', id: j.id, mark: mark(), isNew: false, picking: null }); }}>Edit joint</button>
+            <button className="btn primary" onClick={() => { seal(); openDialog({ kind: 'joint', id: j.id, mark: mark(), isNew: false, picking: null }); }}>Edit joint</button>
             <button className="btn" onClick={() => patchJoint(j.id, { suppressed: j.suppressed ? undefined : true })}>{j.suppressed ? 'Unsuppress' : 'Suppress'}</button>
             <button className="btn danger" onClick={() => { setDesign({ ...cur(), joints: cur().joints.filter((q) => q.id !== j.id) }); setSel(null); }}><Trash2 size={13} /> Delete</button>
           </div>
@@ -1334,7 +1345,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         <button className="icon-btn" onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Y)" aria-label="Redo"><Redo2 size={17} /></button>
         <button className={`icon-btn${showTree ? ' on' : ''}`} onClick={() => setShowTree(!showTree)} title="Browser" aria-label="Browser"><ListTree size={17} /></button>
         <button className={`icon-btn${showProps ? ' on' : ''}`} onClick={() => setShowProps(!showProps)} title="Properties" aria-label="Properties"><PanelRight size={17} /></button>
-        <button className="cadw-close" onClick={onClose} title="Close the CAD window (the part stays in the worksheet)"><X size={16} /> Close</button>
+        <button className="cadw-close" onClick={() => { finishRollback(); onClose(); }} title="Close the CAD window (the part stays in the worksheet)"><X size={16} /> Close</button>
       </header>
 
       <nav className="cadw-tabs" role="tablist">
@@ -1397,7 +1408,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         {shownTab === 'solid' && (
           <>
             <Group label="Create">
-              <RibbonButton icon={<PenTool size={20} />} label="Sketch" title="Create a sketch on a plane or a flat face" on={dialog?.kind === 'sketch'} onClick={() => setDialog({ kind: 'sketch', ref: 'XY', offset: '' })} />
+              <RibbonButton icon={<PenTool size={20} />} label="Sketch" title="Create a sketch on a plane or a flat face" on={dialog?.kind === 'sketch'} onClick={() => openDialog({ kind: 'sketch', ref: 'XY', offset: '' })} />
               <RibbonButton icon={<ArrowUpFromLine size={20} />} label="Extrude" title="Extrude profiles: new body, join, cut or intersect (E)" onClick={() => startFeature('extrude')} />
               <RibbonButton icon={<RotateCw size={20} />} label="Revolve" title="Revolve profiles about an axis" onClick={() => startFeature('revolve')} />
               <RibbonButton icon={<Cone size={20} />} label="Loft" title="Loft: join a profile of one sketch to a profile of another (on an offset plane)" onClick={() => startFeature('loft')} />
@@ -1451,7 +1462,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         {shownTab === 'inspect' && (
           <>
             <Group label="Inspect">
-              <RibbonButton icon={<Ruler size={20} />} label="Measure" title="Smallest distance between two picked faces, edges or corners, on the exact geometry (M)" on={dialog?.kind === 'measure'} onClick={() => setDialog({ kind: 'measure', picks: [] })} />
+              <RibbonButton icon={<Ruler size={20} />} label="Measure" title="Smallest distance between two picked faces, edges or corners, on the exact geometry (M)" on={dialog?.kind === 'measure'} onClick={() => openDialog({ kind: 'measure', picks: [] })} />
               <RibbonButton icon={<SquareSlash size={20} />} label="Section" title="Cut the model with a plane to look inside" on={!!section} onClick={() => setSection(section ? null : { plane: 'XZ', at: 0.5, flip: false })} />
               <RibbonButton icon={<ScanSearch size={20} />} label="Interference" title="Find overlapping occurrences" onClick={runInterference} />
             </Group>

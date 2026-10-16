@@ -4,7 +4,7 @@
 // box less its offset inside, a draft takes off a wedge, a press-pull adds a prism.
 // Picks are references (topology.ts), so they must follow upstream edits.
 import { describe, expect, it } from 'vitest';
-import { circles, points, rect, roundedRect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
+import { circles, points, poly, rect, roundedRect, single, solve, volumes, watchHandles, withCircles } from './fixtures';
 import { occ, setOccEnabled } from './kernel';
 import { buildDesignOcc } from './build';
 import { buildResultOcc, builtResultOcc } from './result';
@@ -168,6 +168,39 @@ describe('fillet', () => {
     expect(round.c[0]).toBeGreaterThan(56);
   });
 
+  it('two sets with different radii on one tangent chain are refused (OpenCascade rounds a chain with one radius)', () => {
+    const items: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'Base', plane: { ref: 'XY' }, sketch: roundedRect('a', 100, 60, 5) },
+      { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+    ];
+    const [front, back] = edgesAt(items, [TOP_FRONT, [50, 60, 10]]);
+    const fillet = (r2: string): DesignItem => ({ kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [front], r: '2' }, { edges: [back], r: r2 }] });
+    const { errors, V } = run([...items, fillet('4')]);
+    expect(errors.f2).toBe('an edge of set 2 is on the tangent chain of set 1, which is rounded with one radius: pick it in that set');
+    near(V[0], 100 * 60 * 10 - (4 - PI) * 25 * 10);
+    // the same radius twice is no conflict
+    expect(run([...items, fillet('2 mm')]).errors).toEqual({});
+  });
+
+  it('round edges: the top circle of a cylinder, rounded or chamfered (Pappus)', () => {
+    // the section (1 − π/4) r² (fillet) or d²/2 (chamfer) swept round the axis at the radius of its
+    // centroid: R − r(10 − 3π)/(3(4 − π)) for the fillet's, R − d/3 for the chamfer's triangle
+    const R = 20, h = 30, r = 4, d = 3;
+    const cyl: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'Disc', plane: { ref: 'XY' }, sketch: circles('c', [[0, 0, R]]) },
+      { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: String(h) }, op: 'new' },
+    ];
+    const b = bodiesOf(built(single(cyl)))[0];
+    const top = refTo('edge', 'f1', b.edges.find((q) => q.circle && Math.abs(q.circle.c[2] - h) < 1e-9)!);
+    const V0 = PI * R * R * h;
+    const f = run([...cyl, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [top], r: String(r) }] }]);
+    expect(f.errors).toEqual({});
+    near(f.V[0], V0 - 2 * PI * (R - (r * (10 - 3 * PI)) / (3 * (4 - PI))) * (1 - PI / 4) * r * r);
+    const c = run([...cyl, { kind: 'chamfer', id: 'f2', name: 'Chamfer1', edges: [top], type: 'equal', d: String(d) }]);
+    expect(c.errors).toEqual({});
+    near(c.V[0], V0 - 2 * PI * (R - d / 3) * (d * d) / 2);
+  });
+
   it('a radius too large says which edge and about how large it may be', () => {
     // the side face under the edge is 10 high: a rounding of 10 or more does not fit
     const items = box(100, 60, 10);
@@ -302,6 +335,33 @@ describe('shell', () => {
     near(V[0], body - inner - (a - 2 * t) * (b - t - r) * t);
   });
 
+  it('a rounding thinner than the wall vanishes inside: the walls meet at a sharp edge', () => {
+    // a vertical edge rounded to r = 2, walls t = 3: the outside keeps the rounding, the cavity is the
+    // plain (a − 2t)(b − 2t)(c − t) box (its offset rounding would have the radius r − t < 0)
+    const r = 2;
+    const [vert, bottom] = edgesAt(items, [[100, 0, 20], [50, 0, 0]]);
+    const k = 1 - PI / 4;
+    for (const [edge, L] of [[vert, c], [bottom, a]] as const) {
+      const rounded: DesignItem[] = [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [edge], r: String(r) }] }];
+      const open = run([...rounded, { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: String(t), side: 'inside' }]);
+      expect(open.errors).toEqual({});
+      near(open.V[0], a * b * c - k * r * r * L - (a - 2 * t) * (b - 2 * t) * (c - t));
+      const hollow = run([...rounded, { kind: 'shell', id: 'f3', name: 'Shell1', faces: [], body: 'f1', t: String(t), side: 'inside' }]);
+      expect(hollow.errors).toEqual({});
+      near(hollow.V[0], a * b * c - k * r * r * L - (a - 2 * t) * (b - 2 * t) * (c - 2 * t));
+    }
+    // the top front edge (its rounding tangent to the opening) the same way
+    const [rim] = edgesAt(items, [[50, 0, 40]]);
+    const tangent = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [rim], r: String(r) }] },
+      { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: String(t), side: 'inside' }]);
+    expect(tangent.errors).toEqual({});
+    near(tangent.V[0], a * b * c - k * r * r * a - (a - 2 * t) * (b - 2 * t) * (c - t));
+    // exactly as thick as the rounding: its offset shrinks to an edge, which OpenCascade cannot make
+    const same = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [vert], r: String(r) }] },
+      { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: String(r), side: 'inside' }]);
+    expect(same.errors.f3).toBe('a wall of 2 mm as thick as the radius of a rounding cannot be made — make it a little thinner or thicker');
+  });
+
   it('a wall thicker than the body allows is refused', () => {
     const { errors, V } = run([...items, { kind: 'shell', id: 'f2', name: 'Shell1', faces: top, t: '35', side: 'inside' }]);
     expect(errors.f2).toBe('a wall of 35 mm does not fit this body — try a thinner one');
@@ -324,6 +384,21 @@ describe('draft', () => {
       const front = bodiesOf(built(single(all)))[0].faces.find((q) => q.key === 'f1/side:rl0')!;
       expect(front.frame!.n[2]).toBeCloseTo(sign * Math.sin(th), 12);
     }
+  });
+
+  it('about a mid-height neutral plane a flat face takes off as much as it adds; four sides: ∫(w − 2kz)(b − 2kz) dz', () => {
+    // neutral plane z = h/2 (a sketch plane): the face turns about its middle, ΔV = 0. All four sides
+    // drafted about z = 0: the section at height z is (w − 2kz)(b − 2kz), k = tan θ, so
+    // V = w b h − k (w + b) h² + 4 k² h³ / 3
+    const w = 100, b = 60, h = 40, k = tan((5 * PI) / 180);
+    const items: DesignItem[] = [...box(w, b, h), { kind: 'sketch', id: 's2', name: 'Mid', plane: { ref: 'XY', offset: String(h / 2) }, sketch: rect('q', 0, 0, 1, 1) }];
+    const [front, back, left, right] = facesAt(items, [[50, 0, 20], [50, 60, 20], [0, 30, 20], [100, 30, 20]]);
+    const mid = run([...items, { kind: 'draft', id: 'f2', name: 'Draft1', faces: [front], plane: 's2', angle: '5 deg' }]);
+    expect(mid.errors).toEqual({});
+    near(mid.V[0], w * b * h);
+    const four = run([...items, { kind: 'draft', id: 'f2', name: 'Draft1', faces: [front, back, left, right], plane: 'XY', angle: '5 deg' }]);
+    expect(four.errors).toEqual({});
+    near(four.V[0], w * b * h - k * (w + b) * h * h + (4 * k * k * h ** 3) / 3);
   });
 
   it('flip pulls the other way; the neutral plane can be a picked face', () => {
@@ -444,6 +519,52 @@ describe('press-pull', () => {
     const round = bodiesOf(built(single(rounded)))[0].faces.find((q) => q.key.startsWith('f2/round:'))!;
     const pulled = run([...rounded, { kind: 'presspull', id: 'f3', name: 'PressPull1', faces: [refTo('face', 'f1', round)], d: '1' }]);
     expect(pulled.errors.f3).toBe('a rounding between two faces cannot be press-pulled: change its radius instead');
+  });
+
+  it('faces that meet move as an offset: the gap between their prisms is filled up to where the moved planes meet', () => {
+    // two faces of the 100 × 60 × 10 box moved by d give the (100 + d) × 60 × (10 + d) box, three at a
+    // corner the (100 + d)(60 + d)(10 + d) one, as an offset of the faces does (pulled: the corner
+    // between the prisms filled; pushed: cut away with them)
+    const keys = (all: DesignItem[]) => bodiesOf(built(single(all)))[0].faces.map((q) => q.key).sort();
+    const six = ['f1/end', 'f1/side:rl0', 'f1/side:rl1', 'f1/side:rl2', 'f1/side:rl3', 'f1/start'];
+    const [right, lid, front] = facesAt(items, [[100, 30, 5], [50, 30, 10], [50, 0, 5]]);
+    for (const d of [5, -3]) {
+      const two: DesignItem[] = [...items, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: [right, lid], d: String(d) }];
+      const r2 = run(two);
+      expect(r2.errors).toEqual({});
+      near(r2.V[0], (100 + d) * 60 * (10 + d));
+      expect(keys(two)).toEqual(six);
+      const three: DesignItem[] = [...items, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: [right, lid, front], d: String(d) }];
+      const r3 = run(three);
+      expect(r3.errors).toEqual({});
+      near(r3.V[0], (100 + d) * (60 + d) * (10 + d));
+      expect(keys(three)).toEqual(six);
+    }
+    // faces at 45°: a wall and the roof of a house profile (extruded 100), pulled 4: the new profile is
+    // bounded by x = 60 + d, x + y = 100 + d√2 and the unmoved roof −x + y = 40 (shoelace area)
+    const house: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'House', plane: { ref: 'XY' }, sketch: poly('h', [[0, 0], [60, 0], [60, 40], [30, 70], [0, 40]]) },
+      { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: '100' }, op: 'new' },
+    ];
+    const d = 4, s2 = Math.SQRT2;
+    const pts: [number, number][] = [[0, 0], [60 + d, 0], [60 + d, 40 + d * (s2 - 1)], [30 + (d * s2) / 2, 70 + (d * s2) / 2], [0, 40]];
+    const area = pts.reduce((acc, p, i) => acc + (p[0] * pts[(i + 1) % 5][1] - pts[(i + 1) % 5][0] * p[1]) / 2, 0);
+    const pulled: DesignItem[] = [...house, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: facesAt(house, [[60, 20, 50], [45, 55, 50]]), d: String(d) }];
+    const rh = run(pulled);
+    expect(rh.errors).toEqual({});
+    near(rh.V[0], area * 100);
+    expect(keys(pulled)).toEqual(['f1/end', 'f1/side:hl0', 'f1/side:hl1', 'f1/side:hl2', 'f1/side:hl3', 'f1/side:hl4', 'f1/start']);
+    // the inner corner of an L (concave) pushed in by 3: the corner square between the prisms goes too
+    const L: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'L', plane: { ref: 'XY' }, sketch: poly('l', [[0, 0], [60, 0], [60, 10], [10, 10], [10, 40], [0, 40]]) },
+      { kind: 'extrude', id: 'f1', name: 'Extrude1', sketch: 's1', extent: { type: 'one', d: '50' }, op: 'new' },
+    ];
+    const inner = facesAt(L, [[35, 10, 25], [10, 25, 25]]);
+    for (const [dd, want] of [[-3, 60 * 7 + 7 * 33], [3, 60 * 13 + 13 * 27]]) {
+      const rl = run([...L, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: inner, d: String(dd) }]);
+      expect(rl.errors).toEqual({});
+      near(rl.V[0], want * 50);
+    }
   });
 
   it('pushed through the whole body is refused', () => {
@@ -625,6 +746,30 @@ describe('modify features together', () => {
       expect(watch.undeleted()).toEqual([]);
     } finally {
       watch.stop();
+    }
+  });
+
+  it('deletes every OCCT object of faces pulled together, of walls past a rounding and of refused features', () => {
+    const [right, lid, front] = facesAt(items, [[100, 30, 20], [50, 30, 40], [50, 0, 20]]);
+    const [vert, rim] = edgesAt(items, [[100, 0, 20], [50, 0, 40]]);
+    const oc = occ()!;
+    for (const list of [
+      [...items, { kind: 'presspull', id: 'f2', name: 'PressPull1', faces: [right, lid, front], d: '5' }],
+      [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [vert], r: '2' }] }, { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: '3', side: 'inside' }],
+      [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [rim], r: '2' }] }, { kind: 'shell', id: 'f3', name: 'Shell1', faces: [], body: 'f1', t: '2', side: 'inside' }],
+      [...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges: [rim], r: '45' }] }],
+    ] as DesignItem[][]) {
+      const design = single(list);
+      const { numbers } = solve(design);
+      const watch = watchHandles(oc);
+      try {
+        const b = buildDesignOcc(oc, design, numbers);
+        builtResultOcc(oc, b);
+        b.free();
+        expect(watch.undeleted()).toEqual([]);
+      } finally {
+        watch.stop();
+      }
     }
   });
 
