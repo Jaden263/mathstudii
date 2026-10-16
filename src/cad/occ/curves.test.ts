@@ -102,6 +102,19 @@ describe('splines on the B-rep kernel', () => {
     near(volumes(res)[0], profileProperties(findProfiles(sk).regions)!.A * 3, 1e-9);
   });
 
+  it('a closed spline revolved a full turn: V = 2π·x̄·A (Pappus\'s centroid theorem)', () => {
+    // the ring moved clear of the sketch's y axis, x from 10 to 75
+    const sk = closedSpline(RING.map((p) => ({ x: p.x + 20, y: p.y })));
+    const items: DesignItem[] = [
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: sk },
+      { kind: 'revolve', id: 'f1', name: 'R', sketch: 's1', axis: 'y', angle: '360 deg', op: 'new' },
+    ];
+    const { res } = solve(single(items));
+    expect(res.design!.errors).toEqual({});
+    const pr = profileProperties(findProfiles(sk).regions)!;
+    near(volumes(res)[0], 2 * PI * pr.xc * pr.A, 1e-9);
+  });
+
   it('the OCCT edge is the sketch curve: through the fit points (1e-9) and on the polyline', () => {
     const Q = [{ x: 0, y: 0 }, { x: 20, y: 15 }, { x: 45, y: 8 }, { x: 60, y: 30 }];
     const sk: CadSketch = {

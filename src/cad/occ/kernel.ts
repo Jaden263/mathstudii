@@ -232,11 +232,12 @@ export function listShapes(t: Arena, list: NCollection_List_TopoDS_Shape): TopoD
 
 /**
  * Volume properties into p. OCCT's default integration is exact on planes, cylinders,
- * cones, spheres and tori but not on the faces a spline or an ellipse sweeps when it is
- * extruded or revolved (a spline profile extruded comes out 10⁻⁴ off), so shapes with those
- * go through the adaptive Gauss–Kronrod integration span by span (exact to 10⁻¹²). General
- * B-spline faces (sweeps along curves, lofts) keep the default: there the adaptive one takes
- * minutes, and the default is within about 10⁻⁵.
+ * cones, spheres and tori but not on the faces a spline sweeps when it is extruded or
+ * revolved (a spline profile extruded comes out 10⁻⁴ off, text 10⁻³), so shapes with such
+ * faces go through the adaptive Gauss–Kronrod integration (exact to 10⁻¹²). Not span by
+ * span: that is as exact but can take seconds (a box with an elliptical pocket: 6 s against
+ * 7 ms). General B-spline faces (sweeps along curves, lofts) keep the default: there the
+ * adaptive one takes minutes, and the default is within about 10⁻⁵.
  */
 export function volumeProperties(oc: OC, s: TopoDS_Shape, p: GProp_GProps): void {
   const S = oc.GeomAbs_SurfaceType;
@@ -253,7 +254,7 @@ export function volumeProperties(oc: OC, s: TopoDS_Shape, p: GProp_GProps): void
     }
     return any;
   });
-  if (adaptive) oc.BRepGProp.VolumePropertiesGK(s, p, 1e-12, false, true, true, true, false);
+  if (adaptive) oc.BRepGProp.VolumePropertiesGK(s, p, 1e-12, false, true, true, false, false);
   else oc.BRepGProp.VolumeProperties(s, p, false, false, false);
 }
 
