@@ -104,6 +104,7 @@ ctx.onmessage = async (e: MessageEvent<EvalRequest>) => {
         }
       }
       post(out, false);
+      sendDisplays(ws, out);
       return;
     }
     await preparePackages(code);
