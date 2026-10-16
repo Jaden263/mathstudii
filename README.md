@@ -386,10 +386,10 @@ default, so older worksheets give the same numbers):
   (K + α K_G(N)) φ = 0 with the first-order axial forces (supports eliminated, hinges with
   their own rotation, a banded Cholesky factor, then dense eigenvalues or Lanczos). The
   panel gives α_cr per combination with the EN 1993-1-1 5.2.1(3) verdict (≥ 10: first
-  order is enough; 3–10: second-order effects count, or the 1/(1 − 1/α_cr) amplification
-  of 5.2.2(5)B for sway; < 3: second order required), and the buckling length of each
-  compressed member, L_cr = π √(EI/(α_cr |N|)). **Buckling** in the strip draws the mode
-  (normalised), with a selector for modes 2 and 3.
+  order is enough, ≥ 15 for a plastic analysis; 3–10: second-order effects count, or the
+  1/(1 − 1/α_cr) amplification of 5.2.2(5)B for sway; < 3: second order required), and
+  the buckling length of each compressed member, L_cr = π √(EI/(α_cr |N|)). **Buckling**
+  in the strip draws the mode (normalised), with a selector for modes 2 and 3.
 - **In the worksheet:** `b.alpha_cr` (`b.α_cr`, the lowest over the ULS combinations),
   `b.alpha_cr_modes` (a vector), `b.L_cr` (a vector in member order; ∞ for members in
   tension), per combination `b.combos.ULS.alpha_cr`, and with second order the

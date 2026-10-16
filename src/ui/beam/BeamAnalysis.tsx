@@ -135,7 +135,9 @@ export function ShearFields({ s, onChange, si }: {
 /** EN 1993-1-1 5.2.1(3) and 5.2.2(5)B for an elastic global analysis. */
 export function alphaVerdict(a: number): { text: string; cls: 'ok' | 'warn' | 'bad' } {
   if (!Number.isFinite(a)) return { text: 'nothing in compression', cls: 'ok' };
-  if (a >= 10) return { text: 'α_cr ≥ 10: first-order analysis is enough', cls: 'ok' };
+  // (5.1: 10 for an elastic global analysis, 15 for a plastic one)
+  if (a >= 15) return { text: 'α_cr ≥ 15: first-order analysis is enough', cls: 'ok' };
+  if (a >= 10) return { text: 'α_cr ≥ 10: first-order elastic analysis is enough (a plastic one needs 15)', cls: 'ok' };
   if (a >= 3) return { text: `second-order effects count; sway effects × 1/(1 − 1/α_cr) = ${(1 / (1 - 1 / a)).toFixed(2)} (5.2.2(5)B), or second order`, cls: 'warn' };
   if (a > 1) return { text: 'α_cr < 3: a second-order analysis is required', cls: 'bad' };
   return { text: 'unstable: above the elastic critical load', cls: 'bad' };
@@ -145,11 +147,12 @@ export function alphaVerdict(a: number): { text: string; cls: 'ok' | 'warn' | 'b
 export function StabilityResults({ region, result }: { region: BeamRegion; result: BeamResult }) {
   const u = units(region);
   const name = region.name.trim() || 'beam';
-  const rows: CaseResult[] = result.combos ?? [{ id: '', name: '', solution: result.solution, buckling: result.buckling }];
+  // with a moving load's envelope shown, the stability of the loads (the envelope is no load set)
+  const shown = result.buckling ?? result.staticBuckling;
+  const rows: CaseResult[] = result.combos ?? [{ id: '', name: '', solution: result.solution, buckling: shown }];
   const withBuckling = rows.filter((c) => c.buckling);
   if (!withBuckling.length) return null;
   const sol = result.solution, first = sol?.secondOrder?.first;
-  const shown = result.buckling;
   const ratio = (a?: number, b?: number) => (a !== undefined && b ? Math.abs(a / b) : undefined);
   const ampM = ratio(sol?.max.M?.value, first?.max.M?.value), ampW = ratio(sol?.max.w?.value, first?.max.w?.value);
   const a1 = shown?.modes[0]?.alpha;

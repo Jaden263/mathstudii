@@ -526,11 +526,19 @@ export function stackLayout(height: number, width: number, n: number, straight: 
 
 const PANEL_TITLE: Record<BeamPanel, string> = { N: 'N', V: 'V', M: 'M', deflection: 'δ', mode: 'Buckling mode' };
 
+/** Why no buckling mode is drawn. */
+function noMode(res?: BeamResult): string {
+  // a moving load's envelope is not a load set: the modes belong to the loads and combinations
+  const loads = res?.staticBuckling?.modes[0];
+  if (loads) return `none for a moving load; the loads: α_cr = ${fmtAlpha(loads.alpha)}`;
+  return res?.buckling ?? res?.staticBuckling ? 'none: nothing is in compression' : 'none';
+}
+
 function panelUnit(r: BeamRegion, k: BeamPanel, res?: BeamResult): string {
   const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
   if (k === 'mode') {
     const m = modeShown(r, res);
-    return m ? `${m.index + 1}: α_cr = ${fmtAlpha(m.alpha)}` : 'none';
+    return m ? `${m.index + 1}: α_cr = ${fmtAlpha(m.alpha)}` : noMode(res);
   }
   // only the buckling mode is drawn above the critical load
   if (res && !res.solution) return 'none: above the critical load';
@@ -609,7 +617,7 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
         const y0 = top + idx * layout.panelH;
         const pts = series(k);
         if (!pts.length) {
-          const why = k === 'mode' ? 'none: nothing is in compression' : !sol ? 'none: above the critical load' : null;
+          const why = k === 'mode' ? noMode(res) : !sol ? 'none: above the critical load' : null;
           return why ? (
             <g key={k} className={`bm-panel ${k}`}>
               <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />

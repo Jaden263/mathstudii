@@ -78,7 +78,7 @@ describe('Euler columns: P_cr = π² EI / (β L)²', () => {
   const L = 4;
   const Pcr = (beta: number) => (Math.PI ** 2 * EI) / (beta * L) ** 2;
   // a roller turned 90° holds the head sideways only
-  const sideways = sup('H', 'h', 'roller', 90);
+  const sideways = sup('H', 'h', 'roller', Math.PI / 2);
 
   it('pinned–pinned (β = 1), with the second mode at 4 P_cr', () => {
     const st = column(L, 'pin', sideways);
@@ -113,7 +113,7 @@ describe('Euler columns: P_cr = π² EI / (β L)²', () => {
   it('with shear deformation: Engesser, P_cr = P_E / (1 + P_E / (G A_v))', () => {
     // a short, deep column where shear matters (HEB 200, 1.5 m pinned–pinned)
     const Ls = 1.5, PE = (Math.PI ** 2 * EI) / Ls ** 2;
-    const st = column(Ls, 'pin', sup('H', 'h', 'roller', 90), 1e3, { G, Av });
+    const st = column(Ls, 'pin', sup('H', 'h', 'roller', Math.PI / 2), 1e3, { G, Av });
     const a = bucklingAnalysis(st, solveStructure(st)).modes[0].alpha;
     near(a * 1e3, PE / (1 + PE / (G * Av)), 0.005);
     expect(a * 1e3).toBeLessThan(PE * 0.97);
@@ -131,12 +131,27 @@ describe('Euler columns: P_cr = π² EI / (β L)²', () => {
     near(bucklingAnalysis(h, sol).modes[0].alpha * -sol.members[0].N[0], Pcr(1), 0.005);
   });
 
+  it('a lateral spring at the head: P_cr = min(k L, π²EI/L²), and second order δ = H / (k − P/L)', () => {
+    // pinned foot, head held sideways by a spring k: the straight column turning about its
+    // foot has no moment anywhere, so k L is exact while it is below the Euler load (and
+    // δ = H/(k − P/L) exact in second order); a stiffer spring leaves the braced mode π²EI/L²
+    for (const f of [0.3, 0.8, 2]) {
+      const k = (f * Math.PI ** 2 * EI) / L ** 3;
+      const st = column(L, 'pin', sup('H', 'h', 'roller', Math.PI / 2, { k }));
+      near(bucklingAnalysis(st, solveStructure(st)).modes[0].alpha * 1e3, Math.min(k * L, Pcr(1)), 0.005);
+      if (f > 1) continue;
+      const P = 0.6 * k * L, H = 2e3;
+      const sol = solveStructure({ ...st, loads: [{ id: 'P', type: 'force', at: { node: 'h' }, Fx: H, Fy: -P }] }, { secondOrder: true });
+      near(sol.nodes.h.dx, H / (k - P / L), 0.005);
+    }
+  });
+
   it('a big model (Lanczos path): a pinned column drawn as 30 members', () => {
     const n = 30;
     const st: NumStructure = {
       nodes: Array.from({ length: n + 1 }, (_, i) => ({ id: `n${i}`, x: 0, y: (L * i) / n })),
       members: Array.from({ length: n }, (_, i) => mem(`m${i}`, `n${i}`, `n${i + 1}`)),
-      supports: [sup('F', 'n0', 'pin'), sup('H', `n${n}`, 'roller', 90)],
+      supports: [sup('F', 'n0', 'pin'), sup('H', `n${n}`, 'roller', Math.PI / 2)],
       loads: [{ id: 'P', type: 'force', at: { node: `n${n}` }, Fx: 0, Fy: -1e3 }],
     };
     const b = bucklingAnalysis(st, solveStructure(st));
