@@ -119,9 +119,15 @@ export interface MeasuredDesign {
 
 const cache = new Map<string, MeasuredDesign>();
 const CACHE_SIZE = 16;
+let cachedBy: OC | null = null;
 
 /** Exact properties of every body, measured once per design and numbers (results are plain data). */
 export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbers): MeasuredDesign {
+  // a renewed kernel measures afresh: what the old one failed on (a trap) may build now
+  if (oc !== cachedBy) {
+    cache.clear();
+    cachedBy = oc;
+  }
   const key = designKey(design, numbers);
   const hit = cache.get(key);
   if (hit) {

@@ -548,6 +548,32 @@ describe('B-rep sketch planes and the worksheet', () => {
     ])).res)[0], PI * 1000);
   });
 
+  it('forgets what a kernel that trapped measured once a fresh one is in', async () => {
+    // a trap inside a feature fails it with "restarts"; the same part must build cleanly with
+    // the fresh instance, not come back from the cache of measured parts with that error
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 17, 11) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '7' }, op: 'new' },
+    ]);
+    const K = occ()! as unknown as Record<string, unknown>;
+    const Prism = K.BRepPrimAPI_MakePrism;
+    K.BRepPrimAPI_MakePrism = function () {
+      throw new WebAssembly.RuntimeError('memory access out of bounds');
+    };
+    let res;
+    try {
+      res = solve(design).res;
+    } finally {
+      K.BRepPrimAPI_MakePrism = Prism;
+    }
+    expect(res.featureError).toMatch(/restarts/);
+    const fresh = await renewOcc(Infinity)!;
+    expect(occ()).toBe(fresh);
+    const again = solve(design).res;
+    expect(again.featureError).toBeUndefined();
+    near(volumes(again)[0], 17 * 11 * 7);
+  });
+
   it('restarts a kernel that trapped', async () => {
     // out of memory or a crash inside OCCT ends in a WebAssembly trap, which can leave the
     // instance broken: the error says so and a fresh instance takes over
