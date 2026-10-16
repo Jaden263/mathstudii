@@ -300,7 +300,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     return () => {
       live = false;
     };
-  }, [ds?.id, sketchComp?.id, dr?.display, sketchFrame]); // eslint-disable-line react-hooks/exhaustive-deps
+    // the frame is in the design key: a worksheet recalculating for other reasons asks nothing
+  }, [ds?.id, sketchComp?.id, dr?.display]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const enterSketch = (id: string) => {
     setDialog(null);
