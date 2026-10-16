@@ -123,6 +123,29 @@ describe('space frame stability', () => {
     for (const m of second.members) expect(Math.abs(memberAt3(m, 0).My)).toBeLessThan(1e-6 * P);
   });
 
+  it('shear deformation: Engesser’s critical load and the second-order cantilever column', () => {
+    // a column with a small shear area A_v (so P_e / G A_v ≈ 5 %), about the weak axis
+    const L = 3, Av = 10e-4, GA = G * Av;
+    const pinned: NumFrame = {
+      ...column(L, [true, true, true, false, false, true], [true, true, false, false, false, false], 100e3),
+      members: [mem('c', 'a', 'b', { Avy: Av, Avz: Av })],
+    };
+    // Timoshenko & Gere §2.17: P_cr = P_e / (1 + P_e / G A_v) (Engesser); Haringx's
+    // (√(1 + 4P_e/GA) − 1) GA / 2 is 0.3 % higher. The consistent Timoshenko element lies
+    // between the two, within 0.1 % of Engesser's.
+    const Pe = (Math.PI ** 2 * E * Iz) / (L * L), engesser = Pe / (1 + Pe / GA);
+    const alpha = buckling3(pinned, solveFrame3(pinned)).modes[0].alpha;
+    expect(Math.abs((alpha * 100e3) / engesser - 1)).toBeLessThan(1e-3);
+    // second order, the clamped column with H at its top: v″ = M/EI − M″/GA and M″ = −P v″
+    // give v″ = M / (EI (1 − P/GA)), so k² = P / (EI (1 − P/GA)); at the clamp θ = 0 but
+    // v′ = γ = H / (GA − P). With M = H (L − x) + P (v_L − v):
+    // v_L = H / (P k) · (tan kL / (1 − P/GA) − kL)
+    const P = 300e3, H = 5e3, Av2 = 15e-4, GA2 = G * Av2, k = Math.sqrt(P / (E * Iz * (1 - P / GA2)));
+    const cant: NumFrame = { ...column(4, FIXED, null, P, [0, H]), members: [mem('c', 'a', 'b', { Avy: Av2, Avz: 30e-4 })] };
+    const top = solveFrame3(cant, { secondOrder: true }).nodes.b[1];
+    expect(top / ((H / (P * k)) * (Math.tan(4 * k) / (1 - P / GA2) - 4 * k))).toBeCloseTo(1, 4);
+  });
+
   it('above the critical load there is no second-order equilibrium', () => {
     const L = 4, Pcr = (Math.PI ** 2 * E * Iz) / (2 * L) ** 2;
     expect(() => solveFrame3(column(L, FIXED, null, 1.2 * Pcr, [0, 1e3]), { secondOrder: true })).toThrow(InstabilityError);
