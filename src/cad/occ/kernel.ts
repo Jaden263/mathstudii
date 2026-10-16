@@ -55,9 +55,10 @@ const RENEW_BYTES = 768 * 2 ** 20;
 /**
  * OCCT itself leaks a little inside some algorithms (in this build about 10 kB per
  * boolean and 50 kB per fillet, with every handle deleted), so a long session slowly
- * fills the WASM heap. Call this between builds, with no OCCT object alive: once the
- * heap is past `limit` a fresh instance loads in the background and takes over, and
- * the old one goes with the garbage. Returns the pending renewal, if any.
+ * fills the WASM heap. Call this between builds: once the heap is past `limit` a fresh
+ * instance loads in the background and takes over when it is ready (never in the middle
+ * of a build, which is synchronous), and the old one goes with the garbage. Returns the
+ * pending renewal, if any.
  */
 export function renewOcc(limit = RENEW_BYTES): Promise<OC> | null {
   if (!K || renewing || K.wasmMemory.buffer.byteLength < limit) return renewing;

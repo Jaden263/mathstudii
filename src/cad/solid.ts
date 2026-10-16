@@ -237,10 +237,6 @@ export function extrudeSolid(Kx: ManifoldToplevel, arena: Arena, regions: Profil
 }
 
 /**
- * Solid of revolution of the regions about the in-plane axis through p along d, turned
- * by `angle` radians with the right-hand rule about d. The profile must stay on one side.
- */
-/**
  * Which side of an in-plane axis the regions lie on (1 = left of its direction); throws
  * when they cross the axis or lie on it. Also returns the unit axis and the coordinates
  * across (w) and along (s) it.
@@ -264,6 +260,10 @@ export function revolveSide(regions: ProfileRegion[], axis: { p: Vec2; d: Vec2 }
   return { side: wMax > tol ? 1 : -1, a, w, s };
 }
 
+/**
+ * Solid of revolution of the regions about the in-plane axis through p along d, turned
+ * by `angle` radians with the right-hand rule about d. The profile must stay on one side.
+ */
 export function revolveSolid(Kx: ManifoldToplevel, arena: Arena, regions: ProfileRegion[], f: Frame, axis: { p: Vec2; d: Vec2 }, angle: number): Manifold {
   const { side, a, w, s } = revolveSide(regions, axis);
   // revolve frame: X = towards the profile (e1), Z = along the axis, Y = Z × X
