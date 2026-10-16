@@ -12,7 +12,7 @@ import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, valueText, unitParts, type FormatOptions } from './format';
 import { dimsOf, closestName, unitNames, compatibleUnits, quantityName } from './unitCatalog';
 import { exprTex, lhsTex, programTex, texCtx, keywordsTex, nameTex } from './tex';
-import { symbolicEval, casReady, type SymFunction } from './symbolic';
+import { symbolicEval, casReady, symbolicUnitNames, type SymFunction } from './symbolic';
 import * as N from './numeric';
 import { evaluateSketch, type SketchResult } from './sketchEval';
 import { solveCad, cadValue, type CadResult } from '../cad/evaluate';
@@ -269,13 +269,15 @@ class Evaluator {
       }
       case 'symbolic': {
         const eq = findEvalEquals(st.expr);
-        // in symbolic math every letter is a variable, never a unit
+        // in symbolic math a letter is a variable, unless it is written as a unit (2 m, kN, m/s)
         texCtx.symbolic = true;
+        texCtx.symbolicUnits = symbolicUnitNames(st.expr, st.keywords, { scope: this.global, functions: this.symFunctions });
         let left: string;
         try {
           left = eq >= 0 ? `${exprTex(st.expr.slice(0, eq))} = ${exprTex(st.expr.slice(eq + 1))}` : exprTex(st.expr);
         } finally {
           texCtx.symbolic = false;
+          texCtx.symbolicUnits = new Set();
         }
         const kw = keywordsTex(st.keywords);
         const arrow = kw ? `\\xrightarrow{${kw}}` : '\\rightarrow';
@@ -341,7 +343,7 @@ class Evaluator {
             this.results.set(r.id, { kind: 'math', tex: this.statementTex(st, null), pending: true });
             return;
           }
-          value = symbolicEval(st.expr, st.keywords, { scope, functions: this.symFunctions });
+          value = symbolicEval(st.expr, st.keywords, { scope, functions: this.symFunctions, fmt: this.fmt });
           break;
         case 'expr':
           // validate syntax only

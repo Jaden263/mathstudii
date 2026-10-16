@@ -5,6 +5,8 @@ import { math } from './math';
 import { parseExpr } from './compile';
 import { splitTop, findEvalEquals } from './syntax';
 import type { ScopeLike } from './scope';
+import type { FormatOptions } from './format';
+import { checkDimensions, hasUnitSymbols, unitNamesIn, unitNode, unitResultTex, valueNode } from './symbolicUnits';
 
 type Nerdamer = ((expr: string) => NerdExpr) & {
   setFunction(name: string, params: string[], body: string): void;
@@ -16,6 +18,7 @@ interface NerdExpr {
   evaluate(): NerdExpr;
   text(mode: string, digits?: number): string;
   sub(a: string, b: string): NerdExpr;
+  variables(): string[];
 }
 
 let cas: Nerdamer | null = null;
@@ -48,6 +51,10 @@ const RENAME_TO_CAS: Record<string, string> = { log: 'log10', ln: 'log', prod: '
 export interface SymContext {
   scope: ScopeLike;
   functions: Map<string, SymFunction>;
+  /** How numbers with units are shown in results (the worksheet's format). */
+  fmt?: FormatOptions;
+  /** Names read as units in the expression being evaluated (set by symbolicEval). */
+  units?: Set<string>;
 }
 
 function boundVariables(node: MathNode): Set<string> {
@@ -71,15 +78,20 @@ function expand(node: MathNode, ctx: SymContext, keep: Set<string>, depth = 0): 
     if (n.type === 'SymbolNode') {
       const name = any.name as string;
       if (keep.has(name)) return n;
+      if (ctx.units?.has(name)) return unitNode(name);
       if (ctx.scope.has(name)) {
         const v = ctx.scope.get(name);
         if (typeof v === 'number') return new math.ParenthesisNode(new math.ConstantNode(v));
+        // a variable defined with a unit (F := 10 kN) brings its value and unit
+        const q = valueNode(v);
+        if (q) return q;
       }
       return n;
     }
     if (n.type === 'FunctionNode') {
       const fn = any.fn as { name?: string };
       const name = fn.name ?? '';
+      if (name === '__d') return new math.ParenthesisNode(expand(primeDerivative(any.args as MathNode[], ctx), ctx, keep, depth + 1));
       const args = (any.args as MathNode[]).map((a) => expand(a, ctx, keep, depth + 1));
       const user = ctx.functions.get(name);
       if (user && !keep.has(name)) {
@@ -98,6 +110,19 @@ function expand(node: MathNode, ctx: SymContext, keep: Set<string>, depth = 0): 
     }
     return n;
   });
+}
+
+/** y''(t) (written __d(y, 2, t)) of a function defined above → diff(y(t), t, 2). */
+function primeDerivative(args: MathNode[], ctx: SymContext): MathNode {
+  const [f, k, arg] = args as (MathNode & { name?: string; value?: number })[];
+  const name = f.name ?? '?';
+  const marks = '′'.repeat(Number(k.value) || 1);
+  const user = ctx.functions.get(name);
+  if (!user || user.params.length !== 1) {
+    throw new Error(`${name}${marks}: ${name} is not a function of one variable defined above — define ${name}(t) := … to differentiate it symbolically`);
+  }
+  if (arg.type !== 'SymbolNode') throw new Error(`${name}${marks}( ) needs a variable in symbolic math, like ${name}${marks}(t)`);
+  return new math.FunctionNode(new math.SymbolNode('diff'), [new math.FunctionNode(new math.SymbolNode(name), [arg]), arg, new math.ConstantNode(Number(k.value))]);
 }
 
 const GREEK_NAMES: Record<string, string> = {
@@ -141,13 +166,43 @@ function rename(node: MathNode): MathNode {
 }
 
 function toCas(node: MathNode, ctx: SymContext, keep: Set<string>): string {
-  return rename(expand(node, ctx, keep))
+  const expanded = expand(node, ctx, keep);
+  // units: like is added to like (2 m + 3 s is an error, not a sum of two symbols)
+  if (ctx.units?.size || hasUnitSymbols(expanded.toString())) checkDimensions(expanded);
+  return rename(expanded)
     .toString({ implicit: 'show', parenthesis: 'auto' })
     .replace(/\s*==\s*/g, '=')
     .replace(/\bdeg\b/g, '(pi/180)');
 }
 
-function texOut(e: NerdExpr): string {
+/** Bound variables of an expression and its keywords (never substituted, never units). */
+function keptNames(node: MathNode, kws: string[]): Set<string> {
+  const keep = boundVariables(node);
+  // variables named in keyword arguments are never substituted
+  kws.slice(1).forEach((k) => {
+    const name = k.split('=')[0].trim();
+    if (/^[A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ]*$/.test(name)) keep.add(name);
+  });
+  return keep;
+}
+
+function unitScope(ctx: SymContext) {
+  return { isDefined: (n: string) => ctx.scope.has(n) || ctx.functions.has(n), value: (n: string) => ctx.scope.get(n) };
+}
+
+/** Names that are units in `expr → keywords` (for showing the input). */
+export function symbolicUnitNames(exprSrc: string, keywords: string, ctx: SymContext): Set<string> {
+  try {
+    const eq = findEvalEquals(exprSrc);
+    const node = parseExpr(eq >= 0 ? `${exprSrc.slice(0, eq)}==${exprSrc.slice(eq + 1)}` : exprSrc);
+    const kws = keywords ? splitTop(keywords, ',').map((k) => k.trim()).filter(Boolean) : [];
+    return unitNamesIn(node, unitScope(ctx), keptNames(node, kws));
+  } catch {
+    return new Set();
+  }
+}
+
+function texOut(e: { toTeX(): string }): string {
   return e
     .toTeX()
     .replace(/vmatrix/g, 'bmatrix')
@@ -167,12 +222,8 @@ export function symbolicEval(exprSrc: string, keywords: string, ctx: SymContext)
   const node = parseExpr(src);
   const kws = keywords ? splitTop(keywords, ',').map((k) => k.trim()).filter(Boolean) : [];
   const kw = kws[0]?.toLowerCase() ?? '';
-  const keep = boundVariables(node);
-  // variables named in keyword arguments are never substituted
-  kws.slice(1).forEach((k) => {
-    const name = k.split('=')[0].trim();
-    if (/^[A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ]*$/.test(name)) keep.add(name);
-  });
+  const keep = keptNames(node, kws);
+  ctx = { ...ctx, units: unitNamesIn(node, unitScope(ctx), keep) };
   let e = toCas(node, ctx, keep);
   const improper = improperIntegral(node, ctx, keep, nerd);
   if (improper !== null) e = improper;
@@ -182,57 +233,65 @@ export function symbolicEval(exprSrc: string, keywords: string, ctx: SymContext)
       if (fallback === undefined) throw new Error(`Keyword "${kw}" needs more arguments`);
       return fallback;
     }
-    return toCas(parseExpr(v), ctx, keep);
+    const vn = parseExpr(v);
+    return toCas(vn, { ...ctx, units: unitNamesIn(vn, unitScope(ctx), keep) }, keep);
   };
   const guessVar = () => {
     const syms = new Set<string>();
     node.traverse((n: MathNode) => {
       if (n.type === 'SymbolNode') {
         const name = (n as unknown as { name: string }).name;
-        if (!(name in math) && !ctx.scope.has(name)) syms.add(name);
+        if (!(name in math) && !ctx.scope.has(name) && !ctx.units?.has(name)) syms.add(name);
       }
     });
     return syms.has('x') ? 'x' : [...syms][0] ?? 'x';
   };
+  // a result with units: each unit part shown the way "=" shows quantities
+  const done = (r: NerdExpr, reshape?: string): string => {
+    const str = r.toString();
+    if (!hasUnitSymbols(str)) return texOut(r);
+    return unitResultTex(nerd, str, { fmt: ctx.fmt ?? { precision: 4, expThreshold: 6, metric: true }, reshape, texOut });
+  };
   switch (kw) {
     case '':
-      return texOut(nerd(e));
+      return done(nerd(e));
     case 'simplify':
-      return texOut(nerd(`simplify(${e})`));
+      return done(nerd(`simplify(${e})`), 'simplify');
     case 'expand':
-      return texOut(nerd(`expand(${e})`));
+      return done(nerd(`expand(${e})`), 'expand');
     case 'factor':
-      return texOut(nerd(`factor(${e})`));
+      return done(nerd(`factor(${e})`), 'factor');
     case 'solve': {
       const v = arg(1, guessVar());
-      return texOut(nerd(`solve(${e}, ${v})`));
+      return done(nerd(`solve(${e}, ${v})`));
     }
     case 'float': {
       const digits = Number(kws[1] ?? 10);
       const txt = nerd(e).evaluate().text('decimals', digits);
-      return texOut(nerd(txt));
+      return done(nerd(txt));
     }
     case 'substitute': {
       let r = nerd(e);
       for (const s of kws.slice(1)) {
         const [a, b] = s.split('=');
         if (b === undefined) throw new Error('substitute, x = value');
-        r = r.sub(a.trim(), toCas(parseExpr(b), ctx, keep));
+        const bn = parseExpr(b);
+        r = r.sub(a.trim(), toCas(bn, { ...ctx, units: unitNamesIn(bn, unitScope(ctx), keep) }, keep));
       }
-      return texOut(nerd(`simplify(${r.toString()})`));
+      return done(nerd(`simplify(${r.toString()})`));
     }
     case 'coeffs':
-      return texOut(nerd(`coeffs(${e}, ${arg(1, guessVar())})`));
+      return done(nerd(`coeffs(${e}, ${arg(1, guessVar())})`));
     case 'collect':
-      return texOut(nerd(`expand(${e})`));
+      return done(nerd(`expand(${e})`), 'expand');
     case 'partfrac':
     case 'parfrac':
-      return texOut(nerd(`partfrac(${e}, ${arg(1, guessVar())})`));
+      return done(nerd(`partfrac(${e}, ${arg(1, guessVar())})`));
     case 'laplace':
-      return texOut(nerd(`laplace(${e}, ${arg(1, 't')}, ${arg(2, 's')})`));
+      return done(nerd(`laplace(${e}, ${arg(1, 't')}, ${arg(2, 's')})`));
     case 'invlaplace':
     case 'ilt':
-      return texOut(nerd(`ilt(${e}, ${arg(1, 's')}, ${arg(2, 't')})`));
+      return done(nerd(`ilt(${e}, ${arg(1, 's')}, ${arg(2, 't')})`));
     case 'series':
     case 'taylor': {
       const v = arg(1, guessVar());
@@ -246,14 +305,14 @@ export function symbolicEval(exprSrc: string, keywords: string, ctx: SymContext)
       if (kws[3] !== undefined) order = Number(kws[3]);
       if (kws[1]?.includes('=')) {
         const [vv, aa] = kws[1].split('=');
-        return taylor(nerd, e, vv.trim(), toCas(parseExpr(aa), ctx, keep), order);
+        return done(taylor(nerd, e, vv.trim(), toCas(parseExpr(aa), ctx, keep), order));
       }
-      return taylor(nerd, e, v, a, order);
+      return done(taylor(nerd, e, v, a, order));
     }
     case 'diff':
-      return texOut(nerd(`diff(${e}, ${arg(1, guessVar())})`));
+      return done(nerd(`diff(${e}, ${arg(1, guessVar())})`));
     case 'integrate':
-      return texOut(nerd(`integrate(${e}, ${arg(1, guessVar())})`));
+      return done(nerd(`integrate(${e}, ${arg(1, guessVar())})`));
     default:
       throw new Error(`Unknown symbolic keyword "${kws[0]}"`);
   }
@@ -277,7 +336,7 @@ function improperIntegral(node: MathNode, ctx: SymContext, keep: Set<string>, ne
   return nerd(`simplify((${at(b)}) - (${at(a)}))`).toString();
 }
 
-function taylor(nerd: Nerdamer, e: string, v: string, a: string, order: number): string {
+function taylor(nerd: Nerdamer, e: string, v: string, a: string, order: number): NerdExpr {
   if (!Number.isInteger(order) || order < 1 || order > 20) throw new Error('series order must be an integer 1..20');
   let term = e;
   const parts: string[] = [];
@@ -290,5 +349,5 @@ function taylor(nerd: Nerdamer, e: string, v: string, a: string, order: number):
     const c = nerd(term).sub(v, `(${a})`).toString();
     if (c !== '0') parts.push(`(${c})/${fact}*(${v}-(${a}))^${k}`);
   }
-  return texOut(nerd(`expand(${parts.join('+') || '0'})`));
+  return nerd(`expand(${parts.join('+') || '0'})`);
 }
