@@ -33,6 +33,7 @@ export function meshOps(K: ManifoldToplevel, arena: Arena): SolidOps<MeshSolid> 
     },
     hole: (centres, dir, o) => ({ m: union(centres.map((p) => holeTool(K, arena, p, dir, o))) }),
     union: (ss) => (ss.length === 1 ? ss[0] : { m: union(ss.map((s) => s.m)) }),
+    group: (ss) => (ss.length === 1 ? ss[0] : { m: union(ss.map((s) => s.m)) }),
     cut: (t, tool) => ({ m: arena.add(t.m.subtract(tool.m)) }),
     intersect: (t, tool) => ({ m: arena.add(t.m.intersect(tool.m)) }),
     transform: (s, M) => ({ m: transformSolid(arena, s.m, M), exact: s.exact && transformMass(s.exact, M) }),

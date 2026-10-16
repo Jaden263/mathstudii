@@ -450,6 +450,8 @@ export interface SolidOps<S> {
   /** Hole tools at the centres (component coordinates), drilled along dir; one solid. */
   hole(centres: Vec3[], dir: Vec3, o: HoleOptions, tag: string): S;
   union(solids: S[]): S;
+  /** Several tools as one, for a single boolean (they may overlap; nothing is merged yet). */
+  group(solids: S[]): S;
   cut(target: S, tool: S): S;
   intersect(target: S, tool: S): S;
   /** A moved (or mirrored) copy; `prefix` goes before the names of the copy's faces. */
@@ -661,7 +663,11 @@ export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadCom
             for (const ref of item.refs) {
               const src = tools.get(ref);
               if (!src) throw new Error('a patterned feature failed or no longer exists');
-              Ms.forEach((M, k) => apply(`${item.id}.${k + 1}.${ref}`, { ...src, tool: ops.transform(src.tool, M, `${item.id}.${k + 1}.`) }));
+              const copies = Ms.map((M, k) => ops.transform(src.tool, M, `${item.id}.${k + 1}.`));
+              // cutting (or joining) copy after copy is one boolean with all of them: much
+              // faster for a grid of holes, the same solid
+              if (copies.length > 1 && (src.op === 'cut' || (src.op === 'join' && bodies.length))) apply(`${item.id}.1.${ref}`, { ...src, tool: ops.group(copies) });
+              else copies.forEach((tool, k) => apply(`${item.id}.${k + 1}.${ref}`, { ...src, tool }));
             }
           } else {
             for (const ref of item.refs) {

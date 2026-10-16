@@ -28,10 +28,12 @@ export interface FaceInfo {
   area: number;
   /** Planar faces: a frame at the face centroid, n pointing out of the material. */
   frame?: Frame;
-  /** Cylinders and cones (and spheres, through the centre); tori have none in this OCCT build. */
+  /** Cylinders, cones and tori (and spheres, through the centre). */
   axis?: { p: Vec3; d: Vec3 };
-  /** Cylinder and sphere radius; a cone's radius where its axis starts. */
+  /** Cylinder and sphere radius; a cone's radius where its axis starts; a torus' distance from its axis to the tube's centre. */
   radius?: number;
+  /** Torus tube radius. */
+  minorRadius?: number;
   /** Cone half angle (radians). */
   angle?: number;
 }

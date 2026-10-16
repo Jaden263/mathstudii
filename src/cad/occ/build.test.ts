@@ -139,6 +139,17 @@ describe('B-rep shells and roundings', () => {
   it('reports a rounding that does not fit', () => {
     const { res } = solve(box({ edgeEnd: { type: 'fillet', r: '35' } }));
     expect(res.featureError).toMatch(/rounding/);
+    // a chamfer wider than a disc's radius: OCCT returns a self-crossing solid whose volume
+    // looks plausible; the validity check must refuse it, and still accept one just inside
+    const disc = (c: string) => solve(single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: circles('k', [[0, 0, 10]]) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '40' }, op: 'new', edgeEnd: { type: 'chamfer', r: c } },
+    ])).res;
+    expect(disc('12').featureError).toMatch(/rounding/);
+    // Pappus as above: ring of c²/2 at R − c/3
+    const ok = disc('9.9'), c = 9.9;
+    expect(ok.featureError).toBeUndefined();
+    near(volumes(ok)[0], PI * 100 * 40 - 2 * PI * (10 * c * c / 2 - c ** 3 / 6));
   });
 
   it('lofts two squares into a frustum of a pyramid', () => {
@@ -197,6 +208,40 @@ describe('B-rep revolve and holes', () => {
     // 90° countersink from Ø16 to Ø8: a cone frustum h = 4 deep, V = πh/3 (R² + Rr + r²)
     const h = 4;
     near(v('countersink', true), V0 - 2 * ((PI * h / 3) * (64 + 32 + 16) + PI * 16 * (T - h)));
+  });
+
+  it('drills holes that overlap, in one feature and in a pattern', () => {
+    // area of two circles r whose centres are s apart: 2πr² − lens, lens = 2r² acos(s/2r) − (s/2)√(4r² − s²)
+    const r = 4, lens = (s: number) => 2 * r * r * Math.acos(s / (2 * r)) - (s / 2) * Math.sqrt(4 * r * r - s * s);
+    const plate = (pts: [number, number][], extra: DesignItem[] = []) => volumes(solve(single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', -30, -30, 30, 30) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'Top', plane: { ref: 'XY', offset: '10' }, sketch: points('h', pts) },
+      { kind: 'hole', id: 'f2', name: 'H', sketch: 's2', d: '8', depth: '', through: true, style: 'simple' },
+      ...extra,
+    ])).res)[0];
+    const V0 = 60 * 60 * 10;
+    // Ø8 holes 4 apart (and one apart from both)
+    near(plate([[0, 0], [4, 0], [20, 0]]), V0 - 10 * (2 * PI * r * r - lens(4) + PI * r * r));
+    // one hole patterned 3 × along X at 6: neighbours overlap, the ends do not
+    near(plate([[-10, 0]], [
+      { kind: 'pattern', id: 'f3', name: 'P', of: 'features', refs: ['f2'], type: 'rect', axis: 'X', count: '3', spacing: '6' },
+    ]), V0 - 10 * (3 * PI * r * r - 2 * lens(6)));
+  });
+
+  it('lets a counterbore or countersink deeper than the hole set its depth', () => {
+    // as the mesh kernel: depth 3, but a Ø14 × 7 counterbore, or a 90° Ø20 countersink that
+    // reaches Ø8 only 6 deep
+    const plate = (h: Partial<Extract<DesignItem, { kind: 'hole' }>>) => single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', -30, -30, 30, 30) },
+      { kind: 'extrude', id: 'f1', name: 'E', sketch: 's1', extent: { type: 'one', d: '12' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'Top', plane: { ref: 'XY', offset: '12' }, sketch: points('h', [[0, 0]]) },
+      { kind: 'hole', id: 'f2', name: 'H', sketch: 's2', d: '8', depth: '3', style: 'simple', ...h } as DesignItem,
+    ]);
+    const V0 = 60 * 60 * 12;
+    near(volumes(solve(plate({ style: 'counterbore', cbD: '14', cbDepth: '7' })).res)[0], V0 - PI * 49 * 7);
+    // frustum R = 10 → r = 4 over h = 6: πh/3 (R² + Rr + r²)
+    near(volumes(solve(plate({ style: 'countersink', csD: '20', csAngle: '90 deg' })).res)[0], V0 - (PI * 6 / 3) * (100 + 40 + 16));
   });
 });
 

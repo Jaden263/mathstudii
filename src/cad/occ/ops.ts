@@ -114,14 +114,26 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     }
   };
 
+  /**
+   * A list of boolean tools, compounds taken apart: one argument must not overlap itself,
+   * but separate tools may overlap each other (two holes closer than their diameter).
+   */
+  const toolList = (t: Arena, shapes: TopoDS_Shape[]) => {
+    const list = t.add(new oc.NCollection_List_TopoDS_Shape());
+    // Append hands back the stored item: a handle of its own to delete
+    for (const s of shapes) {
+      const parts = s.ShapeType() === oc.TopAbs_ShapeEnum.TopAbs_COMPOUND ? subShapes(oc, t, s, oc.TopAbs_ShapeEnum.TopAbs_SOLID) : [s];
+      for (const q of parts) t.add(list.Append(q));
+    }
+    return list;
+  };
+
   /** Fuse / cut / common with history; coplanar pieces are merged afterwards. */
   const boolean = (kind: 'fuse' | 'cut' | 'common', a: OccSolid, tools: OccSolid[], what: string): OccSolid => scratch((t) => {
     const op = t.add(kind === 'fuse' ? new oc.BRepAlgoAPI_Fuse() : kind === 'cut' ? new oc.BRepAlgoAPI_Cut() : new oc.BRepAlgoAPI_Common());
-    // Append hands back the stored item: a handle of its own to delete
     const args = t.add(new oc.NCollection_List_TopoDS_Shape());
     t.add(args.Append(a.shape));
-    const tl = t.add(new oc.NCollection_List_TopoDS_Shape());
-    for (const s of tools) t.add(tl.Append(s.shape));
+    const tl = toolList(t, tools.map((s) => s.shape));
     op.SetArguments(args);
     op.SetTools(tl);
     try {
@@ -213,10 +225,12 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       if (!mk.IsDone()) throw new Error(what);
       return mk.Shape();
     }));
-    // a radius too large for the profile can still "succeed" with a broken solid; rounding
-    // cap edges only ever removes material (BRepCheck_Analyzer would tell more, but it leaks)
+    // a radius too large for the profile can still "succeed" with a broken solid (a chamfer
+    // wider than a disc's radius has a plausible volume): rounding cap edges only ever removes
+    // material, and the result must pass OCCT's checks (which leak ~20 kB, as fillets do)
     const v = hasSolid(oc, shape) ? shapeVolume(oc, shape) : 0;
     if (!(v > 0 && v < shapeVolume(oc, s.shape))) throw new Error(what);
+    if (!t.add(new oc.BRepCheck_Analyzer(shape, true, false, false)).IsValid()) throw new Error(what);
     const feature = featureOf(tag);
     const tags = carry(mk, s.tags, shape);
     for (const { edge, key } of added) for (const face of listShapes(arena, mk.Generated(edge))) tags.push({ face, key, feature });
@@ -232,20 +246,22 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     const fr = frameFromNormal(p, d);
     const back = Math.max(o.d, o.cbD ?? 0, o.csD ?? 0) * 1e-3;
     const r = o.d / 2;
-    // corners (radius, depth, role of the edge from it to the next), round from the axis at the top
+    // corners (radius, depth, role of the edge from it to the next), round from the axis at the top;
+    // a counterbore or countersink deeper than the hole sets its depth (as in the mesh kernel)
     const pts: [number, number, string][] = [[0, -back, 'top']];
+    let bottom = o.depth;
     if (o.style === 'counterbore' && o.cbD && o.cbDepth && o.cbD > o.d) {
       const R = o.cbD / 2;
       pts.push([R, -back, 'cb']);
-      if (o.cbDepth >= o.depth) pts.push([R, o.cbDepth, 'bottom']);
+      if (o.cbDepth >= o.depth) pts.push([R, (bottom = o.cbDepth), 'bottom']);
       else pts.push([R, o.cbDepth, 'cbFloor'], [r, o.cbDepth, 'wall'], [r, o.depth, 'bottom']);
     } else if (o.style === 'countersink' && o.csD && o.csD > o.d && o.csAngle) {
       const R = o.csD / 2, k = Math.tan(o.csAngle / 2), hc = (R - r) / k;
       pts.push([R, -back, 'csTop'], [R, 0, 'cone']);
-      if (hc >= o.depth) pts.push([R - o.depth * k, o.depth, 'bottom']);
+      if (hc >= o.depth) pts.push([r, (bottom = hc), 'bottom']);
       else pts.push([r, hc, 'wall'], [r, o.depth, 'bottom']);
     } else pts.push([r, -back, 'wall'], [r, o.depth, 'bottom']);
-    pts.push([0, o.depth, 'axis']);
+    pts.push([0, bottom, 'axis']);
     const at = ([rad, z]: [number, number, string]): Vec3 => [p[0] + fr.u[0] * rad + d[0] * z, p[1] + fr.u[1] * rad + d[1] * z, p[2] + fr.u[2] * rad + d[2] * z];
     return guard(oc, 'the hole cannot be made', () => {
       const mw = t.add(new oc.BRepBuilderAPI_MakeWire());
@@ -263,7 +279,7 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     });
   };
 
-  return {
+  const ops: SolidOps<OccSolid> = {
     extrude(regions, f, z0, z1, tag) {
       checkExtent(z0, z1);
       return scratch((t) => union(regions.map((r) => {
@@ -364,6 +380,8 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     },
 
     union,
+    // a compound: booleans take its solids as separate tools
+    group: (parts) => (parts.length === 1 ? parts[0] : { shape: compound(oc, arena, parts.map((s) => s.shape)), tags: parts.flatMap((s) => s.tags) }),
     cut: (target, tool) => boolean('cut', target, [tool], 'the cut failed'),
     intersect: (target, tool) => boolean('common', target, [tool], 'the intersection failed'),
 
@@ -380,8 +398,13 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     shared(a, b) {
       try {
         return scratch((t) => {
-          const c = t.add(new oc.BRepAlgoAPI_Common(a.shape, b.shape, progress(t)));
+          const c = t.add(new oc.BRepAlgoAPI_Common());
+          const args = t.add(new oc.NCollection_List_TopoDS_Shape());
+          t.add(args.Append(a.shape));
+          c.SetArguments(args);
+          c.SetTools(toolList(t, [b.shape]));
           try {
+            c.Build(progress(t));
             return c.HasErrors() ? 0 : shapeVolume(oc, t.add(c.Shape()));
           } finally {
             release(c);
@@ -402,4 +425,10 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
       });
     },
   };
+  // an OCCT exception from a step without its own message still becomes a readable Error
+  for (const k of Object.keys(ops) as (keyof SolidOps<OccSolid>)[]) {
+    const f = ops[k] as (...a: unknown[]) => unknown;
+    (ops as unknown as Record<string, unknown>)[k] = (...a: unknown[]) => guard(oc, 'the B-rep kernel could not build this', () => f(...a));
+  }
+  return ops;
 }

@@ -5,7 +5,7 @@
 import type { TopoDS_Edge, TopoDS_Face, TopoDS_Shape } from 'replicad-opencascadejs';
 import type { CadDesign, DesignNumbers } from '../design';
 import { edgeKey, meshBuildResult, type BodyMesh, type BodyResult, type BuildResult, type CurveKind, type EdgeInfo, type FaceInfo, type SurfaceKind } from '../buildResult';
-import { Arena, cross3, kernel, norm3, type Vec3 } from '../solid';
+import { Arena, add3, cross3, dot3, kernel, norm3, scale3, sub3, type Vec3 } from '../solid';
 import { buildDesignOcc, isEmptyShape, occBox, occMass, type OccBody, type OccBuiltDesign } from './build';
 import { occ, scratch, shapeIndex, xyz, type OC } from './kernel';
 
@@ -55,21 +55,31 @@ function faceInfo(oc: OC, t: Arena, face: TopoDS_Face, index: number): FaceInfo 
     const c = xyz(t.add(sp.Location()));
     info.axis = { p: c, d: [0, 0, 1] };
     info.radius = sp.Radius();
-  } else if (type === 'cone' || type === 'torus') {
-    // gp_Cone and gp_Torus are not bound; the face's own surface (located) is
+  } else if (type === 'cone') {
+    // gp_Cone is not bound; the face's own surface (located) is
     const g = t.add(oc.BRep_Tool.Surface(face)) as unknown as {
       Axis(): { Location(): { X(): number; Y(): number; Z(): number; delete(): void }; Direction(): { X(): number; Y(): number; Z(): number; delete(): void }; delete(): void };
       RefRadius?: () => number; SemiAngle?: () => number;
     };
-    // (Geom_ToroidalSurface is not bound either: a torus comes back without its axis)
     if (typeof g.Axis === 'function') {
       const ax = t.add(g.Axis());
       info.axis = { p: xyz(t.add(ax.Location())), d: xyz(t.add(ax.Direction())) };
     }
-    if (type === 'cone' && g.RefRadius && g.SemiAngle) {
+    if (g.RefRadius && g.SemiAngle) {
       info.radius = g.RefRadius();
       info.angle = Math.abs(g.SemiAngle());
     }
+  } else if (type === 'torus') {
+    // neither gp_Torus nor Geom_ToroidalSurface is bound: read them off the surface,
+    // P(u, v) = C + (R + r cos v)(cos u X + sin u Y) + r sin v Z
+    const P = (u: number, v: number) => xyz(t.add(a.Value(u, v)));
+    const p0 = P(0, 0), c = scale3(add3(p0, P(Math.PI, 0)), 0.5);
+    const x = norm3(sub3(p0, c));
+    const outer = dot3(sub3(p0, c), x), inner = dot3(sub3(P(0, Math.PI), c), x);
+    const R = (outer + inner) / 2, r = (outer - inner) / 2;
+    info.axis = { p: c, d: norm3(sub3(P(0, Math.PI / 2), add3(c, scale3(x, R)))) };
+    info.radius = R;
+    info.minorRadius = r;
   }
   return info;
 }

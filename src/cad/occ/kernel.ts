@@ -82,6 +82,12 @@ export function renewOcc(limit = RENEW_BYTES): Promise<OC> | null {
  * them into Errors with our message (OCCT's own is kept as the cause) and free them.
  */
 export function occError(oc: OC, e: unknown, what: string): Error {
+  // a trap (out of memory, a crash inside OCCT) can leave the instance broken: replace it
+  // (the swap happens once the new one has loaded, so never in the middle of a build)
+  if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) {
+    renewOcc(0)?.catch((err) => console.warn('restarting the B-rep kernel failed', err));
+    return new Error(`${what} (the B-rep kernel failed and restarts)`, { cause: e });
+  }
   if (e instanceof Error) return e;
   let cause = String(e);
   if (typeof WebAssembly !== 'undefined' && 'Exception' in WebAssembly && e instanceof WebAssembly.Exception) {

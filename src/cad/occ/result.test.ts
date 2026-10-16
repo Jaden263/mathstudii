@@ -149,10 +149,35 @@ describe('B-rep build results', () => {
     expect(torus.faces.map((f) => f.type)).toEqual(['torus']);
     // a torus' area: 4π² R a
     near(torus.faces[0].area, 4 * PI * PI * 40 * 5);
+    // the circle 40 out on the front plane turned about world Z: R = 40, a = 5, centred at the origin
+    const tf = torus.faces[0];
+    near(tf.radius!, 40);
+    near(tf.minorRadius!, 5);
+    expect(Math.abs(tf.axis!.d[2])).toBeCloseTo(1, 12);
+    expect(Math.hypot(...tf.axis!.p)).toBeLessThan(1e-9);
     const cone = block.faces.find((f) => f.type === 'cone')!;
     expect(cone.key).toBe('f3/hole0:cone');
     near(cone.angle!, PI / 4);
     expect(Math.abs(cone.axis!.d[2])).toBeCloseTo(1, 12);
+  });
+
+  it('describes the torus of a rounded disc rim', () => {
+    // Ø40 × 18 disc, top rim rounded r = 5: the round is a quarter torus, tube centre 20 − 5
+    // from the axis and 18 − 5 up
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: circles('k', [[0, 0, 20]]) },
+      { kind: 'extrude', id: 'f1', name: 'Knob', sketch: 's1', extent: { type: 'one', d: '18' }, op: 'new', edgeEnd: { type: 'fillet', r: '5' } },
+    ]);
+    const { numbers } = solve(design);
+    const [b] = buildResultOcc(occ()!, design, numbers).components.c1.bodies;
+    const round = b.faces.find((f) => f.type === 'torus')!;
+    expect(round.key).toBe('f1/round:end:kk0');
+    near(round.radius!, 15);
+    near(round.minorRadius!, 5);
+    near(round.axis!.p[2], 13);
+    expect(Math.hypot(round.axis!.p[0], round.axis!.p[1])).toBeLessThan(1e-9);
+    // a quarter of the tube on its outer side: 2π a (π R / 2 + a)
+    near(round.area, 2 * PI * 5 * (PI * 15 / 2 + 5));
   });
 });
 
