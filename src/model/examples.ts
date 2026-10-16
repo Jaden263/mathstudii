@@ -942,8 +942,8 @@ function curvesDesign(): CadDesign {
     constraints: [
       { id: 'ef', type: 'fix', refs: ['ec'], at: { x: 0, y: 0 } },
       { id: 'eh', type: 'horizontal', refs: ['ex'] },
-      { id: 'eA', type: 'majorRadius', refs: ['el'], value: 'a_e', offset: { x: 0, y: 8 } },
-      { id: 'eB', type: 'minorRadius', refs: ['el'], value: 'b_e', offset: { x: 8, y: 0 } },
+      { id: 'eA', type: 'majorRadius', refs: ['el'], value: 'a_e', offset: { x: 0, y: -8 } },
+      { id: 'eB', type: 'minorRadius', refs: ['el'], value: 'b_e', offset: { x: -12, y: 0 } },
     ],
   };
   // the plate's right-hand top edge, projected: the hole keeps e_h from it however wide the plate is
