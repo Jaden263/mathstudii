@@ -644,6 +644,51 @@ export function bridgeExample(): Worksheet {
   ]);
 }
 
+export function odeExample(): Worksheet {
+  return build('Differential equations', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Free vibration of a single-storey frame\nA 30 t roof on two fixed-base HEB 200 columns (sway stiffness 2 × 12 EI/h³), 5 % damping, pushed 20 mm sideways and let go. The solve block takes the differential equation and its initial conditions; `odesolve` returns the displacement as a function of time, with units.' }],
+    ['math', L, mm(42), { source: 'h := 4 m' }],
+    ['math', mm(56), mm(42), { source: 'E := 210 GPa' }],
+    ['math', mm(100), mm(42), { source: 'I_c := section("HEB 200").I_y = cm^4' }],
+    ['math', L, mm(54), { source: 'M := 30000 kg' }],
+    ['math', mm(56), mm(54), { source: 'ζ := 0.05' }],
+    ['math', mm(100), mm(54), { source: 'k := 2 * 12 * E * I_c / h^3 = kN/m' }],
+    ['math', L, mm(66), { source: 'ω := sqrt(k / M)' }],
+    ['math', mm(52), mm(66), { source: 'f_n := ω / (2 π) = Hz' }],
+    ['math', mm(96), mm(66), { source: 'T_n := 1 / f_n = s' }],
+    ['math', mm(136), mm(66), { source: 'c := 2 ζ sqrt(k M) = kN*s/m' }],
+    ['solve', L, mm(80), { guesses: '', constraints: "M * u''(t) + c * u'(t) + k * u(t) = 0\nu(0 s) = 20 mm\nu'(0 s) = 0 mm/s", solver: 'u := odesolve(t, 5 s)' }],
+    ['math', mm(110), mm(86), { source: 'u(1 s) = mm' }],
+    ['math', mm(110), mm(98), { source: "u'(0.25 s) = mm/s" }],
+    ['math', mm(110), mm(110), { source: "u''(0 s) = m/s^2" }],
+    ['plot', L, mm(132), { xExpr: 't', traces: [{ y: 'u(t)', style: 'line' }, { y: '20 mm * exp(-ζ * ω * t)', style: 'line' }, { y: '-20 mm * exp(-ζ * ω * t)', style: 'line' }], xmin: '0 s', xmax: '5 s', xUnit: 's', yUnit: 'mm', title: 'Roof displacement u(t) and its envelope', width: mm(130), height: mm(62) }],
+    ['text', L, mm(200), { width: mm(170), markdown: '**Check** against the closed-form solution of the damped free vibration:' }],
+    ['math', L, mm(210), { source: 'ω_d := ω sqrt(1 - ζ^2)' }],
+    ['math', L, mm(222), { source: 'u_e(t) := 20 mm * exp(-ζ ω t) * (cos(ω_d t) + ζ / sqrt(1 - ζ^2) * sin(ω_d t))' }],
+    ['math', L, mm(238), { source: 'u(1 s) - u_e(1 s) = mm' }],
+    ['text', L, mm(305), { width: mm(170), markdown: '## A short pulse\nThe same frame hit by a 0.2 s half-sine force of 50 kN, starting at rest. `odesolve` handles any right-hand side the worksheet can evaluate.' }],
+    ['math', L, mm(323), { source: 'F(t) := if(t < 0.2 s, 50 kN * sin(π t / 0.2 s), 0 kN)' }],
+    ['solve', L, mm(337), { guesses: '', constraints: "M * v''(t) + c * v'(t) + k * v(t) = F(t)\nv(0 s) = 0 mm\nv'(0 s) = 0 mm/s", solver: 'v := odesolve(t, 3 s)' }],
+    ['plot', mm(110), mm(339), { xExpr: 't', traces: [{ y: 'v(t)', style: 'line' }], xmin: '0 s', xmax: '3 s', xUnit: 's', yUnit: 'mm', title: 'Pulse response v(t)', width: mm(80), height: mm(52) }],
+    ['math', L, mm(383), { source: 'v(0.3 s) = mm' }],
+    ['text', L, mm(400), { width: mm(170), markdown: '## Beam deflection as a boundary value problem\nEI y⁗ = q with y = y″ = 0 at both supports: conditions at two points, solved by shooting. The bare zeros take their units from the equation.' }],
+    ['math', L, mm(422), { source: 'q := 12 kN/m' }],
+    ['math', mm(56), mm(422), { source: 'L := 6 m' }],
+    ['math', mm(96), mm(422), { source: 'EI := 210 GPa * 8360 cm^4' }],
+    ['solve', L, mm(436), { guesses: '', constraints: "EI * y''''(x) = q\ny(0) = 0\ny(L) = 0\ny''(0) = 0\ny''(L) = 0", solver: 'y := odesolve(x, L)' }],
+    ['math', mm(110), mm(442), { source: 'y(L / 2) = mm' }],
+    ['math', mm(110), mm(454), { source: '5 q L^4 / (384 EI) = mm' }],
+    ['math', mm(110), mm(468), { source: "-EI * y''(L / 2) = kN*m" }],
+    ['math', mm(110), mm(482), { source: 'q L^2 / 8 = kN*m' }],
+    ['text', L, mm(502), { width: mm(170), markdown: '## Special functions: a flagpole buckling under its own weight\nGreenhill: a column clamped at the base buckles under its self-weight q when q L³/EI = (9/4) j², j being the first zero of the Bessel function J₋₁/₃ (real order).' }],
+    ['math', L, mm(524), { source: 'j := root(Jn(-1/3, z), z, 1, 2.5) =' }],
+    ['math', mm(110), mm(524), { source: '9 / 4 * j^2 =' }],
+    ['math', L, mm(538), { source: 'q_w := 0.5 kN/m' }],
+    ['math', mm(56), mm(538), { source: 'EI_p := 210 GPa * 2000 cm^4' }],
+    ['math', mm(120), mm(538), { source: 'L_cr := (9 / 4 * j^2 * EI_p / q_w)^(1/3) = m' }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -658,4 +703,5 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'CAD part design (parametric)', make: cadExample },
   { name: 'CAD: shells, roundings, lofts', make: shapingExample },
   { name: 'Bridge girder: influence lines, LM1', make: bridgeExample },
+  { name: 'Differential equations (odesolve)', make: odeExample },
 ];

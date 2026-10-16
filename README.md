@@ -187,6 +187,7 @@ pushed apart automatically.
 | `x_max` | literal subscript (part of the name) |
 | `[1, 2, 3]`, `[1; 2; 3]`, `[1, 2; 3, 4]` | row vector, column vector, matrix |
 | `A'`, `A^-1`, `det(A)` | transpose, inverse, determinant |
+| `y'(t)`, `f''(x)` | derivative of a function (prime notation) |
 | `3 + 4i` | complex number (`i` alone is an ordinary variable) |
 | `x^2 - 1 → factor` | symbolic evaluation with a keyword |
 | `integral(f(x), x, a, b)`, `diff(f(x), x)`, `sum(k^2, k, 1, n)` | calculus operators |
@@ -205,6 +206,73 @@ fact(n) :=
 
 Supported: `if` / `else if` / `else`, `for … ∈ range|vector`, `while`, `break`,
 `continue`, `return`, `try` / `on error`, and local `←` (or `<-`) including `v[k] ← …`.
+
+### Differential equations
+
+A solve block with `odesolve` as the solver solves ordinary differential equations,
+Mathcad-style. Under **Constraints** write the equation in prime notation (or with
+`diff(y(t), t, 2)`) and the conditions; the solver line names the unknown function:
+
+```
+Constraints:  m * u''(t) + c * u'(t) + k * u(t) = 0
+              u(0 s) = 20 mm
+              u'(0 s) = 0 mm/s
+Solver:       u := odesolve(t, 5 s)
+```
+
+`u` is then a function like any other: `u(1 s) = mm`, `u'(0.25 s) = mm/s` and
+`u''(t)` (from the state and the equation, not by differencing), in plots and in
+other formulas. It interpolates between steps with the solver's continuous extension;
+outside the interval it is an error ("u(6 s) is outside the solution interval 0 s … 5 s").
+
+- **Units** come from the conditions (`u(0 s) = 20 mm` makes u a length and u′ a velocity).
+  Conditions that are bare zeros take their units from the equation.
+- **Higher orders and systems**: any order is turned into a first-order system;
+  `[x; y] := odesolve([x, y], t, 15)` solves several unknown functions together (orders may differ).
+  The equations are solved for the highest derivatives at every step, directly when they are
+  written as `y''(t) = …`, by Newton iteration otherwise (`exp(y'(t)) = 1 + t` works).
+- **Boundary value problems**: conditions at two (or more) points, such as a beam
+  `EI * y''''(x) = q` with `y(0) = 0`, `y(L) = 0`, `y''(0) = 0`, `y''(L) = 0`, are solved by
+  shooting: Newton on the unknown starting values, with sensitivities computed on a frozen mesh.
+- **Methods**: adaptive Dormand–Prince 5(4) with the worksheet's tolerance (`TOL`, as the
+  relative error to each component's peak), switching to **Radau IIA** (implicit, order 5) when
+  it detects stiffness — Van der Pol with μ = 1000 over 3000 s takes a fraction of a second.
+  `odesolve(t, b, "radau")` asks for the stiff solver, `"rkadapt"` for the explicit one only,
+  `odesolve(t, b, 200, "fixed")` for 200 classic RK4 steps; a number alone sets the minimum
+  number of steps.
+- **Messages** say what is wrong: `missing initial condition for y'`, a condition on y″ for a
+  second-order equation, units of a condition that do not fit, a singularity (step size too small).
+
+Mathcad's solution-matrix functions work too, with units in each component of y:
+`rkfixed`, `Rkadapt`/`rkadapt`, `Bulstoer`/`bulstoer` (Bulirsch–Stoer), `Radau`/`radau`,
+`Stiffb`/`stiffb`, `Stiffr`/`stiffr` (both solved with Radau IIA here; the Jacobian `J(x, y)`
+is optional, numeric when left out), `AdamsBDF`, `Adams` and `BDF` (Dormand–Prince with
+stiffness switching, Dormand–Prince, Radau). The lower-case forms
+`rkadapt(y, x1, x2, acc, D, kmax, save)` return the solver's own steps.
+
+The prime notation also differentiates ordinary functions: with `f(x) := x^3`, `f'(2) = 12`
+(numerically, up to the fifth derivative). On a matrix `A'(x)` keeps its old meaning,
+transpose times x. Not covered: partial differential equations (`Pdesolve`), delay equations,
+differential-algebraic systems (an equation without a highest derivative is reported).
+
+### Special functions
+
+Bessel functions of any real order `Jn(m, x)`, `Yn`, `In`, `Kn` (and `J0` … `K1`), spherical
+`js(n, x)`, `ys(n, x)`; Airy `Ai`, `Bi`; `gamma(x)` and the upper incomplete `gamma(a, x)`,
+`gammainc(a, x)` (lower), `gammaP`, `gammaQ` (regularised), `beta`, `ibeta(z, a, b)`
+(regularised incomplete beta), `betainc`, `lgamma`, `digamma`, `zeta`; `erf`, `erfc` (accurate
+in the tail), `erfinv`, `erfcinv`; exponential and trigonometric integrals `Ei`, `E1`,
+`En(n, x)`, `Si`, `Ci`, Fresnel `FresnelS`, `FresnelC` (∫ sin(πt²/2)); elliptic integrals
+`ellipK(k)`, `ellipE(k)`, `ellipE(φ, k)`, `ellipF(φ, k)`, `ellipPi(n, k)`, `ellipPi(n, φ, k)`
+with the **modulus k** (parameter m = k²) and φ in rad or deg; `LambertW(x [, −1])`;
+orthogonal polynomials `Leg(n, x)` / `Leg(n, m, x)` (associated, with the (−1)ᵐ phase),
+`Her` (physicists'), `Lag(n, x)` / `Lag(n, α, x)`, `Tcheb`, `Ucheb`, `Jac(n, a, b, x)`; `sinc`.
+Distributions add `dF`, Weibull, lognormal, gamma and beta (`d…`, `p…`, `q…`). The algorithms
+are the standard ones (Steed/Temme and Hankel asymptotics for Bessel, Lentz continued
+fractions, Carlson's symmetric integrals, Euler–Maclaurin for ζ) and are tested against
+DLMF / Abramowitz & Stegun values to about 1e-13 relative; near zeros of a function only the
+absolute error is that small. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
+A worksheet variable with one of these names (say `Si := 3 m`) still works as a variable.
 
 ### Sketches (drawing)
 
@@ -687,7 +755,7 @@ Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values
 The honest answer first: Mathcad is decades of work by a large team. Matching
 *all* of it is not one delivery, so this is a solid core with a clear list of
 gaps. Everything marked ✅ is covered by the automated tests in
-`src/engine/engine.test.ts`, or was checked in a real browser.
+`src/engine/*.test.ts`, or was checked in a real browser.
 
 | Area | Status |
 |---|---|
@@ -701,17 +769,17 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Programming (if/for/while/break/continue/return/try) | ✅ |
 | Numeric calculus: adaptive integrals (incl. ±∞, unit aware), derivatives up to order 5, Σ, Π | ✅ |
 | Solving: `root`, `polyroots`, `lsolve`, solve blocks with `find`/`minerr`/`minimize`/`maximize`, inequality constraints, units | ✅ |
-| ODEs: `rkfixed`, `Rkadapt` | ✅ |
-| Statistics and distributions (normal, t, χ², F, binomial, Poisson, exponential, uniform, random) | ✅ |
+| ODEs: `odesolve` solve blocks (initial and boundary values, systems, stiff), `rkfixed`, `Rkadapt`, `Bulstoer`, `Radau`, `Stiffb`/`Stiffr`, units | ✅ (Stiffb/Stiffr use Radau IIA) |
+| Statistics and distributions (normal, t, χ², F, binomial, Poisson, exponential, uniform, Weibull, lognormal, gamma, beta, random) | ✅ |
 | Interpolation and fitting: `linterp`, `cspline`/`interp`, `slope`/`intercept`/`line`, `polyfit`, `genfit` | ✅ |
-| FFT (`fft`, `ifft`, `cfft`, `icfft`), Bessel J/Y/I/K, Γ, erf | ✅ |
+| FFT (`fft`, `ifft`, `cfft`, `icfft`); special functions: Bessel (real order), Airy, Γ and incomplete Γ/B, ψ, ζ, erf/erfinv, Ei/E₁/Si/Ci, Fresnel, elliptic, Lambert W, orthogonal polynomials | ✅ |
 | Symbolics (→): simplify, expand, factor, solve, substitute, float, series, partfrac, coeffs, Laplace and inverse Laplace, limits, (in)definite integrals, derivatives | ✅ (via nerdamer-prime) |
 | Plots: X-Y (lines, points, steps, bars, log axes, units), QuickPlot, polar, 3-D surface, contour, trace readout | ✅ |
 | Text with Markdown, TeX and live values, images, data tables | ✅ |
 | Undo/redo, copy/paste regions, disable evaluation, separate regions, dark mode | ✅ |
 | Page zoom: Ctrl+wheel / trackpad / pinch around the pointer, browser-style steps, Ctrl+0 | ✅ |
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
-| `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
+| `Pdesolve`, `Find` with matrix-valued unknowns | ❌ |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
@@ -724,7 +792,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ⚠️ Excel ranges paste into tables and CSV files import/export; no live Excel link or .xlsx files |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas, headers/footers, protected regions, track changes | ❌ |
-| Special functions beyond Bessel/Γ/erf (Airy, elliptic, Fresnel, …), wavelets | ❌ |
+| Hypergeometric functions (`fhyper`, `mhyper`), Kelvin functions, wavelets | ❌ |
 | Native iOS build signed for the App Store | ❌: needs an Apple developer account (the PWA works today) |
 
 ## Development
