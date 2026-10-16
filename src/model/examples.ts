@@ -3,6 +3,7 @@ import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
 import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
 import { windCases, type F3Load, type F3Member, type F3Node } from '../frame3d/model';
+import { collapseArea } from './areas';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -927,3 +928,35 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Flat slab with an opening (plate)', make: plateExample },
   { name: 'Differential equations (odesolve)', make: odeExample },
 ];
+
+// ---------------------------------------------------------------- areas, protection, symbolic units
+
+export function areasExample(): Worksheet {
+  const ws = build('Areas, protection, units in symbolics', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Areas, protection and units in symbolics\nSelect regions and right-click → **Group into area** to fold intermediate steps away (click ▸ to open it again). **Protect worksheet** (file menu ▾) leaves only the regions marked as inputs — dashed while protected — editable. `→` keeps units.' }],
+    ['text', L, mm(42), { width: mm(170), markdown: '## Glulam beam GL24h, simply supported (EN 1995-1-1)' }],
+    ['math', L, mm(54), { source: 'L := 6 m', input: true }],
+    ['math', mm(65), mm(54), { source: 'q := 12 kN/m', input: true }],
+    ['math', mm(110), mm(54), { source: 'b := 200 mm', input: true }],
+    ['math', mm(150), mm(54), { source: 'h := 400 mm', input: true }],
+    ['area', mm(13), mm(66), { title: 'Section, moment and design strength', height: mm(48) }],
+    ['math', L, mm(76), { source: 'W := b * h^2 / 6 = cm^3' }],
+    ['math', mm(100), mm(76), { source: 'M_Ed := q * L^2 / 8 = kN*m' }],
+    ['math', L, mm(92), { source: 'k_mod := 0.8' }],
+    ['math', mm(55), mm(92), { source: 'γ_M := 1.25' }],
+    ['math', mm(100), mm(92), { source: 'f_md := k_mod * 24 MPa / γ_M = MPa' }],
+    ['math', L, mm(122), { source: 'σ_md := M_Ed / W = MPa' }],
+    ['math', mm(90), mm(122), { source: 'σ_md ≤ f_md' }],
+    ['text', L, mm(140), { width: mm(170), markdown: '## Units in symbolic results\nNumbers with units come out as `=` shows them; symbols keep their units; mismatched units are an error.' }],
+    ['math', L, mm(160), { source: 'q * L^2 / 8 →' }],
+    ['math', mm(100), mm(160), { source: '1 m + 10 cm →' }],
+    ['math', L, mm(174), { source: 'x * kN/m + 2 kN/m →' }],
+    ['math', mm(100), mm(174), { source: 'sqrt(4 m^2) →' }],
+    ['math', L, mm(188), { source: 'y(t) := 5 m/s^2 * t^2' }],
+    ['math', mm(100), mm(188), { source: "y'(t) →" }],
+  ]);
+  // the intermediate steps start folded away
+  return collapseArea(ws, ws.regions.find((r) => r.kind === 'area')!.id);
+}
+
+EXAMPLES.push({ name: 'Areas, protection, units in symbolics', make: areasExample });

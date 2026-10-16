@@ -106,6 +106,9 @@ describe('prime notation in symbolic input', () => {
     expect(result(['y(t) := t^3', "y'(t) →"])).toBe('3 \\cdot t^{2}');
     expect(result(['y(t) := t^3', "y''(t) →"])).toBe('6 \\cdot t');
     expect(result(['f(x) := sin(x)', "f'(x) →"])).toMatch(/cos/);
+    // with units in the body: d/dt (5 m/s² t²) = 10 t m/s²
+    expect(result(['y(t) := 5 m/s^2 * t^2', "y'(t) →"])).toBe('10 \\cdot t\\,\\frac{\\mathrm{m}}{\\mathrm{s}^{2}}');
+    expect(result(['F := 2 kN', 'f(a) := F*a/2', 'f(x) →'])).toBe('x\\,\\mathrm{kN}');
   });
   it('explains what it cannot do', () => {
     expect(run(["z'(t) →"]).error).toMatch(/^z′: z is not a function of one variable defined above/);

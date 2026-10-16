@@ -81,8 +81,9 @@ describe('collapse and expand', () => {
     const both = groupIntoArea(inner, ['b', 'I'], (id) => (id === 'c' ? 200 : 24), area('O'));
     expect(areasOf(both.regions, 'c').map((a) => a.id)).toEqual(['O', 'I']);
     const I = byId(both, 'I') as AreaRegion, O = byId(both, 'O') as AreaRegion;
-    // the outer band holds the inner one
+    // the outer band holds the inner one, its bar a grid step further out
     expect(O.y).toBeLessThan(I.y);
+    expect(O.x).toBe(I.x - GRID);
     expect(O.y + O.height).toBeGreaterThanOrEqual(I.y + I.height);
     const s1 = collapseArea(both, 'I');
     // the outer band shrinks by what the inner area gives back
@@ -93,6 +94,18 @@ describe('collapse and expand', () => {
     expect(expandArea(expandArea(s2, 'O'), 'I')).toEqual(both);
     // revealing c opens the outer area, then the inner one
     expect(revealRegion(s2, 'c')).toEqual(both);
+  });
+
+  it('keeps the contents of an open area inside a collapsed one apart from what moves up', () => {
+    const inner = groupIntoArea(calc(), ['c'], heights, area('I'));
+    const both = groupIntoArea(inner, ['b', 'I'], heights, area('O'));
+    const shut = collapseArea(both, 'O');
+    // e and f moved up into the heights where I's band was: they are not in I
+    const I = byId(shut, 'I') as AreaRegion;
+    expect(byId(shut, 'e').y).toBeLessThan(I.y + I.height);
+    expect([...withContents(shut.regions, ['I'])].sort()).toEqual(['I', 'c', 'd']);
+    expect([...withContents(shut.regions, ['O'])].sort()).toEqual(['I', 'O', 'b', 'c', 'd']);
+    expect(areasOf(shut.regions, 'e')).toEqual([]);
   });
 
   it('round-trips two areas one under the other in any order', () => {

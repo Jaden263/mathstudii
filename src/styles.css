@@ -5569,6 +5569,12 @@ div.pl-cutplot {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* the grip at the bar's right end, clear of the collapse button */
+.region.kind-area > .grip {
+  left: auto;
+  right: -9px;
+}
+
 .area-bar {
   display: flex;
   align-items: center;

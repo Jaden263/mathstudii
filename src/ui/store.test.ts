@@ -140,6 +140,15 @@ describe('protected worksheet', () => {
 });
 
 describe('areas through the store', () => {
+  it('pastes an area into room made for it', () => {
+    const box: AreaRegion = { ...(createRegion('area', 48, 100) as AreaRegion), id: 'A', height: 80 };
+    let s = start([box, math('b', 130, 'b := 2'), math('c', 300, 'c := 3')]);
+    const copy: AreaRegion = { ...box, id: 'A2', y: 200 };
+    s = run(s, { type: 'add', regions: [copy, math('b2', 230, 'b2 := 2')], room: { at: 200, height: 96 } });
+    // c moved down by the room; the original area and its contents stayed
+    expect(['A', 'b', 'c', 'A2', 'b2'].map((id) => get(s, id)!.y)).toEqual([100, 130, 396, 200, 230]);
+  });
+
   it('collapse, expand and group as undo steps', () => {
     let s = start([math('a', 40, 'a := 1'), math('b', 100, 'b := 2'), math('c', 200, 'c := 3')]);
     const area: AreaRegion = { ...(createRegion('area', 48, 0) as AreaRegion), id: 'A' };

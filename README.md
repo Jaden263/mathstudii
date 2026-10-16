@@ -39,8 +39,8 @@ interrupt it (Esc / Stop), like Mathcad's interrupt.
 - Enter finishes a region and moves the cursor below it. Drag a region to move it.
 - Press **F1** for all keyboard shortcuts. **Examples** in the top bar has worked worksheets.
 - **Right-click** a region for Edit, Cut/Copy/Paste, Duplicate, Delete, *Show result in…*,
-  *Copy value*, a typo fix, Disable evaluation, front/back, align (several selected),
-  Format and Properties. Right-click empty paper to insert any region there, paste,
+  *Copy value*, a typo fix, Group into area, Lock, Input, Disable evaluation, front/back,
+  align (several selected), Format and Properties. Right-click empty paper to insert any region there, paste,
   select all or recalculate.
 - **Suggestions while typing:** functions and your own variables from the first letter
   (with the signature shown inside the brackets), units after a number (`10 k` → kN,
@@ -104,6 +104,40 @@ right-click menu changes it. `kNm`, `Nm` and `Nmm` are accepted as moment units.
 exotic SI prefixes ronto, quecto, ronna and quetta are switched off, so a typo like
 `kN/rm` is an error instead of a silent 10⁻²⁷ m. (`kn` no longer means knot: use `knot`.)
 
+### Units in symbolic results
+
+`→` keeps units. A number with a unit comes out the way `=` would show it (practical
+metric unit, the worksheet's decimals), so the choice between 1.1 m and 110 cm follows
+the table above:
+
+| You type | Result |
+|---|---|
+| `2 m + 3 m →` | 5 m |
+| `1 m + 10 cm →` | 1.1 m |
+| `F·L →` with `F := 10 kN`, `L := 2 m` | 20 kN·m |
+| `sqrt(4 m^2) →` | 2 m |
+| `x·m/s →`, `x·kN + 2 kN →` | x m/s, (x + 2) kN |
+| `x^2 = 4 m^2 → solve, x` | [−2 m, 2 m] |
+| `2 m + 3 s →` | error: *Cannot add a length and a time* |
+
+Variables defined with a unit bring their value, as numeric ones always did. A symbolic
+coefficient gets the unit that leaves it simplest (`x·kN`, not `1000·x·N`).
+
+Which names are units is the delicate part, because in symbolic math most single letters
+are variables (`q·L²/8` must not become litres, `F/A` not farad per ampere, `s² + 3 s + 2`
+not seconds). The rules:
+
+- Units of several letters (`kN`, `mm`, `MPa`, `kNm`, `Hz`, `ft` …) are units anywhere.
+- `m`, `s` and `N` are units when written as a quantity, a number then the unit (`2 m`,
+  `9.81 m/s^2`) with no variable in the same product, next to a longer unit (`x·kN/m`), or
+  as `m/s`, `m/s²`, `N/m`, `N/m²`. So `2 m·a →` and `1/2 m v^2 →` keep the mass `m`.
+- Every other single letter (`L`, `A`, `F`, `t`, `h` …) is a variable in `→`, even where
+  the numeric worksheet would read a unit. Define it with a unit (`P := 5 kN`) instead.
+
+Units inside functions that the CAS cannot separate (`exp(−t/τ)` with `τ := 2 s`) are shown
+in place. `y'(t)` and `y''(t)` work in `→` for a function `y` defined above (they become
+`diff(y(t), t, n)`); for an undefined one you get a message saying so.
+
 ### Tables and data
 
 - **Paste from Excel** (or any tab-separated text) onto the page, or into a table cell.
@@ -136,6 +170,41 @@ their size and region count.
 - **Restore** brings one back. The state just before is kept as a snapshot, so a restore
   can itself be undone.
 - **Open as copy** starts a new document from that snapshot.
+
+### Areas
+
+Select regions, right-click → **Group into area** (or right-click empty paper → Insert →
+**Area**). An area is a title bar over a band of the page, Mathcad style: whatever starts in
+the band belongs to it, so regions beside the selection come along.
+
+- Click ▾ / ▸ on the bar to collapse or expand. Collapsed, the bar says what it holds
+  ("Loads · 12 regions") and everything below moves up by the space the contents took;
+  expanding moves it back down by the same amount, so the layout returns exactly.
+- Collapsing never changes the results: evaluation follows the reading order of the
+  expanded worksheet.
+- Double-click the title to rename. Drag the bar to move the area with its contents; Delete
+  removes it with its contents; **Ungroup** removes only the bar. Areas nest, and a band
+  grows (pushing what is below down) when its contents get taller.
+- Right-click → **Print**: as on screen, always expanded or always collapsed.
+- Find and replace look inside collapsed areas: a match lights up the bar, and stepping to
+  it (Enter) opens the area.
+
+### Locking and protection
+
+- Right-click → **Lock** a region, or an area with everything in it. A locked region shows a
+  small lock and cannot be edited, moved, deleted, cut, replaced by find and replace or
+  renamed by *Rename everywhere*; nothing can be pasted or typed into a locked area. Undo and
+  redo never change or remove a locked region (its place still follows areas collapsing above
+  it). Locking is not an undo step: unlock with the same menu.
+- Right-click → **Input (editable when protected)** marks the regions a user of the
+  calculation should fill in.
+- File menu ▾ or right-click on paper → **Protect worksheet**. Then only the inputs can be
+  edited (shown dashed); nothing can be moved, deleted, pasted or added, the formats and the
+  title are fixed, and undo only reaches the inputs. Areas still collapse and expand. An
+  optional password is stored as a salted SHA-256 hash; the status bar shows *Protected*,
+  click it to unprotect.
+- Honestly: this prevents accidental edits, not determined ones. A worksheet is readable
+  JSON, and anyone with a text editor can change it or delete the protection.
 
 ### Printing a calculation sheet
 
@@ -1256,7 +1325,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Page zoom: Ctrl+wheel / trackpad / pinch around the pointer, browser-style steps, Ctrl+0 | ✅ |
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
 | `Pdesolve`, `Find` with matrix-valued unknowns | ❌ |
-| Units in symbolic results | ❌ (symbolics are unit-free) |
+| Units in symbolic results | ✅ (which single letters are units follows the rules in *Units in symbolic results*) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
@@ -1268,7 +1337,8 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
 | Excel/MATLAB components, READPRN/WRITEPRN file I/O | ⚠️ Excel ranges paste into tables and CSV files import/export; no live Excel link or .xlsx files |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
-| Collapsible areas, headers/footers, protected regions, track changes | ❌ |
+| Collapsible areas (nested, printed collapsed or expanded), locked regions, protected worksheets with inputs | ✅ (protection stops accidents, not someone editing the JSON) |
+| Track changes | ❌ |
 | Hypergeometric functions (`fhyper`, `mhyper`), Kelvin functions, wavelets | ❌ |
 | Native iOS build signed for the App Store | ❌: needs an Apple developer account (the PWA works today) |
 

@@ -96,7 +96,8 @@ function expand(node: MathNode, ctx: SymContext, keep: Set<string>, depth = 0): 
       const user = ctx.functions.get(name);
       if (user && !keep.has(name)) {
         if (user.params.length !== args.length) throw new Error(`${name} expects ${user.params.length} arguments`);
-        const body = parseExpr(user.body).transform((b: MathNode) => {
+        const raw = parseExpr(user.body);
+        const body = raw.transform((b: MathNode) => {
           const bn = b as unknown as { type: string; name?: string };
           if (bn.type === 'SymbolNode') {
             const k = user.params.indexOf(bn.name!);
@@ -104,7 +105,9 @@ function expand(node: MathNode, ctx: SymContext, keep: Set<string>, depth = 0): 
           }
           return b;
         });
-        return new math.ParenthesisNode(expand(body, ctx, keep, depth + 1));
+        // the body's own units (y(t) := 5 m/s^2·t^2); the arguments came in expanded
+        const units = unitNamesIn(raw, unitScope(ctx), new Set(user.params));
+        return new math.ParenthesisNode(expand(body, { ...ctx, units }, keep, depth + 1));
       }
       return new math.FunctionNode(new math.SymbolNode(name), args);
     }

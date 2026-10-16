@@ -38,7 +38,7 @@ import { VersionsDialog } from './VersionsDialog';
 import { isName, replaceInRegion } from '../model/search';
 import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
-import { AREA_X, areasOf, hiddenIds, isArea, withContents } from '../model/areas';
+import { AREA_BAR, AREA_X, areasOf, hiddenIds, isArea, withContents } from '../model/areas';
 import { canAddAt, canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
 import { regionOwnsKey } from './sheetKeys';
 import { ProtectDialog } from './ProtectDialog';
@@ -559,7 +559,12 @@ export function App() {
     if (!regs.length) return;
     const minX = Math.min(...regs.map((r) => r.x));
     const minY = Math.min(...regs.map((r) => r.y));
-    const base = at ?? cursor ?? { x: minX + GRID * 2, y: minY + GRID * 2 };
+    // an area pastes into room made for it (below the original when duplicating), never on top of other bands
+    const withArea = regs.some(isArea);
+    const hiddenInBlock = hiddenIds(regs);
+    const extent = (r: Region) => (isArea(r) ? (r.collapsed ? AREA_BAR : r.height) : document.querySelector<HTMLElement>(`[data-region-id="${r.id}"]`)?.offsetHeight ?? 24);
+    const blockH = Math.max(...regs.filter((r) => !hiddenInBlock.has(r.id)).map((r) => r.y - minY + extent(r)));
+    const base = at ?? cursor ?? (withArea ? { x: minX, y: snap(minY + blockH + GRID * 2) } : { x: minX + GRID * 2, y: minY + GRID * 2 });
     if (!canAddAt(ws, base.y)) {
       setToast(isProtected(ws) ? 'The worksheet is protected: nothing can be pasted' : 'That area is locked: nothing can be pasted into it');
       return;
@@ -572,7 +577,7 @@ export function App() {
       if (isArea(c) && c.hidden) c.hidden = c.hidden.filter((h) => ids.has(h)).map((h) => ids.get(h)!);
       return c;
     });
-    dispatch({ type: 'add', regions: copies });
+    dispatch({ type: 'add', regions: copies, ...(withArea ? { room: { at: base.y, height: blockH + GRID * 2 } } : {}) });
     setSelected(new Set(copies.map((r) => r.id)));
     setCursor(null);
   }, [cursor, dispatch, ws]);

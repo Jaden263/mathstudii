@@ -1,11 +1,12 @@
 import { useReducer } from 'react';
 import type { AreaRegion, Region, Worksheet, WorksheetProtection, WorksheetSettings } from '../model/types';
-import { collapseArea, expandArea, fitArea, groupIntoArea, insertArea, isArea, ungroupArea, withContents } from '../model/areas';
+import { collapseArea, expandArea, fitArea, groupIntoArea, insertArea, isArea, makeRoom, ungroupArea, withContents } from '../model/areas';
 import { canAddAt, canEdit, canMove, isProtected, isViewPatch, movableIds, respectLocks } from '../model/protect';
 
 export type Action =
   | { type: 'load'; ws: Worksheet }
-  | { type: 'add'; regions: Region[] }
+  /** `room`: first move what is at that height and below down (pasting an area). */
+  | { type: 'add'; regions: Region[]; room?: { at: number; height: number } }
   | { type: 'update'; id: string; patch: Partial<Region>; coalesce?: string; /** false: not an undo step (e.g. a sketch's zoom) */ history?: false }
   | { type: 'move'; ids: string[]; dx: number; dy: number; coalesce?: string }
   | { type: 'delete'; ids: string[] }
@@ -56,7 +57,9 @@ function apply(ws: Worksheet, a: Action): Worksheet {
   switch (a.type) {
     case 'add': {
       const regions = a.regions.filter((r) => canAddAt(ws, r.y));
-      return regions.length ? { ...ws, regions: [...ws.regions, ...regions] } : ws;
+      if (!regions.length) return ws;
+      const base = a.room ? makeRoom(ws, a.room.at, a.room.height) : ws;
+      return { ...base, regions: [...base.regions, ...regions] };
     }
     case 'update': {
       const r = ws.regions.find((q) => q.id === a.id);

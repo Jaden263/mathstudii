@@ -31,6 +31,13 @@ export function areaMembers(regions: Region[], a: AreaRegion, hidden = hiddenIds
     const ids = new Set(a.hidden ?? []);
     return regions.filter((r) => ids.has(r.id));
   }
+  if (hidden.has(a.id)) {
+    // an open area inside a collapsed one: its band holds what that one hides with it (the
+    // visible regions now at those heights are from further down)
+    const owner = regions.find((o): o is AreaRegion => isArea(o) && !!o.collapsed && !!o.hidden?.includes(a.id));
+    const pool = new Set(owner?.hidden ?? []);
+    return regions.filter((r) => pool.has(r.id) && inBand(a, r));
+  }
   return regions.filter((r) => !hidden.has(r.id) && inBand(a, r));
 }
 
@@ -209,7 +216,10 @@ export function groupIntoArea(ws: Worksheet, ids: string[], height: (id: string)
   // room for the bar above the first region, then for the end line under the last
   let regions = reflow(ws.regions, top, bar, outer, new Set());
   regions = reflow(regions, bottom + bar, AREA_PAD + GRID, outer, set);
-  const made: AreaRegion = { ...area, y: top, height: bottom + bar + AREA_PAD - top };
+  // an area round other areas sits a step further out, so the bars read as nested
+  const inner = ws.regions.filter((r): r is AreaRegion => isArea(r) && set.has(r.id));
+  const x = Math.max(GRID, Math.min(area.x, ...inner.map((r) => r.x - GRID)));
+  const made: AreaRegion = { ...area, x, y: top, height: bottom + bar + AREA_PAD - top };
   // drawn first, so it never covers a region
   return { ...ws, regions: [made, ...regions] };
 }
@@ -219,6 +229,12 @@ export function insertArea(ws: Worksheet, area: AreaRegion): Worksheet {
   const outer = new Set(areasAt(ws.regions, area.y).map((o) => o.id));
   const regions = reflow(ws.regions, area.y, area.height + GRID, outer, new Set());
   return { ...ws, regions: [area, ...regions] };
+}
+
+/** Space `height` tall at the height `at`: what is there and below moves down, areas round it grow. */
+export function makeRoom(ws: Worksheet, at: number, height: number): Worksheet {
+  const outer = new Set(areasAt(ws.regions, at).map((o) => o.id));
+  return { ...ws, regions: reflow(ws.regions, at, height, outer, new Set()) };
 }
 
 /** Remove an area and keep its contents where they are (expanded). */
