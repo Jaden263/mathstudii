@@ -10,7 +10,7 @@ import { isDimension, sketchSig, type CadSketch } from './model';
 import { solveSketch, measure } from './solver';
 import { findProfiles, profileProperties, type ProfileRegion, type Vec2 } from './profile';
 import {
-  activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
+  activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, hasFeatures, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
   placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
 } from './design';
 import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
@@ -272,7 +272,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   // without the B-rep kernel the values are approximate (or missing): evaluate again once it
   // is there, unless it could not load
   const failure = occFailure();
-  if (!oc && !failure) result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed)) || undefined;
+  if (!oc && !failure) result.needsBrep = hasFeatures(design) || undefined;
   if (!oc && failure) dr.brepError = failure;
   let m: MeasuredDesign | null = null;
   try {

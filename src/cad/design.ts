@@ -236,6 +236,11 @@ export function activeItems(c: CadComponent): DesignItem[] {
   return c.marker === undefined ? c.items : c.items.slice(0, c.marker);
 }
 
+/** Whether the design makes any solid: a feature that is neither rolled back nor suppressed. */
+export function hasFeatures(design: CadDesign): boolean {
+  return design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed));
+}
+
 export function nextName(design: CadDesign, base: string): string {
   const used = new Set<string>();
   for (const c of design.components) {

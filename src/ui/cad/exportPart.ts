@@ -4,7 +4,7 @@
 import type { CadRegion } from '../../model/types';
 import { designOf } from '../../cad/design';
 import type { CadResult } from '../../cad/evaluate';
-import { designNumbers } from '../../cad/keys';
+import { designKey, designNumbers } from '../../cad/keys';
 import type { ExportScope } from '../../cad/kernel/protocol';
 import { exportFile } from '../../platform/files';
 import { kernelRequest } from './kernelClient';
@@ -19,7 +19,10 @@ export async function exportPart(region: CadRegion, result: CadResult | undefine
   const one = design.occurrences.length === 1 ? design.occurrences[0] : null;
   const scope: ExportScope = one ? { kind: 'component', component: one.component } : { kind: 'assembly' };
   const name = region.name.trim() || design.components[0]?.name || 'Part';
-  const data = await kernelRequest({ op: 'export', design, numbers: designNumbers(dr), format, scope, unit: region.unit, name });
+  const numbers = designNumbers(dr);
+  // an edit the worksheet has not evaluated yet: its numbers would build something else
+  if (dr.display && designKey(design, numbers) !== dr.display) throw new Error('the part is still being evaluated — try again in a moment');
+  const data = await kernelRequest({ op: 'export', design, numbers, format, scope, unit: region.unit, name });
   const file = (region.name.trim() || 'part').replace(/[^\w.-]+/g, '_');
   await exportFile(`${file}.${format}`, data, format === 'step' ? 'model/step' : 'model/stl');
 }

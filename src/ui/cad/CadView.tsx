@@ -95,7 +95,7 @@ export function CadView({ region, result, editing, selected, dispatch, onDone }:
             <Scene3D
               width={region.width - (split ? sketchW : 0)} height={region.height} meshes={scene.meshes} lines={scene.lines}
               view={{ yaw: region.view3d.yaw, pitch: region.view3d.pitch, zoom: 1, pan: { x: 0, y: 0 } }} onView={() => {}} viewCube={false} showTriad={false}
-              message={waiting && !scene.meshes.length ? (shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Building the part…') : !scene.meshes.length && !scene.lines.length ? 'Open the part and model it: Sketch, then Extrude' : undefined}
+              message={empty ? '' : waiting && !scene.meshes.length ? (shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Building the part…') : !scene.meshes.length && !scene.lines.length ? 'Open the part and model it: Sketch, then Extrude' : undefined}
             />
             {waiting && scene.meshes.length > 0 && <span className="cad-busy">{shown.state === 'loading' ? 'Loading 3-D kernel…' : 'Rebuilding…'}</span>}
             {shown.notice && <span className="cad-busy warn" title={shown.notice}>Mesh kernel</span>}

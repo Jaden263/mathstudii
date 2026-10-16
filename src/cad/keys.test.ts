@@ -65,6 +65,24 @@ describe('timeline step keys', () => {
     expect(stepKey('root', g, numbers(12), find)).toBe(stepKey('root', g, numbers(10), find));
   });
 
+  it('ignore where a dimension text sits, not its value or a plane offset', () => {
+    const dim = (offset?: { x: number; y: number }, value = '10'): DesignSketch => {
+      const s = sketch('s1');
+      return { ...s, sketch: { ...s.sketch, constraints: [{ id: 'k1', type: 'length', refs: ['l0'], value, ...(offset ? { offset } : {}) }] } };
+    };
+    const at = (s: DesignSketch) => (id: string) => (id === 's1' ? s : undefined);
+    const f = extrude('f1', 's1');
+    const a = stepKey('root', f, numbers(), at(dim()));
+    expect(stepKey('root', f, numbers(), at(dim({ x: 4, y: -12 })))).toBe(a);
+    expect(stepKey('root', dim({ x: 4, y: -12 }), numbers(), find)).toBe(stepKey('root', dim(), numbers(), find));
+    expect(designKey(design([dim({ x: 0, y: 30 }), f]), numbers())).toBe(designKey(design([dim(), f]), numbers()));
+    // the value drives the solve (its result is in the numbers), but a changed value still shows
+    expect(stepKey('root', f, numbers(), at(dim(undefined, '12')))).not.toBe(a);
+    // an offset plane is geometry
+    const off: DesignSketch = { ...sketch('s1'), plane: { ref: 'XY', offset: '5' } };
+    expect(stepKey('root', off, numbers(), find)).not.toBe(stepKey('root', sketch('s1'), numbers(), find));
+  });
+
   it('a sketch step ignores whether the sketch is hidden', () => {
     const s = sketch('s1');
     expect(stepKey('root', { ...s, hidden: true }, numbers(), find)).toBe(stepKey('root', s, numbers(), find));

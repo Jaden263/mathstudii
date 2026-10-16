@@ -23,8 +23,16 @@ export function hashString(s: string, seed = 0): string {
 /** Editor state that never changes a solid. */
 const PRESENTATION = new Set(['view', 'color']);
 
-/** JSON without the editor's viewports and colours. */
-const solidJson = (v: unknown) => JSON.stringify(v, (k, x) => (PRESENTATION.has(k) ? undefined : x));
+/** A sketch constraint (features have a kind; joints and planes have no refs). */
+const isConstraint = (o: unknown) => !!o && typeof o === 'object' && Array.isArray((o as { refs?: unknown }).refs) && !('kind' in o);
+
+/**
+ * JSON without the editor's viewports, colours and where dimension texts sit (dragging a
+ * dimension's label must not rebuild the features after its sketch).
+ */
+const solidJson = (v: unknown) => JSON.stringify(v, function (this: unknown, k, x) {
+  return PRESENTATION.has(k) || (k === 'offset' && isConstraint(this)) ? undefined : x;
+});
 
 /** Key of a built design: its display data and measured values are the same for equal keys. */
 export function designKey(design: CadDesign, numbers: DesignNumbers): string {

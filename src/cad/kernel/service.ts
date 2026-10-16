@@ -84,6 +84,16 @@ export function displayFor(design: CadDesign, numbers: DesignNumbers): BuildResu
   return out;
 }
 
+/**
+ * Display data for a request: when OpenCascade fails on this design the mesh kernel
+ * stands in, which a kernel worker of its own has not loaded yet.
+ */
+async function shownFor(design: CadDesign, numbers: DesignNumbers): Promise<BuildResult | null> {
+  const b = displayFor(design, numbers);
+  if (b || !brepNow()) return b;
+  return (await ensureMesh()) ? displayFor(design, numbers) : null;
+}
+
 /** A 3-D box seen along a view: its extent across (right) and up the paper. */
 export function viewBox(b: { min: Vec3; max: Vec3 }, v: ViewSpec): ViewLines['box'] {
   const d = norm3(v.dir), right = norm3(cross3(d, v.up)), up = cross3(right, d);
@@ -106,10 +116,10 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
   const which = oc ? 'brep' : K ? 'mesh' : 'none';
   const { design, numbers } = req;
   // the display data stays cached here: it travels as a copy
-  if (req.op === 'display') return { value: displayFor(design, numbers), kernel: which, transfer: [] };
+  if (req.op === 'display') return { value: await shownFor(design, numbers), kernel: which, transfer: [] };
   if (req.op === 'views') {
     // hidden lines of the display meshes, off the UI thread
-    const shown = displayFor(design, numbers);
+    const shown = await shownFor(design, numbers);
     if (!shown) return { value: null, kernel: which, transfer: [] };
     const meshes = drawMeshes(shown, design);
     const views: Record<string, ViewLines> = {};

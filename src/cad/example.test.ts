@@ -2,6 +2,9 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initKernel } from './solid';
 import { evaluateWorksheet, type CadResult, type MathResult } from '../engine/evaluator';
 import { cadExample } from '../model/examples';
+import { designOf } from './design';
+import { designKey, designNumbers } from './keys';
+import type { CadRegion, Worksheet } from '../model/types';
 
 beforeAll(async () => {
   await initKernel();
@@ -31,5 +34,26 @@ describe('CAD example worksheet', () => {
     expect(res.design!.placements.os.by).toBe('joint');
     const shaftLine = out.results.get(ws.regions.find((r) => r.kind === 'math' && r.source.startsWith('asm.Spin'))!.id) as MathResult;
     expect(shaftLine.tex).toContain('15');
+  });
+
+  it('each part carries the key of the design and numbers it was built from', () => {
+    const ws = cadExample();
+    const keys = (w: Worksheet) => {
+      const out = evaluateWorksheet(w);
+      return w.regions.filter((r): r is CadRegion => r.kind === 'cad').map((r) => {
+        // as the UI holds it: a structured clone of the worker's result
+        const dr = structuredClone((out.results.get(r.id) as CadResult).design!);
+        // the UI files display data under this key and checks its requests against it
+        expect(designKey(designOf(r), designNumbers(dr))).toBe(dr.display);
+        return dr.display;
+      });
+    };
+    const k = keys(ws);
+    expect(new Set(k).size).toBe(k.length);
+    // a math-only change keeps every key; the bolt count changes the assembly's alone
+    const edit = (src: string, to: string): Worksheet => ({ ...ws, regions: ws.regions.map((r) => (r.kind === 'math' && r.source.startsWith(src) ? { ...r, source: to } : r)) });
+    expect(keys(edit('ω', 'ω := 2*π*1500/(60 s)'))).toEqual(k);
+    const nb = keys(edit('n_b', 'n_b := 8'));
+    expect(nb.filter((x, i) => x !== k[i])).toHaveLength(1);
   });
 });

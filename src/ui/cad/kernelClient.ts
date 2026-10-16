@@ -3,11 +3,11 @@
 // it built for the worksheet; a separate CAD window starts a worker of its own) and come
 // back as promises. Display data of built designs arrives from the calculation worker
 // after the results it belongs to, once per design key, and is kept here for the views.
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import type { BuildResult } from '../../cad/buildResult';
-import type { CadDesign } from '../../cad/design';
+import { hasFeatures, type CadDesign } from '../../cad/design';
 import type { CadResult } from '../../cad/evaluate';
-import { designNumbers } from '../../cad/keys';
+import { designKey, designNumbers } from '../../cad/keys';
 import type { DisplayMessage, KernelCall, KernelOp, KernelReply, KernelRequest, KernelValues } from '../../cad/kernel/protocol';
 
 /** A request replaced by a newer one in its lane before it was sent: nobody waits for it. */
@@ -103,6 +103,8 @@ export function warmKernel() {
 
 const shown = new Map<string, BuildResult>();
 const SHOWN = 24;
+/** Designs the kernel answered without display data (nothing could build them): nobody waits for it. */
+const missing = new Set<string>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -112,11 +114,15 @@ function put(key: string, b: BuildResult) {
   while (shown.size > SHOWN) shown.delete(shown.keys().next().value!);
 }
 
+function changed() {
+  version++;
+  for (const f of listeners) f();
+}
+
 /** Display data from the calculation worker. */
 export function receiveDisplay(m: DisplayMessage) {
   for (const [k, b] of m.display) put(k, b);
-  version++;
-  for (const f of listeners) f();
+  changed();
 }
 
 const subscribe = (f: () => void) => {
@@ -140,18 +146,24 @@ const lastShown = new Map<string, BuildResult>();
 export function useBuildResult(regionId: string, design: CadDesign, result: CadResult | undefined): Shown {
   useSyncExternalStore(subscribe, () => version);
   const dr = result?.design;
-  const key = dr?.display;
+  // sketches alone build nothing: no display data to wait for, no kernel to load for it
+  const solid = hasFeatures(design);
+  const key = solid ? dr?.display : undefined;
   const build = key ? shown.get(key) ?? null : null;
-  const [, bump] = useState(0);
   useEffect(() => {
-    if (!key || !dr || build || result?.needsBrep) return;
+    if (!key || !dr || build || result?.needsBrep || missing.has(key)) return;
     let live = true;
     // the calculation worker sends display data right after the results: ask only when it
     // did not come (or in a CAD window of its own)
     const t = window.setTimeout(() => {
-      kernelRequest({ op: 'display', design, numbers: designNumbers(dr) }, `display:${regionId}`).then((b) => {
+      const numbers = designNumbers(dr);
+      // a part edited since this result was made waits for its own result (a build of the
+      // newer design must not be filed under this one's key)
+      if (designKey(design, numbers) !== key) return;
+      kernelRequest({ op: 'display', design, numbers }, `display:${regionId}`).then((b) => {
         if (b) put(key, b);
-        if (live) bump((n) => n + 1);
+        else missing.add(key);
+        if (live) changed();
       }, () => {});
     }, host ? 1500 : 0);
     return () => {
@@ -159,10 +171,12 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
       window.clearTimeout(t);
     };
   }, [key, build, regionId, !!result?.needsBrep]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!solid) return { build: null, state: 'none' };
   if (build) lastShown.set(regionId, build);
-  const notice = build?.kernel === 'mesh' || dr?.brepError ? 'Mesh kernel: OpenCascade did not load, so faces, edges and values are approximate' : undefined;
+  const notice = dr?.brepError ? 'Mesh kernel: OpenCascade did not load, so faces, edges and values are approximate'
+    : build?.kernel === 'mesh' ? 'Mesh kernel: OpenCascade could not build this part, so its faces and edges are approximate' : undefined;
   if (build) return { build, state: 'ready', notice };
   const stale = lastShown.get(regionId) ?? null;
   if (!result || result.needsBrep || result.needsKernel) return { build: stale, state: 'loading', notice };
-  return { build: stale, state: key ? 'rebuilding' : 'none', notice };
+  return { build: stale, state: key && !missing.has(key) ? 'rebuilding' : 'none', notice };
 }
