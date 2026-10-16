@@ -4,8 +4,9 @@ import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
 import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
+import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 
-export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing';
+export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d';
 
 interface RegionBase {
   id: string;
@@ -216,7 +217,30 @@ export interface DrawingRegion extends RegionBase {
   date?: string;
 }
 
-export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion;
+/** 3-D frame: nodes, members, sections, supports and loads as tables, solved in space. */
+export interface Frame3DRegion extends RegionBase, Frame3DData {
+  kind: 'frame3d';
+  /** Variable that receives reactions, displacements, member extremes and forces along members. */
+  name: string;
+  width: number;
+  height: number;
+  lengthUnit: BeamLengthUnit;
+  forceUnit: BeamForceUnit;
+  camera: Frame3DCamera;
+  /** What the 3-D view draws: the model, the deformed shape, a force diagram, the buckling mode. */
+  show: Frame3DShow;
+  /** Size of the deformed shape and diagrams relative to the automatic one (1). */
+  scale?: number;
+  /** Node and member names in the view. */
+  labels?: boolean;
+  /** Table shown while editing. */
+  tab?: Frame3DTab;
+  /** Load cases and combinations (absent: all loads act together). */
+  loadCases?: BeamCases;
+  analysis?: Frame3DAnalysis;
+}
+
+export type Region = MathRegion | TextRegion | PlotRegion | SolveRegion | TableRegion | ImageRegion | SketchRegion | CadRegion | BeamRegion | PythonRegion | DrawingRegion | Frame3DRegion;
 
 /** Page header and footer for printed calculation sheets. */
 export interface ReportSettings {
@@ -333,6 +357,11 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       return {
         ...base, kind, cad: '', width: 680, height: 481, sheet: 'A4', projection: 'first',
         views: { front: true, top: true, side: true, iso: true }, hidden: true, dims: true, ...(init as Partial<DrawingRegion>),
+      };
+    case 'frame3d':
+      return {
+        ...base, kind, name: '', width: 600, height: 420, lengthUnit: 'm', forceUnit: 'kN', camera: { ...DEFAULT_CAMERA }, show: 'model',
+        ...newFrame(), ...(init as Partial<Frame3DRegion>),
       };
   }
 }
