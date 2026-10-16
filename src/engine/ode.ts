@@ -24,7 +24,7 @@ export interface OdeOptions {
   jac?: Jacobian;
   /** Replay these mesh points (t0 … t1) without error control, e.g. for finite-difference sensitivities. */
   mesh?: number[];
-  /** The method of each replayed step (a solution's kinds); default Dormand–Prince, or Radau for method radau. */
+  /** The method of each replayed step (a solution's kinds); default the method (Dormand–Prince for auto). */
   meshKinds?: StepKind[];
   /** Points to land on exactly (Bulirsch–Stoer output points). */
   stops?: number[];
@@ -615,13 +615,13 @@ function hermiteSegment(t: number, h: number, y0: number[], f0: number[], y1: nu
   };
 }
 
-function rk4(run: Run, t: number, y: number[]): { t: number; y: number[] } {
+function rk4(run: Run, t: number, y: number[], mesh?: number[]): { t: number; y: number[] } {
   run.methods.push('Runge–Kutta 4 (fixed step)');
-  const steps = Math.max(1, Math.round(run.opts.steps ?? 1000));
+  const steps = mesh ? mesh.length - 1 : Math.max(1, Math.round(run.opts.steps ?? 1000));
   const h = (run.t1 - run.t0) / steps;
   let k1 = run.f(t, y);
   for (let s = 0; s < steps; s++) {
-    const tn = s === steps - 1 ? run.t1 : run.t0 + (s + 1) * h;
+    const tn = mesh ? mesh[s + 1] : s === steps - 1 ? run.t1 : run.t0 + (s + 1) * h;
     const hs = tn - t;
     const k2 = run.f(t + hs / 2, y.map((v, i) => v + (hs / 2) * k1[i]));
     const k3 = run.f(t + hs / 2, y.map((v, i) => v + (hs / 2) * k2[i]));
@@ -723,7 +723,7 @@ export function solveIvp(f: Rhs, t0: number, y0: number[], t1: number, opts: Ode
   const run = new Run(f, t0, y0, t1, opts);
   if (t0 === t1) return run.solution();
   const method = opts.method ?? 'auto';
-  if (opts.mesh) replay(run, opts.mesh, opts.meshKinds, method === 'radau' ? 'radau' : 'dopri');
+  if (opts.mesh) replay(run, opts.mesh, opts.meshKinds, method === 'radau' || method === 'rk4' ? method : 'dopri');
   else if (method === 'rk4') rk4(run, t0, y0.slice());
   else if (method === 'bs') bulirschStoer(run, t0, y0.slice());
   else if (method === 'radau') radau(run, t0, y0.slice());
@@ -764,17 +764,24 @@ function autoSwitch(run: Run, t: number, y: number[]) {
   }
 }
 
-/** Replay a mesh without error control, each stretch with the method that made it. */
-function replay(run: Run, mesh: number[], kinds: StepKind[] | undefined, fallback: 'dopri' | 'radau') {
+/**
+ * Replay a mesh without error control, each stretch with the method that made it
+ * (Bulirsch–Stoer steps, whose order varies, with Dormand–Prince).
+ */
+function replay(run: Run, mesh: number[], kinds: StepKind[] | undefined, fallback: StepKind) {
   let t = run.t0;
   let y = run.ys[0].slice();
-  const kindOf = (i: number) => (kinds?.[i] === 'radau' ? 'radau' : kinds ? 'dopri' : fallback);
+  const kindOf = (i: number): StepKind => {
+    const k = kinds?.[i] ?? fallback;
+    return k === 'bs' ? 'dopri' : k;
+  };
   for (let i = 0; i < mesh.length - 1;) {
     const kind = kindOf(i);
     let j = i + 1;
     while (j < mesh.length - 1 && kindOf(j) === kind) j++;
     const sub = mesh.slice(i, j + 1);
-    ({ t, y } = kind === 'radau' ? radau(run, t, y, { mesh: sub }) : dopri(run, t, y, { mesh: sub }));
+    if (kind === 'rk4') ({ t, y } = rk4(run, t, y, sub));
+    else ({ t, y } = kind === 'radau' ? radau(run, t, y, { mesh: sub }) : dopri(run, t, y, { mesh: sub }));
     i = j;
   }
 }

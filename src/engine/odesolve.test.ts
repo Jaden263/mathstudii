@@ -158,6 +158,17 @@ describe('odesolve: boundary value problems (shooting)', () => {
     // far from the supports the beam just rests on the foundation: y = q/k
     expect(last([...found, 'y(L/2) = mm'])).toBeCloseTo(0.4, 6);
   }, 30000);
+  it('fixed RK4 steps in a boundary value problem count over the whole interval', () => {
+    // u″ = 400u, u(0) = 1, u(10) = 0 ≈ e^(−20x), by multiple shooting with 2000 RK4 steps in all (h = 0.005):
+    // the RK4 error per step ~ (20h)⁵/120 compounds to ≈ 1.7e−6 relative at x = 0.1; with 2000 steps
+    // in each of the 8 pieces it would be 8⁴ times smaller
+    const e = last([block("u''(x) = 400*u(x)\nu(0) = 1\nu(10) = 0", 'u := odesolve(x, 10, 2000, "fixed")'), 'abs(u(0.1) / exp(-2) - 1) =']);
+    expect(e).toBeGreaterThan(5e-7);
+    expect(e).toBeLessThan(5e-6);
+    // RK4 integrates the beam's quartic exactly, replayed shots included
+    const ss = [...beam, block("y''''(x) = q/(E*I)\ny(0) = 0\ny(L) = 0\ny''(0) = 0\ny''(L) = 0", 'y := odesolve(x, L, 10, "fixed")')];
+    expect(last([...ss, 'abs(y(L/2) / (5*q*L^4/(384*E*I)) - 1) ='])).toBeLessThan(1e-9);
+  });
   it('says when the conditions cannot be met', () => {
     // Bratu y″ = −λ e^y, y(0) = y(1) = 0 has no solution for λ > 3.5138 (the fold)
     expect(solverError([block("y''(x) = -4*exp(y(x))\ny(0) = 0\ny(1) = 0", 'y := odesolve(x, 1)')])).toMatch(/could not be met/);

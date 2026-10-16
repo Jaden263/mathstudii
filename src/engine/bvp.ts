@@ -35,11 +35,15 @@ export interface PiecewiseSolution {
   pieces: number;
 }
 
-/** Integrate from t0 to t1; with a reference solution, on its mesh (smooth in y0). */
-function solve(f: Rhs, t0: number, y0: number[], t1: number, o: ShootingOptions, ref?: OdeSolution | null): OdeSolution | null {
+/**
+ * Integrate from t0 to t1, a part of an interval of length span (a number of steps is
+ * shared out in proportion); with a reference solution, on its mesh (smooth in y0).
+ */
+function solve(f: Rhs, t0: number, y0: number[], t1: number, o: ShootingOptions, span: number, ref?: OdeSolution | null): OdeSolution | null {
   if (t1 === t0) return null;
   const replay = ref ? { mesh: ref.ts, meshKinds: ref.kinds } : {};
-  return solveIvp(f, t0, y0, t1, { method: o.method, rtol: o.rtol, steps: o.steps, ...replay });
+  const steps = o.steps && Math.max(1, Math.round((o.steps * Math.abs(t1 - t0)) / span));
+  return solveIvp(f, t0, y0, t1, { method: o.method, rtol: o.rtol, steps, ...replay });
 }
 
 function peakOf(y0: number[], sols: (OdeSolution | null)[]): number[] {
@@ -57,8 +61,8 @@ interface TwoWays {
 
 /** Integrate forwards to hi and backwards to lo from the starting point. */
 function fromPoint(f: Rhs, start: number, y0: number[], lo: number, hi: number, o: ShootingOptions, ref?: TwoWays): TwoWays {
-  const fwd = solve(f, start, y0, hi, o, ref?.fwd);
-  const bwd = solve(f, start, y0, lo, o, ref?.bwd);
+  const fwd = solve(f, start, y0, hi, o, hi - lo, ref?.fwd);
+  const bwd = solve(f, start, y0, lo, o, hi - lo, ref?.bwd);
   const at = (t: number) => {
     const s = t >= start ? fwd ?? bwd : bwd ?? fwd;
     return s ? s.at(t) : y0.slice();
@@ -233,7 +237,7 @@ function multipleShooting(
   const norm = (r: number[], st: State) => Math.max(...r.map((v, k) => Math.abs(v) / scaleOf(rowComponent[k], st.peak)));
   const run = (X: number[], ref?: State): State => {
     const s = states(X);
-    const sols = s.map((y, j) => solve(f, nodes[j], y, nodes[j + 1], o, ref?.sols[j]));
+    const sols = s.map((y, j) => solve(f, nodes[j], y, nodes[j + 1], o, hi - lo, ref?.sols[j]));
     return { sols, s, peak: peakOf(s[0], sols) };
   };
   const evaluate = (X: number[]) => {
@@ -255,9 +259,9 @@ function multipleShooting(
           y[q] += d;
           let sol: OdeSolution | null;
           try {
-            sol = solve(f, nodes[j], y, nodes[j + 1], o, cur.state.sols[j]);
+            sol = solve(f, nodes[j], y, nodes[j + 1], o, hi - lo, cur.state.sols[j]);
           } catch {
-            sol = solve(f, nodes[j], y, nodes[j + 1], o);
+            sol = solve(f, nodes[j], y, nodes[j + 1], o, hi - lo);
           }
           const at = (t: number) => (sol ? sol.at(t) : y);
           const col = j * dim + q;
