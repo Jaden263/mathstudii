@@ -240,7 +240,12 @@ export function extrudeSolid(Kx: ManifoldToplevel, arena: Arena, regions: Profil
  * Solid of revolution of the regions about the in-plane axis through p along d, turned
  * by `angle` radians with the right-hand rule about d. The profile must stay on one side.
  */
-export function revolveSolid(Kx: ManifoldToplevel, arena: Arena, regions: ProfileRegion[], f: Frame, axis: { p: Vec2; d: Vec2 }, angle: number): Manifold {
+/**
+ * Which side of an in-plane axis the regions lie on (1 = left of its direction); throws
+ * when they cross the axis or lie on it. Also returns the unit axis and the coordinates
+ * across (w) and along (s) it.
+ */
+export function revolveSide(regions: ProfileRegion[], axis: { p: Vec2; d: Vec2 }): { side: 1 | -1; a: Vec2; w: (p: Vec2) => number; s: (p: Vec2) => number } {
   const l = Math.hypot(axis.d.x, axis.d.y);
   const a = { x: axis.d.x / l, y: axis.d.y / l };
   // distance from the axis on the left (w) side, and along it (s)
@@ -256,7 +261,11 @@ export function revolveSolid(Kx: ManifoldToplevel, arena: Arena, regions: Profil
   const tol = 1e-7 * Math.max(size, 1e-30);
   if (wMin < -tol && wMax > tol) throw new Error('The profile crosses the axis of revolution');
   if (wMax <= tol && wMin >= -tol) throw new Error('The profile lies on the axis of revolution');
-  const side = wMax > tol ? 1 : -1;
+  return { side: wMax > tol ? 1 : -1, a, w, s };
+}
+
+export function revolveSolid(Kx: ManifoldToplevel, arena: Arena, regions: ProfileRegion[], f: Frame, axis: { p: Vec2; d: Vec2 }, angle: number): Manifold {
+  const { side, a, w, s } = revolveSide(regions, axis);
   // revolve frame: X = towards the profile (e1), Z = along the axis, Y = Z × X
   const polys = regionPolygons(regions, (p) => [Math.max(0, side * w(p)), s(p)]);
   const cs = crossSection(Kx, arena, polys);

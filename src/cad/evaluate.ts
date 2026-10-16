@@ -14,6 +14,8 @@ import {
   placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
 } from './design';
 import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
+import { occ } from './occ/kernel';
+import { measureDesignOcc } from './occ/build';
 
 export interface CadResult {
   kind: 'cad';
@@ -43,6 +45,8 @@ export interface CadResult {
   design?: DesignResult;
   /** Booleans waited for the 3-D kernel; evaluate again once it has loaded. */
   needsKernel?: boolean;
+  /** Built without the B-rep kernel (not loaded yet); evaluate again once it has, for exact results. */
+  needsBrep?: boolean;
 }
 
 export interface BodyInfo {
@@ -64,6 +68,8 @@ export interface DesignResult extends DesignNumbers {
   box?: { min: Vec3; max: Vec3 };
   /** Solids were built by the kernel (not only exact single-feature bodies). */
   kernel: boolean;
+  /** …by the B-rep kernel: every property is exact. */
+  brep?: boolean;
 }
 
 const isAngle = (t: string) => t === 'angle';
@@ -249,8 +255,25 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   const dr: DesignResult = { ...numbers, bodies: {}, components: {}, placements: {}, kernel: false };
   const density = (cid: string) => numbers.params[cid]?.density;
   const compMass = new Map<string, Mass3[]>();
+  const oc = occ();
   const K = kernel();
-  if (K) {
+  if (oc) {
+    const m = measureDesignOcc(oc, design, numbers);
+    dr.kernel = dr.brep = true;
+    for (const c of design.components) {
+      const masses: Mass3[] = [];
+      dr.bodies[c.id] = (m.bodies[c.id] ?? []).map((b) => {
+        if (!b.mass) return { id: b.id, name: b.name, feature: b.feature, empty: true };
+        masses.push(b.mass);
+        return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m: b.mass, rho: density(c.id) }]) ?? undefined };
+      });
+      compMass.set(c.id, masses);
+    }
+    Object.assign(dr.errors, m.errors);
+    dr.placements = m.placements;
+    dr.box = m.box;
+  } else if (K) {
+    result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed));
     const built = buildDesign(K, design, numbers);
     try {
       dr.kernel = true;
@@ -273,6 +296,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       built.free();
     }
   } else {
+    result.needsBrep = design.components.some((c) => activeItems(c).some((i) => i.kind !== 'sketch' && !i.suppressed));
     const inp = buildInputs(design, numbers);
     for (const c of design.components) {
       const ex = exactComponent(design, c, inp);
