@@ -853,11 +853,12 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             {res?.buckling && <span>α<sub>cr</sub> {fmtAlpha(res.buckling.modes[0]?.alpha ?? Infinity)}</span>}
           </div>
         )}
+        {/* above the strip (in the flow it fell under it, hidden) */}
+        {(res?.error || (res && Object.keys(res.errors).length > 0)) && (
+          <div className={`region-error bm-error${region.members.length > 0 ? ' over-strip' : ''}`} role="alert">{res.error ?? Object.values(res.errors)[0]}</div>
+        )}
       </div>
       {(editing || regionSelected) && <div className="resize-handle sk-resize" onPointerDown={startResize} title="Drag to resize" aria-label="Resize beam" />}
-      {(res?.error || (res && Object.keys(res.errors).length > 0)) && (
-        <div className="region-error" role="alert">{res.error ?? Object.values(res.errors)[0]}</div>
-      )}
     </div>
   );
 }
