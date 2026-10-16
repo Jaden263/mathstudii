@@ -406,8 +406,6 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   const startFeature = (kind: DesignFeature['kind']) => {
     if (!comp) return;
-    // a feature edited with the timeline rolled back is done: the new one goes at the end
-    finishRollback();
     // "Press pull" names its features PressPull1 …
     const name = nextName(cur(), FEATURE_LABEL[kind].replace(/ (\w)/g, (_, c: string) => c.toUpperCase()));
     const id = cadId('f');
@@ -447,6 +445,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (bodiesNow.length < 2) return setMsg('Combine needs two bodies in this component');
       f = { kind: 'combine', id, name, target: bodiesNow[0].id, tools: bodiesNow.slice(1).map((b) => b.id), op: 'join' };
     }
+    // a feature edited with the timeline rolled back is done: the new one goes where the marker was
+    finishRollback();
     seal();
     const m = mark();
     insertItem(comp.id, f);
@@ -455,9 +455,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
 
   const editItem = (cid: string, item: DesignItem) => {
-    finishRollback();
     setActive(cid);
     if (isSketch(item)) return enterSketch(item.id);
+    finishRollback();
     seal();
     const m = mark();
     // a modify feature picks on the bodies as it found them: the features after it roll back meanwhile

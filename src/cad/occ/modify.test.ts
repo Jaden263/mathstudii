@@ -168,6 +168,18 @@ describe('fillet', () => {
     expect(round.c[0]).toBeGreaterThan(56);
   });
 
+  it('two edges meeting at a corner (the third edge sharp): the overlap of the two cuts, r³(5/3 − π/2), counts once', () => {
+    // each rounding takes off (1 − π/4) r² L; near the corner both cut the cube r³ where a point is outside
+    // both quarter circles: at depth s = r − w below the top, u, v < r − √(r² − s²), so the overlap is
+    // ∫₀ʳ (r − √(r² − s²))² ds = r³ (5/3 − π/2) (the roundings mitre, each as if alone)
+    const r = 4;
+    const items = box(100, 60, 40);
+    const edges = edgesAt(items, [[50, 0, 40], [100, 30, 40]]);
+    const { V, errors } = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: String(r) }] }]);
+    expect(errors).toEqual({});
+    near(V[0], 240000 - (1 - PI / 4) * r * r * (100 + 60) + r ** 3 * (5 / 3 - PI / 2));
+  });
+
   it('two sets with different radii on one tangent chain are refused (OpenCascade rounds a chain with one radius)', () => {
     const items: DesignItem[] = [
       { kind: 'sketch', id: 's1', name: 'Base', plane: { ref: 'XY' }, sketch: roundedRect('a', 100, 60, 5) },
@@ -333,6 +345,22 @@ describe('shell', () => {
     const body = a * b * c - k * r * r * a;
     const inner = (a - 2 * t) * (b - 2 * t) * (c - 2 * t) - k * (r - t) ** 2 * (a - 2 * t);
     near(V[0], body - inner - (a - 2 * t) * (b - t - r) * t);
+  });
+
+  it('the opening tangent to two roundings that meet: body less its offset less the top slab, both cornered', () => {
+    // as above with the top front and right edges rounded (r = 4, t = 3): the body is
+    // abc − k r² (a + b) + r³ q (q = 5/3 − π/2, the corner), its offset the (a−2t)(b−2t)(c−2t) box
+    // rounded to r − t the same way, and the opening's image, (a − t − r) × (b − t − r), cuts the
+    // top wall t deep
+    const r = 4, k = 1 - PI / 4, q = 5 / 3 - PI / 2;
+    const edges = edgesAt(items, [[50, 0, 40], [100, 30, 40]]);
+    const { V, errors } = run([...items, { kind: 'fillet', id: 'f2', name: 'Fillet1', sets: [{ edges, r: String(r) }] },
+      { kind: 'shell', id: 'f3', name: 'Shell1', faces: top, t: String(t), side: 'inside' }]);
+    expect(errors).toEqual({});
+    const body = a * b * c - k * r * r * (a + b) + r ** 3 * q;
+    const ri = r - t;
+    const inner = (a - 2 * t) * (b - 2 * t) * (c - 2 * t) - k * ri * ri * (a - 2 * t + b - 2 * t) + ri ** 3 * q;
+    near(V[0], body - inner - (a - t - r) * (b - t - r) * t);
   });
 
   it('a rounding thinner than the wall vanishes inside: the walls meet at a sharp edge', () => {
