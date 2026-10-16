@@ -181,6 +181,8 @@ export interface BeamRegion extends RegionBase, BeamData {
   loadCases?: BeamCases;
   /** Shear deformation, second order, buckling (absent: first order, Euler–Bernoulli). */
   analysis?: BeamAnalysis;
+  /** Influence lines and moving loads (absent: none). */
+  traffic?: import('../beam/model').BeamTraffic;
 }
 
 /** Python code that reads the worksheet variables above it and exports what it assigns. */

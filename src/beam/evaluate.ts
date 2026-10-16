@@ -9,6 +9,7 @@ import { loadCase, type BeamSection } from './model';
 import { InstabilityError, memberAt, solveStructure, StructureError, type BeamSolution, type Extreme, type MemberResult, type NumLoad, type NumMember, type NumStructure, type Reaction } from './solve';
 import { bucklingAnalysis, type BucklingResult } from './buckling';
 import { profileShearArea, rhsShearArea, SHEAR_FACTOR, shearModulus, weldedShearArea } from './shear';
+import { identifierOf, movingParts, solveTraffic, trafficValue, withMoving, type TrafficResult } from './traffic';
 
 /** Result of one load case or one combination. */
 export interface CaseResult {
@@ -18,6 +19,8 @@ export interface CaseResult {
   solution?: BeamSolution;
   /** Linear buckling of the combination (with the buckling or second-order option). */
   buckling?: BucklingResult;
+  /** With moving loads: the combination's bounds (`solution` is the upper one). */
+  range?: { max: BeamSolution; min: BeamSolution };
   error?: string;
 }
 
@@ -42,6 +45,10 @@ export interface BeamResult {
   buckling?: BucklingResult;
   /** The analysis options in effect (absent: first order, no shear, no buckling). */
   analysis?: { shear: boolean; secondOrder: boolean; buckling: boolean };
+  /** Influence lines and moving loads. */
+  traffic?: TrafficResult;
+  /** The loads' own solution while `solution` shows a moving load's envelope. */
+  staticSolution?: BeamSolution;
   error?: string;
 }
 
@@ -173,6 +180,12 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     res.error = supportError;
     return res;
   }
+  // influence lines and moving loads (linear, along the load path)
+  try {
+    res.traffic = solveTraffic(r, base, (src, b, fb, what) => quantity(evalExpr, src, b, fb, what), evalExpr, res.errors);
+  } catch (e) {
+    res.error = `Moving loads: ${(e as Error).message}`;
+  }
   // first order, then buckling from its axial forces, then (below the critical load only)
   // second order; an unstable load set keeps its buckling result and gets an error
   const solve = (ls: NumLoad[]): { solution?: BeamSolution; buckling?: BucklingResult; error?: string } => {
@@ -200,6 +213,7 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     } catch (e) {
       res.error = e instanceof StructureError ? e.message : `Could not solve: ${(e as Error).message}`;
     }
+    showMoving(res, r);
     return res;
   }
   // second order is not linear: a combination that is unstable fails on its own
@@ -223,13 +237,23 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
       }
       return run({ id: cb.id, name: cb.name, kind: cb.kind }, factored);
     });
+    // moving loads in a combination: its static part plus their factored bounds
+    const tr = res.traffic;
+    if (tr) cases.combos.forEach((cb, i) => {
+      const c = res.combos![i], parts = movingParts(cb, tr, evalExpr);
+      if (!parts.length || !c.solution) return;
+      c.range = withMoving(c.solution, parts, tr.structure);
+      c.solution = c.range.max;
+    });
   } catch (e) {
     res.error = e instanceof StructureError ? e.message : (e as Error).message;
     return res;
   }
-  const uls = res.combos.filter((c) => c.kind === 'ULS' && c.solution).map((c) => c.solution!);
-  const sls = res.combos.filter((c) => c.kind === 'SLS' && c.solution).map((c) => c.solution!);
-  const all = res.combos.flatMap((c) => (c.solution ? [c.solution] : []));
+  // (a combination with moving loads brings both its bounds)
+  const bounds = (c: CaseResult) => (c.range ? [c.range.max, c.range.min] : c.solution ? [c.solution] : []);
+  const uls = res.combos.filter((c) => c.kind === 'ULS').flatMap(bounds);
+  const sls = res.combos.filter((c) => c.kind === 'SLS').flatMap(bounds);
+  const all = res.combos.flatMap(bounds);
   if (all.length) res.envelope = envelopeOf(uls.length ? uls : all, sls.length ? sls : uls.length ? uls : all);
   const view = cases.view ?? cases.combos.find((c) => c.kind === 'ULS')?.id ?? cases.combos[0]?.id ?? cases.cases[0]?.id;
   res.view = view;
@@ -239,7 +263,26 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
   res.buckling = view === 'envelope' ? governing(res.combos)?.buckling : shown?.buckling;
   const failed = res.combos.find((c) => c.error) ?? res.cases.find((c) => c.error);
   if (failed) res.error = shown?.error ?? failed.error;
+  showMoving(res, r);
   return res;
+}
+
+/** A moving load picked in the strip: its envelope is shown (the loads' own solution stays for the worksheet). */
+function showMoving(res: BeamResult, r: BeamRegion): void {
+  const id = r.traffic?.view;
+  const m = id ? res.traffic?.moving.find((q) => q.id === id) : undefined;
+  if (!m?.env) return;
+  res.staticSolution = res.solution;
+  res.solution = m.env.max;
+  res.view = m.id;
+  res.buckling = undefined;
+}
+
+/** The lower bound drawn with what is shown: of the envelope, of a combination with moving loads, of a moving load. */
+export function lowerBound(res?: BeamResult): BeamSolution | undefined {
+  if (!res?.view) return undefined;
+  if (res.view === 'envelope') return res.envelope?.min;
+  return res.combos?.find((c) => c.id === res.view)?.range?.min ?? res.traffic?.moving.find((m) => m.id === res.view)?.env?.min;
 }
 
 /** The combination with the lowest α_cr: the ULS ones, or all when there are none. */
@@ -351,10 +394,22 @@ export function straightBeam(r: BeamRegion): { id: string; x0: number; x1: numbe
   return segs;
 }
 
-/** Worksheet value: reactions per support, extremes and functions along a straight beam. */
+/** Worksheet value: reactions per support, extremes and functions along a straight beam; influence lines and moving loads. */
 export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
+  const value = loadsValue(r, res);
+  if (res.traffic) {
+    Object.assign(value, trafficValue(r, res.traffic, (sol) => solutionValue(r, sol)));
+    // a combination with moving loads has two bounds: b.combos.ULS the upper, b.combos.ULS.min the lower
+    const combos = value.combos as Record<string, Record<string, unknown>> | undefined;
+    for (const c of res.combos ?? []) if (c.range && combos?.[identifierOf(c.name)]) combos[identifierOf(c.name)].min = solutionValue(r, c.range.min);
+  }
+  return value;
+}
+
+function loadsValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
   if (!r.loadCases || !res.combos) {
-    if (res.solution) return solutionValue(r, res.solution, res.buckling);
+    const sol = res.staticSolution ?? res.solution;
+    if (sol) return solutionValue(r, sol, res.buckling);
     // above the critical load in second order: α_cr is all there is
     const value: Record<string, unknown> = {};
     if (res.buckling) stabilityValue(r, res.buckling, value);
@@ -407,11 +462,6 @@ export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknow
   // second order: the governing first-order values beside them
   if (forceSet[0].solution!.secondOrder?.first) value.first = governingOf((sol) => sol.secondOrder?.first);
   return value;
-}
-
-function identifierOf(name: string): string {
-  const s = name.trim().replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^_+|_+$/g, '');
-  return /^\p{L}/u.test(s) ? s : `_${s}`;
 }
 
 /** α_cr (lowest mode), all modes' α as a vector, and L_cr per member in drawing order (∞ in tension). */

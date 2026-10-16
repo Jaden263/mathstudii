@@ -9,7 +9,7 @@
 import { backward, cholesky, forward, largestEigen, symmetricEigen } from './eigen';
 import {
   elementsPerMember, frameMesh, geometricK, localK, memberAt, shearStiffness, StructureError, subdivide, supportAxis, toGlobal,
-  type BeamSolution, type NumStructure,
+  type BeamSolution, type FrameMesh, type NumStructure, type Piece,
 } from './solve';
 
 /** A buckling mode along one member, normalised so the largest displacement is 1. */
@@ -41,7 +41,6 @@ const DENSE_MAX = 240;
 export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3): BucklingResult {
   const mesh = frameMesh(st);
   const elems = subdivide(mesh, elementsPerMember(st.members.length));
-  const nn = mesh.pos.length;
 
   // axial force of each element as a straight line through its two Gauss points (inside
   // the element, so clear of jumps at its ends; exact for N linear); a force that is only
@@ -59,48 +58,7 @@ export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3)
   });
   if (!Ne.some(([a, b]) => a < 0 || b < 0)) return { modes: [], Lcr: {} };
 
-  // unknowns: per node x and y (less what the supports hold) and the rotation (unless
-  // held, or every member end there is hinged); a hinged member end turns on its own
-  const held = Array.from({ length: nn }, () => ({ dirs: [] as [number, number][], rot: false }));
-  const springs: { node: number; n: [number, number]; k: number }[] = [];
-  const rotSprings: { node: number; kr: number }[] = [];
-  for (const sp of st.supports) {
-    const k = mesh.nodeIndex.get(sp.node);
-    if (k === undefined) continue;
-    const n = supportAxis(sp.angle);
-    if (sp.k && sp.k > 0) springs.push({ node: k, n, k: sp.k });
-    else held[k].dirs.push(n);
-    if (sp.type !== 'roller') held[k].dirs.push([n[1], -n[0]]);
-    if (sp.type === 'fixed') {
-      if (sp.kr && sp.kr > 0) rotSprings.push({ node: k, kr: sp.kr });
-      else held[k].rot = true;
-    }
-  }
-  const turns = new Array<boolean>(nn).fill(false);
-  for (const p of elems) {
-    if (!p.hingeI) turns[p.i] = true;
-    if (!p.hingeJ) turns[p.j] = true;
-  }
-  // full unknowns: 3 per node, then one per hinged element end; each maps onto the reduced ones
-  const map: [number, number][][] = [];
-  let nz = 0;
-  for (let k = 0; k < nn; k++) {
-    const { dirs, rot } = held[k];
-    const d0 = dirs[0];
-    if (!d0) {
-      map.push([[nz++, 1]], [[nz++, 1]]);
-    } else if (dirs.every((d) => Math.abs(d0[0] * d[1] - d0[1] * d[0]) < 1e-9)) {
-      // held in one direction: free along the other
-      const z = nz++;
-      map.push([[z, -d0[1]]], [[z, d0[0]]]);
-    } else map.push([], []);
-    map.push(turns[k] && !rot ? [[nz++, 1]] : []);
-  }
-  const ends = elems.map((p) => {
-    const a = p.hingeI ? map.push([[nz++, 1]]) - 1 : 3 * p.i + 2;
-    const b = p.hingeJ ? map.push([[nz++, 1]]) - 1 : 3 * p.j + 2;
-    return [3 * p.i, 3 * p.i + 1, a, 3 * p.j, 3 * p.j + 1, b];
-  });
+  const { map, ends, count: nz, springs, rotSprings } = reducedDofs(st, mesh, elems);
 
   const K = Array.from({ length: nz }, () => new Array<number>(nz).fill(0));
   const G = Array.from({ length: nz }, () => new Array<number>(nz).fill(0));
@@ -209,6 +167,69 @@ export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3)
     }
   }
   return { modes, Lcr };
+}
+
+/** The unknowns of a mesh with the supports eliminated (see {@link reducedDofs}). */
+export interface ReducedDofs {
+  /** Each full unknown (x, y, rotation per node, then one per hinged element end) as [reduced unknown, weight] pairs. */
+  map: [number, number][][];
+  /** The six full unknowns at the ends of each element. */
+  ends: number[][];
+  count: number;
+  /** Elastic supports: along their axis, and rotational. */
+  springs: { node: number; n: [number, number]; k: number }[];
+  rotSprings: { node: number; kr: number }[];
+}
+
+/**
+ * Unknowns: per node x and y (less what the supports hold) and the rotation (unless
+ * held, or every member end there is hinged); a hinged member end turns on its own.
+ * A node held in one direction keeps one unknown along the other, so inclined rollers
+ * need nothing special.
+ */
+export function reducedDofs(st: NumStructure, mesh: FrameMesh, elems: Piece[]): ReducedDofs {
+  const nn = mesh.pos.length;
+  const held = Array.from({ length: nn }, () => ({ dirs: [] as [number, number][], rot: false }));
+  const springs: ReducedDofs['springs'] = [];
+  const rotSprings: ReducedDofs['rotSprings'] = [];
+  for (const sp of st.supports) {
+    const k = mesh.nodeIndex.get(sp.node);
+    if (k === undefined) continue;
+    const n = supportAxis(sp.angle);
+    if (sp.k && sp.k > 0) springs.push({ node: k, n, k: sp.k });
+    else held[k].dirs.push(n);
+    if (sp.type !== 'roller') held[k].dirs.push([n[1], -n[0]]);
+    if (sp.type === 'fixed') {
+      if (sp.kr && sp.kr > 0) rotSprings.push({ node: k, kr: sp.kr });
+      else held[k].rot = true;
+    }
+  }
+  const turns = new Array<boolean>(nn).fill(false);
+  for (const p of elems) {
+    if (!p.hingeI) turns[p.i] = true;
+    if (!p.hingeJ) turns[p.j] = true;
+  }
+  // full unknowns: 3 per node, then one per hinged element end; each maps onto the reduced ones
+  const map: [number, number][][] = [];
+  let nz = 0;
+  for (let k = 0; k < nn; k++) {
+    const { dirs, rot } = held[k];
+    const d0 = dirs[0];
+    if (!d0) {
+      map.push([[nz++, 1]], [[nz++, 1]]);
+    } else if (dirs.every((d) => Math.abs(d0[0] * d[1] - d0[1] * d[0]) < 1e-9)) {
+      // held in one direction: free along the other
+      const z = nz++;
+      map.push([[z, -d0[1]]], [[z, d0[0]]]);
+    } else map.push([], []);
+    map.push(turns[k] && !rot ? [[nz++, 1]] : []);
+  }
+  const ends = elems.map((p) => {
+    const a = p.hingeI ? map.push([[nz++, 1]]) - 1 : 3 * p.i + 2;
+    const b = p.hingeJ ? map.push([[nz++, 1]]) - 1 : 3 * p.j + 2;
+    return [3 * p.i, 3 * p.i + 1, a, 3 * p.j, 3 * p.j + 1, b];
+  });
+  return { map, ends, count: nz, springs, rotSprings };
 }
 
 /**

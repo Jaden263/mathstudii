@@ -44,6 +44,8 @@ export interface BeamMember {
   /** Moment releases (hinges) at the start / end of the member. */
   hingeA?: boolean;
   hingeB?: boolean;
+  /** Part of the load path (deck) the moving loads travel on. */
+  deck?: boolean;
 }
 
 export type SupportType = 'pin' | 'roller' | 'fixed';
@@ -270,4 +272,71 @@ export interface BeamAnalysis {
   buckling?: boolean;
   /** Buckling mode drawn (0 = the lowest). */
   mode?: number;
+}
+
+/** What an influence line is of: a support reaction, or a force or the deflection at a section. */
+export type InfluenceQuantity = 'Ry' | 'Rx' | 'Mr' | 'V' | 'M' | 'N' | 'w';
+
+export interface BeamInfluenceLine {
+  id: string;
+  /** Name in the worksheet: b.IL.M1(x). */
+  name: string;
+  quantity: InfluenceQuantity;
+  /** Support id (Ry, Rx, Mr). */
+  support?: string;
+  /** Section (V, M, N, w): a point on a member, in the length unit, and the member it was picked on. */
+  at?: { x: number; y: number };
+  member?: string;
+  /** At a joint: the member to the left of the point (default: the one to its right). */
+  left?: boolean;
+}
+
+/**
+ * A moving load: a preset, or an axle train with a uniform load. Values are worksheet
+ * expressions; bare numbers take the region's force and length units.
+ */
+export interface BeamMovingLoad {
+  id: string;
+  /** Name in combinations and the worksheet (b.moving.LM1). */
+  name: string;
+  preset: 'point' | 'lm1' | 'crane' | 'train';
+  /** Point load, or each crane wheel. */
+  P?: string;
+  /** Crane wheel spacing. */
+  a?: string;
+  /** Load Model 1 (EN 1991-2 4.3.2), one notional lane: adjustment factors and the lane width (bare number m). */
+  alphaQ?: string;
+  alphaq?: string;
+  w?: string;
+  /** Train: axle loads with the spacing to the axle before (the first spacing is unused). */
+  axles?: { P: string; a: string }[];
+  /** Train: uniform load, put only where it is adverse. */
+  q?: string;
+  /** Both ways (default), or only towards +x / −x. */
+  dir?: 'both' | 'forward' | 'backward';
+}
+
+/** Influence lines and moving loads of a beam region. */
+export interface BeamTraffic {
+  lines: BeamInfluenceLine[];
+  loads: BeamMovingLoad[];
+  /** Spacing of the load positions (expression; bare number in the length unit); empty = automatic. */
+  step?: string;
+  /** Id of the moving load whose envelope is shown, instead of the loads, case or combination. */
+  view?: string;
+  /** Hide the influence-line panels. */
+  hideLines?: boolean;
+}
+
+/** EN 1991-2 Table 4.2, lane 1: tandem axle load Q₁k and uniform load q₁k. */
+export const LM1 = { Q: 300, q: 9, spacing: 1.2 };
+
+export function movingLoad(preset: BeamMovingLoad['preset'], name: string): BeamMovingLoad {
+  const id = beamId('t');
+  switch (preset) {
+    case 'point': return { id, name, preset, P: '100' };
+    case 'lm1': return { id, name, preset, alphaQ: '1', alphaq: '1', w: '3' };
+    case 'crane': return { id, name, preset, P: '80', a: '3.5' };
+    case 'train': return { id, name, preset, axles: [{ P: '100', a: '0' }, { P: '100', a: '2' }], q: '' };
+  }
 }
