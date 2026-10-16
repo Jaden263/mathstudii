@@ -41,6 +41,8 @@ export interface BeamResult {
   errors: Record<string, string>;
   /** Default section in SI (E Pa, A m², I m⁴, W m³; with shear deformation G Pa, A_v m²). */
   section?: SectionSI;
+  /** Members with their own section: its values in SI, as for `section`. */
+  memberSections?: Record<string, SectionSI>;
   /** Buckling of what is shown (the envelope: of the combination with the lowest α_cr). */
   buckling?: BucklingResult;
   /** The analysis options in effect (absent: first order, no shear, no buckling). */
@@ -118,6 +120,7 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     if (m.section) {
       try {
         sec = sectionValues(evalExpr, m.section, withShear);
+        (res.memberSections ??= {})[m.id] = sec;
       } catch (e) {
         res.errors[m.id] = (e as Error).message;
         sec = undefined;

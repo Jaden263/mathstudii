@@ -188,7 +188,7 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
           <p className="hint">Both ends hinged: a truss bar (axial force only).</p>
           <label className="check" title="Moving loads travel along the members marked (with none marked: the horizontal ones)"><input type="checkbox" checked={!!member.deck} onChange={(e) => updMember({ deck: e.target.checked || undefined })} /> Load path (deck) for moving loads</label>
           <label className="check"><input type="checkbox" checked={!!member.section} onChange={(e) => updMember({ section: e.target.checked ? { ...region.section } : undefined })} /> Own section</label>
-          {member.section && <SectionFields s={member.section} shear={!!region.analysis?.shear} onChange={(s) => updMember({ section: s })} />}
+          {member.section && <SectionFields s={member.section} shear={!!region.analysis?.shear} si={result?.memberSections?.[member.id]} onChange={(s) => updMember({ section: s })} />}
           {(() => {
             const Lcr = (result?.buckling ?? result?.staticBuckling)?.Lcr[member.id];
             return Lcr !== undefined && <p className="hint">Buckling length in the lowest mode: L<sub>cr</sub> = {u.length(Lcr / (LENGTH_M[region.lengthUnit] ?? 1))}.</p>;

@@ -174,6 +174,22 @@ describe('shear deformation, second order and buckling in a worksheet', () => {
     expect(num(run(d, ['b.w_max = mm']).tex(0))).toBeCloseTo(((P * L ** 3) / (3 * EI)) * 1000, 2);
   });
 
+  it('a member of its own concrete section: G = E/2.4 (ν = 0.2) and A_v = 5/6 A', () => {
+    // a 300 × 500 mm concrete cantilever, 2 m, 200 kN at the tip: δ = P L³/3EI + P L/(G A_v)
+    const Ec = 33e9, A = 0.3 * 0.5, Ic = (0.3 * 0.5 ** 3) / 12, P = 200e3, L = 2;
+    const d: BeamData = {
+      nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: L, y: 0 }],
+      members: [{ id: 'm', a: 'a', b: 'b', section: { E: '33 GPa', A: '1500 cm^2', I: `${Ic * 1e8} cm^4`, material: 'concrete' } }],
+      supports: [{ id: 's', node: 'a', type: 'fixed', angle: 0, label: 'A' }],
+      loads: [{ id: 'P', type: 'force', at: { node: 'b' }, value: '200', angle: -90 }],
+    };
+    const { res, tex } = run(d, ['b.w_max = mm'], { analysis: { shear: true } });
+    const Gc = Ec / 2.4, Av = (5 / 6) * A;
+    expect(res.memberSections?.m.G).toBeCloseTo(Gc, 0);
+    expect(res.memberSections!.m.Av).toBeCloseTo(Av, 9);
+    expect(num(tex(0))).toBeCloseTo(((P * L ** 3) / (3 * Ec * Ic) + (P * L) / (Gc * Av)) * 1000, 3);
+  });
+
   it('α_cr, its modes and the buckling lengths', () => {
     const d = columnData();
     d.loads = d.loads.map((l) => ({ ...l, case: undefined }));

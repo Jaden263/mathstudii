@@ -76,7 +76,7 @@ type RuleKind = BeamShearArea['kind'] | 'auto';
 /** Shear modulus and shear area of a section (shown with shear deformation on). */
 export function ShearFields({ s, onChange, si }: {
   s: BeamSection; onChange: (s: BeamSection) => void;
-  /** Values in SI the analysis used (the default section only). */
+  /** Values in SI the analysis used for this section. */
   si?: { G?: number; Av?: number };
 }) {
   const profile = profileShearArea(s.label) !== null;
