@@ -8,7 +8,8 @@ import { buildDesign } from '../design';
 import { planeToLocal } from '../inspect';
 import { fitCircle } from '../project';
 import { kernel, m4Pose, m4Translate } from '../solid';
-import { occ } from '../occ/kernel';
+import { occ, renewOcc } from '../occ/kernel';
+import { designNumbers } from '../keys';
 import { answer, displayFor } from './service';
 import { sectionMesh } from './meshFallback';
 import type { KernelRequest, KernelValues, SectionBody } from './protocol';
@@ -185,5 +186,33 @@ describe('kernel requests', () => {
       X.extract = extract;
       warn.mockRestore();
     }
+  });
+
+  it('a renewed kernel draws afresh what a trapped one failed on', async () => {
+    // a trap inside a feature drops the body from the display; once the fresh instance is in,
+    // the same design key must not come back from the display cache without it
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 29, 13) },
+      { kind: 'extrude', id: 'f1', name: 'Block', sketch: 's1', extent: { type: 'one', d: '5' }, op: 'new' },
+    ]);
+    const K = occ()! as unknown as Record<string, unknown>;
+    const Prism = K.BRepPrimAPI_MakePrism;
+    K.BRepPrimAPI_MakePrism = function () {
+      throw new WebAssembly.RuntimeError('memory access out of bounds');
+    };
+    let broken, numbers;
+    try {
+      // the worksheet builds it first (the trap), the display then comes from that build
+      numbers = designNumbers(solve(design).res.design!);
+      broken = displayFor(design, numbers)!;
+    } finally {
+      K.BRepPrimAPI_MakePrism = Prism;
+    }
+    expect(broken.components.c1.bodies).toHaveLength(0);
+    expect(broken.components.c1.errors.f1).toMatch(/restarts/);
+    await renewOcc(Infinity);
+    const b = displayFor(design, numbers)!;
+    expect(b.kernel).toBe('brep');
+    near(b.components.c1.bodies[0].mass.V, 29 * 13 * 5);
   });
 });

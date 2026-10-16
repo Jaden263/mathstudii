@@ -6,6 +6,7 @@ import { loadCas } from './symbolic';
 import type { Worksheet } from '../model/types';
 import { loadKernel } from '../cad/kernelBrowser';
 import { loadOcc } from '../cad/occ/browser';
+import { occ } from '../cad/occ/kernel';
 import { displayFor, ensureBrep, serveKernel, setKernelLoaders } from '../cad/kernel/service';
 import { isKernelPortMessage, type DisplayMessage } from '../cad/kernel/protocol';
 import type { BuildResult } from '../cad/buildResult';
@@ -61,7 +62,13 @@ const needsBrep = (out: ReturnType<typeof evaluateWorksheet>) => [...out.results
 // display data (meshes, faces, edges) follows the results it belongs to, once per design
 // key: a worksheet that recalculates for other reasons sends none
 const sent = new Set<string>();
+let sentBy: unknown = null;
 function sendDisplays(ws: Worksheet, out: ReturnType<typeof evaluateWorksheet>, only?: string[]) {
+  // a renewed B-rep kernel shows every part afresh (the old one may have failed on one)
+  if (occ() !== sentBy) {
+    sent.clear();
+    sentBy = occ();
+  }
   const display: [string, BuildResult][] = [];
   for (const r of ws.regions) {
     if (r.kind !== 'cad' || (only && !only.includes(r.id))) continue;

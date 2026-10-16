@@ -54,12 +54,18 @@ const brepNow = (): OC | null => occ();
 
 const displays = new Map<string, BuildResult>();
 const DISPLAYS = 6;
+let displaysBy: OC | null = null;
 
 /**
  * Display data of a design: from the B-rep kernel when it is loaded, from the mesh kernel
  * when OpenCascade failed (to load, or on this design), null while it is still loading.
  */
 export function displayFor(design: CadDesign, numbers: DesignNumbers): BuildResult | null {
+  // a renewed kernel builds afresh: the old one may have failed on a part (a trap)
+  if (brepNow() !== displaysBy) {
+    displays.clear();
+    displaysBy = brepNow();
+  }
   const key = designKey(design, numbers);
   const hit = displays.get(key);
   if (hit) {
