@@ -12,6 +12,7 @@ import { findProfiles, loopPolygon, type ProfileRegion, type Vec2 } from '../../
 import type { Mesh } from '../../cad/mesh';
 import { framePoint, type Frame, type M4 } from '../../cad/solid';
 import type { SceneLines, SceneMesh, ScenePlane, Vec3 } from './Scene3D';
+import { constructScene } from './constructView';
 
 // ------------------------------------------------------------ scene pieces
 
@@ -137,6 +138,8 @@ export interface SceneOptions {
   section?: SectionBody[] | null;
   /** Faces and edges to mark on a body (key `b:occ:body`): selected and under the pointer. */
   marks?: (key: string) => Pick<SceneMesh, 'selFaces' | 'selEdges' | 'hoverFace' | 'hoverEdge'> | undefined;
+  /** Construction planes take clicks (a sketch or a plane field waits for one). */
+  pickDatums?: boolean;
 }
 
 /** Colour of the faces a section cuts. */
@@ -185,6 +188,12 @@ export function buildScene(design: CadDesign, result: CadResult | undefined, sho
         meshes.push({ key, mesh: displayMesh(b), matrix: M, ...look(occ.id, comp.id, key), ...o.marks?.(key) });
       }
     }
+  }
+  // construction geometry and cosmetic threads
+  if (shown) {
+    const c = constructScene(design, result, shown, placement, { highlight: o.highlight, pickPlanes: !!o.pickDatums, size: o.size });
+    planes.push(...c.planes);
+    lines.push(...c.lines);
   }
   // sketches and profiles of the active component, in its first occurrence
   const comp = design.components.find((c) => c.id === o.active);

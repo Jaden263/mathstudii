@@ -809,25 +809,106 @@ workspace opens full screen in the page. Its layout follows Fusion:
   flat face of a body. The sketch opens looking straight at its plane. The bodies it cuts
   show as grey reference outlines, and **Project** turns them into fixed sketch geometry
   (circles come back as circles).
+  - A sketch on a face follows the face. Make the base taller and the sketch, with the
+    holes and bosses on it, moves up. Make it wider and the sketch stays where it was:
+    its origin is the component origin projected onto the face.
+  - When that origin lands on a corner of the face or the centre of a circular edge (a
+    base drawn from the origin, a disc centred on it), the sketch keeps to that point:
+    move the base or the disc in its plane and the sketch goes along. Otherwise it keeps
+    its place in the plane, as in Fusion.
 - **Extrude:** one side, symmetric, two sides or through all. Operations are new body,
   join, cut or intersect. Click profiles in the view to pick them and bodies to choose
   targets. Cuts go into the material automatically: both directions are tried and the one
   that removes more is kept.
 - **Revolve:** about the sketch axes or any sketch line, any angle, in either direction.
 - **Hole:** at sketch points — simple, counterbore or countersink, a depth or through all.
+  **Tapped** picks an ISO metric size: the hole is drilled to the tap drill (8.5 mm for
+  M10) and threaded to a depth, cosmetic (rings in the view) or modeled.
+- **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs and circles, a
+  chain of body edges (they follow edits) or the helix of a coil. The profile stays
+  perpendicular to the path (corrected Frenet) or parallel to itself; a twist angle (a
+  positive one turns it by the right-hand rule about the path) or an end scale (taper) on
+  open paths. New body, join, cut or intersect; click bodies (or tick them) for the
+  targets, as for coils. A path that makes the swept profile run into itself says so:
+  *the profile reaches 6 mm from the path, but the path bends with a radius of 4 mm: the
+  sweep would cut through itself*; so does a path lying in the profile's own plane.
+- **Coil:** a helix on an origin, sketch or construction plane (or a flat face) at a
+  centre point: diameter, then revolutions and height, revolutions and pitch, or height
+  and pitch; left or right hand; a circle, square or triangle section inside, on or
+  outside the diameter. Path only gives just the helix, for a sweep to follow.
+- **Thread:** ISO metric coarse and fine (ISO 261/262, M1.6 to M64, profile by ISO 68-1)
+  on picked cylinders: external on a shaft, internal in a hole, the size suggested from
+  the diameter. Cosmetic threads are listed in the inspector and drawn as rings; modeled
+  ones cut the real groove (it takes a few seconds).
+- **Rib:** an open line or arc drawn on a plane through the middle of the rib grows in that
+  plane until the body closes it off (or to a depth), as thick as asked across the plane
+  (both sides, one or the other) — the gusset in the corner of a bracket. Both sides of the
+  curve are tried and the one the body closes off is taken; Flip takes the other.
 - **Pattern:** rectangular (one or two directions) or circular, of features (the copies
   repeat the boolean) or of bodies.
-- **Mirror:** features or bodies, about an origin plane or a sketch plane.
+- **Mirror:** features or bodies, about an origin plane, a sketch plane or a construction plane.
 - **Combine:** join, cut or intersect bodies, optionally keeping the tools.
 - A dialog edits the real feature, so the model previews every change; Cancel rolls it back.
+
+**Construction geometry** (Construct group) sits in the timeline and in a *Construction*
+folder of the browser, drawn orange in the view, and follows edits through its references:
+
+- **Plane:** offset from a plane or face, at an angle about an axis or edge, midplane of
+  two, through three points, tangent to a cylinder at an angle, normal to an edge or a
+  sketch path at a fraction of its length.
+- **Axis:** through two points, along an edge, through a cylinder or cone, normal to a face
+  at a point. **Point:** a vertex, the centre of a circle or sphere, where an edge crosses
+  a plane.
+- Sketches, mirrors, patterns, splits, drafts, coils and joints take them like origin
+  planes and axes.
+
+**Modify** (Solid tab, as in Fusion; they need the B-rep kernel). Edges, faces and bodies
+are clicked in the view while the dialog is open (click again to take one out); what is
+picked before pressing the button is used. They store references to what they picked, so a
+base made longer keeps its rounded edge rounded. Every size is a worksheet expression.
+
+- **Fillet (F):** sets of edges, each with a radius, or with an end radius for a radius that
+  changes linearly along the chain (from its end with the smaller x, then y, z). A face adds
+  all its edges; clicking a rounding takes its edge out. A radius too large says so:
+  *radius 12 mm is too large for the edge between the end face and the side face of
+  Extrude1 (max ≈ 10 mm)* (the estimate is for straight edges between flat faces). Two
+  sets with different radii on one tangent chain are refused (the chain takes one radius).
+- **Chamfer:** equal distances, two distances, or a distance and an angle. The first
+  distance (and the angle) is measured on the face of each edge that comes first by name;
+  Flip takes the other one.
+- **Shell:** walls of a thickness inside or outside, with the picked faces open, or with
+  none picked a closed void inside the body. A rounding thinner than the wall vanishes
+  inside: the inner walls meet at a sharp edge, as in Fusion.
+- **Draft:** faces tilted about where they meet a neutral plane (origin plane, sketch plane
+  or a picked face), pulled along its normal or along an axis; a positive angle narrows the
+  part towards the pull direction.
+- **Press pull (Q):** flat faces moved along their normal (out adds material, a negative
+  distance removes it), cylinders grown or shrunk (a hole's wall pulled out makes the hole
+  smaller). The face keeps its name, so a sketch on it follows. Flat faces move as an
+  offset, as in Fusion: the flat faces around one that stay are extended up to it (a
+  chamfer or a drafted side goes on), and faces moved together meet where their moved
+  planes meet (pulling the top and a side of a box gives the larger box).
+- **Split body:** by an origin plane with an offset, a sketch plane or a flat face. The piece
+  behind the plane stays the body; the others become new bodies.
+- **Move/Copy:** bodies turned about an axis (origin axis, sketch line, a picked edge or
+  cylinder), then moved by ΔX, ΔY, ΔZ; Copy keeps the original.
+- Sizes preview while you type (after a short pause, at once on Enter).
+- Editing one from the timeline rolls the timeline back to it while the dialog is open; OK,
+  another dialog or closing the window rolls it forward again.
 
 **Assemblies** (Assemble tab):
 
 - **New component** adds a component and makes it active. **Insert copy** adds another
   occurrence of the active component.
 - **Joints:** rigid, revolute, slider and cylindrical. A joint origin is either picked on
-  a face (it snaps to hole and shaft centres) or chosen from a list: the component origin,
-  or any sketch point or circle centre with Z along the sketch normal or a sketch axis.
+  the model or chosen from a list: the component origin, or any sketch point or circle
+  centre with Z along the sketch normal or a sketch axis.
+  - Picking works as in Fusion. Hover a face or edge and its snap points show as small
+    glyphs: the face's centre, a cylinder's axis, circle and arc centres, edge midpoints
+    and vertices. The one nearest the pointer is marked with its Z axis, and a click
+    takes it.
+  - A joint on a snap point follows its geometry. Move or resize the hole a pin sits in,
+    and the pin goes with it.
   - The angle and offset are worksheet expressions, so a calculation can drive the
     mechanism. A slider drives revolute joints by hand.
   - **Flip** makes mating faces point at each other.
@@ -910,6 +991,9 @@ visible lines disappear.
     itself (`shaft.A`, `shaft.Ix`, `shaft.Wx` …)
   - every named dimension (`asm.D_f`) and every moving joint (`asm.Spin` in degrees, a
     slider in length)
+  - each thread and tapped hole: `bolt.Thread1.P`, the pitch diameter `d2`, the minor
+    diameters `d1` (nut) and `d3` (bolt), the stress area `As` = π/4·((d2+d3)/2)² and the
+    tap drill `drill`
 - **Live:** edits travel to the worksheet at once, which recalculates and sends the results
   back. Undo in the CAD window applies to the part only. The worksheet window must stay
   open, since it owns the document. The page shows the 3-D model, the first sketch, or both.
@@ -953,6 +1037,10 @@ bevels them, and a few borderline roundings one kernel accepts the other refuses
 - Section views, sketch outlines, measuring, interference, drawings and exports are
   requests to the worker. In a separate CAD window, a kernel worker of its own answers.
   The views show *Loading the 3-D kernel…* or *Rebuilding…* meanwhile.
+- If that worker fails (an error escapes it), whatever it was asked fails with a message,
+  and the next request starts a fresh one. A view whose part was being built asks once
+  more; if the kernel stops on it again, the view says why instead of waiting. If neither kernel can load, the worksheet and
+  the CAD window both say *No 3-D kernel*.
 
 **Exact display and selection.** The 3-D views draw the B-rep: curved faces are smoothly
 shaded, and edges are the true edges as crisp lines (no seams). In the CAD window:
@@ -965,13 +1053,41 @@ shaded, and edges are the true edges as crisp lines (no seams). In the CAD windo
   - totals for several picks
   - for two picks, the angle and parallel gap between them and, with **Distance**, the
     exact smallest distance
-- **Rebuilds:** picks follow their faces through a rebuild, by the faces' history.
+- **Rebuilds:** picks follow their faces and edges through a rebuild, by their names (below).
 - **Other tools:**
   - **Measure** (M) works on faces, edges and snapped corners, on the exact geometry.
-  - **Sketch on a face** takes the face's exact plane.
-  - **Joints** snap to cylinder axes and hole or shaft rims.
+  - **Sketch on a face** takes the face's exact plane, and follows it.
+  - **Joints** snap to face centres, axes, circle centres, edge midpoints and vertices.
+  - **Fillet, chamfer, shell, draft, press-pull** start from the picked edges or faces.
 - **Drawings:** the hidden-line views come from the worker and are dimensioned from the
   exact box.
+
+**References that survive edits.** Every face, edge and vertex has a name from the feature
+history, the same after every rebuild. Sketches on faces, joints on geometry, the modify
+features and the selection store these names:
+
+- **Faces** are named after the feature and the sketch line or cap that made them
+  (`f1/side:l3`, `f1/end`, `f2/hole0:wall`). Pattern and mirror copies carry a prefix
+  (`f3.2.f2/hole0:wall`).
+  - A face that a cut splits keeps its name on both pieces, numbered `#1`, `#2` in the
+    order of their place on the face (along its own x axis, on a flat face). Faces that a
+    join merges keep both names (`f1/end+f2/end`).
+  - The walls of a thin extrusion are named after the line they offset (`side:l0:out`,
+    `side:l0:in`).
+  - Faces a modify feature makes are named after what they came from: a rounding
+    `f5/round:…` after its edge, a shell's inner wall `f6/in:…` after the face it offsets,
+    the cut of a split `f7/split`. Drafted, press-pulled and moved faces keep their names.
+- **Edges** are named after their two faces. **Vertices** are named after the faces that
+  meet there.
+- **Finding a reference again:** first by its name. A split face or edge gives the piece
+  nearest to where it was, and the first piece on a tie. A renamed entity that has not
+  moved is found by its geometry.
+- **Lost references:** when nothing matches, the timeline marks the item yellow:
+  *reference lost: the end face of Boss, which the sketch is on, is gone*.
+  - A sketch then keeps the plane it had when it was made.
+  - A joint keeps the origin where it was picked.
+  - The worksheet shows the message too. Nothing is ever moved to some other face.
+- **Order:** a sketch can only refer to faces built before it in the timeline.
 
 **Exchange:**
 
@@ -995,21 +1111,62 @@ The **CAD part design** example covers three things:
 The **CAD: shells, roundings, lofts** example has a thin-walled enclosure, a knob with a
 chamfered bottom and a rounded top, and a duct lofted from a rectangle to a circle.
 
+The **CAD: sweeps, coils, threads** example has a compression spring (a coil; its rate
+from the wire and coil sizes), an M12 bolt with a modeled thread whose stress area feeds
+a tension check, and a pipe swept round a bend on a construction plane normal to its path
+(its volume against the closed form).
+
 What it is not, honestly:
 
-- **Edge rounding only on extrusions:** fillets and chamfers work on the start and end
-  edges of an extrusion (plus sketch fillets for the side edges). You cannot pick any
-  3-D edge to round yet, and there are no drafts. The B-rep kernel can do both; the
-  features and picking are still to come.
+- **Modify features, the limits:**
+  - OpenCascade always rounds and chamfers along the whole tangent chain of a picked edge.
+    With Tangent chain off, an edge whose chain goes on is refused rather than rounded alone.
+  - Press-pull extends the neighbours of a flat face bounded by straight edges with flat
+    faces around it. A face with a hole, a curved edge or a curved neighbour (next to a
+    rounding) moves as a straight prism: a neighbour not square to it gets a step instead
+    of being extended, and at a corner with other moved faces that is not square a small
+    piece can stay open. Cylinders grow or shrink between their two ends; other curved
+    faces cannot be press-pulled.
+  - A shell whose opening is tangent to a face it keeps (the top of a box with a rounded
+    rim) is made as the body less its offset inside and the opening pushed through: the
+    rounding stays as a lip curving in. Outside shells with such an opening are refused.
+  - A wall exactly as thick as the radius of a rounding is refused (its offset would shrink
+    to an edge, which OpenCascade cannot make): make it a little thinner or thicker.
+  - There is no Delete face: this OpenCascade build has no defeaturing algorithm.
+  - The mesh kernel (only while OpenCascade loads, or if it cannot) makes no fillets,
+    chamfers, shells, drafts or press-pulls; it splits and moves bodies.
 - **Faceted where it matters little:** drawings are hidden-line views of the display
   mesh, so circles in them are fine polylines (their dimensions are exact). The section
-  view's cut bodies cannot be picked. No sweeps along paths and no splines; lofts are
-  ruled (straight between the two profiles).
-- **Selection is not used by features yet:** picked faces and edges feed the inspector
-  and Measure; fillet, chamfer, shell and draft on them are still to come.
+  view's cut bodies cannot be picked. No splines; lofts are ruled (straight between the
+  two profiles).
+- **Sweeps, coils, threads, ribs, the limits:**
+  - A sweep takes a twist or a taper, not both, and neither on a closed path. Coils have
+    no taper angle and no flat spiral.
+  - A rib's ends go straight towards the body along the curve's normal (its curve is not
+    extended to meet faces), and a curve that turns back on itself is refused. There is no
+    Web.
+  - Threads are the basic ISO profile: no tolerance classes, no runout, only metric. A
+    modeled thread on a mesh-kernel build waits for OpenCascade (a tapped hole is drilled
+    to its tap drill until then). Cosmetic threads are not in drawings yet.
+  - The tangent plane is for cylinders only. A vertex is picked as the corner nearest the
+    click on a face or edge; sketch points and curves are chosen from the dialog's lists.
+  - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix
+    (ribs it makes too).
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
-- **Face sketches:** a sketch on a face keeps that face's position from when it was made;
-  it does not follow later edits.
+- **References:**
+  - Names come from history. An edit that rebuilds a face from another sketch line (a
+    line deleted and drawn again) gives it a new name. A reference to it is then lost
+    unless the face has not moved.
+  - A reference remembers where its entity was when it was picked, not where it was at
+    the last rebuild. So after many edits, the piece of a split face it picks is the one
+    nearest that first place.
+  - Sketches on faces made before this version keep their fixed plane.
+  - A sketch follows one point of its face (a corner or circle centre at its origin), so
+    a face that turns within its own plane does not turn the sketch.
+  - The mesh kernel (only while OpenCascade loads, or if it cannot) has no names. It
+    finds a referenced face or edge only where it has not moved, and the timeline says so.
+    A sketch or joint picked while it draws the part gets no name either, so it follows
+    its face only by place.
 - **Joints:** no joint limits, motion studies or contact.
 - **Drawings:** only the overall sizes are dimensioned automatically. There are no section
   views on the sheet and no GD&T.
@@ -1105,7 +1262,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no free 3-D edge fillets, drafts or sweeps yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |

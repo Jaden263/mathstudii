@@ -13,9 +13,10 @@ import {
   activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, hasFeatures, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
   placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
 } from './design';
-import { boxOf, kernel, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
+import { boxOf, kernel, kernelFailure, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
 import { designKey } from './keys';
 import { dimensionValue } from './dimension';
+import { parseThread, threadIn } from './threads';
 import { occ, occFailure } from './occ/kernel';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
@@ -74,10 +75,16 @@ export interface DesignResult extends DesignNumbers {
   brep?: boolean;
   /** Why the B-rep kernel is not there (it could not load): the mesh kernel built the part. */
   brepError?: string;
+  /** Neither kernel could load: why the mesh kernel did not (nothing built the part). */
+  kernelError?: string;
   /** Key of the built design (keys.ts): its display data comes separately, once per key. */
   display?: string;
   /** The errors of resolving the numbers, before the build added its own (`errors` has both). */
   resolveErrors?: Record<string, string>;
+  /** Items and joints whose references were lost but which still build (a sketch whose face is gone). */
+  warnings?: Record<string, string>;
+  /** The sketch planes as resolved, before the build moved sketches on faces onto them (`frames` are as built). */
+  resolveFrames?: Record<string, Frame>;
 }
 
 export { designNumbers } from './keys';
@@ -151,6 +158,17 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
     if (!(n > 0)) throw new Error(`the ${what} must be positive`);
     return n;
   };
+  /** A plain number (a count of turns, a scale factor, a fraction). */
+  const ratio = (src: string | undefined, fallback: string, what: string) => {
+    const v = evalExpr((src ?? '').trim() || fallback);
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`the ${what} must be a plain number`);
+    return v;
+  };
+  /** The ISO dimensions of a thread designation, in part units. */
+  const thread = (size: string) => {
+    const s = threadIn(parseThread(size), unit);
+    return { P: s.P, dM: s.d, d2: s.d2, d1: s.d1, d3: s.d3, As: s.As, drill: s.drill };
+  };
   for (const comp of design.components) {
     try {
       const src = comp.density?.trim() || partDensity.trim();
@@ -191,8 +209,14 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
             break;
           }
           case 'hole': {
-            p.d = positive(value(item.d, '6', 'L', 'diameter'), 'diameter');
+            // a tapped hole is drilled to the tap drill of its thread
+            if (item.tap) Object.assign(p, thread(item.tap.size), { d: thread(item.tap.size).drill });
+            else p.d = positive(value(item.d, '6', 'L', 'diameter'), 'diameter');
             if (!item.through) p.depth = positive(value(item.depth, '10', 'L', 'depth'), 'depth');
+            if (item.tap?.depth?.trim()) {
+              p.tdepth = positive(value(item.tap.depth, '10', 'L', 'thread depth'), 'thread depth');
+              if (!item.through && p.tdepth > p.depth * (1 + 1e-9)) throw new Error('the thread is deeper than the hole');
+            }
             if (item.style === 'counterbore') {
               p.cbD = value(item.cbD, `${p.d * 1.8}`, 'L', 'counterbore diameter');
               p.cbDepth = positive(value(item.cbDepth, `${p.d * 0.6}`, 'L', 'counterbore depth'), 'counterbore depth');
@@ -204,6 +228,89 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
               if (!(p.csD > p.d)) throw new Error('the countersink must be wider than the hole');
               if (!(p.csAngle > 0 && p.csAngle < Math.PI)) throw new Error('the countersink angle must be between 0 and 180°');
             }
+            break;
+          }
+          case 'fillet': {
+            item.sets.forEach((st, i) => {
+              p[`r${i}`] = positive(value(st.r, '2', 'L', 'radius'), 'radius');
+              if (st.r2?.trim()) p[`re${i}`] = positive(value(st.r2, '2', 'L', 'end radius'), 'end radius');
+            });
+            break;
+          }
+          case 'chamfer': {
+            p.d = positive(value(item.d, '1', 'L', 'distance'), 'distance');
+            if (item.type === 'two') p.d2 = positive(value(item.d2, item.d, 'L', 'second distance'), 'second distance');
+            if (item.type === 'angle') {
+              p.angle = value(item.angle, '45', 'A', 'angle');
+              if (!(p.angle > 0 && p.angle < Math.PI / 2)) throw new Error('the chamfer angle must be between 0 and 90°');
+            }
+            break;
+          }
+          case 'shell':
+            p.t = positive(value(item.t, '2', 'L', 'wall thickness'), 'wall thickness');
+            break;
+          case 'draft': {
+            p.angle = value(item.angle, '3', 'A', 'draft angle');
+            if (!(Math.abs(p.angle) < Math.PI / 2) || !p.angle) throw new Error('the draft angle must be between −90° and 90°, and not 0');
+            break;
+          }
+          case 'presspull': {
+            p.d = value(item.d, '5', 'L', 'distance');
+            if (!p.d) throw new Error('the distance must not be 0');
+            break;
+          }
+          case 'split':
+            p.offset = item.offset?.trim() ? value(item.offset, '0', 'L', 'plane offset') : 0;
+            break;
+          case 'sweep': {
+            p.twist = item.twist?.trim() ? value(item.twist, '0', 'A', 'twist angle') : 0;
+            p.scale = item.scale?.trim() ? positive(ratio(item.scale, '1', 'end scale'), 'end scale') : 1;
+            break;
+          }
+          case 'coil': {
+            p.d = positive(value(item.d, '20', 'L', 'diameter'), 'diameter');
+            p.size = positive(value(item.size, '2', 'L', 'section size'), 'section size');
+            const revs = () => positive(ratio(item.revs, '5', 'number of revolutions'), 'number of revolutions');
+            const height = () => positive(value(item.height, '50', 'L', 'height'), 'height');
+            const pitch = () => positive(value(item.pitch, '5', 'L', 'pitch'), 'pitch');
+            if (item.mode === 'revs-height') {
+              p.revs = revs();
+              p.height = height();
+              p.pitch = p.height / p.revs;
+            } else if (item.mode === 'revs-pitch') {
+              p.revs = revs();
+              p.pitch = pitch();
+              p.height = p.revs * p.pitch;
+            } else {
+              p.height = height();
+              p.pitch = pitch();
+              p.revs = p.height / p.pitch;
+            }
+            break;
+          }
+          case 'thread': {
+            Object.assign(p, thread(item.size));
+            if (item.length?.trim()) p.length = positive(value(item.length, '10', 'L', 'thread length'), 'thread length');
+            if (item.offset?.trim()) p.offset = value(item.offset, '0', 'L', 'thread offset');
+            break;
+          }
+          case 'rib':
+            p.thickness = positive(value(item.thickness, '2', 'L', 'thickness'), 'thickness');
+            if (item.depth?.trim()) p.depth = positive(value(item.depth, '10', 'L', 'depth'), 'depth');
+            break;
+          case 'plane': {
+            const def = item.def;
+            if (def.type === 'offset') p.d = value(def.d, '10', 'L', 'offset');
+            if (def.type === 'angle' || def.type === 'tangent') p.angle = value(def.angle, '0', 'A', 'angle');
+            if (def.type === 'path') {
+              p.at = ratio(def.at, '0', 'position along the path');
+              if (!(p.at >= 0 && p.at <= 1)) throw new Error('the position along the path is a fraction from 0 (its start) to 1 (its end)');
+            }
+            break;
+          }
+          case 'move': {
+            for (const k of ['dx', 'dy', 'dz'] as const) p[k] = item[k]?.trim() ? value(item[k], '0', 'L', k) : 0;
+            p.angle = item.angle?.trim() ? value(item.angle, '0', 'A', 'angle') : 0;
             break;
           }
           case 'pattern': {
@@ -231,7 +338,7 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
       errors[j.id] = msg(e);
     }
   }
-  return { sketches, frames, params, errors };
+  return { sketches, frames, params, errors, unit };
 }
 
 const emptyResult = (): CadResult => ({
@@ -250,8 +357,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   result.ok = Object.values(numbers.sketches).every((s) => s.ok);
 
   const dr: DesignResult = {
-    ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, display: designKey(design, numbers),
-    bodies: {}, components: {}, placements: {}, kernel: false,
+    ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, frames: { ...numbers.frames }, resolveFrames: numbers.frames, warnings: {},
+    display: designKey(design, numbers), bodies: {}, components: {}, placements: {}, kernel: false,
   };
   const density = (cid: string) => numbers.params[cid]?.density;
   const compMass = new Map<string, Mass3[]>();
@@ -281,6 +388,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       compMass.set(c.id, masses);
     }
     Object.assign(dr.errors, m.errors);
+    Object.assign(dr.warnings!, m.warnings);
+    Object.assign(dr.frames, m.frames);
     dr.placements = m.placements;
     dr.box = m.box;
   } else if (K) {
@@ -290,6 +399,8 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       for (const c of design.components) {
         const cb = built.components.get(c.id)!;
         Object.assign(dr.errors, cb.errors);
+        Object.assign(dr.warnings!, cb.warnings);
+        Object.assign(dr.frames, cb.frames);
         const masses: Mass3[] = [];
         dr.bodies[c.id] = cb.bodies.map((b) => {
           if (b.solid.isEmpty()) return { id: b.id, name: b.name, feature: b.feature, empty: true };
@@ -300,6 +411,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
         compMass.set(c.id, masses);
       }
       Object.assign(dr.errors, built.errors);
+      Object.assign(dr.warnings!, built.warnings);
       dr.placements = built.placements;
       dr.box = boxOf(design.occurrences.filter((o) => !o.hidden).flatMap((o) => placedSolids(built, design, o.id).map((p) => p.solid))) ?? undefined;
     } finally {
@@ -307,11 +419,14 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     }
   } else {
     const inp = buildInputs(design, numbers);
+    // both kernels failed to load: nothing is coming, say so instead of waiting
+    const none = failure && kernelFailure();
+    if (none) dr.kernelError = none;
     for (const c of design.components) {
       const ex = exactComponent(design, c, inp);
       if (!ex) {
-        result.needsKernel = true;
-        for (const i of activeItems(c)) if (i.kind !== 'sketch' && !i.suppressed) dr.errors[i.id] ??= 'loading the 3-D kernel…';
+        if (!none) result.needsKernel = true;
+        for (const i of activeItems(c)) if (i.kind !== 'sketch' && !i.suppressed) dr.errors[i.id] ??= none ? 'the 3-D kernel could not load' : 'loading the 3-D kernel…';
         compMass.set(c.id, []);
         dr.bodies[c.id] = [];
         continue;
@@ -339,6 +454,12 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   for (const c of design.components) {
     if (numbers.errors[c.id]) result.featureError ??= numbers.errors[c.id];
     for (const i of activeItems(c)) if (i.kind !== 'sketch' && dr.errors[i.id] && !i.suppressed) result.featureError ??= `${i.name}: ${dr.errors[i.id]}`;
+  }
+  // a lost reference builds on, but the worksheet hears of it (the mesh kernel cannot follow
+  // references at all: that is no news while OpenCascade loads)
+  if (dr.brep) {
+    for (const c of design.components) for (const i of activeItems(c)) if (dr.warnings?.[i.id]) result.featureError ??= `${i.name}: ${dr.warnings[i.id]}`;
+    for (const j of design.joints) if (dr.warnings?.[j.id]) result.featureError ??= `${j.name}: ${dr.warnings[j.id]}`;
   }
   result.design = dr;
   return { result };
@@ -378,6 +499,11 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
       for (const i of c.items) {
         const s = isSketch(i) ? d.sketches[i.id]?.section : undefined;
         if (s && identifier(i.name)) sub[identifier(i.name)] = section(s);
+        // ISO thread data of threads and tapped holes: part.Thread1.As, part.Hole1.P …
+        const t = d.params[i.id];
+        if ((i.kind === 'thread' || (i.kind === 'hole' && i.tap)) && t?.P && identifier(i.name)) {
+          sub[identifier(i.name)] = { d: L(t.dM), P: L(t.P), d2: L(t.d2), d1: L(t.d1), D1: L(t.d1), d3: L(t.d3), As: L(t.As, 2), drill: L(t.drill) };
+        }
       }
       if (id && design.components.length > 1 && !(id in value)) value[id] = sub;
       else if (id && design.components.length === 1) {

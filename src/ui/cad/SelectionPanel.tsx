@@ -4,7 +4,8 @@
 import { useEffect, useState } from 'react';
 import { Ruler, X } from 'lucide-react';
 import type { BuildResult, EdgeInfo, FaceInfo } from '../../cad/buildResult';
-import type { CadDesign } from '../../cad/design';
+import { itemName, type CadDesign } from '../../cad/design';
+import { faceWords } from '../../cad/topology';
 import type { CadResult } from '../../cad/evaluate';
 import { designNumbers } from '../../cad/keys';
 import type { Distance, EntityRef } from '../../cad/kernel/protocol';
@@ -13,6 +14,8 @@ import { m4Dir, norm3, type Vec3 } from '../../cad/solid';
 import { fmtNum } from './cadRender';
 import { isSuperseded, kernelRequest } from './kernelClient';
 import { num } from './SketchPanel';
+import { threadsOn } from './constructView';
+import { parseThread } from '../../cad/threads';
 
 const SURFACE: Record<string, string> = { plane: 'Plane', cylinder: 'Cylinder', cone: 'Cone', sphere: 'Sphere', torus: 'Torus', bspline: 'Freeform', other: 'Surface' };
 const CURVE: Record<string, string> = { line: 'Line', circle: 'Circle', ellipse: 'Ellipse', bspline: 'Spline', other: 'Curve' };
@@ -25,10 +28,15 @@ export function pickLabel(p: Pick): string {
 }
 
 /** Rows describing a face or edge (directions turned into assembly coordinates by M). */
-function facts(info: FaceInfo | EdgeInfo, M: number[], u: string): [string, string][] {
+function facts(info: FaceInfo | EdgeInfo, M: number[], u: string, design: CadDesign): [string, string][] {
   const dir = (d: Vec3) => vec(norm3(m4Dir(M, d)));
   const rows: [string, string][] = [];
   if ('area' in info) {
+    // what its persistent name says made it
+    if (info.key) {
+      const w = faceWords(info.key, (id) => itemName(design, id)).replace(/^the /, '');
+      rows.push(['Made by', w[0].toUpperCase() + w.slice(1)]);
+    }
     rows.push(['Area', `${num(info.area)} ${u}²`]);
     if (info.frame) rows.push(['Normal', dir(info.frame.n)]);
     if (info.radius !== undefined) rows.push([info.type === 'torus' ? 'Major radius' : 'Radius', `${num(info.radius)} ${u}`]);
@@ -89,11 +97,28 @@ export function SelectionPanel({ picks, build, design, result, unit, onBody, onC
           const M = build.placements[p.occ]?.matrix;
           if (!b || !info || !M) return null;
           const occ = occurrenceName(design, p.occ);
+          // threads on a face: cosmetic ones are only an attribute, so this is where they show
+          const cid = design.occurrences.find((o) => o.id === p.occ)?.component ?? '';
+          const threads = p.kind === 'face' ? threadsOn(design, result, cid, b, p.index) : [];
           return (
             <li key={pickId(p)}>
               <div className="cadw-sel-title">{pickLabel(p)} <em>on <button className="link" onClick={() => onBody(p.occ, p.body)}>{b.name}</button>{occ && ` · ${occ}`}</em></div>
               <table className="props-table"><tbody>
-                {facts(info, M, u).map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}
+                {facts(info, M, u, design).map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}
+                {threads.map((t) => {
+                  let s;
+                  try {
+                    s = parseThread(t.size);
+                  } catch {
+                    return null;
+                  }
+                  const internal = 'outward' in info && info.outward === false;
+                  return [
+                    <tr key={`${t.name}:t`}><td>Thread</td><td><b>{s.name.replace('x', ' × ')}</b> {internal ? 'internal' : 'external'}, {t.modeled ? 'modeled' : 'cosmetic'} ({t.name})</td></tr>,
+                    <tr key={`${t.name}:p`}><td>P · d₂ · {internal ? 'D₁' : 'd₃'}</td><td>{num(s.P)} · {num(s.d2, 5)} · {num(internal ? s.d1 : s.d3, 5)} mm</td></tr>,
+                    ...(internal ? [] : [<tr key={`${t.name}:a`}><td>Stress area A_s</td><td>{num(s.As, 4)} mm²</td></tr>]),
+                  ];
+                })}
               </tbody></table>
             </li>
           );

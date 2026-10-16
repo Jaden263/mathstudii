@@ -18,7 +18,7 @@ import { initOcc, occ, occFailure, renewOcc, type OC } from '../occ/kernel';
 import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc, visibleBoxOcc } from '../occ/query';
 import { cachedResultOcc } from '../occ/result';
 import { interferenceMesh, meshBuilt, outlineMesh, sectionMesh, stlMesh } from './meshFallback';
-import { buffersOf, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
+import { buffersOf, NO_KERNEL, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
 
 let loadBrep: () => Promise<unknown> = () => initOcc();
 let loadMesh: () => Promise<unknown> = () => initKernel();
@@ -116,8 +116,9 @@ export function viewBox(b: { min: Vec3; max: Vec3 }, v: ViewSpec): ViewLines['bo
 /** Answer one request; `transfer` lists buffers nothing else holds on to. */
 export async function answer(req: KernelRequest): Promise<{ value: unknown; kernel: 'brep' | 'mesh' | 'none'; transfer: ArrayBuffer[] }> {
   const hasBrep = await ensureBrep();
-  if (!hasBrep || !brepNow()) await ensureMesh();
-  if (req.op === 'warm') return { value: { brep: hasBrep }, kernel: brepNow() ? 'brep' : 'mesh', transfer: [] };
+  const hasMesh = !hasBrep || !brepNow() ? await ensureMesh() : !!kernel();
+  if (req.op === 'warm') return { value: { brep: hasBrep, mesh: hasMesh }, kernel: brepNow() ? 'brep' : hasMesh ? 'mesh' : 'none', transfer: [] };
+  if (!hasBrep && !hasMesh) throw new Error(NO_KERNEL);
   const oc = brepNow(), K = kernel();
   const which = oc ? 'brep' : K ? 'mesh' : 'none';
   const { design, numbers } = req;
@@ -135,7 +136,7 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
     if (box) for (const s of req.specs) if (s.view !== 'iso') views[s.key].box = viewBox(box, STANDARD_VIEWS[s.view]);
     return { value: views, kernel: which, transfer: [] };
   }
-  if (!oc && !K) throw new Error('the 3-D kernel could not load');
+  if (!oc && !K) throw new Error(NO_KERNEL);
   switch (req.op) {
     case 'section': {
       const value = oc ? sectionOcc(oc, buildDesignCached(oc, design, numbers), design, req.plane) : sectionMesh(meshBuilt(K!, design, numbers), design, req.plane);

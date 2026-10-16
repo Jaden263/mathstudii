@@ -99,6 +99,21 @@ describe('pickScene', () => {
     expect(pickScene({ origin: [3, 0, 10], dir: [0, 0, -1] }, meshes)).toEqual({ kind: 'none' });
   });
 
+  it('frames the bodies without construction geometry reaching past them, and that alone in an empty scene', () => {
+    const meshes = [{ key: 'a', mesh: cube, color: [1, 0, 0] as Vec3 }];
+    // an axis 40 long and a plane square 10 across far off, both unframed
+    const axis = { key: 'cl:a1', segments: new Float32Array([0, 0, -20, 0, 0, 20]), color: [1, 0.5, 0] as Vec3, unframed: true };
+    const plane = { key: 'cp:p1', origin: [30, 0, 0] as Vec3, u: [0, 1, 0] as Vec3, v: [0, 0, 1] as Vec3, size: 5, color: [1, 0.5, 0] as Vec3, unframed: true };
+    const b = sceneBounds(meshes, [axis], [plane])!;
+    close(b.min, [-1, -1, -1]);
+    close(b.max, [1, 1, 1]);
+    // all that is drawn (for the depth range)
+    close(sceneBounds(meshes, [axis], [plane], true)!.max, [30, 5, 20]);
+    const alone = sceneBounds([], [axis], [plane])!;
+    close(alone.min, [0, -5, -20]);
+    close(alone.max, [30, 5, 20]);
+  });
+
   it('picks a plane only when no body is nearer', () => {
     const meshes = [{ key: 'a', mesh: cube, color: [1, 0, 0] as Vec3 }];
     const planes = [

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initKernel } from './solid';
 import { evaluateWorksheet, type CadResult, type MathResult } from '../engine/evaluator';
-import { cadExample } from '../model/examples';
+import { cadExample, sweepExample } from '../model/examples';
 import { designOf } from './design';
 import { designKey, designNumbers } from './keys';
 import { withSolution } from './edit';
@@ -92,5 +92,36 @@ describe('CAD example worksheet', () => {
     expect(timelineCache.ran).toBe(ran);
     // V of the stepped shaft by Pappus: Ø40 × 60 and Ø50 × 120
     expect(Math.abs(back[0].mass!.V / (Math.PI * (20 ** 2 * 60 + 25 ** 2 * 120)) - 1)).toBeLessThan(1e-9);
+  });
+});
+
+describe('CAD sweeps example worksheet', () => {
+  it('builds the spring, the threaded bolt and the swept pipe; the worksheet uses their data', () => {
+    const ws = sweepExample();
+    const out = evaluateWorksheet(ws);
+    const tex = new Map<string, string>();
+    for (const r of ws.regions) {
+      const res = out.results.get(r.id);
+      if (r.kind === 'math') {
+        expect((res as MathResult).error, r.source).toBeUndefined();
+        tex.set(r.source, (res as MathResult).tex);
+      }
+    }
+    const cad = ws.regions.find((r) => r.kind === 'cad')!;
+    const res = out.results.get(cad.id) as CadResult;
+    expect(res.featureError).toBeUndefined();
+    expect(res.design!.brep).toBe(true);
+    const V = (cid: string) => res.design!.components[cid]!.V;
+    // coil: π (d/2)² n √((π D)² + p²); the helix is approximated to 10⁻⁷
+    expect(Math.abs(V('cs') / (Math.PI * 1.5 ** 2 * 6 * Math.hypot(30 * Math.PI, 8)) - 1)).toBeLessThan(1e-6);
+    // pipe: the annulus times the path, 80 + π/2·40 + 80 (exact: cylinders and a torus)
+    expect(Math.abs(V('cp') / ((Math.PI / 4) * (400 - 256) * (160 + 20 * Math.PI)) - 1)).toBeLessThan(1e-9);
+    // bolt: head + shank less the thread's groove (screw flux, sweep.test.ts); a little less than the plain bolt
+    const plain = (3 * Math.sqrt(3) / 2) * (18 / Math.sqrt(3)) ** 2 * 7.5 + Math.PI * 36 * 50;
+    expect(V('cb')).toBeLessThan(plain);
+    expect(V('cb')).toBeGreaterThan(plain - 20 * 30);
+    // k = G d⁴ / (8 D³ n) = 81 500 · 81 / (8 · 27 000 · 6) = 5.094 N/mm; F_t,Rd = 0.9 · 800 · 84.27 / 1.25 = 48.5 kN
+    expect([...tex.entries()].find(([s]) => s.startsWith('k_s'))![1]).toContain('5.09');
+    expect([...tex.entries()].find(([s]) => s.startsWith('F_tRd'))![1]).toContain('48.5');
   });
 });

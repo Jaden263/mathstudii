@@ -157,6 +157,16 @@ export function trsf(oc: OC, t: Arena, M: M4): gp_Trsf {
 
 export const xyz = (p: { X(): number; Y(): number; Z(): number }): Vec3 => [p.X(), p.Y(), p.Z()];
 
+export function occBox(oc: OC, shapes: TopoDS_Shape[]): { min: Vec3; max: Vec3 } | null {
+  return scratch((t) => {
+    const bb = t.add(new oc.Bnd_Box());
+    // the optimal box hugs curved faces (the plain one is padded by their control points)
+    for (const s of shapes) oc.BRepBndLib.AddOptimal(s, bb, false, false);
+    if (bb.IsVoid()) return null;
+    return { min: [bb.GetXMin(), bb.GetYMin(), bb.GetZMin()], max: [bb.GetXMax(), bb.GetYMax(), bb.GetZMax()] };
+  });
+}
+
 // ------------------------------------------------------------ topology
 
 /**

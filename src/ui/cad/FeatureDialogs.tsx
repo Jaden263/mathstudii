@@ -4,11 +4,12 @@ import type { ReactNode } from 'react';
 import { Check, X } from 'lucide-react';
 import type { CadResult } from '../../cad/evaluate';
 import {
-  FEATURE_LABEL, isSketch, profileKey,
-  type CadComponent, type CadDesign, type CadJoint, type DesignFeature, type DesignSketch, type Direction, type Extent, type FeatureOp, type JointOrigin,
+  FEATURE_LABEL, isConstruct, isSketch, profileKey,
+  type CadComponent, type CadDesign, type CadJoint, type ConstructItem, type DesignFeature, type DesignItem, type DesignSketch, type Direction, type Extent, type FeatureOp, type JointOrigin,
 } from '../../cad/design';
 import { LazyInput } from '../sketch/SketchProps';
 import { sketchRegions } from './useDesign';
+import { ThreadTable, sizeChoices } from './threadParts';
 
 export function Dialog({ title, error, children, onOk, onCancel, okLabel = 'OK' }: { title: string; error?: string; children: ReactNode; onOk: () => void; onCancel: () => void; okLabel?: string }) {
   return (
@@ -46,7 +47,7 @@ export function Pick<T extends string>({ label, value, options, onChange }: { la
   );
 }
 
-function Checks({ label, items, value, onChange, empty, allLabel }: { label: string; items: [string, string][]; value?: string[]; onChange: (v: string[] | undefined) => void; empty: string; allLabel?: string }) {
+export function Checks({ label, items, value, onChange, empty, allLabel }: { label: string; items: [string, string][]; value?: string[]; onChange: (v: string[] | undefined) => void; empty: string; allLabel?: string }) {
   const sel = value ?? [];
   return (
     <div className="field">
@@ -82,7 +83,7 @@ interface FeatureProps {
 }
 
 /** Bodies of the component before this feature (by the latest result). */
-function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string, string][] {
+export function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string, string][] {
   return (result?.design?.bodies[comp.id] ?? []).map((b) => [b.id, b.name]);
 }
 
@@ -193,7 +194,17 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
           {sketchSel(f.sketch)}
           <Checks label="Centres (sketch points)" items={pts.map((p, i) => [p.id, `Point ${i + 1}`])} value={f.points} onChange={(points) => onChange({ points })} empty="Add points to the sketch for the hole centres" allLabel="All points" />
           <Pick label="Type" value={f.style} options={[['simple', 'Simple'], ['counterbore', 'Counterbore'], ['countersink', 'Countersink']]} onChange={(style) => onChange({ style })} />
-          <Expr label="Diameter" value={f.d} onChange={(d) => onChange({ d }, 'd')} />
+          <label className="check" title="Drilled to the tap drill of an ISO metric thread (d − P), threaded to a depth">
+            <input type="checkbox" checked={!!f.tap} onChange={(e) => onChange({ tap: e.target.checked ? { size: 'M8' } : undefined })} /> Tapped
+          </label>
+          {f.tap ? (
+            <>
+              <Pick label="Thread (ISO 262)" value={f.tap.size} options={sizeChoices()} onChange={(size) => onChange({ tap: { ...f.tap!, size } })} />
+              <ThreadTable size={f.tap.size} />
+              <Expr label="Thread depth" value={f.tap.depth ?? ''} placeholder={f.through ? 'all the way' : 'the hole’s depth'} onChange={(depth) => onChange({ tap: { ...f.tap!, depth: depth || undefined } }, 'tdepth')} />
+              <label className="check" title="True helical geometry (slower to build); otherwise cosmetic"><input type="checkbox" checked={!!f.tap.modeled} onChange={(e) => onChange({ tap: { ...f.tap!, modeled: e.target.checked || undefined } })} /> Modeled thread</label>
+            </>
+          ) : <Expr label="Diameter" value={f.d} onChange={(d) => onChange({ d }, 'd')} />}
           <label className="check"><input type="checkbox" checked={!!f.through} onChange={(e) => onChange({ through: e.target.checked || undefined })} /> Through all</label>
           {!f.through && <Expr label="Depth" value={f.depth} onChange={(depth) => onChange({ depth }, 'depth')} />}
           {f.style === 'counterbore' && (
@@ -213,10 +224,33 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
         </>
       );
     }
+    case 'rib': {
+      // sketches with open curves: lines and arcs
+      const open = sketches.filter((s) => s.sketch.entities.some((e) => e.type === 'line' || e.type === 'arc'));
+      const ds = sketches.find((s) => s.id === f.sketch);
+      const curves = ds?.sketch.entities.filter((e) => e.type === 'line' || e.type === 'arc') ?? [];
+      return (
+        <>
+          <Pick label="Sketch" value={f.sketch} options={open.map((s) => [s.id, s.name])} onChange={(sketch) => onChange({ sketch, curves: undefined })} />
+          <Checks label="Curves" items={curves.map((e) => [e.id, `${e.type} ${ds!.sketch.entities.indexOf(e) + 1}${e.construction ? ' (construction)' : ''}`])} value={f.curves}
+            onChange={(c) => onChange({ curves: c })} empty="The sketch has no lines or arcs" allLabel="All of the sketch (not construction)" />
+          <div className="row2">
+            <Expr label="Thickness" value={f.thickness} onChange={(thickness) => onChange({ thickness }, 'thickness')} />
+            <Pick label="Thickness to" value={f.side ?? 'symmetric'} options={[['symmetric', 'Both sides'], ['one', 'Side of the normal'], ['other', 'Other side']]} onChange={(side) => onChange({ side: side === 'symmetric' ? undefined : side })} />
+          </div>
+          <Pick label="Depth" value={f.depth === undefined ? 'next' : 'depth'} options={[['next', 'To the next faces'], ['depth', 'A depth']]} onChange={(k) => onChange({ depth: k === 'next' ? undefined : '10' })} />
+          {f.depth !== undefined && <Expr label="Depth from the curve" value={f.depth} onChange={(depth) => onChange({ depth }, 'depth')} />}
+          <label className="check"><input type="checkbox" checked={!!f.flip} onChange={(e) => onChange({ flip: e.target.checked || undefined })} /> Flip direction</label>
+          <Pick label="Operation" value={f.op} options={[['join', 'Join'], ['new', 'New body']]} onChange={(op) => onChange({ op })} />
+          {f.op === 'join' && targets(f.targets)}
+          <p className="hint">Draw an open line or arc on a plane through the middle of the rib, its ends on the faces it closes against: it grows in that plane to the body.</p>
+        </>
+      );
+    }
     case 'pattern':
     case 'mirror': {
-      const feats = before.filter((i): i is DesignFeature => !isSketch(i) && (i.kind === 'extrude' || i.kind === 'revolve' || i.kind === 'hole'));
-      const axes = axisOptions(sketches);
+      const feats = before.filter((i): i is DesignFeature => !isSketch(i) && (i.kind === 'extrude' || i.kind === 'revolve' || i.kind === 'hole' || i.kind === 'sweep' || i.kind === 'coil' || i.kind === 'rib'));
+      const axes = axisOptions(sketches, constructBefore(comp, f));
       return (
         <>
           <Pick label="Copy" value={f.of} options={[['features', 'Features'], ['bodies', 'Bodies']]} onChange={(of) => onChange({ of, refs: [] })} />
@@ -244,7 +278,7 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
               )}
             </>
           ) : (
-            <Pick label="Mirror plane" value={f.plane} options={[['XY', 'XY plane'], ['XZ', 'XZ plane'], ['YZ', 'YZ plane'], ...sketches.map((s) => [s.id, `Plane of ${s.name}`] as [string, string])]} onChange={(plane) => onChange({ plane })} />
+            <Pick label="Mirror plane" value={f.plane} options={planeOptions(comp, f)} onChange={(plane) => onChange({ plane })} />
           )}
           {f.of === 'bodies' && <label className="check"><input type="checkbox" checked={!!f.join} onChange={(e) => onChange({ join: e.target.checked || undefined })} /> Join the copies to the original</label>}
         </>
@@ -266,14 +300,30 @@ export function FeatureFields({ design, comp, feature: f, result, unit, onChange
   return null;
 }
 
-export function axisOptions(sketches: DesignSketch[]): [string, string][] {
+export function axisOptions(sketches: DesignSketch[], construct: ConstructItem[] = []): [string, string][] {
   const out: [string, string][] = [['X', 'X axis'], ['Y', 'Y axis'], ['Z', 'Z axis']];
+  for (const a of construct) if (a.kind === 'axis') out.push([a.id, a.name]);
   for (const s of sketches) {
     s.sketch.entities.forEach((e, i) => {
       if (e.type === 'line') out.push([`${s.id}/${e.id}`, `${s.name} · line ${i + 1}${e.construction ? ' (construction)' : ''}`]);
     });
   }
   return out;
+}
+
+/** The construction planes, axes and points of a component before an item (all of them when it is not in the timeline). */
+export function constructBefore(comp: CadComponent, item?: DesignItem): ConstructItem[] {
+  const upto = item ? comp.items.indexOf(item) : -1;
+  return comp.items.slice(0, upto < 0 ? undefined : upto).filter(isConstruct);
+}
+
+/** Planes a feature can use: the origin planes, the planes of sketches and the construction planes before it. */
+export function planeOptions(comp: CadComponent, item?: DesignItem): [string, string][] {
+  const upto = item ? comp.items.indexOf(item) : -1;
+  const before = comp.items.slice(0, upto < 0 ? undefined : upto);
+  return [['XY', 'XY plane'], ['XZ', 'XZ plane'], ['YZ', 'YZ plane'],
+    ...before.filter((i): i is ConstructItem => i.kind === 'plane').map((p) => [p.id, p.name] as [string, string]),
+    ...before.filter(isSketch).map((s) => [s.id, `Plane of ${s.name}`] as [string, string])];
 }
 
 export const featureTitle = (f: DesignFeature) => `${FEATURE_LABEL[f.kind]}${f.name ? ` — ${f.name}` : ''}`;
@@ -284,6 +334,8 @@ export const featureTitle = (f: DesignFeature) => `${FEATURE_LABEL[f.kind]}${f.n
 export function originOptions(design: CadDesign, cid: string): { key: string; label: string; origin: JointOrigin }[] {
   const comp = design.components.find((c) => c.id === cid);
   const out: { key: string; label: string; origin: JointOrigin }[] = [{ key: 'origin', label: 'Component origin (Z up)', origin: { kind: 'origin' } }];
+  // construction points (Z up), axes (Z along them) and planes (Z their normal)
+  for (const ci of comp?.items.filter(isConstruct) ?? []) out.push({ key: `datum/${ci.id}`, label: `${ci.name} (construction ${ci.kind})`, origin: { kind: 'datum', id: ci.id } });
   for (const s of comp?.items.filter(isSketch) ?? []) {
     const label = new Map<string, string>();
     // circle centres first: that is what shafts and holes turn about
@@ -306,7 +358,7 @@ export function originOptions(design: CadDesign, cid: string): { key: string; la
   return out;
 }
 
-export const originKey = (o: JointOrigin) => (o.kind === 'origin' ? 'origin' : o.kind === 'point' ? `${o.sketch}/${o.point}/${o.axis ?? 'n'}` : 'frame');
+export const originKey = (o: JointOrigin) => (o.kind === 'origin' ? 'origin' : o.kind === 'point' ? `${o.sketch}/${o.point}/${o.axis ?? 'n'}` : o.kind === 'datum' ? `datum/${o.id}` : o.kind);
 
 export function JointFields({ design, joint: j, picking, onPick, onChange, values }: {
   design: CadDesign;
@@ -330,13 +382,17 @@ export function JointFields({ design, joint: j, picking, onPick, onChange, value
       <fieldset className="cadd-side">
         <legend>{title}</legend>
         <Pick label="Occurrence" value={end.occ} options={design.occurrences.map((o) => [o.id, occName(o.id)])} onChange={(occ) => onChange({ [s]: { occ, origin: { kind: 'origin' } } } as Partial<CadJoint>)} />
-        <Pick label="Joint origin" value={key} options={[...(key === 'frame' ? [['frame', 'Picked on the model'] as [string, string]] : []), ...opts.map((o) => [o.key, o.label] as [string, string])]}
+        <Pick label="Joint origin" value={key} options={[
+          ...(key === 'frame' ? [['frame', 'Picked on the model'] as [string, string]] : []),
+          ...(end.origin.kind === 'snap' ? [['snap', `On the model: ${end.origin.label}`] as [string, string]] : []),
+          ...opts.map((o) => [o.key, o.label] as [string, string]),
+        ]}
           onChange={(k) => {
             const o = opts.find((x) => x.key === k);
             if (o) onChange({ [s]: { occ: end.occ, origin: o.origin } } as Partial<CadJoint>);
           }} />
         <button className={`btn${picking === s ? ' primary' : ''}`} onClick={() => onPick(picking === s ? null : s)}>
-          {picking === s ? 'Click a face… (Esc to stop)' : 'Pick on the model'}
+          {picking === s ? 'Click a snap point… (Esc to stop)' : 'Pick on the model'}
         </button>
       </fieldset>
     );

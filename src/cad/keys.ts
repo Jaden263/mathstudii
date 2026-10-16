@@ -56,7 +56,7 @@ export function designKey(design: CadDesign, numbers: DesignNumbers): string {
   const bare = { ...design, components: design.components.map((c) => ({ ...c, items: c.items.map((i) => (i.kind === 'sketch' ? { ...i, sketch: curves(i.sketch) } : i)) })) };
   // only the solved geometry of each sketch counts, not its dimension readouts
   const sketches = Object.fromEntries(Object.entries(numbers.sketches).map(([id, s]) => [id, solved(s)]));
-  return `d${hashString(solidJson([bare, sketches, numbers.frames, numbers.params, numbers.errors]))}`;
+  return `d${hashString(solidJson([bare, sketches, numbers.frames, numbers.params, numbers.errors, numbers.unit]))}`;
 }
 
 /** A sketch as the features using it see it: its curves, plane and solved geometry. */
@@ -74,6 +74,26 @@ export function sketchesOf(item: DesignItem): string[] {
   if (item.kind === 'loft') add(item.sketch2);
   if (item.kind === 'mirror' && !['XY', 'XZ', 'YZ'].includes(item.plane)) add(item.plane);
   if (item.kind === 'pattern') for (const a of [item.axis, item.axis2]) if (a?.includes('/')) add(a.split('/')[0]);
+  // planes and axes of modify features: a sketch's plane, or a sketch line `${sketch}/${line}`
+  const plane = (pk: unknown) => typeof pk === 'string' && !['XY', 'XZ', 'YZ'].includes(pk) && add(pk);
+  const axis = (pk: unknown) => typeof pk === 'string' && pk.includes('/') && add(pk.split('/')[0]);
+  if (item.kind === 'split') plane(item.plane);
+  if (item.kind === 'draft') {
+    plane(item.plane);
+    axis(item.pull);
+  }
+  if (item.kind === 'move') axis(item.axis);
+  if (item.kind === 'sweep' && item.path.kind === 'sketch') add(item.path.sketch);
+  // what a coil stands on and construction geometry is made from: sketch planes, points
+  // `${sketch}/${point}` and curves `${sketch}/${curve}` (construction items' own ids add nothing)
+  const picks = (v: unknown) => {
+    if (typeof v === 'string') {
+      if (v.includes('/')) axis(v);
+      else plane(v);
+    } else if (Array.isArray(v)) v.forEach(picks);
+  };
+  if (item.kind === 'coil') [item.plane, item.centre].forEach(picks);
+  if (item.kind === 'plane' || item.kind === 'axis' || item.kind === 'point') for (const [k, v] of Object.entries(item.def)) if (!['type', 'd', 'angle', 'at'].includes(k)) picks(v);
   return out;
 }
 
@@ -82,18 +102,19 @@ export function sketchesOf(item: DesignItem): string[] {
  * name), its evaluated parameters and error, and every sketch it reads.
  */
 export function stepKey(prev: string, item: DesignItem, numbers: DesignNumbers, sketches: (id: string) => DesignSketch | undefined): string {
-  // a name or a hidden sketch never changes a solid (undefined drops out of the JSON)
-  const own = { ...item, name: undefined, ...(item.kind === 'sketch' ? { hidden: undefined, sketch: curves(item.sketch) } : {}) };
+  // a name, a hidden sketch or construction item never changes a solid (undefined drops out of the JSON)
+  const own = { ...item, name: undefined, hidden: undefined, ...(item.kind === 'sketch' ? { sketch: curves(item.sketch) } : {}) };
   const input = item.kind === 'sketch'
     ? [own, sketchInput(item, item.id, numbers)]
-    : [own, numbers.params[item.id] ?? null, numbers.errors[item.id] ?? null, sketchesOf(item).map((id) => sketchInput(sketches(id), id, numbers))];
+    : [own, numbers.params[item.id] ?? null, numbers.errors[item.id] ?? null, sketchesOf(item).map((id) => sketchInput(sketches(id), id, numbers)), numbers.unit];
   return hashString(`${prev}|${solidJson(input)}`);
 }
 
 /**
  * The numbers a design result was built from: a build needs them without the errors the
- * build itself added (`resolveErrors`; results without it have only resolve errors).
+ * build itself added (`resolveErrors`; results without it have only resolve errors) and
+ * with the sketch planes as resolved, not as the build moved them onto their faces.
  */
-export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string> }): DesignNumbers {
-  return { sketches: dr.sketches, frames: dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors };
+export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string>; resolveFrames?: DesignNumbers['frames'] }): DesignNumbers {
+  return { sketches: dr.sketches, frames: dr.resolveFrames ?? dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors, ...(dr.unit ? { unit: dr.unit } : {}) };
 }

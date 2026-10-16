@@ -5484,3 +5484,74 @@ div.pl-cutplot {
     display: none;
   }
 }
+
+/* CAD: references that survive edits (lost ones are warnings) */
+
+.cadw-tl-item.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.region-warn {
+  font-size: 11.5px;
+  color: var(--warn);
+  margin-top: 2px;
+  max-width: 420px;
+  white-space: normal;
+}
+
+/* CAD: modify features (fillet, chamfer, shell, draft, press-pull, split, move) */
+
+.cadd-picked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.cadd-picked b {
+  font-weight: 600;
+}
+
+.cadd-picked button.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cadd-set {
+  cursor: pointer;
+}
+
+.cadd-set.on {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  cursor: default;
+}
+
+.cadd-set.on legend {
+  color: var(--accent);
+}
+
+.cadd-pickfield {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 6px;
+}
+
+.cadd-pickfield .field {
+  min-width: 0;
+}
+
+.cadd-pickfield .btn {
+  margin-bottom: 4px;
+}

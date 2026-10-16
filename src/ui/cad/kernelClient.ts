@@ -5,10 +5,10 @@
 // after the results it belongs to, once per design key, and is kept here for the views.
 import { useEffect, useSyncExternalStore } from 'react';
 import type { BuildResult } from '../../cad/buildResult';
-import { hasFeatures, type CadDesign } from '../../cad/design';
+import { hasFeatures, type CadDesign, type DesignNumbers } from '../../cad/design';
 import type { CadResult } from '../../cad/evaluate';
 import { designKey, designNumbers } from '../../cad/keys';
-import type { DisplayMessage, KernelCall, KernelOp, KernelReply, KernelRequest, KernelValues } from '../../cad/kernel/protocol';
+import { NO_KERNEL, NO_KERNEL_NOTICE, type DisplayMessage, type KernelCall, type KernelOp, type KernelReply, type KernelRequest, type KernelValues } from '../../cad/kernel/protocol';
 
 /** A request replaced by a newer one in its lane before it was sent: nobody waits for it. */
 export class Superseded extends Error {
@@ -30,27 +30,57 @@ export function setKernelHost(h: (() => Worker) | null) {
   host = h;
 }
 
+const startWorker = () => new Worker(new URL('../../cad/kernel/worker.ts', import.meta.url), { type: 'module' });
+let makeWorker: () => Worker = startWorker;
+
+/** How a worker of our own is started (tests pass a stand-in; null: the real one). */
+export function setKernelWorkerFactory(make: (() => Worker) | null) {
+  makeWorker = make ?? startWorker;
+}
+
 /** Fail everything the linked worker was asked and forget the link. */
-function unlink() {
-  for (const p of waiting.values()) p.reject(new Error('the calculation was interrupted — try again'));
+function unlink(why = 'the calculation was interrupted — try again') {
+  for (const p of waiting.values()) p.reject(new Error(why));
   waiting.clear();
   link?.port.close();
   link = null;
 }
 
 /**
- * The host worker was stopped (the calculation was interrupted): fail what it was asked
- * now, not at the next request, so a lane waiting on it moves on.
+ * The host worker was stopped (the calculation was interrupted, or the worker failed):
+ * fail what it was asked now, not at the next request, so a lane waiting on it moves on.
  */
-export function kernelHostStopped() {
-  if (link && link.worker !== own) unlink();
+export function kernelHostStopped(why?: string) {
+  if (link && link.worker !== own) unlink(why);
 }
 
 /** The worker of our own has answered: it loads OpenCascade before its first answer. */
 let ownUp = false;
+/** Neither kernel could load in the worker of our own. */
+let ownDown = false;
+
+/**
+ * Our own worker failed (an error escaped it, or it could not start): what it was asked
+ * fails with a message, and the next request starts a fresh one.
+ */
+function ownCrashed(w: Worker, why: string) {
+  if (w !== own) return;
+  own = null;
+  ownUp = false;
+  w.terminate();
+  if (link?.worker === w) unlink(`the 3-D kernel stopped (${why}) — it starts again with the next request`);
+  changed();
+}
+
+function ownWorker(): Worker {
+  const w = makeWorker();
+  w.addEventListener('error', (e) => ownCrashed(w, (e as ErrorEvent).message || 'it failed'));
+  w.addEventListener('messageerror', () => ownCrashed(w, 'a reply could not be read'));
+  return w;
+}
 
 function port(): MessagePort {
-  const w = host ? host() : (own ??= new Worker(new URL('../../cad/kernel/worker.ts', import.meta.url), { type: 'module' }));
+  const w = host ? host() : (own ??= ownWorker());
   if (link?.worker === w) return link.port;
   // a new worker (the calculation was interrupted): what the old one was asked is lost
   unlink();
@@ -64,7 +94,14 @@ function port(): MessagePort {
     if (!p) return;
     waiting.delete(r.rid);
     if (r.ok) p.resolve(r.value);
-    else p.reject(new Error(r.error));
+    else {
+      // our own worker has no kernel at all: the views say so instead of waiting
+      if (w === own && r.error === NO_KERNEL && !ownDown) {
+        ownDown = true;
+        changed();
+      }
+      p.reject(new Error(r.error));
+    }
   };
   w.postMessage({ kernelPort: ch.port2 }, [ch.port2]);
   link = { worker: w, port: ch.port1 };
@@ -117,7 +154,12 @@ export function kernelRequest<K extends KernelOp>(req: Extract<KernelRequest, { 
 
 /** Load the kernel now (the CAD workspace opened), so the first build does not wait for it. */
 export function warmKernel() {
-  kernelRequest({ op: 'warm' }, 'warm').catch(() => {});
+  kernelRequest({ op: 'warm' }, 'warm').then((v) => {
+    if (!host && !v.brep && !v.mesh && !ownDown) {
+      ownDown = true;
+      changed();
+    }
+  }, () => {});
 }
 
 // ------------------------------------------------------------ display data
@@ -126,6 +168,8 @@ const shown = new Map<string, BuildResult>();
 const SHOWN = 24;
 /** Designs the kernel answered without display data (nothing could build them): nobody waits for it. */
 const missing = new Set<string>();
+/** Display requests that failed (the kernel stopped while building them), by design key, and how often. */
+const failures = new Map<string, { tries: number; why: string }>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -138,6 +182,7 @@ const dropped = new Set<string>();
 function put(key: string, b: BuildResult) {
   shown.delete(key);
   dropped.delete(key);
+  failures.delete(key);
   shown.set(key, b);
   while (shown.size > SHOWN) {
     const old = shown.keys().next().value!;
@@ -167,6 +212,33 @@ export function receiveDisplay(m: DisplayMessage) {
   changed();
 }
 
+/**
+ * Ask the kernel for the display data of a design. A request that fails (the worker
+ * stopped) is asked once more by the view, on a fresh worker; when that fails too the
+ * view says why (`displayGaveUp`) instead of waiting for a build that is not coming.
+ */
+export function requestDisplay(regionId: string, key: string, design: CadDesign, numbers: DesignNumbers): Promise<void> {
+  return kernelRequest({ op: 'display', design, numbers }, `display:${regionId}`).then((b) => {
+    if (b) put(key, b);
+    else missing.add(key);
+    // every view of the part follows, also when the one that asked has gone (an open
+    // workspace over the page shares the part's lane with the page's view)
+    changed();
+  }, (e: unknown) => {
+    if (isSuperseded(e)) return;
+    failures.set(key, { tries: (failures.get(key)?.tries ?? 0) + 1, why: e instanceof Error ? e.message : String(e) });
+    changed();
+  });
+}
+
+/** How often the display request of a design failed. */
+const displayTries = (key: string | undefined) => (key ? failures.get(key)?.tries ?? 0 : 0);
+
+/** Why the display data of a design is not coming: its request failed twice. */
+export function displayGaveUp(key: string | undefined): string | undefined {
+  return displayTries(key) > 1 ? failures.get(key!)!.why : undefined;
+}
+
 const subscribe = (f: () => void) => {
   listeners.add(f);
   return () => listeners.delete(f);
@@ -177,8 +249,18 @@ export interface Shown {
   build: BuildResult | null;
   /** loading: the kernel is loading (or the worksheet evaluating); rebuilding: `build` is the previous design. */
   state: 'loading' | 'rebuilding' | 'ready' | 'none';
-  /** The mesh kernel stood in for OpenCascade. */
+  /** The mesh kernel stood in for OpenCascade, or no kernel could load. */
   notice?: string;
+  /** The notice in two words, for a chip on the view. */
+  noticeShort?: string;
+}
+
+/** What a view says about the kernels: the mesh kernel standing in, or none at all. */
+export function kernelNotice(dr: { brepError?: string; kernelError?: string } | undefined, build: BuildResult | null, ownFailed: boolean): Pick<Shown, 'notice' | 'noticeShort'> {
+  if (dr?.kernelError || ownFailed) return { notice: NO_KERNEL_NOTICE, noticeShort: 'No 3-D kernel' };
+  if (dr?.brepError) return { notice: 'Mesh kernel: OpenCascade did not load, so faces, edges and values are approximate', noticeShort: 'Mesh kernel' };
+  if (build?.kernel === 'mesh') return { notice: 'Mesh kernel: OpenCascade could not build this part, so its faces and edges are approximate', noticeShort: 'Mesh kernel' };
+  return {};
 }
 
 /** The last display data each part showed, kept on screen while a new build is on its way. */
@@ -201,8 +283,9 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
   const solid = hasFeatures(design);
   const key = solid ? dr?.display : undefined;
   const build = key ? shown.get(key) ?? null : null;
+  const tries = displayTries(key);
   useEffect(() => {
-    if (!key || !dr || build || result?.needsBrep || missing.has(key)) return;
+    if (!key || !dr || build || result?.needsBrep || missing.has(key) || tries > 1) return;
     // the calculation worker sends display data right after the results: ask only when it
     // did not come (or in a CAD window of its own, or when it came and was dropped)
     const t = window.setTimeout(() => {
@@ -210,22 +293,20 @@ export function useBuildResult(regionId: string, design: CadDesign, result: CadR
       // a part edited since this result was made waits for its own result (a build of the
       // newer design must not be filed under this one's key)
       if (designKey(design, numbers) !== key) return;
-      kernelRequest({ op: 'display', design, numbers }, `display:${regionId}`).then((b) => {
-        if (b) put(key, b);
-        else missing.add(key);
-        // every view of the part follows, also when the one that asked has gone (an open
-        // workspace over the page shares the part's lane with the page's view)
-        changed();
-      }, () => {});
-    }, displayDelay(key));
+      void requestDisplay(regionId, key, design, numbers);
+    }, tries ? 0 : displayDelay(key));
     return () => window.clearTimeout(t);
-  }, [key, build, regionId, !!result?.needsBrep]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, build, regionId, !!result?.needsBrep, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!solid) return { build: null, state: 'none' };
   if (build) lastShown.set(regionId, build);
-  const notice = dr?.brepError ? 'Mesh kernel: OpenCascade did not load, so faces, edges and values are approximate'
-    : build?.kernel === 'mesh' ? 'Mesh kernel: OpenCascade could not build this part, so its faces and edges are approximate' : undefined;
-  if (build) return { build, state: 'ready', notice };
+  const notice = kernelNotice(dr, build, !host && ownDown);
+  if (build) return { build, state: 'ready', ...notice };
+  // nothing can build it: no kernel loaded, here or in the worksheet
+  if (dr?.kernelError || (!host && ownDown)) return { build: null, state: 'none', ...notice };
+  // the kernel stopped on it twice: say so rather than wait (an edit asks again)
+  const gaveUp = displayGaveUp(key);
+  if (gaveUp) return { build: lastShown.get(regionId) ?? null, state: 'none', notice: gaveUp, noticeShort: 'Not built' };
   // a CAD window's own kernel worker is loading OpenCascade until it first answers
   const state = waitingFor(result, key, { missing: !!key && missing.has(key), kernelUp: !!host || ownUp });
-  return { build: lastShown.get(regionId) ?? null, state, notice };
+  return { build: lastShown.get(regionId) ?? null, state, ...notice };
 }

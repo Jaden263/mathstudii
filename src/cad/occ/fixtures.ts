@@ -4,6 +4,7 @@ import { evaluateWorksheet, type CadResult } from '../../engine/evaluator';
 import { createRegion, emptyWorksheet, type CadRegion } from '../../model/types';
 import type { CadSketch } from '../model';
 import type { CadDesign, DesignItem, DesignNumbers } from '../design';
+import { designNumbers } from '../keys';
 import type { OC } from './kernel';
 
 type P = [number, number];
@@ -64,7 +65,8 @@ export function solve(design: CadDesign, pre: string[] = [], density = '7850 kg/
   ws.regions = [...before, cad];
   const res = evaluateWorksheet(ws).results.get(cad.id) as CadResult;
   if (!res.design) throw new Error(res.error ?? 'the part did not evaluate');
-  return { res, numbers: res.design };
+  // as the app sends them to a kernel: the planes as resolved, not as built
+  return { res, numbers: designNumbers(res.design) };
 }
 
 /** Volumes of the bodies of a component in the result. */
