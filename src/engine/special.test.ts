@@ -281,4 +281,13 @@ describe('hard corners', () => {
     // a Y of high order at small x overflows to −∞, not NaN
     expect(S.besselY(50, 1e-8)).toBe(-Infinity);
   });
+  it('Si, Ci and Fresnel far out, where the continued fractions overflow', () => {
+    // 40-digit mpmath values; then the limits Si(∞) = π/2, S(∞) = C(∞) = ½
+    close(S.sici(1e9).si, 1.5707963259570094, 1e-15);
+    close(S.sici(1e9).ci, 5.458434486108124e-10, 1e-13);
+    close(S.fresnel(1e10).s, 0.499999999968169, 1e-15);
+    expect(S.sici(1e300).si).toBe(Math.PI / 2);
+    expect(S.sici(-1e300).si).toBe(-Math.PI / 2);
+    expect(S.fresnel(1e200)).toEqual({ s: 0.5, c: 0.5 });
+  });
 });

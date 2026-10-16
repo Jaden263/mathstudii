@@ -1006,7 +1006,13 @@ export function sici(x: number): { si: number; ci: number } {
   if (t === 0) return { si: 0, ci: -Infinity };
   if (t === Infinity) return { si: Math.sign(x) * Math.PI / 2, ci: x > 0 ? 0 : NaN };
   let si: number, ci: number;
-  if (t > 2) {
+  if (t > 1e9) {
+    // Si = π/2 − f cos t − g sin t, Ci = f sin t − g cos t with f ~ 1/t, g ~ 1/t² (DLMF 6.12.3–4):
+    // the next terms are 2/t² smaller (the continued fraction overflows near t = 1e154)
+    const f = 1 / t, g = f * f;
+    si = Math.PI / 2 - f * Math.cos(t) - g * Math.sin(t);
+    ci = f * Math.sin(t) - g * Math.cos(t);
+  } else if (t > 2) {
     // complex continued fraction for E1(it)
     let br = 1, bi = t;
     let cr = 1 / FPMIN, cim = 0;
@@ -1057,6 +1063,7 @@ export function sici(x: number): { si: number; ci: number } {
 
 /** x²/2 mod 2, from an exact split of x² (Veltkamp: x = hi + lo with 26-bit halves). */
 function halfSquareMod2(x: number): number {
+  if (x >= 18014398509481984) return 0; // from 2⁵⁴ on x is even: x²/2 = 2(x/2)²
   const c = 134217729 * x; // 2²⁷ + 1
   const hi = c - (c - x), lo = x - hi;
   const mod2 = (v: number) => v - 2 * Math.round(v / 2);
@@ -1067,8 +1074,15 @@ function halfSquareMod2(x: number): number {
 export function fresnel(x: number): { s: number; c: number } {
   const ax = Math.abs(x);
   let s: number, c: number;
-  if (ax === Infinity) { s = 0.5; c = 0.5; }
+  if (ax === Infinity || ax > 1e300) { s = 0.5; c = 0.5; }
   else if (ax < Math.sqrt(FPMIN)) { s = 0; c = ax; }
+  else if (ax > 1e8) {
+    // S = ½ − f cos(πx²/2) − g sin(πx²/2), C = ½ + f sin − g cos, f ~ 1/(πx), g ~ 1/(π²x³)
+    // (DLMF 7.5.3, 7.12.2): g and f's next term are below 1e−25 (the fraction overflows at 1e77)
+    const half = halfSquareMod2(ax), f = 1 / (Math.PI * ax);
+    s = 0.5 - f * cosPi(half);
+    c = 0.5 + f * sinPi(half);
+  }
   else if (ax <= 1.5) {
     let sum = 0, sums = 0, sumc = ax, sign = 1, term = ax, n = 3, odd = true;
     const fact = (Math.PI / 2) * ax * ax;

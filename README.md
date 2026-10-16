@@ -226,11 +226,14 @@ other formulas. It interpolates between steps with the solver's continuous exten
 outside the interval it is an error ("u(6 s) is outside the solution interval 0 s … 5 s").
 
 - **Units** come from the conditions (`u(0 s) = 20 mm` makes u a length and u′ a velocity).
-  Conditions that are bare zeros take their units from the equation.
+  Conditions that are bare zeros take their units from the equation. Both sides of every
+  equation must agree in units, written as `y''(t) = …` or not; an angle counts as a plain
+  number (θ in degrees with `sin(θ(t))`).
 - **Higher orders and systems**: any order is turned into a first-order system;
   `[x; y] := odesolve([x, y], t, 15)` solves several unknown functions together (orders may differ).
   The equations are solved for the highest derivatives at every step, directly when they are
-  written as `y''(t) = …`, by Newton iteration otherwise (`exp(y'(t)) = 1 + t` works).
+  written as `y''(t) = …`, by a damped Newton iteration otherwise (`exp(y'(t)) = 1 + t`,
+  `y'(t)^3 + y'(t) = 1` work). Conditions at the right end are integrated backwards.
 - **Boundary value problems**: conditions at two (or more) points, such as a beam
   `EI * y''''(x) = q` with `y(0) = 0`, `y(L) = 0`, `y''(0) = 0`, `y''(L) = 0`, are solved by
   shooting: Newton on the unknown starting values, with sensitivities computed on a frozen mesh.
@@ -284,7 +287,9 @@ fractions, Carlson's symmetric integrals, Euler–Maclaurin for ζ) and are test
 DLMF / Abramowitz & Stegun values and checked against 40-digit mpmath values on a few thousand
 points: within 1e-12 relative (most within 1e-14); near zeros of an oscillating function (Bessel
 J, Y of large order) only the absolute error is that small, while the positive roots of ψ and Ei
-keep full relative accuracy. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
+keep full relative accuracy. Orders in the hundreds lose more: J, Y and I of order 1000 are good to
+about 1e-10 relative (Y near a zero less), and ψ⁽ⁿ⁾ of high n at negative x, which is badly
+conditioned there, to about 1e-8. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
 On vectors and matrices they work element by element (`J0([1, 2])`, `pnorm(v, 0, 1)`).
 A worksheet variable with one of these names (say `Si := 3 m`) still works as a variable.
 

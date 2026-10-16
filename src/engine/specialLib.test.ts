@@ -106,6 +106,9 @@ describe('special functions in the worksheet', () => {
     tiny('qgamma(1e-10, 1) / (-log1p(-1e-10)) - 1', 1e-12); // Γ(1) is exponential
     tiny('qbeta(1e-10, 1, 3) / -expm1(log1p(-1e-10) / 3) - 1', 1e-12); // I_x(1, b) = 1 − (1 − x)^b
     tiny('gamma(1e-8, 1) / 0.21938393537395226 - 1', 1e-14); // Mathcad's Γ(a, x), small a (mpmath value)
+    // p = 1 is reached only at ∞ by an unbounded count, at n by the binomial
+    const r = run(['qpois(1, 3) =', 'qgeom(1, 0.5) =', 'qnbinom(1, 2, 0.5) =', 'qbinom(1, 10, 0.5) =']);
+    expect(r.map((x) => x.tex.slice(x.tex.lastIndexOf('=') + 2))).toEqual(['\\infty', '\\infty', '\\infty', '10']);
   });
   it('work element by element on vectors and matrices', () => {
     const r = run(['J0([1, 2]) =', 'Jn([0, 1], [2, 3]) =', 'Leg(2, [0.5, 1; 0, -1]) =', 'Jn([0, 1], [2, 3, 4]) =']);
@@ -113,6 +116,10 @@ describe('special functions in the worksheet', () => {
     expect(r[1].tex).toMatch(/= \\begin\{bmatrix\} 0\.2239 & 0\.3391 \\end\{bmatrix\}$/); // J₀(2), J₁(3)
     expect(r[2].tex).toMatch(/= \\begin\{bmatrix\} -0\.125 & 1 \\\\ -0\.5 & 1 \\end\{bmatrix\}$/); // (3x² − 1)/2
     expect(r[3].error).toBe('The vector arguments have different sizes');
+    // the core library's distributions too: Φ(0) = ½, Φ(1) = 0.8413
+    const d = run(['v := [0; 1]', 'pnorm(v, 0, 1) =', 'pbinom(3, [10, 20], 0.5) =']);
+    expect(d[1].tex).toMatch(/= \\begin\{bmatrix\} 0\.5 \\\\ 0\.8413 \\end\{bmatrix\}$/);
+    expect(d[2].tex).toMatch(/= \\begin\{bmatrix\} 0\.1719 & 0\.0013 \\end\{bmatrix\}$/); // 176/1024, 1351/2²⁰
   });
   it('worksheet variables with the same names still multiply', () => {
     const r = run(['Si := 3 m', 'Si (2) =', 'beta := 0.5', 'beta (4) =']);

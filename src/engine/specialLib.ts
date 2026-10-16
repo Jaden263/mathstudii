@@ -138,6 +138,7 @@ const lnChoose = (n: number, k: number) => S.lgamma(n + 1) - S.lgamma(k + 1) - S
  * 64 ulp (as R does) so that a p computed from the cdf itself gives back its own k.
  */
 function discreteQuantile(cdf: (k: number) => number, p: number, lo: number, hi = Infinity): number {
+  if (p === 1) return hi; // an unbounded count reaches p = 1 only at ∞
   const target = p * (1 - 64 * Number.EPSILON);
   if (cdf(lo) >= target) return lo;
   let a = lo, b = lo + 1;
@@ -339,6 +340,12 @@ if (clashes.length) throw new Error(`Special function names clash: ${clashes.joi
 math.import(SPECIAL, { override: true });
 // a worksheet variable with one of these names (Ai, Si, beta …) still multiplies: Ai (x + 1)
 for (const k of Object.keys(SPECIAL)) SHADOWABLE.add(k);
+
+// the core library's distributions element by element as well: pnorm(v, 0, 1)
+const CORE_DISTRIBUTIONS = ['dnorm', 'pnorm', 'qnorm', 'dt', 'pt', 'qt', 'dchisq', 'pchisq', 'qchisq', 'pF', 'qF',
+  'dbinom', 'pbinom', 'dpois', 'ppois', 'dexp', 'pexp', 'qexp', 'dunif', 'punif', 'qunif'];
+const core = math as unknown as Record<string, (...a: unknown[]) => unknown>;
+math.import(Object.fromEntries(CORE_DISTRIBUTIONS.map((k) => [k, elementwise(core[k])])), { override: true });
 
 // Mathcad's gamma(a, x) is the upper incomplete gamma function
 math.import({ gamma: math.typed('gamma', { 'number, number': (a: number, x: number) => S.gammaUpper(a, x) }) });
