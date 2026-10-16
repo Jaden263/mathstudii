@@ -209,9 +209,11 @@ function pathPlane(ps: PathSample[]): Vec3 | null {
  * Why a sweep of `profile` (points on its outline) along the sampled path would cut through
  * itself, or null: where the path bends tighter than the profile reaches from it (towards
  * the bend, for a flat path), where it comes back closer to itself than the profile is
- * wide, or, for a parallel sweep, where it turns back through the profile's plane.
+ * wide, or, for a parallel sweep, where it turns back through the profile's plane. A path
+ * that runs in the profile's plane where it meets it is refused too. `grow`: the largest
+ * size a taper scales the profile to (about its point on the path).
  */
-export function sweepClash(ps: PathSample[], closed: boolean, profile: Vec3[], normal: Vec3, parallel: boolean, unit?: string): string | null {
+export function sweepClash(ps: PathSample[], closed: boolean, profile: Vec3[], normal: Vec3, parallel: boolean, unit?: string, grow = 1): string | null {
   if (ps.length < 2 || !profile.length) return null;
   const c = scale3(profile.reduce((a, q) => add3(a, q), [0, 0, 0] as Vec3), 1 / profile.length);
   // where the profile sits on the path
@@ -220,9 +222,11 @@ export function sweepClash(ps: PathSample[], closed: boolean, profile: Vec3[], n
     if (len3(sub3(q.p, c)) < len3(sub3(ps[ia].p, c))) ia = i;
   });
   const at = ps[ia];
-  const reach = max(...profile.map((q) => len3(sub3(q, at.p))));
+  const reach = grow * max(...profile.map((q) => len3(sub3(q, at.p))));
   const L = ps[ps.length - 1].s;
   const w = (v: number) => sizeWords(v, unit);
+  // a path along the profile's own plane would sweep it edgeways, into nothing
+  if (abs(dot3(at.t, normal)) < 1e-6) return 'the path runs along the profile’s plane where it meets the profile: sketch the profile on a plane across the path (Construct → Plane along path)';
   if (parallel) {
     const sides = ps.map((q) => dot3(q.t, normal));
     if (sides.some((v) => v * sides[ia] <= 0)) return 'the path turns back along the profile’s plane: a parallel sweep would fold over itself (use Perpendicular)';
@@ -230,10 +234,10 @@ export function sweepClash(ps: PathSample[], closed: boolean, profile: Vec3[], n
     // a flat path bends in its plane: what counts is how far the profile reaches that way
     const n = pathPlane(ps);
     const side = n ? norm3(cross3(n, at.t)) : null;
-    const towards = side ? max(...profile.map((q) => abs(dot3(sub3(q, at.p), side)))) : reach;
+    const towards = side ? grow * max(...profile.map((q) => abs(dot3(sub3(q, at.p), side)))) : reach;
     const kmax = max(...ps.map((q) => q.k));
     if (kmax > 0 && towards >= (1 - 1e-9) / kmax) {
-      return `the profile reaches ${w(towards)} from the path, but the path bends with a radius of ${w(1 / kmax)}: the sweep would cut through itself`;
+      return `the profile reaches ${w(towards)} from the path${grow > 1 ? ' where the taper makes it largest' : ''}, but the path bends with a radius of ${w(1 / kmax)}: the sweep would cut through itself`;
     }
   }
   // the path coming back near itself: points farther apart along it than half a turn round

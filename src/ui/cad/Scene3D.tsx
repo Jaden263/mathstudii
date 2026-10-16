@@ -59,6 +59,8 @@ export interface SceneLines {
   highlight?: boolean;
   /** always drawn on top (no depth test), e.g. the sketch being edited */
   overlay?: boolean;
+  /** left out of the framing (construction axes reach well past the model) */
+  unframed?: boolean;
 }
 
 export interface ScenePlane {
@@ -74,6 +76,8 @@ export interface ScenePlane {
   label?: string;
   /** false: never returned by picking (default true) */
   pickable?: boolean;
+  /** left out of the framing (a construction plane far off the model) */
+  unframed?: boolean;
 }
 
 export interface PickHit {
@@ -398,8 +402,15 @@ export function raySegment(o: ArrayLike<number>, d: ArrayLike<number>, L: ArrayL
   return { dist: Math.hypot(px, py, pz), t };
 }
 
-/** Union of the transformed mesh boxes, line endpoints and plane squares; null when empty. */
-export function sceneBounds(meshes: SceneMesh[], lines: SceneLines[] = [], planes: ScenePlane[] = []): Bounds | null {
+/**
+ * Union of the transformed mesh boxes, line endpoints and plane squares; null when empty.
+ * Lines and planes marked unframed count only when there is nothing else, or with `all`.
+ */
+export function sceneBounds(meshes: SceneMesh[], lines: SceneLines[] = [], planes: ScenePlane[] = [], all = false): Bounds | null {
+  if (!all && (lines.some((l) => l.unframed) || planes.some((p) => p.unframed))) {
+    const b = sceneBounds(meshes, lines.filter((l) => !l.unframed), planes.filter((p) => !p.unframed));
+    if (b) return b;
+  }
   const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
   const add = (p: ArrayLike<number>) => {
     for (let k = 0; k < 3; k++) {
@@ -956,11 +967,13 @@ export function Scene3D(props: {
   const view = live?.view ?? given;
 
   const content = useMemo(() => sceneBounds(meshes, lines, planes), [meshes, lines, planes]);
+  // everything drawn, unframed construction geometry too: it must stay inside the depth range
+  const drawn = useMemo(() => sceneBounds(meshes, lines, planes, true), [meshes, lines, planes]);
   const pb = props.bounds;
   const frame = useMemo(
-    () => (pb ? frameOf(pb, content) : content ? frameOf(content) : null),
+    () => (pb ? frameOf(pb, drawn) : content ? frameOf(content, drawn) : null),
     // the framing bounds come as a fresh object easily: key them by value
-    [pb?.min[0], pb?.min[1], pb?.min[2], pb?.max[0], pb?.max[1], pb?.max[2], content],
+    [pb?.min[0], pb?.min[1], pb?.min[2], pb?.max[0], pb?.max[1], pb?.max[2], content, drawn],
   );
   const hasContent = !!content;
   const active = hasContent && gl === 'ok' && !!frame;

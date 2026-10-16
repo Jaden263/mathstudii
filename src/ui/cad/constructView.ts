@@ -59,7 +59,7 @@ function datumPieces(id: string, name: string, d: Datum, M: M4, box: ReturnType<
     // the square round its origin where that is a point of the model (a plane along a path,
     // through points, tangent to a face), else round the middle of the model
     const c = atOrigin ? f.o : sub3(mid, scale3(f.n, dot3(sub3(mid, f.o), f.n)));
-    planes.push({ key: `cp:${id}`, origin: m4Point(M, c), u: m4Dir(M, f.u), v: m4Dir(M, f.v), size: Math.max(o.size * 0.15, 5), color, opacity: hl ? 0.22 : 0.12, label: name, highlight: hl, pickable: o.pickPlanes });
+    planes.push({ key: `cp:${id}`, origin: m4Point(M, c), u: m4Dir(M, f.u), v: m4Dir(M, f.v), size: Math.max(o.size * 0.15, 5), color, opacity: hl ? 0.22 : 0.12, label: name, highlight: hl, pickable: o.pickPlanes, unframed: true });
     return;
   }
   const seg: number[] = [];
@@ -77,7 +77,8 @@ function datumPieces(id: string, name: string, d: Datum, M: M4, box: ReturnType<
     const h = d.helix, n = Math.max(8, Math.ceil(h.turns * 48));
     for (let i = 0; i < n; i++) seg.push(...m4Point(M, helixPoint(h, (2 * Math.PI * h.turns * i) / n)), ...m4Point(M, helixPoint(h, (2 * Math.PI * h.turns * (i + 1)) / n)));
   }
-  lines.push({ key: `cl:${id}`, segments: new Float32Array(seg), color, highlight: hl, overlay: d.kind !== 'helix' });
+  // a helix is the coil's real path; planes, axes and points do not move the view's framing
+  lines.push({ key: `cl:${id}`, segments: new Float32Array(seg), color, highlight: hl, overlay: d.kind !== 'helix', unframed: d.kind !== 'helix' });
 }
 
 /** Rings a pitch apart round the faces cosmetic threads (and cosmetically tapped holes) are on. */

@@ -858,6 +858,12 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const edges = i >= 0 ? f.path.edges.filter((_, k) => k !== i) : [...f.path.edges, refTo('edge', on.body, edge)];
       return patchItem(c.id, f.id, { path: { kind: 'edges', edges } } as Partial<DesignItem>);
     }
+    // a sweep or coil that joins, cuts or intersects: a body clicked goes into its targets or out
+    if ((f.kind === 'sweep' || f.kind === 'coil') && f.op !== 'new' && !(f.kind === 'coil' && f.pathOnly)) {
+      const l = f.targets ?? [];
+      const next = l.includes(on.body) ? l.filter((x) => x !== on.body) : [...l, on.body];
+      return patchItem(c.id, f.id, { targets: next.length ? next : undefined } as Partial<DesignItem>);
+    }
   };
 
   const onPick = (hit: PickHit, shift = false) => {
@@ -1265,7 +1271,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       return `Click ${what[dialog.pick.kind]} · Esc stops picking`;
     }
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'thread') return 'Click cylindrical faces to thread them (a shaft outside, a hole inside) · click one again to take it out · Esc cancels';
-    if (dialog?.kind === 'feature' && activeFeature?.kind === 'sweep') return activeFeature.path.kind === 'edges' ? 'Click edges of the path, end to end · click a profile to sweep it · Esc cancels' : 'Click a profile to sweep it · Esc cancels';
+    if (dialog?.kind === 'feature' && activeFeature?.kind === 'sweep') {
+      const edges = activeFeature.path.kind === 'edges';
+      // with edges for the path, an edge clicked goes to the path and a face to the targets
+      const bodies = activeFeature.op === 'new' ? '' : edges ? ' · click a face of a body for the targets' : ' · click a body for the targets';
+      return `${edges ? 'Click edges of the path, end to end · click' : 'Click'} a profile to sweep it${bodies} · Esc cancels`;
+    }
+    if (dialog?.kind === 'feature' && activeFeature?.kind === 'coil' && !dialog.pick && activeFeature.op !== 'new' && !activeFeature.pathOnly) return 'Click bodies for the targets (none: every body it meets) · Pick fills a field from the view · Esc cancels';
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'rib') return 'Pick the sketch and its curves in the dialog · click a body to join the rib to it · Esc cancels';
     if (dialog?.kind === 'feature' && held) return 'Pick fills a field from the view (a face, an edge, a corner or a plane) · Esc cancels';
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';

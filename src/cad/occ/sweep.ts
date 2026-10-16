@@ -219,7 +219,8 @@ export function sweepOps(oc: OC, kit: SweepKit) {
         if (spine.closed && o.twist) throw new Error('a sweep along a closed path cannot twist');
         if (spine.closed && Math.abs(o.scale - 1) > 1e-12) throw new Error('a sweep along a closed path cannot taper');
         if (o.orientation !== 'axis') {
-          const clash = sweepClash(samples, spine.closed, outline, f.n, o.orientation === 'parallel', o.unit);
+          // a taper scales the profile up to k (k > 1) at the end of the path
+          const clash = sweepClash(samples, spine.closed, outline, f.n, o.orientation === 'parallel', o.unit, Math.max(1, o.scale));
           if (clash) throw new Error(clash);
         }
         let aux: TopoDS_Wire | null = null;

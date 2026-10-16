@@ -11,7 +11,7 @@ import {
   type SweepFeature, type ThreadFeature,
 } from '../../cad/design';
 import { refWords, type TopoRef } from '../../cad/topology';
-import { Pick, axisOptions, bodyOptions, constructBefore, planeOptions } from './FeatureDialogs';
+import { Checks, Pick, axisOptions, bodyOptions, constructBefore, planeOptions } from './FeatureDialogs';
 import { Expr, Picked } from './ModifyDialogs';
 import { sketchRegions } from './useDesign';
 import { ThreadTable, sizeChoices } from './threadParts';
@@ -129,6 +129,11 @@ function curveOptions(comp: CadComponent, item: DesignItem, only?: 'circles'): [
   return out;
 }
 
+/** The bodies a join, cut or intersect works on (none ticked: every body it meets); clicking a body in the view does the same. */
+function Targets({ comp, result, value, onChange }: { comp: CadComponent; result?: CadResult; value?: string[]; onChange: (v: string[] | undefined) => void }) {
+  return <Checks label="Bodies" items={bodyOptions(comp, result)} value={value} onChange={onChange} empty="No bodies yet" allLabel="Automatic" />;
+}
+
 // ------------------------------------------------------------ sweep
 
 export function SweepFields({ comp, feature: f, result, onChange }: Props<SweepFeature>) {
@@ -180,14 +185,14 @@ export function SweepFields({ comp, feature: f, result, onChange }: Props<SweepF
         <Expr label="End scale (taper)" value={f.scale ?? ''} placeholder="1" hint="Size of the profile at the end of the path as a factor of its size at the start" onChange={(scale) => onChange({ scale: scale || undefined } as Partial<DesignItem>, 'scale')} />
       </div>
       <Pick label="Operation" value={f.op} options={OPS} onChange={(op) => onChange({ op } as Partial<DesignItem>)} />
-      {f.op !== 'new' && <p className="hint">Targets: {f.targets?.length ? f.targets.map((t) => bodyOptions(comp, result).find(([id]) => id === t)?.[1] ?? t).join(', ') : 'automatic'}</p>}
+      {f.op !== 'new' && <Targets comp={comp} result={result} value={f.targets} onChange={(targets) => onChange({ targets } as Partial<DesignItem>)} />}
     </>
   );
 }
 
 // ------------------------------------------------------------ coil
 
-export function CoilFields({ design, comp, feature: f, pick, onPick, onChange }: Props<CoilFeature>) {
+export function CoilFields({ design, comp, feature: f, result, pick, onPick, onChange }: Props<CoilFeature>) {
   const set = (patch: Partial<CoilFeature>, key?: string) => onChange(patch as Partial<DesignItem>, key);
   return (
     <>
@@ -209,6 +214,7 @@ export function CoilFields({ design, comp, feature: f, pick, onPick, onChange }:
       <Pick label="Section position" value={f.position ?? 'center'} options={[['center', 'On centre'], ['inside', 'Inside'], ['outside', 'Outside']]} onChange={(position) => set({ position: position === 'center' ? undefined : position })} />
       <label className="check" title="Only the helix: a path for a sweep"><input type="checkbox" checked={!!f.pathOnly} onChange={(e) => set({ pathOnly: e.target.checked || undefined })} /> Path only (for a sweep, no body)</label>
       {!f.pathOnly && <Pick label="Operation" value={f.op} options={OPS} onChange={(op) => set({ op: op as CoilFeature['op'] })} />}
+      {!f.pathOnly && f.op !== 'new' && <Targets comp={comp} result={result} value={f.targets} onChange={(targets) => set({ targets })} />}
       <p className="hint">The section stands square to the helix; turns that would overlap are refused.</p>
     </>
   );

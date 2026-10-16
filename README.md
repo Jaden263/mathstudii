@@ -597,10 +597,12 @@ workspace opens full screen in the page. Its layout follows Fusion:
   M10) and threaded to a depth, cosmetic (rings in the view) or modeled.
 - **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs and circles, a
   chain of body edges (they follow edits) or the helix of a coil. The profile stays
-  perpendicular to the path (corrected Frenet) or parallel to itself; a twist angle or an
-  end scale (taper) on open paths. A path that makes the swept profile run into itself says so: *the profile
-  reaches 6 mm from the path, but the path bends with a radius of 4 mm: the sweep would
-  cut through itself*.
+  perpendicular to the path (corrected Frenet) or parallel to itself; a twist angle (a
+  positive one turns it by the right-hand rule about the path) or an end scale (taper) on
+  open paths. New body, join, cut or intersect; click bodies (or tick them) for the
+  targets, as for coils. A path that makes the swept profile run into itself says so:
+  *the profile reaches 6 mm from the path, but the path bends with a radius of 4 mm: the
+  sweep would cut through itself*; so does a path lying in the profile's own plane.
 - **Coil:** a helix on an origin, sketch or construction plane (or a flat face) at a
   centre point: diameter, then revolutions and height, revolutions and pitch, or height
   and pitch; left or right hand; a circle, square or triangle section inside, on or

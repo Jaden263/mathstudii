@@ -90,6 +90,12 @@ describe('timeline step keys', () => {
     expect(stepKey('root', more, numbers(), find)).not.toBe(stepKey('root', s, numbers(), find));
   });
 
+  it('a construction plane hidden in the view keeps its key (the features after it need no rebuild); its offset does not', () => {
+    const p: DesignItem = { kind: 'plane', id: 'p1', name: 'Plane1', def: { type: 'offset', plane: 'XY', d: '5' } };
+    expect(stepKey('root', { ...p, hidden: true }, numbers(), find)).toBe(stepKey('root', p, numbers(), find));
+    expect(stepKey('root', { ...p, def: { type: 'offset', plane: 'XY', d: '6' } }, numbers(), find)).not.toBe(stepKey('root', p, numbers(), find));
+  });
+
   it('ignore the positions a sketch stores: the solved geometry in the numbers counts', () => {
     // the page writes the solution back into the stored sketch: same numbers, same solid
     const circ = (x: number, r: number): DesignSketch => ({

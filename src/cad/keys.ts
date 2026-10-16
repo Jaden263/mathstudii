@@ -102,8 +102,8 @@ export function sketchesOf(item: DesignItem): string[] {
  * name), its evaluated parameters and error, and every sketch it reads.
  */
 export function stepKey(prev: string, item: DesignItem, numbers: DesignNumbers, sketches: (id: string) => DesignSketch | undefined): string {
-  // a name or a hidden sketch never changes a solid (undefined drops out of the JSON)
-  const own = { ...item, name: undefined, ...(item.kind === 'sketch' ? { hidden: undefined, sketch: curves(item.sketch) } : {}) };
+  // a name, a hidden sketch or construction item never changes a solid (undefined drops out of the JSON)
+  const own = { ...item, name: undefined, hidden: undefined, ...(item.kind === 'sketch' ? { sketch: curves(item.sketch) } : {}) };
   const input = item.kind === 'sketch'
     ? [own, sketchInput(item, item.id, numbers)]
     : [own, numbers.params[item.id] ?? null, numbers.errors[item.id] ?? null, sketchesOf(item).map((id) => sketchInput(sketches(id), id, numbers)), numbers.unit];

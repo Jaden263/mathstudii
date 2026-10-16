@@ -14,9 +14,10 @@ import { refTo } from '../topology';
 import { grooveArea, parseThread } from '../threads';
 import { evaluateWorksheet, type CadResult, type MathResult } from '../../engine/evaluator';
 import { createRegion, emptyWorksheet, type CadRegion } from '../../model/types';
-import type { Vec3 } from '../solid';
+import { add3, cross3, scale3, type Vec3 } from '../solid';
+import { threadFace, threadGeometry } from '../sweep';
 
-const { PI, sqrt, hypot } = Math;
+const { PI, sqrt, hypot, cos, sin } = Math;
 const near = (v: number, want: number, rel = 1e-9) => expect(Math.abs(v - want) / Math.max(Math.abs(want), 1e-300)).toBeLessThan(rel);
 
 /** Open sketch curves: lines between points and arcs (centre, from, to; anticlockwise). */
@@ -42,6 +43,16 @@ const run = (items: DesignItem[], pre: string[] = []) => {
   const { res } = solve(single(items), pre);
   return { res, V: volumes(res), errors: res.design!.errors, warnings: res.design!.warnings ?? {} };
 };
+
+/**
+ * A cube of side 0.2 centred at p (a probe body, f0): a feature after it that intersects
+ * with f0 leaves 0.008 where its solid fills the spot and 0 where it does not.
+ */
+const probe = (p: Vec3): DesignItem[] => [
+  { kind: 'sketch', id: 's0', name: 'Probe', plane: { ref: 'XY', offset: String(p[2] - 0.1) }, sketch: rect('pb', p[0] - 0.1, p[1] - 0.1, p[0] + 0.1, p[1] + 0.1) },
+  { kind: 'extrude', id: 'f0', name: 'Probe', sketch: 's0', extent: { type: 'one', d: '0.2' }, op: 'new' },
+];
+const PROBE = 0.2 ** 3;
 
 /** A sweep of the first profile of sketch s1 (on XY) along the curves of sketch s2. */
 const sweepOf = (profile: CadSketch, path: CadSketch, more: Partial<SweepFeature> = {}, pathPlane: { ref: 'XY' | 'XZ' | 'YZ'; offset?: string } = { ref: 'XZ' }): DesignItem[] => [
@@ -103,6 +114,18 @@ describe('sweep', () => {
     near(arc.V[0], a * a * ((PI * R) / 2), 1e-5);
   });
 
+  it('the twist really turns the profile: halfway along 45° a square has turned 22.5°, anticlockwise about the path', () => {
+    // a 10 × 10 square up the z axis; at z = 50 its corners (radius 7.07) point at 45° + 22.5° = 67.5°
+    // and 157.5° … for +45°, at 22.5° … for −45°: a spot at radius 6.5 and 67.5° is inside the
+    // first (|x'| + |y'| ≤ 7.07 in the square's own axes) and outside the second (the side is 5 off)
+    const spot: Vec3 = [6.5 * cos(3 * PI / 8), 6.5 * sin(3 * PI / 8), 50];
+    for (const [twist, V] of [['45 deg', PROBE], ['-45 deg', 0], ['0 deg', 0]] as const) {
+      const r = run([...probe(spot), ...sweepOf(rect('s', -5, -5, 5, 5), curves('q', [[0, 0, 0, L]]), { twist, op: 'intersect', targets: ['f0'] })]);
+      expect(r.errors).toEqual({});
+      expect(Math.abs((r.V[0] ?? 0) - V)).toBeLessThan(1e-9);
+    }
+  });
+
   it('a taper to k makes a frustum: A·L(1 + k + k²)/3', () => {
     for (const k of [0.5, 2]) {
       const { V, errors } = run(sweepOf(circles('c', [[0, 0, r]]), curves('q', [[0, 0, 0, L]]), { scale: String(k) }));
@@ -133,6 +156,14 @@ describe('sweep', () => {
     // a parallel sweep turning back along the profile's plane folds over
     const fold = run(sweepOf(circles('c', [[0, 0, r]]), curves('q', [[0, 0, 0, 50], [0, 50, 50, 50], [50, 50, 50, 0]]), { orientation: 'parallel' }));
     expect(fold.errors.f1).toMatch(/fold over itself/);
+    // a taper that grows the profile past the bend: r = 3 scaled to 15 × 3 = 45 > 40 at the end
+    const taper = run(sweepOf(circles('c', [[0, 0, r]]), curves('q', [], [[R, 0, R, R, 0, 0]]), { scale: '15' }));
+    expect(taper.errors.f1).toMatch(/reaches 45 mm from the path where the taper makes it largest, but the path bends with a radius of 40 mm/);
+    // a path in the profile's own plane (both on XY) would sweep it edgeways
+    for (const orientation of ['perpendicular', 'parallel'] as const) {
+      const flat = run(sweepOf(circles('c', [[0, 0, r]]), curves('q', [[0, 0, 50, 0]]), { orientation }, { ref: 'XY' }));
+      expect(flat.errors.f1).toMatch(/the path runs along the profile’s plane where it meets the profile/);
+    }
   });
 
   it('joins, cuts and intersects with targets; the faces carry the profile’s names', () => {
@@ -231,6 +262,15 @@ describe('coil', () => {
     near(left.V[0], cut.V[0], 1e-6);
   });
 
+  it('right-handed turns anticlockwise seen from the top as it rises, left-handed clockwise', () => {
+    // from (20, 0, 0) on XY: a quarter turn on, a right-hand helix of pitch 8 is at (0, 20, 2), a left-hand one at (0, −20, 2)
+    for (const [hand, at, V] of [['right', [0, 20, 2], PROBE], ['right', [0, -20, 2], 0], ['left', [0, -20, 2], PROBE], ['left', [0, 20, 2], 0]] as const) {
+      const r = run([...probe(at as unknown as Vec3), coil({ hand, op: 'intersect', targets: ['f0'] })]);
+      expect(r.errors).toEqual({});
+      expect(Math.abs((r.V[0] ?? 0) - V)).toBeLessThan(1e-9);
+    }
+  });
+
   it('is a helix path for a sweep (path only: no body of its own)', () => {
     // a circle on the plane square to the helix at its start (20, 0, 0), tilted by the helix angle
     const alpha = Math.atan2(10, 2 * PI * 20);
@@ -288,6 +328,33 @@ describe('threads', () => {
     expect(full.errors).toEqual({});
     const half = ((7 / 8 + 0.1 * Math.tan(PI / 6)) * s.P) / 2;
     near(full.V[0], V0 - Af * (40 - half - 0.05 * s.P), 1e-5);
+  });
+
+  it('a right-hand thread’s groove rises anticlockwise about the axis it runs along; a left-hand one clockwise', () => {
+    // where the groove starts (its section's direction x and height z0 on the free end's axis):
+    // a quarter turn anticlockwise on, a right-hand groove is a quarter pitch higher, so the
+    // spot a quarter pitch above the start is in the groove (air) for a right-hand thread and
+    // in the middle of a tooth for a left-hand one (it is a quarter pitch lower there)
+    const items = shaft(12, 30);
+    const b = buildResultOcc(occ()!, single(items), solve(single(items)).numbers).components.c1.bodies[0];
+    const cyl = b.faces.find((f) => f.type === 'cylinder')!;
+    const side = refTo('face', b.id, cyl);
+    const s = parseThread('M12');
+    const g = threadGeometry(s, threadFace(b, cyl), {});
+    // anticlockwise about the axis from x is axis × x; 8 pitches in so the spot is inside the rod
+    const y = cross3(g.axis, g.x);
+    const spot = add3(add3(g.o, scale3(g.axis, g.z0 + 8 * s.P + s.P / 4)), scale3(y, 5.5));
+    expect(Math.abs(spot[2] - 15)).toBeLessThan(15);
+    const thread = (hand: 'right' | 'left'): DesignItem => ({ kind: 'thread', id: 'f1', name: 'Thread1', faces: [side], size: 'M12', modeled: true, hand });
+    const cube = (p: Vec3): DesignItem[] => [
+      { kind: 'sketch', id: 's9', name: 'Probe', plane: { ref: 'XY', offset: String(p[2] - 0.1) }, sketch: rect('pb', p[0] - 0.1, p[1] - 0.1, p[0] + 0.1, p[1] + 0.1) },
+      { kind: 'extrude', id: 'f9', name: 'Probe', sketch: 's9', extent: { type: 'one', d: '0.2' }, op: 'intersect', targets: ['f0'] },
+    ];
+    for (const [hand, V] of [['right', 0], ['left', PROBE]] as const) {
+      const r = run([...items, thread(hand), ...cube(spot)]);
+      expect(r.errors).toEqual({});
+      expect(Math.abs((r.V[0] ?? 0) - V)).toBeLessThan(1e-9);
+    }
   });
 
   it('cosmetic threads change nothing; the worksheet reads the ISO data', () => {

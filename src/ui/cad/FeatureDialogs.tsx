@@ -47,7 +47,7 @@ export function Pick<T extends string>({ label, value, options, onChange }: { la
   );
 }
 
-function Checks({ label, items, value, onChange, empty, allLabel }: { label: string; items: [string, string][]; value?: string[]; onChange: (v: string[] | undefined) => void; empty: string; allLabel?: string }) {
+export function Checks({ label, items, value, onChange, empty, allLabel }: { label: string; items: [string, string][]; value?: string[]; onChange: (v: string[] | undefined) => void; empty: string; allLabel?: string }) {
   const sel = value ?? [];
   return (
     <div className="field">
