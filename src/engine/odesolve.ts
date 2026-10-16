@@ -274,6 +274,22 @@ export function solveOdeBlock(lines: OdeLine[], args: string[], lhsNames: string
     if (refs.some((r) => freeSymbols(r.arg).has(indep))) {
       throw new Error(`In "${text}" call the unknown functions with ${indep} itself, e.g. ${names[0]}(${indep})`);
     }
+    // y'(x) = … under odesolve(t, …): the equation is written in another variable
+    const args = refs.map((r) => unwrap(r.arg) as AnyNode);
+    const undefinedName = (a: AnyNode) => {
+      if (a.type !== 'SymbolNode') return false;
+      try {
+        evalIn(a);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const other = args.find(undefinedName)
+      ?? (refs.length > 1 && args.every((a) => a.type === 'SymbolNode' && a.name === args[0].name) ? args[0] : undefined);
+    if (other) {
+      throw new Error(`“${text}” is written in ${other.name}, but odesolve's variable is ${indep}: write ${names[0]}(${indep}) …, or odesolve(${other.name}, …)`);
+    }
     // a condition: one side is y^(k)(a), the other a value
     const lr = refOf(unwrap(L), unknowns, indep), rr = refOf(unwrap(R), unknowns, indep);
     const ref = lr && refs.length === 1 ? lr : rr && refs.length === 1 ? rr : null;

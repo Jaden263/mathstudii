@@ -184,6 +184,7 @@ describe('odesolve: messages', () => {
     expect(solverError([block("y''(t) = -y(t)\ny(0 s) = 1 mm\ny'(0 s) = 1 mm", 'y := odesolve(t, 1 s)')])).toMatch(/y' needs units of mm \/ s/);
     expect(solverError([block("y'(t) = -y(t)\ny(0 s) = 1", 'y := odesolve(t, 1 m)')])).toMatch(/units of s, the variable t has m/);
     expect(solverError([block("y'(t) = y(t - 1)\ny(0) = 1", 'y := odesolve(t, 2)')])).toMatch(/with t itself/);
+    expect(solverError([block("y'(x) = -y(x)\ny(0) = 1", 'y := odesolve(t, 2)')])).toMatch(/written in x, but odesolve's variable is t/);
     expect(solverError([block("y'(t) = y(t)^2\ny(0) = 1", 'y := odesolve(t, 2)')])).toMatch(/too small at t = 1\.0000/);
     expect(solverError([block('y(t) = 1\ny(0) = 1', 'y := odesolve(t, 2)')])).toMatch(/No derivative of y/);
     expect(solverError([block("y'(t) = 1\ny(0) = 1", 'odesolve(t, 2)')])).toMatch(/Assign the solution/);

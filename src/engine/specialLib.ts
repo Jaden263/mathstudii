@@ -2,7 +2,7 @@
 // family, integrals, elliptic integrals, Lambert W, orthogonal polynomials and the
 // distributions Mathcad has that the core library lacks. Mathcad names where Mathcad
 // has them (Jn, Leg, Her, Tcheb, ibeta …); arguments are dimensionless except angles.
-import { math, isUnit, splitUnit } from './math';
+import { math, isUnit, isMatrix, splitUnit } from './math';
 import { num, int } from './library';
 import { SHADOWABLE } from './compile';
 import * as S from './special';
@@ -313,6 +313,25 @@ const SPECIAL: Record<string, unknown> = {
 };
 SPECIAL.Jacobi = SPECIAL.Jac;
 SPECIAL.Ibeta = SPECIAL.ibeta;
+
+/**
+ * Element by element over vectors and matrices, as the built-in sin or erf do: J0(v),
+ * pnorm(v, 0, 1); several array arguments pair up element by element.
+ */
+function elementwise(f: (...a: unknown[]) => unknown) {
+  const go = (args: unknown[]): unknown => {
+    const k = args.findIndex(Array.isArray);
+    if (k < 0) return f(...args);
+    const n = (args[k] as unknown[]).length;
+    if (args.some((a) => Array.isArray(a) && a.length !== n)) throw new Error('The vector arguments have different sizes');
+    return Array.from({ length: n }, (_, i) => go(args.map((a) => (Array.isArray(a) ? a[i] : a))));
+  };
+  return (...args: unknown[]) => {
+    if (!args.some((a) => isMatrix(a) || Array.isArray(a))) return f(...args);
+    return math.matrix(go(args.map((a) => (isMatrix(a) ? a.toArray() : a))) as never);
+  };
+}
+for (const k of Object.keys(SPECIAL)) SPECIAL[k] = elementwise(SPECIAL[k] as (...a: unknown[]) => unknown);
 
 const clashes = Object.keys(SPECIAL).filter((k) => k in math);
 if (clashes.length) throw new Error(`Special function names clash: ${clashes.join(', ')}`);

@@ -285,6 +285,7 @@ DLMF / Abramowitz & Stegun values and checked against 40-digit mpmath values on 
 points: within 1e-12 relative (most within 1e-14); near zeros of an oscillating function (Bessel
 J, Y of large order) only the absolute error is that small, while the positive roots of ψ and Ei
 keep full relative accuracy. The display uses textbook notation (J_m(x), P_n^m(x), K(k) …).
+On vectors and matrices they work element by element (`J0([1, 2])`, `pnorm(v, 0, 1)`).
 A worksheet variable with one of these names (say `Si := 3 m`) still works as a variable.
 
 ### Sketches (drawing)

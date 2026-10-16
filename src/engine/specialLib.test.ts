@@ -99,6 +99,13 @@ describe('special functions in the worksheet', () => {
     tiny('Psi(1) + 0.5772156649015329', 1e-15);
     tiny('Psi(1, 1) - π^2 / 6', 1e-15);
   });
+  it('work element by element on vectors and matrices', () => {
+    const r = run(['J0([1, 2]) =', 'Jn([0, 1], [2, 3]) =', 'Leg(2, [0.5, 1; 0, -1]) =', 'Jn([0, 1], [2, 3, 4]) =']);
+    expect(r[0].tex).toMatch(/= \\begin\{bmatrix\} 0\.7652 & 0\.2239 \\end\{bmatrix\}$/); // J₀(1), J₀(2)
+    expect(r[1].tex).toMatch(/= \\begin\{bmatrix\} 0\.2239 & 0\.3391 \\end\{bmatrix\}$/); // J₀(2), J₁(3)
+    expect(r[2].tex).toMatch(/= \\begin\{bmatrix\} -0\.125 & 1 \\\\ -0\.5 & 1 \\end\{bmatrix\}$/); // (3x² − 1)/2
+    expect(r[3].error).toBe('The vector arguments have different sizes');
+  });
   it('worksheet variables with the same names still multiply', () => {
     const r = run(['Si := 3 m', 'Si (2) =', 'beta := 0.5', 'beta (4) =']);
     expect(r[1].tex).toMatch(/= 6\\ \\mathrm\{m\}$/);
