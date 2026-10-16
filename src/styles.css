@@ -5185,3 +5185,302 @@ kbd {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------- plates */
+
+.pl-plate {
+  fill: color-mix(in srgb, var(--text) 5%, var(--page));
+  stroke: none;
+}
+
+.pl-plate.faint {
+  fill: color-mix(in srgb, var(--text) 3%, var(--page));
+}
+
+.pl-outline {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: calc(1.6px * var(--lw, 1));
+  stroke-linejoin: round;
+}
+
+.pl-mesh {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 22%, transparent);
+  stroke-width: 0.5;
+}
+
+.pl-zero {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 55%, transparent);
+  stroke-width: 0.9;
+  stroke-dasharray: 3 2;
+}
+
+.pl-edge {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1;
+}
+
+.pl-edge.clamped {
+  stroke-width: 1.3;
+}
+
+.pl-edge.spring {
+  stroke: var(--f3-V);
+}
+
+.pl-edge.sel {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.pl-edge.err {
+  stroke: var(--error);
+}
+
+.pl-wall line {
+  stroke: color-mix(in srgb, var(--text) 70%, transparent);
+  stroke-width: calc(4.5px * var(--lw, 1));
+  stroke-linecap: butt;
+}
+
+.pl-wall.sel line {
+  stroke: var(--accent);
+}
+
+.pl-wall.err line {
+  stroke: var(--error);
+}
+
+.pl-column polygon,
+.pl-column rect {
+  fill: color-mix(in srgb, var(--text) 55%, transparent);
+  stroke: var(--text);
+  stroke-width: 1;
+}
+
+.pl-column.sel polygon,
+.pl-column.sel rect {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.pl-column.err polygon,
+.pl-column.err rect {
+  stroke: var(--error);
+}
+
+.pl-load {
+  fill: none;
+  stroke: var(--f3-load);
+  stroke-width: calc(1.3px * var(--lw, 1));
+}
+
+.pl-load circle {
+  fill: var(--f3-load);
+  stroke: none;
+}
+
+.pl-load .pl-point {
+  fill: var(--page);
+  stroke: var(--f3-load);
+  stroke-width: 1.3;
+}
+
+.pl-load .pl-patch {
+  fill: color-mix(in srgb, var(--f3-load) 10%, transparent);
+  stroke-dasharray: 4 2;
+}
+
+.pl-load .pl-line-load {
+  stroke-width: calc(2px * var(--lw, 1));
+}
+
+.pl-load.faded {
+  opacity: 0.25;
+}
+
+.pl-load.sel,
+.pl-load.sel .pl-point {
+  stroke: var(--accent);
+}
+
+.pl-load.err {
+  stroke: var(--error);
+}
+
+.f3-svg .pl-load-label {
+  fill: var(--f3-load);
+  stroke: var(--page);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: calc(10px * var(--fs, 1));
+}
+
+.pl-reaction {
+  fill: color-mix(in srgb, var(--f3-react) 20%, transparent);
+  stroke: var(--f3-react);
+  stroke-width: 1;
+}
+
+.f3-svg .pl-reaction-label {
+  fill: var(--f3-react);
+  stroke: var(--page);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: calc(10px * var(--fs, 1));
+}
+
+.pl-cut line {
+  stroke: var(--text);
+  stroke-width: 1.2;
+  stroke-dasharray: 6 3;
+}
+
+.pl-cut circle {
+  fill: var(--page);
+  stroke: var(--text);
+  stroke-width: 1.2;
+}
+
+.pl-marker path {
+  fill: var(--text);
+  stroke: var(--page);
+  stroke-width: 1;
+}
+
+.f3-svg .pl-value,
+.pl-cutplot .pl-value {
+  fill: var(--text);
+  stroke: var(--page);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: calc(10px * var(--fs, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.f3-svg .pl-name {
+  fill: var(--text-muted);
+  font-size: calc(9.5px * var(--fs, 1));
+  font-weight: 600;
+}
+
+.pl-face {
+  stroke: color-mix(in srgb, var(--text) 25%, transparent);
+  stroke-width: 0.4;
+  stroke-linejoin: round;
+}
+
+.pl-flat {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 40%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.f3-svg .pl-legend-title,
+.pl-cutplot .pl-legend-title {
+  fill: var(--text);
+  font-size: calc(10.5px * var(--fs, 1));
+  font-weight: 600;
+}
+
+.f3-svg .pl-legend-unit {
+  fill: var(--text-muted);
+  font-size: calc(9.5px * var(--fs, 1));
+}
+
+.f3-svg .pl-legend-label,
+.pl-cutplot .pl-tick {
+  fill: var(--text-muted);
+  font-size: calc(9.5px * var(--fs, 1));
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-legend-frame {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 30%, transparent);
+  stroke-width: 0.6;
+}
+
+.pl-cutplot {
+  display: block;
+}
+
+.pl-cutplot text {
+  font-family: var(--font);
+}
+
+.pl-cutplot .pl-axis {
+  stroke: color-mix(in srgb, var(--text) 35%, transparent);
+  stroke-width: 1;
+}
+
+.pl-cut-curve {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+div.pl-cutplot {
+  padding: 8px;
+}
+
+.f3-strip.pl-strip {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.pl-strip > * {
+  flex: none;
+}
+
+.pl-strip .f3-view {
+  max-width: 128px;
+}
+
+.pl-strip .pl-more {
+  max-width: 96px;
+}
+
+.pl-strip .pl-more.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pl-summary {
+  top: auto;
+  bottom: 6px;
+}
+
+.pl-warn {
+  bottom: 40px;
+}
+
+.f3-table td.pl-corners input {
+  width: 300px;
+}
+
+.f3-table .pl-at {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.f3-table .pl-at input {
+  width: 62px;
+}
+
+.pl-columns {
+  margin-top: 10px;
+}
+
+@media print {
+  .pl-strip {
+    display: none;
+  }
+}

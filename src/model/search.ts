@@ -19,7 +19,7 @@ const SKIP = new Set([
 ]);
 
 /** Fields that hold an id or a list entry when they are text (a beam member's own `section` is an object of expressions). */
-const SKIP_TEXT = new Set(['section', 'case', 'profile', 'material', 'relA', 'relB', 'tab']);
+const SKIP_TEXT = new Set(['section', 'case', 'profile', 'material', 'relA', 'relB', 'tab', 'support', 'outer']);
 
 const NAME_CHAR = /[\p{L}\p{N}_']/u;
 

@@ -32,7 +32,7 @@ const PROFILE_HINTS = [...ROLLED_SECTIONS, 'CHS 60.3x4', 'CHS 114.3x5', 'CHS 168
 const MATERIALS = [...STEEL_GRADES, ...CONCRETE_GRADES, ...TIMBER_GRADES];
 
 /** A table cell: commits on Enter or leaving it; Enter and ↑ ↓ move along the column; a pasted block goes to `onGrid`. */
-function Cell({ value, onCommit, table, row, col, placeholder, title, list, onGrid, readOnly }: {
+export function Cell({ value, onCommit, table, row, col, placeholder, title, list, onGrid, readOnly }: {
   value: string; onCommit: (v: string) => void; table: string; row: number; col: number; placeholder?: string; title?: string; list?: string;
   onGrid?: (grid: string[][]) => void; readOnly?: boolean;
 }) {

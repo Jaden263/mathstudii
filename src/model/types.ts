@@ -271,6 +271,10 @@ export interface PlateRegion extends RegionBase, PlateData {
   showMesh?: boolean;
   /** The deflected shape in an oblique view instead of the plan. */
   deformed?: boolean;
+  /** Support reactions on the plan. */
+  reactions?: boolean;
+  /** Names of edges, walls and columns while editing (absent: shown). */
+  labels?: boolean;
   /** A section cut (length unit), its values plotted under the plan. */
   cut?: { x1: number; y1: number; x2: number; y2: number };
   view?: PlateView;
@@ -404,7 +408,7 @@ export function createRegion(kind: RegionKind, x: number, y: number, init: Parti
       };
     case 'plate':
       return {
-        ...base, kind, name: '', width: 560, height: 420, lengthUnit: 'm', forceUnit: 'kN', thickness: '200', material: 'C30/37', show: 'model',
+        ...base, kind, name: '', width: 640, height: 460, lengthUnit: 'm', forceUnit: 'kN', thickness: '200', material: 'C30/37', show: 'model',
         ...newPlate(), ...(init as Partial<PlateRegion>),
       };
   }

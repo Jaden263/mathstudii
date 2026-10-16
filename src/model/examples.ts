@@ -1,4 +1,4 @@
-import { createRegion, emptyWorksheet, PX_PER_MM, type Frame3DRegion, type Region, type Worksheet } from './types';
+import { createRegion, emptyWorksheet, PX_PER_MM, type Frame3DRegion, type PlateRegion, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
 import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
@@ -763,6 +763,64 @@ export function frame3dExample(): Worksheet {
   ]);
 }
 
+/** A flat slab of 6 m × 4.5 m on six columns with a stair opening, from worksheet variables. */
+function flatSlab(): Partial<PlateRegion> {
+  const col = (name: string, x: string, y: string) => ({ id: name.toLowerCase(), name, x, y, b: 'c', h: 'c' });
+  return {
+    thickness: 't_s', material: 'C30/37',
+    outline: [{ x: '0', y: '0' }, { x: 'L_x', y: '0' }, { x: 'L_x', y: 'L_y' }, { x: '0', y: 'L_y' }],
+    edges: [0, 1, 2, 3].map(() => ({ support: 'free' as const })),
+    openings: [{ id: 'o1', name: 'O1', points: [{ x: '3.9', y: '1.8' }, { x: '5.1', y: '1.8' }, { x: '5.1', y: '2.7' }, { x: '3.9', y: '2.7' }] }],
+    walls: [],
+    columns: [col('C1', 'c/2', 'c/2'), col('C2', 'L_x/2', 'c/2'), col('C3', 'L_x - c/2', 'c/2'), col('C4', 'c/2', 'L_y - c/2'), col('C5', 'L_x/2', 'L_y - c/2'), col('C6', 'L_x - c/2', 'L_y - c/2')],
+    loads: [
+      { id: 'sw', type: 'self', case: 'G' },
+      { id: 'g2', type: 'area', q: 'g_2', case: 'G' },
+      // the façade along the far edge, over the columns' line
+      { id: 'gf', type: 'line', q: 'g_f', x1: '0', y1: 'L_y - c/2', x2: 'L_x', y2: 'L_y - c/2', case: 'G' },
+      { id: 'qk', type: 'area', q: 'q_k', case: 'Q' },
+    ],
+    loadCases: {
+      cases: [{ id: 'G', name: 'G', label: 'Permanent' }, { id: 'Q', name: 'Q', label: 'Imposed' }],
+      combos: [{ id: 'uls', name: 'ULS', kind: 'ULS', factors: { G: '1.35', Q: '1.5' } }, { id: 'sls', name: 'SLS', kind: 'SLS', factors: { G: '1', Q: '1' } }],
+      view: 'uls',
+    },
+    rebar: { steel: 'B500B', cover: '25', bar: '12' },
+    show: 'asyb', cut: { x1: 0, y1: 2.25, x2: 6, y2: 2.25 },
+  };
+}
+
+export function plateExample(): Worksheet {
+  return build('Flat slab (plate)', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Flat slab with an opening\nPress **Plate** in the toolbar for a slab or plate: an outline with openings, edge supports, walls, columns and loads, solved by finite elements (MITC4 plate elements, meshed to the size you ask). This 6.0 m × 4.5 m slab, 220 mm C30/37, stands on six columns 350 × 350 with free edges and a stair opening of 1.2 m × 0.9 m. It carries its own weight, finishes, a façade along the far edge and an imposed load, in the EN 1990 combinations, and the bending reinforcement is designed from Wood–Armer moments (EN 1992-1-1). Double-click it to edit the tables; the strip picks the result, *More…* the design quantities, and the section A–B is plotted under the plan (hover for values).' }],
+    ['math', L, mm(70), { source: 'L_x := 6 m' }],
+    ['math', mm(55), mm(70), { source: 'L_y := 4.5 m' }],
+    ['math', mm(95), mm(70), { source: 't_s := 220 mm' }],
+    ['math', mm(140), mm(70), { source: 'c := 350 mm' }],
+    ['math', L, mm(80), { source: 'g_2 := 1.5 kN/m^2' }],
+    ['math', mm(65), mm(80), { source: 'g_f := 4 kN/m' }],
+    ['math', mm(110), mm(80), { source: 'q_k := 3 kN/m^2' }],
+    ['plate', L, mm(94), { name: 'p', width: mm(170), height: mm(150), ...flatSlab() }],
+    ['text', L, mm(250), { width: mm(170), markdown: '## Results in the worksheet\nMoments, shear and reinforcement are the governing ones over the ULS combinations, the deflection over SLS; reactions per column. The deflection is elastic and uncracked: the long-term value needs creep and cracking on top.' }],
+    ['math', L, mm(282), { source: 'p.w_max = mm' }],
+    ['math', mm(70), mm(282), { source: 'p.w_max ≤ L_y / 250' }],
+    ['math', L, mm(294), { source: 'p.m_y_max = kN*m/m' }],
+    ['math', mm(70), mm(294), { source: 'p.m_x_min = kN*m/m' }],
+    ['math', L, mm(306), { source: 'p.C5.R = kN' }],
+    ['math', mm(70), mm(306), { source: 'p.R_sum = kN' }],
+    ['text', L, mm(322), { width: mm(170), markdown: '## Reinforcement\nBottom bars along y Ø12/200 and along x Ø10/250, top bars Ø10/200 both ways, against the largest required a_s and the minimum of EN 1992-1-1 9.3.1.1 (d_x = 220 − 25 − 6 = 189 mm). Punching at the columns and the detailing round the opening are not checked here.' }],
+    ['math', L, mm(352), { source: 'a_s_yb := bars(1, 12 mm) / 200 mm = cm^2/m' }],
+    ['math', mm(100), mm(352), { source: 'p.a_s_y_bot_max / a_s_yb ≤ 1' }],
+    ['math', L, mm(364), { source: 'a_s_xb := bars(1, 10 mm) / 250 mm = cm^2/m' }],
+    ['math', mm(100), mm(364), { source: 'p.a_s_x_bot_max / a_s_xb ≤ 1' }],
+    ['math', L, mm(376), { source: 'a_s_t := bars(1, 10 mm) / 200 mm = cm^2/m' }],
+    ['math', mm(100), mm(376), { source: 'max(p.a_s_x_top_max, p.a_s_y_top_max) / a_s_t ≤ 1' }],
+    ['math', L, mm(388), { source: 'p.a_s_min_x = cm^2/m' }],
+    ['math', mm(100), mm(388), { source: 'p.a_s_min_x / a_s_xb ≤ 1' }],
+    ['plot', L, mm(404), { xExpr: 'x', traces: [{ y: 'p.m_x(x, c/2)', style: 'line' }, { y: 'p.m_x(x, 1.2 m)', style: 'line' }], xmin: '0 m', xmax: 'L_x', xUnit: 'm', yUnit: 'kN*m/m', title: 'm_x along the column line y = c/2 and at y = 1.2 m (ULS)', width: mm(130), height: mm(58) }],
+  ]);
+}
+
 export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Welcome & beam check', make: welcomeWorksheet },
   { name: 'Solving & optimisation', make: solvingExample },
@@ -778,5 +836,6 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'CAD: shells, roundings, lofts', make: shapingExample },
   { name: 'Bridge girder: influence lines, LM1', make: bridgeExample },
   { name: '3-D steel frame', make: frame3dExample },
+  { name: 'Flat slab with an opening (plate)', make: plateExample },
   { name: 'Differential equations (odesolve)', make: odeExample },
 ];

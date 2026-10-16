@@ -11,7 +11,8 @@ import { CadProps } from './cad/CadProps';
 import { DrawingProps } from './cad/DrawingProps';
 import { BeamProps } from './beam/BeamProps';
 import { Frame3DProps } from './frame3d/Frame3DProps';
-import type { RegionResult, SketchResult, CadResult, BeamResult, Frame3DResult } from '../engine/evaluator';
+import { PlateProps } from './plate/PlateProps';
+import type { RegionResult, SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult } from '../engine/evaluator';
 
 export type Tab = 'math' | 'units' | 'functions' | 'format' | 'properties';
 
@@ -312,6 +313,7 @@ function Properties({ selection, results, dispatch }: { selection: Region[]; res
       {r.kind === 'cad' && <CadProps region={r} result={results.get(r.id) as CadResult | undefined} dispatch={dispatch} />}
       {r.kind === 'beam' && <BeamProps region={r} result={results.get(r.id) as BeamResult | undefined} dispatch={dispatch} />}
       {r.kind === 'frame3d' && <Frame3DProps region={r} result={results.get(r.id) as Frame3DResult | undefined} dispatch={dispatch} />}
+      {r.kind === 'plate' && <PlateProps region={r} result={results.get(r.id) as PlateResult | undefined} dispatch={dispatch} />}
       {r.kind === 'drawing' && <DrawingProps region={r} dispatch={dispatch} />}
       {(r.kind === 'text' || r.kind === 'image') && (
         <label className="field">
