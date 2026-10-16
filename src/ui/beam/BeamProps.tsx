@@ -12,9 +12,15 @@ import {
 import type { Action } from '../store';
 import { useSketchUI } from '../sketch/context';
 import { LazyInput } from '../sketch/SketchProps';
-import { fmt, units } from './beamDraw';
+import { LENGTH_M, fmt, units } from './beamDraw';
+import { AnalysisOptions, MaterialField, ShearFields, StabilityResults } from './BeamAnalysis';
 
-function SectionFields({ s, onChange }: { s: BeamSection; onChange: (s: BeamSection) => void }) {
+function SectionFields({ s, onChange, shear = false, si }: {
+  s: BeamSection; onChange: (s: BeamSection) => void;
+  /** Shear deformation is on: show G and the shear area. */
+  shear?: boolean;
+  si?: { G?: number; Av?: number };
+}) {
   const known = PROFILES.find((p) => p.name === s.label);
   return (
     <>
@@ -22,13 +28,15 @@ function SectionFields({ s, onChange }: { s: BeamSection; onChange: (s: BeamSect
         <span>Profile</span>
         <select value={known ? known.name : 'custom'} onChange={(e) => {
           const p = profileSection(e.target.value, s.E);
-          if (p) onChange(p);
+          // a new profile keeps the material; its shear area follows the profile again
+          if (p) onChange({ ...p, material: s.material, grade: s.grade, G: s.G });
           else onChange({ ...s, label: undefined });
         }}>
           {PROFILES.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
           <option value="custom">Custom values</option>
         </select>
       </label>
+      <MaterialField s={s} onChange={onChange} />
       <div className="row2">
         <label className="field" title="Young's modulus; a bare number is GPa"><span>E</span><LazyInput label="E" value={s.E} onCommit={(v) => onChange({ ...s, E: v.trim() })} /></label>
         <label className="field" title="Area; a bare number is cm²"><span>A</span><LazyInput label="A" value={s.A} onCommit={(v) => onChange({ ...s, A: v.trim(), label: undefined })} /></label>
@@ -37,6 +45,7 @@ function SectionFields({ s, onChange }: { s: BeamSection; onChange: (s: BeamSect
         <label className="field" title="Second moment of area; a bare number is cm⁴"><span>I</span><LazyInput label="I" value={s.I} onCommit={(v) => onChange({ ...s, I: v.trim(), label: undefined })} /></label>
         <label className="field" title="Section modulus for the bending stress (optional); a bare number is cm³"><span>W</span><LazyInput label="W" value={s.W ?? ''} placeholder="optional" onCommit={(v) => onChange({ ...s, W: v.trim() || undefined, label: undefined })} /></label>
       </div>
+      {shear && <ShearFields s={s} onChange={onChange} si={si} />}
     </>
   );
 }
@@ -149,7 +158,8 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
       <p className="hint">
         With a name the math below can use <code>{name}.A.Ry</code> (reactions per support), <code>{name}.M_max</code>, <code>{name}.V_max</code>, <code>{name}.w_max</code>
         {region.section.W || region.members.some((m) => m.section?.W) ? <>, <code>{name}.σ_max</code></> : null}
-        {straight ? <> and the functions <code>{name}.M(x)</code>, <code>{name}.V(x)</code>, <code>{name}.w(x)</code> for plots</> : null}.
+        {straight ? <> and the functions <code>{name}.M(x)</code>, <code>{name}.V(x)</code>, <code>{name}.w(x)</code> for plots</> : null}
+        {region.analysis?.buckling || region.analysis?.secondOrder ? <>, <code>{name}.alpha_cr</code> and <code>{name}.L_cr</code></> : null}.
         Loads and sections accept worksheet expressions.
       </p>
       <div className="row2">
@@ -170,13 +180,16 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
 
       {member && (
         <>
-          <h3 className="sub">Member · {u.length(memberLength(member))}</h3>
+          <h3 className="sub">Member {region.members.indexOf(member) + 1} · {u.length(memberLength(member))}</h3>
           {err(member.id)}
           <label className="check"><input type="checkbox" checked={!!member.hingeA} onChange={(e) => updMember({ hingeA: e.target.checked || undefined })} /> Hinge at the start</label>
           <label className="check"><input type="checkbox" checked={!!member.hingeB} onChange={(e) => updMember({ hingeB: e.target.checked || undefined })} /> Hinge at the end</label>
           <p className="hint">Both ends hinged: a truss bar (axial force only).</p>
           <label className="check"><input type="checkbox" checked={!!member.section} onChange={(e) => updMember({ section: e.target.checked ? { ...region.section } : undefined })} /> Own section</label>
-          {member.section && <SectionFields s={member.section} onChange={(s) => updMember({ section: s })} />}
+          {member.section && <SectionFields s={member.section} shear={!!region.analysis?.shear} onChange={(s) => updMember({ section: s })} />}
+          {result?.buckling?.Lcr[member.id] !== undefined && (
+            <p className="hint">Buckling length in the lowest mode: L<sub>cr</sub> = {u.length(result.buckling.Lcr[member.id] / (LENGTH_M[region.lengthUnit] ?? 1))}.</p>
+          )}
         </>
       )}
       {support && (
@@ -304,9 +317,11 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
         <>
           <h3 className="sub">Section (all members)</h3>
           {err('section')}
-          <SectionFields s={region.section} onChange={(s) => set({ section: s }, 'section')} />
+          <SectionFields s={region.section} shear={!!region.analysis?.shear} si={result?.section} onChange={(s) => set({ section: s }, 'section')} />
           <h3 className="sub">Load cases</h3>
           <LoadCases lc={region.loadCases} loads={region.loads} onChange={(lc) => set({ loadCases: lc }, 'cases')} />
+          <h3 className="sub">Analysis</h3>
+          <AnalysisOptions region={region} onChange={(patch) => set(patch, 'analysis')} />
         </>
       )}
 
@@ -333,9 +348,14 @@ export function BeamProps({ region, result, dispatch }: { region: BeamRegion; re
               {sol.max.sigma && <tr><td>σ<sub>max</sub></td><td>{u.stress(sol.max.sigma.value)}</td></tr>}
             </tbody>
           </table>
-          <p className="hint">Linear elastic, small deflections, Euler–Bernoulli members (no shear deformation). Self-weight is not included unless you add it as a line load.</p>
+          <p className="hint">
+            Linear elastic, {region.analysis?.secondOrder ? 'second order (equilibrium on the deformed structure)' : 'first order, small deflections'},
+            {' '}{region.analysis?.shear ? 'Timoshenko members (with shear deformation)' : 'Euler–Bernoulli members (no shear deformation)'}.
+            {' '}Self-weight is not included unless you add it as a line load.
+          </p>
         </>
       )}
+      {result && <StabilityResults region={region} result={result} />}
     </div>
   );
 }

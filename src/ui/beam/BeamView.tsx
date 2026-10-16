@@ -13,7 +13,7 @@ import {
 import type { Action } from '../store';
 import { useSketchUI, type BeamTool } from '../sketch/context';
 import {
-  Diagram, FrameMultiples, LoadGlyph, Reactions, STRIP_H, StackedDiagrams, SupportGlyph, autoPanels, fitView, fmt, stackLayout, toS, toW, units,
+  Diagram, FrameMultiples, LoadGlyph, Reactions, STRIP_H, StackedDiagrams, SupportGlyph, autoPanels, fitView, fmt, fmtAlpha, modeShown, stackLayout, toS, toW, units,
   type P2, type Vp,
 } from './beamDraw';
 import { straightBeam } from '../../beam/evaluate';
@@ -55,6 +55,7 @@ const DIAGRAMS: { id: BeamDiagram; label: string; title: string }[] = [
   { id: 'V', label: 'V', title: 'Shear force' },
   { id: 'M', label: 'M', title: 'Bending moment, drawn on the tension side' },
   { id: 'deflection', label: 'δ', title: 'Deflected shape (exaggerated)' },
+  { id: 'mode', label: 'Buckling', title: 'Buckling mode (normalised) and its load factor α_cr' },
 ];
 
 type Hit =
@@ -558,10 +559,13 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   // ------------------------------------------------------------ render
 
   const show = region.show;
-  const diagramOn = !stacked && show !== 'model' && show !== 'reactions' && !!res?.solution;
+  // buckling modes exist with the buckling or the second-order option
+  const buckling = !!(region.analysis?.buckling || region.analysis?.secondOrder);
+  const mode = modeShown(region, res);
+  const diagramOn = !stacked && show !== 'model' && show !== 'reactions' && (show === 'mode' ? !!mode : !!res?.solution);
   const reactionsOn = !!res?.solution && (stacked ? !!region.reactions : show === 'reactions');
   const togglePanel = (k: BeamPanel) => {
-    const order: BeamPanel[] = ['N', 'V', 'M', 'deflection'];
+    const order: BeamPanel[] = ['N', 'V', 'M', 'deflection', 'mode'];
     const next = kinds.includes(k) ? kinds.filter((x) => x !== k) : order.filter((x) => x === k || kinds.includes(x));
     set({ panels: next }, false);
   };
@@ -751,25 +755,37 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             <span className="bm-tab-sep" />
             {stacked ? (
               <>
-                {(['N', 'V', 'M', 'deflection'] as BeamPanel[]).map((k) => (
+                {(['N', 'V', 'M', 'deflection', ...(buckling ? ['mode'] : [])] as BeamPanel[]).map((k) => (
                   <button key={k} className={kinds.includes(k) ? 'on' : ''} aria-pressed={kinds.includes(k)} title={DIAGRAMS.find((d) => d.id === k)?.title}
-                    onClick={(e) => { e.stopPropagation(); togglePanel(k); }}>{k === 'deflection' ? 'δ' : k}</button>
+                    onClick={(e) => { e.stopPropagation(); togglePanel(k); }}>{k === 'deflection' ? 'δ' : k === 'mode' ? 'Buckling' : k}</button>
                 ))}
                 <button className={region.reactions ? 'on' : ''} aria-pressed={!!region.reactions} title="Show the support reactions on the structure"
                   onClick={(e) => { e.stopPropagation(); set({ reactions: !region.reactions }, false); }}>Reactions</button>
               </>
-            ) : DIAGRAMS.map((dg) => (
+            ) : DIAGRAMS.filter((dg) => dg.id !== 'mode' || buckling).map((dg) => (
               <button key={dg.id} role="tab" aria-selected={show === dg.id} className={show === dg.id ? 'on' : ''} title={dg.title}
-                disabled={dg.id !== 'model' && !res?.solution} onClick={(e) => { e.stopPropagation(); set({ show: dg.id }, false); }}>{dg.label}</button>
+                disabled={dg.id === 'mode' ? !mode : dg.id !== 'model' && !res?.solution} onClick={(e) => { e.stopPropagation(); set({ show: dg.id }, false); }}>{dg.label}</button>
             ))}
+            {mode && mode.count > 1 && (stacked ? kinds.includes('mode') : show === 'mode') && (
+              <>
+                <span className="bm-tab-sep" />
+                <select
+                  className="bm-view" aria-label="Buckling mode shown" value={mode.index} title="Which buckling mode is drawn"
+                  onChange={(e) => set({ analysis: { ...region.analysis, mode: Number(e.target.value) } }, false)}
+                >
+                  {res!.buckling!.modes.map((m, i) => <option key={i} value={i}>Mode {i + 1} · α {fmtAlpha(m.alpha)}</option>)}
+                </select>
+              </>
+            )}
           </div>
         )}
-        {sol && !lc && (
+        {sol && !lc && !(stacked && kinds.includes('mode')) && (
           <div className={`bm-summary${stacked && region.members.length > 0 ? ' in-strip' : ''}`}>
             {sol.max.M && <span>M<sub>max</sub> {u.moment(sol.max.M.value)}</span>}
             {sol.max.V && !(stacked && region.members.length > 0) && <span>V<sub>max</sub> {u.force(sol.max.V.value)}</span>}
             {sol.max.w && <span>δ<sub>max</sub> {u.defl(sol.max.w.value)}</span>}
             {sol.max.sigma && !(stacked && region.members.length > 0) && <span>σ<sub>max</sub> {u.stress(sol.max.sigma.value)}</span>}
+            {res?.buckling && <span>α<sub>cr</sub> {fmtAlpha(res.buckling.modes[0]?.alpha ?? Infinity)}</span>}
           </div>
         )}
       </div>

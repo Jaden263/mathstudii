@@ -429,6 +429,15 @@ function rootsIn(p: number[], L: number, n = 12): number[] {
   return out;
 }
 
+/**
+ * The axis a support holds (its normal): (−sin a, cos a). Snapped at whole right angles,
+ * where cos(π/2) ≈ 6e-17 would otherwise leak a sliver of the load into the other direction.
+ */
+export function supportAxis(angle: number): [number, number] {
+  const snap = (v: number) => (Math.abs(v) < 1e-12 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-12 ? Math.sign(v) : v);
+  return [snap(-Math.sin(angle)), snap(Math.cos(angle))];
+}
+
 const MAX_ITERATIONS = 30;
 
 export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamSolution {
@@ -458,7 +467,7 @@ export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamS
   st.supports.forEach((sp, si) => {
     const k = nodeIndex.get(sp.node);
     if (k === undefined) return;
-    if (sp.k && sp.k > 0) springs.push({ support: si, node: k, n: [-Math.sin(sp.angle), Math.cos(sp.angle)], k: sp.k, settle: sp.settle ?? 0 });
+    if (sp.k && sp.k > 0) springs.push({ support: si, node: k, n: supportAxis(sp.angle), k: sp.k, settle: sp.settle ?? 0 });
     if (sp.type === 'fixed' && sp.kr && sp.kr > 0) rotSprings.push({ support: si, node: k, kr: sp.kr });
   });
 
@@ -518,7 +527,7 @@ export function solveStructure(st: NumStructure, opts: SolveOptions = {}): BeamS
   st.supports.forEach((sp, si) => {
     const k = nodeIndex.get(sp.node);
     if (k === undefined) return;
-    const nx = -Math.sin(sp.angle), ny = Math.cos(sp.angle);
+    const [nx, ny] = supportAxis(sp.angle);
     const settle = sp.settle ?? 0;
     if (!(sp.k && sp.k > 0)) rows.push({ dof: [3 * k, 3 * k + 1], w: [nx, ny], support: si, dir: [nx, ny, 0], ...(settle ? { rhs: -settle } : {}) });
     if (sp.type !== 'roller') rows.push({ dof: [3 * k, 3 * k + 1], w: [ny, -nx], support: si, dir: [ny, -nx, 0] });

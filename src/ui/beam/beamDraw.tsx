@@ -1,9 +1,9 @@
 // Drawing of a beam region: members, supports, loads, reactions and the N / V / M /
-// deflection diagrams, in screen coordinates.
+// deflection diagrams and the buckling modes, in screen coordinates.
 import type { JSX } from 'react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
-import type { BeamSolution } from '../../beam/solve';
+import type { BeamSolution, Extreme } from '../../beam/solve';
 import { loadPoint, type BeamData, type BeamDiagram, type BeamLoad, type BeamPanel, type BeamView } from '../../beam/model';
 
 export const LENGTH_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
@@ -22,6 +22,33 @@ export interface P2 {
 
 export const toS = (vp: Vp, p: P2): P2 => ({ x: (p.x - vp.view.cx) * vp.view.zoom + vp.width / 2, y: vp.height / 2 - (p.y - vp.view.cy) * vp.view.zoom });
 export const toW = (vp: Vp, s: P2): P2 => ({ x: (s.x - vp.width / 2) / vp.view.zoom + vp.view.cx, y: (vp.height / 2 - s.y) / vp.view.zoom + vp.view.cy });
+
+/** α_cr to three significant figures. */
+export const fmtAlpha = (a: number) => (Number.isFinite(a) ? (a >= 100 ? a.toFixed(0) : a.toPrecision(3)) : '∞');
+
+/**
+ * The buckling mode drawn (the region's choice among those found) as a solution whose
+ * displacements are the normalised mode, so it draws like a deflected shape.
+ */
+export function modeShown(r: BeamRegion, res?: BeamResult): { index: number; alpha: number; count: number; sol: BeamSolution } | null {
+  const modes = res?.buckling?.modes;
+  if (!modes?.length) return null;
+  const index = Math.min(Math.max(0, r.analysis?.mode ?? 0), modes.length - 1);
+  const mode = modes[index];
+  const Lm = LENGTH_M[r.lengthUnit] ?? 1;
+  const N = new Map(r.nodes.map((q) => [q.id, q]));
+  let w: Extreme | undefined;
+  const members = mode.members.map((ms) => {
+    const m = r.members.find((q) => q.id === ms.id);
+    const a = m && N.get(m.a), b = m && N.get(m.b);
+    ms.dx.forEach((dx, i) => {
+      const mag = Math.hypot(dx, ms.dy[i]);
+      if (!w || mag > w.value) w = { value: mag, member: ms.id, s: ms.s[i], x: 0, y: 0 };
+    });
+    return { id: ms.id, L: a && b ? Math.hypot(b.x - a.x, b.y - a.y) * Lm : ms.s.at(-1) ?? 1, s: ms.s, N: [], V: [], M: [], dx: ms.dx, dy: ms.dy, pieces: [] };
+  });
+  return { index, alpha: mode.alpha, count: modes.length, sol: { members, reactions: [], nodes: {}, max: w ? { w } : {}, indeterminacy: 0 } };
+}
 
 export function fmt(v: number): string {
   if (!Number.isFinite(v)) return '?';
@@ -276,7 +303,7 @@ export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX, low }: {
 }) {
   const sol = res.solution;
   if (!sol) return null;
-  if (low && kind !== 'deflection') {
+  if (low && kind !== 'deflection' && kind !== 'mode') {
     let vmax = 0;
     for (const so of [sol, low]) for (const mr of so.members) for (const v of kind === 'M' ? mr.M : kind === 'V' ? mr.V : mr.N) vmax = Math.max(vmax, Math.abs(v));
     return (
@@ -290,12 +317,13 @@ export function Diagram({ r, d, vp, res, kind, px = DIAGRAM_PX, low }: {
 }
 
 function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride }: { r: BeamRegion; d: BeamData; vp: Vp; res: BeamResult; kind: Exclude<BeamDiagram, 'model' | 'reactions'>; px?: number; vmaxOverride?: number }) {
-  const sol = res.solution;
-  if (!sol) return null;
+  const mode = kind === 'mode' ? modeShown(r, res) : null;
+  const sol = mode ? mode.sol : res.solution;
+  if (!sol || (kind === 'mode' && !mode)) return null;
   const u = units(r);
   const Lm = LENGTH_M[r.lengthUnit] ?? 1;
   const N = new Map(d.nodes.map((q) => [q.id, q]));
-  if (kind === 'deflection') {
+  if (kind === 'deflection' || mode) {
     const wmax = sol.max.w?.value ?? 0;
     const k = wmax > 0 ? px / vp.view.zoom / (wmax / Lm) : 0; // exaggeration: the largest deflection shows as px
     const paths: JSX.Element[] = [];
@@ -309,7 +337,7 @@ function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride }: { r:
         const w = { x: a.x + (b.x - a.x) * t + (mr.dx[i] / Lm) * k, y: a.y + (b.y - a.y) * t + (mr.dy[i] / Lm) * k };
         return toS(vp, w);
       });
-      paths.push(<polyline key={mr.id} points={pts.map((p) => `${p.x},${p.y}`).join(' ')} className="bm-deformed" />);
+      paths.push(<polyline key={mr.id} points={pts.map((p) => `${p.x},${p.y}`).join(' ')} className={mode ? 'bm-mode' : 'bm-deformed'} />);
     }
     const mx = sol.max.w;
     let label: JSX.Element | null = null;
@@ -321,12 +349,12 @@ function DiagramOne({ r, d, vp, res, kind, px = DIAGRAM_PX, vmaxOverride }: { r:
       const p = toS(vp, { x: a.x + (b.x - a.x) * t + (mr.dx[i] / Lm) * k, y: a.y + (b.y - a.y) * t + (mr.dy[i] / Lm) * k });
       label = (
         <g>
-          <circle cx={p.x} cy={p.y} r={3} className="bm-max-dot" />
-          <text x={p.x + 6} y={p.y + 14} className="bm-value">δ = {u.defl(wmax)}</text>
+          <circle cx={p.x} cy={p.y} r={3} className={mode ? 'bm-mode-dot' : 'bm-max-dot'} />
+          <text x={p.x + 6} y={p.y + 14} className="bm-value">{mode ? <>α<tspan className="bm-sub" dy={3}>cr,{mode.index + 1}</tspan><tspan dy={-3}> = {fmtAlpha(mode.alpha)}</tspan></> : <>δ = {u.defl(wmax)}</>}</text>
         </g>
       );
     }
-    return <g className="bm-diagram defl">{paths}{label}</g>;
+    return <g className={`bm-diagram ${mode ? 'mode' : 'defl'}`}>{paths}{label}</g>;
   }
   const vals = (mr: typeof sol.members[number]) => (kind === 'M' ? mr.M : kind === 'V' ? mr.V : mr.N);
   let vmax = 0;
@@ -474,8 +502,12 @@ export function stackLayout(height: number, width: number, n: number, straight: 
 
 const PANEL_TITLE: Record<BeamPanel, string> = { N: 'N', V: 'V', M: 'M', deflection: 'δ', mode: 'Buckling mode' };
 
-function panelUnit(r: BeamRegion, k: BeamPanel): string {
+function panelUnit(r: BeamRegion, k: BeamPanel, res?: BeamResult): string {
   const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
+  if (k === 'mode') {
+    const m = modeShown(r, res);
+    return m ? `${m.index + 1}: α_cr = ${fmtAlpha(m.alpha)}` : 'none';
+  }
   return k === 'M' ? `${r.forceUnit}·${r.lengthUnit}` : k === 'deflection' ? (metric ? 'mm' : 'in') : r.forceUnit;
 }
 
@@ -516,7 +548,12 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
   }
   const yBeam = toS(vp, { x: 0, y: beamY }).y;
 
+  const mode = kinds.includes('mode') ? modeShown(r, res) : null;
   const series = (k: BeamPanel, so: BeamSolution = sol): Station[] => {
+    if (k === 'mode') {
+      if (!mode) return [];
+      so = mode.sol;
+    }
     const byId = new Map(so.members.map((m) => [m.id, m]));
     const out: Station[] = [];
     for (const seg of segs) {
@@ -546,8 +583,15 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
       {kinds.map((k, idx) => {
         const y0 = top + idx * layout.panelH;
         const pts = series(k);
-        if (!pts.length) return null;
-        const pts2 = low ? series(k, low) : null;
+        if (!pts.length) {
+          return k === 'mode' ? (
+            <g key={k} className="bm-panel mode">
+              <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />
+              <text x={10} y={y0 + 15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [none: nothing is in compression]</tspan></text>
+            </g>
+          ) : null;
+        }
+        const pts2 = low && k !== 'mode' ? series(k, low) : null;
         // plotted value: moments on the tension side, the rest as they are
         const pv = (v: number) => (k === 'M' ? -v : v);
         let lo = 0, hi = 0, vmax = 0;
@@ -570,7 +614,7 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
           if (p.v > pts[iMax].v) iMax = i;
           if (p.v < pts[iMin].v) iMin = i;
         });
-        if (!flat) {
+        if (!flat && k !== 'mode') {
           if (Math.abs(pts[iMax].v) > 1e-9 * vmax) cands.push({ i: iMax, pri: 0 });
           if (Math.abs(pts[iMin].v) > 1e-9 * vmax) cands.push({ i: iMin, pri: 0 });
           pts.forEach((p, i) => {
@@ -601,7 +645,7 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
         return (
           <g key={k} className={`bm-panel ${k}`}>
             <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />
-            <text x={10} y={y0 + 15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{panelUnit(r, k)}]</tspan></text>
+            <text x={10} y={y0 + 15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{panelUnit(r, k, res)}]</tspan></text>
             {!flat && <polygon points={`${x0},${yb} ${curve} ${x1},${yb}`} className={`bm-fill ${k === 'deflection' ? 'D' : k}`} />}
             <line x1={x0} y1={yb} x2={x1} y2={yb} className="bm-panel-base" />
             {!flat && <polyline points={curve} className={`bm-curve ${k === 'deflection' ? 'D' : k}`} />}
@@ -635,7 +679,7 @@ export function FrameMultiples({ r, d, res, top, layout, kinds, width, low }: {
           <g key={k} transform={`translate(${x0} ${y0})`} className={`bm-panel ${k}`}>
             <line x1={0} y1={0} x2={cellW} y2={0} className="bm-panel-sep" />
             {col > 0 && <line x1={0} y1={0} x2={0} y2={layout.panelH} className="bm-panel-sep" />}
-            <text x={10} y={15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{panelUnit(r, k)}]</tspan></text>
+            <text x={10} y={15} className="bm-panel-title">{PANEL_TITLE[k]}<tspan className="bm-panel-unit"> [{panelUnit(r, k, res)}]</tspan></text>
             {d.members.map((m) => {
               const a = N.get(m.a), b = N.get(m.b);
               if (!a || !b) return null;
@@ -650,9 +694,10 @@ export function FrameMultiples({ r, d, res, top, layout, kinds, width, low }: {
   );
 }
 
-/** Diagrams worth showing when the user has not chosen: N only when there is axial force. */
+/** Diagrams worth showing when the user has not chosen: N only when there is axial force, the buckling mode with buckling. */
 export function autoPanels(res: BeamResult | undefined): BeamPanel[] {
   const sol = res?.solution;
   const nmax = Math.abs(sol?.max.N?.value ?? 0), vmax = Math.abs(sol?.max.V?.value ?? 0);
-  return nmax > 1e-3 * Math.max(vmax, 1e-9) ? ['N', 'V', 'M', 'deflection'] : ['V', 'M', 'deflection'];
+  const out: BeamPanel[] = nmax > 1e-3 * Math.max(vmax, 1e-9) ? ['N', 'V', 'M', 'deflection'] : ['V', 'M', 'deflection'];
+  return res?.analysis?.buckling ? [...out, 'mode'] : out;
 }

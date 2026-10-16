@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { evaluateWorksheet, type BeamResult, type MathResult } from '../engine/evaluator';
 import { createRegion, emptyWorksheet, type BeamRegion } from '../model/types';
 import { splitMember, removeItems, type BeamData } from './model';
+import type { BeamSolution } from './solve';
 
 function simpleBeam(): BeamData {
   return {
@@ -208,6 +209,27 @@ describe('shear deformation, second order and buckling in a worksheet', () => {
     expect(res.combos?.every((c) => c.solution?.secondOrder)).toBe(true);
   });
 
+  it('envelopes over second-order combinations', () => {
+    const lc = {
+      cases: [{ id: 'G', name: 'G' }, { id: 'Q', name: 'Q' }],
+      combos: [
+        { id: 'u1', name: 'ULS1', kind: 'ULS' as const, factors: { G: '1.35', Q: '1.5' } },
+        { id: 'u2', name: 'ULS2', kind: 'ULS' as const, factors: { G: '1.35', Q: '-1.5' } },
+      ],
+      view: 'envelope',
+    };
+    const { res } = run(columnData(), [], { loadCases: lc, analysis: { secondOrder: true } });
+    expect(res.error).toBeUndefined();
+    // wind either way: the envelope holds both foot moments, ± H tan(kL)/k
+    const P = 270e3, k = Math.sqrt(P / EI), M = (7.5e3 * Math.tan(k * 4)) / k;
+    const foot = (sol: BeamSolution) => sol.members[0].M[0];
+    expect(foot(res.envelope!.max) / M).toBeCloseTo(1, 2);
+    expect(foot(res.envelope!.min) / -M).toBeCloseTo(1, 2);
+    expect(res.solution).toBe(res.envelope!.max);
+    // the buckling shown is the lowest combination's (both are the same here)
+    expect(res.buckling?.modes[0].alpha).toBeCloseTo((Math.PI ** 2 * EI) / 64 / P, 1);
+  });
+
   it('a combination above the critical load fails on its own', () => {
     const d = columnData();
     d.loads[0] = { ...d.loads[0], value: '3000' } as BeamData['loads'][number];
@@ -224,5 +246,10 @@ describe('shear deformation, second order and buckling in a worksheet', () => {
     expect(res.combos![1].solution).toBeDefined();
     expect(num(tex(0))).toBeLessThan(1);
     expect(num(tex(1))).toBeCloseTo(-30, 6);
+    // without load cases: the error, and α_cr still in the worksheet
+    d.loads = d.loads.map((l) => ({ ...l, case: undefined }));
+    const one = run(d, ['b.alpha_cr ='], { analysis: { secondOrder: true } });
+    expect(one.res.error).toMatch(/^Above the elastic critical load/);
+    expect(num(one.tex(0))).toBeCloseTo((Math.PI ** 2 * EI) / 64 / 3000e3, 3);
   });
 });

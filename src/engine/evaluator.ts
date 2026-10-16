@@ -861,8 +861,8 @@ class Evaluator {
       return { kind: 'beam', values: {}, errors: {}, error: friendlyError(e) };
     }
     const name = r.name.trim();
-    // with load cases, one combination failing (second order) leaves the others to export
-    if (name && (res.solution || res.combos?.some((c) => c.solution))) {
+    // above the critical load (second order) α_cr, and the other combinations, still export
+    if (name && (res.solution || res.buckling || res.combos?.some((c) => c.solution))) {
       if (!isIdentifier(name)) res.error = `"${name}" is not a valid variable name`;
       else {
         this.global.set(name, beamValue(r, res));

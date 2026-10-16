@@ -119,6 +119,18 @@ describe('Euler columns: P_cr = π² EI / (β L)²', () => {
     expect(a * 1e3).toBeLessThan(PE * 0.97);
   });
 
+  it('springs and hinges: a cantilever on a rotational spring, and hinged member ends at fixed supports', () => {
+    // free head, foot on a rotational spring k_r: kL tan(kL) = k_r L / EI (here 2)
+    const kr = (2 * EI) / L;
+    const kL = root((x) => x * Math.tan(x) - 2, 0.1, Math.PI / 2 - 1e-9);
+    const st: NumStructure = { ...column(L, 'fixed', null), supports: [sup('F', 'f', 'fixed', 0, { kr })] };
+    near(bucklingAnalysis(st, solveStructure(st)).modes[0].alpha * 1e3, (kL * kL * EI) / (L * L), 0.005);
+    // clamped at both ends by the supports, but the member is hinged at both: β = 1
+    const h = column(L, 'fixed', sup('H', 'h', 'fixed', 0, { k: 1e3 }), 1e3, { hingeA: true, hingeB: true });
+    const sol = solveStructure(h);
+    near(bucklingAnalysis(h, sol).modes[0].alpha * -sol.members[0].N[0], Pcr(1), 0.005);
+  });
+
   it('a column in tension does not buckle', () => {
     const st = column(L, 'fixed', null, -1e3);
     expect(bucklingAnalysis(st, solveStructure(st)).modes).toEqual([]);

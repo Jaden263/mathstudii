@@ -8,7 +8,7 @@
 // densely: its largest eigenvalues give the lowest α, and φ = L⁻ᵀ y the modes.
 import { backward, cholesky, forward, largestEigen, symmetricEigen } from './eigen';
 import {
-  elementsPerMember, frameMesh, geometricK, localK, memberAt, shearStiffness, StructureError, subdivide, toGlobal,
+  elementsPerMember, frameMesh, geometricK, localK, memberAt, shearStiffness, StructureError, subdivide, supportAxis, toGlobal,
   type BeamSolution, type NumStructure,
 } from './solve';
 
@@ -64,7 +64,7 @@ export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3)
   for (const sp of st.supports) {
     const k = mesh.nodeIndex.get(sp.node);
     if (k === undefined) continue;
-    const n: [number, number] = [-Math.sin(sp.angle), Math.cos(sp.angle)];
+    const n = supportAxis(sp.angle);
     if (sp.k && sp.k > 0) springs.push({ node: k, n, k: sp.k });
     else held[k].dirs.push(n);
     if (sp.type !== 'roller') held[k].dirs.push([n[1], -n[0]]);
@@ -166,15 +166,27 @@ export function bucklingAnalysis(st: NumStructure, sol: BeamSolution, count = 3)
         sh.dy.push(p.s * u + p.c * v);
       }
     });
-    // largest displacement 1, and pointing the positive way
-    let big = 0, sign = 1;
-    for (const sh of shapes.values()) sh.dx.forEach((dx, k) => {
-      const dy = sh.dy[k], mag = Math.hypot(dx, dy);
-      if (mag > big) {
-        big = mag;
-        sign = Math.abs(dx) > Math.abs(dy) ? Math.sign(dx) : Math.sign(dy);
-      }
-    });
+    // largest displacement 1, pointing the way the structure deflects under the loads
+    // (else its largest component positive)
+    let big = 0, sign = 1, along = 0, mm = 0, dd = 0;
+    for (const sh of shapes.values()) {
+      const r = results.get(sh.id);
+      sh.dx.forEach((dx, k) => {
+        const dy = sh.dy[k], mag = Math.hypot(dx, dy);
+        if (mag > big) {
+          big = mag;
+          sign = Math.abs(dx) > Math.abs(dy) ? Math.sign(dx) : Math.sign(dy);
+        }
+        if (r) {
+          const d = memberAt(r, Math.min(sh.s[k], r.L));
+          along += dx * d.dx + dy * d.dy;
+          mm += dx * dx + dy * dy;
+          dd += d.dx * d.dx + d.dy * d.dy;
+        }
+      });
+    }
+    // (a mode at right angles to the deflection, like sway under symmetric loads, keeps the rule above)
+    if (Math.abs(along) > 1e-3 * Math.sqrt(mm * dd)) sign = Math.sign(along);
     const k = big > 0 ? sign / big : 0;
     for (const sh of shapes.values()) {
       sh.dx = sh.dx.map((v) => v * k);

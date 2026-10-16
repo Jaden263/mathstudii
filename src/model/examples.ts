@@ -1,7 +1,7 @@
 import { createRegion, emptyWorksheet, PX_PER_MM, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
-import type { BeamCases, BeamData } from '../beam/model';
+import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -518,6 +518,21 @@ export function beamExample(): Worksheet {
       view: 'envelope',
     },
   };
+  // sway portal on pinned feet: second order with shear deformation, and its buckling mode
+  const sway: BeamData & { analysis: BeamAnalysis; panels: BeamPanel[] } = {
+    nodes: [{ id: 'w1', x: 0, y: 0 }, { id: 'w2', x: 0, y: 5 }, { id: 'w3', x: 8, y: 5 }, { id: 'w4', x: 8, y: 0 }],
+    members: [{ id: 'wc1', a: 'w1', b: 'w2' }, { id: 'wr', a: 'w2', b: 'w3' }, { id: 'wc2', a: 'w4', b: 'w3' }],
+    supports: [
+      { id: 'wsA', node: 'w1', type: 'pin', angle: 0, label: 'A' },
+      { id: 'wsD', node: 'w4', type: 'pin', angle: 0, label: 'D' },
+    ],
+    loads: [
+      { id: 'wq', type: 'line', member: 'wr', q1: 'q_s', dir: 'global' },
+      { id: 'wH', type: 'force', at: { node: 'w2' }, value: 'H_s', angle: 0 },
+    ],
+    analysis: { secondOrder: true, shear: true },
+    panels: ['M', 'mode'],
+  };
   return build('Beams and frames', [
     ['text', L, mm(12), { width: mm(170), markdown: '# Beams and frames\nPress **Beam** in the toolbar, draw members, click supports and loads onto them — the reactions and the N, V, M and deflection diagrams follow at once. Loads are worksheet expressions, and the results come back as variables. Double-click a structure to edit it; switch diagrams with the strip below it.' }],
     ['math', L, mm(44), { source: 'q_k := 8 kN/m' }],
@@ -551,6 +566,19 @@ export function beamExample(): Worksheet {
     ['math', mm(65), mm(534), { source: 'pb.combos.ULS_1.M_max = kN*m' }],
     ['math', L, mm(546), { source: 'pb.B.Ry = kN' }],
     ['math', mm(65), mm(546), { source: 'pb.w_max = mm' }],
+    ['text', L, mm(562), { width: mm(170), markdown: '## Stability: a sway portal in second order\nOn pinned feet the portal sways easily. Its analysis (side panel → Analysis) is **second order** with shear deformation: each load set is first checked for buckling — α_cr, with the EN 1993-1-1 5.2.1(3) verdict — and then solved on the deformed structure. The strip shows the moments and the lowest buckling mode.' }],
+    ['math', L, mm(588), { source: 'q_s := 30 kN/m' }],
+    ['math', mm(65), mm(588), { source: 'H_s := 10 kN' }],
+    // tall enough for its diagrams from the start, so it does not grow over the math below
+    ['beam', L, mm(598), { name: 'sp', width: mm(170), height: mm(160), ...sway }],
+    ['math', L, mm(770), { source: 'sp.alpha_cr =' }],
+    ['math', mm(65), mm(770), { source: 'sp.alpha_cr ≥ 3' }],
+    ['math', L, mm(782), { source: 'sp.M_max = kN*m' }],
+    ['math', mm(80), mm(782), { source: 'sp.first.M_max = kN*m' }],
+    ['math', L, mm(794), { source: 'sp.M_max / sp.first.M_max =' }],
+    ['math', mm(80), mm(794), { source: '1 / (1 - 1 / sp.alpha_cr) =' }],
+    ['math', L, mm(810), { source: 'sp.L_cr[0] = m' }],
+    ['text', L, mm(822), { width: mm(170), markdown: 'The corner moment comes mostly from the roof load, which hardly sways the frame, so it grows less than 1/(1 − 1/α_cr): that factor amplifies the sway part only (EN 1993-1-1 5.2.2(5)B). `sp.L_cr` lists the buckling lengths in member order: the left column first.' }],
   ]);
 }
 

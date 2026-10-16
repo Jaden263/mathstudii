@@ -181,7 +181,7 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     const buckling = wantBuckling ? bucklingAnalysis(st, first) : undefined;
     if (!second) return { solution: first, buckling };
     const a = buckling?.modes[0]?.alpha;
-    if (a !== undefined && a <= 1) return { buckling, error: `the loads are above the elastic critical load (α_cr = ${a.toPrecision(3)} < 1): there is no second-order equilibrium` };
+    if (a !== undefined && a <= 1) return { buckling, error: `above the elastic critical load (α_cr = ${a.toPrecision(3)} < 1): no second-order equilibrium` };
     try {
       const solution = solveStructure(st, { secondOrder: true });
       solution.secondOrder = { iterations: solution.secondOrder?.iterations ?? 0, first: { max: first.max, reactions: first.reactions } };
@@ -353,7 +353,13 @@ export function straightBeam(r: BeamRegion): { id: string; x0: number; x1: numbe
 
 /** Worksheet value: reactions per support, extremes and functions along a straight beam. */
 export function beamValue(r: BeamRegion, res: BeamResult): Record<string, unknown> {
-  if (!r.loadCases || !res.combos) return res.solution ? solutionValue(r, res.solution, res.buckling) : {};
+  if (!r.loadCases || !res.combos) {
+    if (res.solution) return solutionValue(r, res.solution, res.buckling);
+    // above the critical load in second order: α_cr is all there is
+    const value: Record<string, unknown> = {};
+    if (res.buckling) stabilityValue(r, res.buckling, value);
+    return value;
+  }
   // with load cases: b.cases.G, b.combos.ULS, and at the top the governing values:
   // forces and reactions over the ULS combinations, deflection over the SLS ones
   const named = (list: CaseResult[] = []) => Object.fromEntries(list.filter((c) => c.solution).map((c) => [identifierOf(c.name), solutionValue(r, c.solution!, c.buckling)]));

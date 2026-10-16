@@ -269,6 +269,8 @@ stress (with a section modulus W) and the degree of static indeterminacy.
 
 **Sections:** IPE/HEA/HEB profiles from a list, or any E, A, I and W. All four are
 expressions; bare numbers mean GPa, cm², cm⁴ and cm³. Each member can have its own section.
+A material (steel, or a concrete or timber class, which also sets E) gives the shear
+modulus.
 
 **Back into the worksheet:** name the region (`b`) and the math below can use
 - the reactions per support: `b.A.Ry`, `b.A.Rx`, `b.A.M`, `b.A.R`
@@ -289,8 +291,43 @@ statically determinate and indeterminate structures are handled alike.
   of M/EI. The answers therefore match the handbook formulas, not just approximate them:
   the tests check simply supported, cantilever, propped, continuous and Gerber beams
   and a truss against closed-form results, and a portal frame for equilibrium.
-- **Not included:** shear deformation (Timoshenko), second-order effects (P-Δ, buckling),
-  plasticity, moving loads and self-weight. Add self-weight as a line load.
+- **Not included:** plasticity, imperfections (add equivalent sway forces as loads),
+  lateral-torsional and out-of-plane buckling, moving loads and self-weight. Add
+  self-weight as a line load.
+
+**Shear deformation, second order and buckling** (side panel → *Analysis*; all off by
+default, so older worksheets give the same numbers):
+
+- **Shear deformation:** Timoshenko members, φ = 12EI/(G A_v L²). G = E/2(1 + ν) with
+  ν = 0.3 for steel and 0.2 for concrete; timber uses G_mean of its class (E/16 without
+  one), or type G. The shear area is EN 1993-1-1 6.2.6(3) for the listed profiles
+  (A − 2b t_f + (t_w + 2r) t_f, at least h_w t_w), else a rule: rectangle 5/6 A, solid
+  circle 0.9 A, circular hollow 2A/π, rectangular hollow A h/(b + h), welded I h_w t_w, or
+  a value. Fixed-end forces and deflection lines stay exact.
+- **Second order (P-Δ and P-δ):** every case and combination is solved on the deformed
+  structure. Members are cut into 4–8 elements with the consistent geometric stiffness of
+  their axial force, and the axial forces are iterated until the displacements change by
+  less than 10⁻⁶. Loads at or above the critical load are reported (α_cr ≤ 1, a stiffness
+  turning negative, or no convergence in 30 iterations); a combination that fails does so
+  on its own, and then the governing values are withheld. The panel shows how much M_max
+  and δ_max grew against first order, next to 1/(1 − 1/α_cr).
+- **Buckling:** for each combination the three lowest load factors α_cr from
+  (K + α K_G(N)) φ = 0 with the first-order axial forces (supports eliminated, hinges with
+  their own rotation, a banded Cholesky factor, then dense eigenvalues or Lanczos). The
+  panel gives α_cr per combination with the EN 1993-1-1 5.2.1(3) verdict (≥ 10: first
+  order is enough; 3–10: second-order effects count, or the 1/(1 − 1/α_cr) amplification
+  of 5.2.2(5)B for sway; < 3: second order required), and the buckling length of each
+  compressed member, L_cr = π √(EI/(α_cr |N|)). **Buckling** in the strip draws the mode
+  (normalised), with a selector for modes 2 and 3.
+- **In the worksheet:** `b.alpha_cr` (`b.α_cr`, the lowest over the ULS combinations),
+  `b.alpha_cr_modes` (a vector), `b.L_cr` (a vector in member order; ∞ for members in
+  tension), per combination `b.combos.ULS.alpha_cr`, and with second order the
+  first-order values beside the results: `b.first.M_max`.
+- **Checked against closed forms:** Euler columns with β = 1, 2, 0.699 and 0.5 and the
+  second mode (within 0.5 %), Engesser's shear-flexible column, pinned- and fixed-base
+  sway portals (Timoshenko & Gere), the Timoshenko cantilever δ = PL³/3EI + PL/GA_v and
+  propped cantilevers, the cantilever column δ = H (tan kL − kL)/(P k) and the
+  beam-column under a uniform load with its exact amplification.
 
 **Load cases and combinations.** Side panel → *Use load cases & combinations* splits the
 loads into cases (G permanent, Q imposed, wind, snow …; pick a load's case in its value
@@ -312,12 +349,14 @@ a coil), settle by a given amount (into the support, e.g. 10 mm down), and a fix
 can have a rotational spring (a semi-rigid foot). Springs go into the stiffness matrix,
 settlements are prescribed displacements; both are checked against closed-form results.
 
-The **Beams and frames** example covers two structures:
+The **Beams and frames** example covers four structures:
 
 - A two-span beam with factored loads, its reactions, a stress and deflection check, and
   plots of `b.M(x)` and `b.w(x)`.
 - A portal frame with fixed feet under roof load and wind.
 - Pattern loading: G on both spans, Q on either, three ULS combinations and the envelope.
+- A sway portal on pinned feet in second order with shear deformation: α_cr, the buckling
+  mode, the column's buckling length and the amplified corner moment.
 
 ### Python code
 
@@ -611,7 +650,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | `odesolve` solve blocks, `Pdesolve`, `Find` with matrix-valued unknowns | ❌ (use `rkfixed`/`Rkadapt`) |
 | Units in symbolic results | ❌ (symbolics are unit-free) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
-| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic, first order, no shear deformation) |
+| Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans), assemblies with joints, section view, measure, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STL out | ✅ (mesh kernel: no free 3-D edge fillets, drafts or sweeps) |
