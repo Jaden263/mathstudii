@@ -195,6 +195,9 @@ describe('3-D frame region in a worksheet', () => {
     expect(mech.error).toMatch(/mechanism\) at node N\d, (along|about) [XYZ]/);
     const names = run(cantilever([]), [], { nodes: [{ id: 'a', name: 'N1', x: '0', y: '0', z: '0' }, { id: 'b', name: 'N1', x: '3', y: '0', z: '0' }] }).res;
     expect(names.errors.names).toMatch(/named N1/);
+    const twice = run(cantilever([]), [], { supports: [{ id: 'p', node: 'a', dofs: ['fixed', 'fixed', 'fixed', 'free', 'free', 'free'] }, { id: 'q', node: 'a', dofs: ['free', 'free', 'free', 'fixed', 'fixed', 'fixed'] }] }).res;
+    expect(twice.errors.q).toMatch(/N1 has a support already/);
+    expect(twice.error).toBeTruthy();
   });
 
   it('a node added to the table before its members leaves the frame solved', () => {

@@ -216,8 +216,12 @@ export function solveFrame3D(r: Frame3DRegion, evalExpr: Eval): Frame3DResult {
   }
 
   const supports: NumSupport3[] = [];
+  const supported = new Set<string>();
   for (const sp of r.supports) {
     try {
+      // two rows on one node would each report the whole reaction
+      if (supported.has(sp.node)) throw new Error(`${r.nodes.find((n) => n.id === sp.node)?.name ?? 'A node'} has a support already: set its six unknowns in one row`);
+      supported.add(sp.node);
       // kN·m/rad: the radian carries no dimension here
       const perRad: Eval = (src) => {
         const v = evalExpr(src);
