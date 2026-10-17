@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { bomMass, bomRows, devDecimals, dimText, fmtMass, fmtSize, gdtLayout, textWidth, type DrawPick } from './annotations';
 import { continueDimension, movedAnnotation, newDimension, nextDatumLetter } from './annotationTools';
-import { followText } from './drawingRefs';
+import { followText, pickAt, type ViewEntity } from './drawingRefs';
 import type { CadDesign } from './design';
 
 const pt = (x: number, y: number): DrawPick => ({ snap: 'free', shape: { k: 'point', x, y } });
@@ -126,6 +126,23 @@ describe('what the tools make of picks', () => {
     expect(newDimension('d', 'top', [line(0, 0, 50, 0), line(0, 0, 30, 30)], [30, 10])?.type).toBe('angle');
     expect(newDimension('d', 'top', [line(0, 0, 50, 0), line(0, 10, 50, 10)], [60, 5])).toMatchObject({ type: 'linear' });
     expect(newDimension('d', 'top', [pt(1, 1)], [5, 5])).toBeNull();
+  });
+
+  it('a small hole is picked as its circle, its centre and quadrants only close to them; a corner wins over the edges meeting there', () => {
+    // a Ø9 hole at 1:2.5 (3.6 mm on the paper) with the tool's tolerances, 2 mm for points and 1.2 mm for curves
+    const hole: ViewEntity = { occ: 'o', body: 'b', kind: 'edge', index: 0, shape: { k: 'circle', cx: 75, cy: 0, r: 4.5, a0: 0, a1: 2 * Math.PI }, depth: 0, p3: [], faces: [] };
+    const tp = 2 / 0.4, tc = 1.2 / 0.4;
+    const on = (deg: number) => pickAt([hole], 75 + 4.5 * Math.cos((deg * Math.PI) / 180), 4.5 * Math.sin((deg * Math.PI) / 180), tp, tc)?.snap;
+    expect([0, 30, 45, 60, 90].map(on)).toEqual(['q0', 'circle', 'circle', 'circle', 'q1']);
+    expect(pickAt([hole], 75.5, 0.5, tp, tc)?.snap).toBe('centre');
+    // two picked holes measure between their centres
+    const c = (cx: number): DrawPick => ({ snap: 'circle', shape: { k: 'circle', cx, cy: 0, r: 4.5, a0: 0, a1: 2 * Math.PI } });
+    expect(newDimension('d', 'top', [c(75), c(-75)], [0, -20])).toMatchObject({ type: 'linear', orient: 'h' });
+    // a rectangle's corner 1.5 mm along an edge from it is still the corner
+    const edge = (x2: number, y2: number, i: number): ViewEntity => ({ occ: 'o', body: 'b', kind: 'edge', index: i, shape: { k: 'line', x1: 0, y1: 0, x2, y2 }, depth: 0, p3: [], faces: [] });
+    const corner: ViewEntity = { occ: 'o', body: 'b', kind: 'vertex', index: 0, shape: { k: 'point', x: 0, y: 0 }, depth: 0, p3: [], faces: [] };
+    const hit = pickAt([edge(100, 0, 1), edge(0, 60, 2), corner], 1.5 / 0.4, 0, tp, tc)!;
+    expect([hit.snap, hit.x, hit.y]).toEqual([expect.stringMatching(/^(vertex|end0)$/), 0, 0]);
   });
 
   it('a chain dimensions each point from the last on one line; a baseline each from the first, a row further out', () => {

@@ -391,17 +391,20 @@ export interface PickHit {
 /**
  * What the pointer is on: a snap point within `tolPoint` (the nearest; at the same place,
  * the entity nearest the viewer), else a line, circle or cylinder outline within
- * `tolCurve` (the nearest; at the same distance, the nearer to the viewer). `points` /
- * `curves` leave either kind out; `accept` narrows the entities.
+ * `tolCurve` (the nearest; at the same distance, the nearer to the viewer). A circle's
+ * own points snap within 0.4 of its radius at most, so a small hole is still taken as its
+ * circle (whose centre two-pick measures use anyway) rather than always as a point of it.
+ * `points` / `curves` leave either kind out; `accept` narrows the entities.
  */
 export function pickAt(ents: ViewEntity[], x: number, y: number, tolPoint: number, tolCurve: number, o: { points?: boolean; curves?: boolean; accept?: (e: ViewEntity, snap: PickSnap) => boolean } = {}): PickHit | null {
   let best: PickHit | null = null, bd = Infinity, bz = Infinity;
   const ok = (e: ViewEntity, s: PickSnap) => !o.accept || o.accept(e, s);
   if (o.points !== false) {
     for (const e of ents) {
+      const tol = e.shape.k === 'circle' ? min(tolPoint, 0.4 * e.shape.r) : tolPoint;
       for (const s of entitySnaps(e)) {
         const d = hypot(s.x - x, s.y - y);
-        if (d > tolPoint || !ok(e, s.snap)) continue;
+        if (d > tol || !ok(e, s.snap)) continue;
         if (d < bd - tolPoint * 1e-3 || (d < bd + tolPoint * 1e-3 && e.depth < bz)) [best, bd, bz] = [{ e, snap: s.snap, x: s.x, y: s.y }, d, e.depth];
       }
     }
