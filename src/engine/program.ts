@@ -8,9 +8,18 @@
 //     return r
 import { compileExpr } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
-import { parseRange, isIdentifier, splitTop } from './syntax';
+import { parseRange, isIdentifier, splitTop, findEvalEquals } from './syntax';
 import { tick, toVector, assignIndex, normalize, engineCtx, int, matrix2D } from './library';
 import { math, isUnit, isComplex, isMatrix, joinUnit, splitUnit } from './math';
+
+export type ProgramStmt = Stmt;
+
+/** A condition's lone = compares (if x = 0), as Mathcad's bold equals does; it never assigns. */
+function condition(src: string): string {
+  let s = src;
+  for (let at = findEvalEquals(s); at >= 0; at = findEvalEquals(s)) s = `${s.slice(0, at)}==${s.slice(at + 1)}`;
+  return s;
+}
 
 type Stmt =
   | { k: 'assign'; name: string; index: string[] | null; expr: string; line: number; column?: boolean }
@@ -205,7 +214,7 @@ function exec(s: Stmt, scope: ChainScope): unknown {
       throw new Signal('continue');
     case 'if':
       for (const b of s.branches) {
-        if (b.cond === null || truthy(compileExpr(b.cond).evaluate(scope))) return run(b.body, scope);
+        if (b.cond === null || truthy(compileExpr(condition(b.cond)).evaluate(scope))) return run(b.body, scope);
       }
       return undefined;
     case 'for': {
@@ -224,7 +233,7 @@ function exec(s: Stmt, scope: ChainScope): unknown {
     }
     case 'while': {
       let last: unknown;
-      while (truthy(compileExpr(s.cond).evaluate(scope))) {
+      while (truthy(compileExpr(condition(s.cond)).evaluate(scope))) {
         try {
           last = run(s.body, scope);
         } catch (e) {

@@ -136,7 +136,7 @@ const FN_MAP: Record<string, string> = {
 };
 
 /** SMath unit names that mean something else here (g is gravity in Mathcad convention). */
-const SMATH_UNITS: Record<string, string> = { g: 'gm', in: 'inch', h: 'hr', min: 'min', t: 'tonne', l: 'L', '°': 'deg' };
+const SMATH_UNITS: Record<string, string> = { g: 'gm', in: 'inch', h: 'hr', min: 'min', t: 'tonne', l: 'L', '°': 'deg', 'g.e': 'g' };
 
 const CONSTANTS: Record<string, string> = { π: 'π', e: 'e', '∞': '∞' };
 
@@ -160,12 +160,24 @@ class Converter {
   /** Plot variable renaming (x → x_plot when x is already a worksheet variable). */
   rename: Record<string, string> = {};
 
+  /** Inside a display unit, where every name is a unit even when a variable has its name. */
+  private inContract = false;
+
   unit(raw: string): Ex {
     // a region marked "ignore units" calculates with every unit as 1
     if (this.ignoreUnits) return { s: '1', p: P.ATOM };
     const name = SMATH_UNITS[raw] ?? unitName(raw);
-    if (this.assigned.has(name) || this.assigned.has(raw)) return { s: `unit(1, "${name}")`, p: P.ATOM };
+    if (!this.inContract && (this.assigned.has(name) || this.assigned.has(raw))) return { s: `unit(1, "${name}")`, p: P.ATOM };
     return { s: name, p: P.ATOM };
+  }
+
+  displayUnit(t: Tok): string {
+    this.inContract = true;
+    try {
+      return this.expr(t).s;
+    } finally {
+      this.inContract = false;
+    }
   }
 
   name(raw: string): string {
@@ -224,11 +236,13 @@ class Converter {
     const bin = BINOPS[op];
     if (!bin || t.args.length !== 2) throw new Unsupported(`the “${op}” operator`);
     const x = this.expr(a), y = this.expr(b);
-    if (op === '^') return { s: `${wrap(x, P.POW + 1)}^${wrap(y, P.POW)}`, p: P.POW };
+    // m^-1, not m^(-1): a display unit takes a plain exponent
+    if (op === '^') return { s: `${wrap(x, P.POW + 1)}^${isNumberLiteral(y.s) ? y.s : wrap(y, P.POW)}`, p: P.POW };
     if (op === '*' && this.ignoreUnits && this.unitOnly(b)) return x;
     // 10 % is 10/100 here (% is a display unit only)
     if (op === '*' && y.s === '%') return { s: `${wrap(x, P.MUL)}/100`, p: P.MUL };
-    if (op === '*' && isNumberLiteral(x.s) && this.unitOnly(b)) return { s: `${x.s} ${y.s}`, p: P.MUL };
+    // 2·(300 kN) is not "2 300 kN": only a unit (numbers as its exponents) joins a number
+    if (op === '*' && isNumberLiteral(x.s) && this.unitOnly(b) && !/^[\d.]/.test(y.s)) return { s: `${x.s} ${y.s}`, p: P.MUL };
     return { s: `${wrap(x, bin.p)}${bin.op}${wrap(y, bin.p + 1)}`, p: bin.p };
   }
 
@@ -538,7 +552,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         const result = child(body, 'result');
         const action = result?.getAttribute('action') ?? '';
         const contract = parseRpn(child(body, 'contract'))[0];
-        const unit = contract && !conv.ignoreUnits ? ` ${conv.expr(contract).s}` : '';
+        const unit = contract && !conv.ignoreUnits ? ` ${conv.displayUnit(contract)}` : '';
         const show = result ? (action === 'symbolic' ? ' →' : ` =${unit}`) : '';
 
         if (isOp(t, ':') && isFn(t.args[1], 'sys') && plotLists.has(targetName(t.args[0]) ?? '')) {

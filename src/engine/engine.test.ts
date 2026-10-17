@@ -260,6 +260,12 @@ describe('programs', () => {
   it('builds vectors with indexed assignment', () => {
     expect(result(['sq :=\n  for k in 0 .. 4\n    v[k] <- k^2\n  v', 'sq[4] ='])).toBe('16');
   });
+  it('a lone = in a condition compares, as Mathcad’s bold equals (it assigned before)', () => {
+    const sgn = 'sgn(x) :=\n  if x < 0\n    -1\n  else if x = 0\n    0\n  else\n    1';
+    expect(result([sgn, 'sgn(-4) + 10*sgn(0) + 100*sgn(3) ='])).toBe('99');
+    // while x = 2c: true for c = 0 only, so one step
+    expect(result(['n_s(x) :=\n  c ← 0\n  while x = 2*c\n    c ← c + 1\n  c', 'n_s(0) ='])).toBe('1');
+  });
   it('stops infinite loops', () => {
     expect(error(['x :=\n  while 1\n    k <- 1\n  k'])).toMatch(/aborted/);
   }, 30000);

@@ -191,3 +191,35 @@ describe('SMath import', () => {
     expect(() => importSmath(strToU8('<html></html>'), 'x.sm')).toThrow(/SMath/);
   });
 });
+
+describe('SMath import: what writing files for SMath showed', () => {
+  // each a formula as SMath writes it, read in a one-region worksheet
+  const one = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return importSmath(strToU8(`<?xml version="1.0" encoding="utf-8"?><?application progid="SMath Studio Desktop" version="0.99.7030.1435"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions type="content">${regions.map((r) => math(r)).join('')}</regions></worksheet>`), 'x.sm').ws;
+  };
+  it('2·(300 kN) is a product, not the number "2 300"', () => {
+    const ws = one(def(v('F'), v('2') + v('300') + u('kN') + op('*') + op('*')));
+    expect(sources(ws)).toEqual(['F := 2*(300 kN)']);
+  });
+  it('a negative exponent in a display unit (m^-1), standard gravity gₑ', () => {
+    id = 0;
+    top = 0;
+    const ws = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      region(`<math><input>${def(v('k'), v('2') + u('m') + op('/'))}</input><contract>${u('m') + v('1') + op('-', 1) + op('^')}</contract><result action="numeric">${v('2')}</result></math>`)
+    }${region(`<math><input>${def(v('w'), v('1000') + u('kg') + u('g.e') + op('*') + op('*'))}</input><contract>${u('kN')}</contract><result action="numeric">${v('9.8066')}</result></math>`)}</regions></worksheet>`), 'x.sm').ws;
+    expect(sources(ws)).toEqual(['k := 2/m = m^-1', 'w := 1000 kg*g = kN']);
+    expect(value(ws, 'k := 2/m = m^-1')).toMatch(/= 2\\/);
+    expect(value(ws, 'w := 1000 kg*g = kN')).toMatch(/= 9\.80\d*\\ \\mathrm\{kN\}/);
+  });
+  it('a display unit stays a unit when a variable has its name (m := … , = kN/m)', () => {
+    id = 0;
+    top = 0;
+    const ws = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      region(`<math><input>${def(v('m'), v('3'))}</input></math>`)
+    }${region(`<math><input>${def(v('q'), v('12') + u('kN') + u('m') + op('/') + op('*'))}</input><contract>${u('kN') + u('m') + op('/')}</contract><result action="numeric">${v('12')}</result></math>`)}</regions></worksheet>`), 'x.sm').ws;
+    expect(sources(ws)).toContain('q := 12 kN/unit(1, "m") = kN/m');
+    expect(value(ws, 'q := 12 kN/unit(1, "m") = kN/m')).toMatch(/= 12\\/);
+  });
+});

@@ -97,7 +97,7 @@ class Converter {
     if (label === 'UNIT' || raw === '%') {
       const u = unitName(raw);
       // Prime tells a unit from a variable of the same name by its label; here the unit is written out
-      return this.variables.has(raw) && !/[()*/^ ]/.test(u) ? `unit(1, "${u}")` : u;
+      return this.variables.has(raw) && !this.unitSlot && !/[()*/^ ]/.test(u) ? `unit(1, "${u}")` : u;
     }
     if (label === 'CONSTANT' && CONSTANT_MAP[raw]) return CONSTANT_MAP[raw];
     // unlabelled (Mathcad 15) or auto-labelled (*, sheets converted from 15) names that are units
@@ -312,6 +312,9 @@ class Converter {
     const raw = rawName(head);
     let fn = sanitize(raw);
     const args = this.args(rest);
+    // y′′(t), y′(0): prime notation of a function (odesolve), when y′′ is not a name of its own
+    const primed = /^(.*?)(['′]+)$/.exec(raw);
+    if (primed && primed[1] && !this.defined.has(raw)) return { s: `${sanitize(primed[1])}${"'".repeat(primed[2].length)}(${args.join(', ')})`, p: P.ATOM };
     if (raw === 'Γ') fn = 'gamma';
     if (raw === 'mod') fn = 'mod'; // a function here, not the reserved operator
     if (raw === 'if') fn = 'if'; // Mathcad's inline if(cond, a, b), labelled KEYWORD
@@ -556,7 +559,8 @@ class Converter {
         const parts = seq ? kids(seq) : kids(c);
         if (parts.length && !isPlaceholder(parts[0])) {
           const name = rawName(parts[0]).toLowerCase().replace(/^parfrac$/, 'partfrac');
-          kw = [name, ...parts.slice(1).map((p) => this.expr(p).s)].join(', ');
+          // an equation among the arguments (substitute, x = 2) is written with a plain =
+          kw = [name, ...parts.slice(1).map((p) => this.expr(p).s.replace(/ == /g, ' = '))].join(', ');
         }
       } else if (t === 'symResult' || t === 'result') {
         /* cached result: recomputed by our CAS */
@@ -877,7 +881,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           continue;
         }
         if (solve) {
-          if (/\b(find|minerr|minimize|maximize)\(/.test(src)) {
+          if (/\b(find|minerr|minimize|maximize|odesolve|pdesolve)\(/i.test(src)) {
             regions.push(createRegion('solve', solve.at.x, mathY(solve.at), { guesses: solve.guesses.join('\n'), constraints: solve.constraints.join('\n'), solver: src }));
             solve = null;
             continue;
