@@ -57,7 +57,7 @@ export function paintHits(meshes: SceneMesh[], hits: Set<string>, build: BuildRe
 }
 
 /** The frame of a study's results nearest to t. */
-export function nearestFrame(result: MotionResult | undefined, t: number): number {
+function nearestFrame(result: MotionResult | undefined, t: number): number {
   if (!result?.t.length) return -1;
   let best = 0;
   result.t.forEach((s, i) => Math.abs(s - t) < Math.abs(result.t[best] - t) && (best = i));

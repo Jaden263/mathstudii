@@ -7,7 +7,7 @@ import { math, isUnit } from '../engine/math';
 import { DOF_KEYS, JOINT_DOFS, dofWord, isAngleDof, type DofKey, type MotionStudy } from './assembly';
 import { identifier, type CadDesign, type CadJoint, type DesignNumbers, type JointType } from './design';
 import { dimensionValue } from './dimension';
-import { solveKinematics, type KinState } from './kinematics';
+import { solveKinematics, type DofValues, type KinState } from './kinematics';
 import type { MotionResult } from './motion';
 
 /** An expression → part units ('L') or radians ('A'; bare numbers are degrees). */
@@ -122,17 +122,18 @@ export function motionValue(st: MotionStudy, mr: MotionResult, kin: KinState, un
   const joints = kin.model.joints.filter((j) => !j.group && JOINT_DOFS[j.type].length && mr.values[j.id]);
   const out: Record<string, unknown> = { t: vec(mr.t.map(sec)) };
   const at = (jid: string, f: number) => Object.fromEntries(Object.entries(mr.values[jid] ?? {}).map(([k, xs]) => [k, xs![f]]));
-  const columns: { head: string; cell: (f: number) => unknown }[] = [{ head: 't', cell: (f) => sec(mr.t[f]) }];
+  // the table's columns: t, each moving joint's DOFs, the clearance
+  const columns: ((f: number) => unknown)[] = [(f) => sec(mr.t[f])];
   for (const j of joints) {
     const id = identifier(j.name);
     if (!id || id in out) continue;
     const frames = mr.t.map((_, f) => jointExport(j.type, at(j.id, f), unit));
     if (JOINT_DOFS[j.type].length === 1) out[id] = vec(frames);
     else out[id] = Object.fromEntries(Object.keys(frames[0] as object).map((k) => [k, vec(frames.map((x) => (x as Record<string, unknown>)[k]))]));
-    for (const k of JOINT_DOFS[j.type]) columns.push({ head: `${id}.${k}`, cell: (f) => {
+    for (const k of JOINT_DOFS[j.type]) columns.push((f) => {
       const x = jointExport(j.type, at(j.id, f), unit);
       return JOINT_DOFS[j.type].length === 1 ? x : Object.values(x as object)[JOINT_DOFS[j.type].indexOf(k)];
-    } });
+    });
   }
   if (mr.clearance) {
     const c = mr.clearance.map((x) => (Number.isFinite(x.d) ? x.d : NaN));
@@ -143,20 +144,26 @@ export function motionValue(st: MotionStudy, mr: MotionResult, kin: KinState, un
       out.c_min = math.unit(c[i], unit);
       out.t_cmin = sec(mr.t[i]);
     }
-    columns.push({ head: 'c', cell: (f) => math.unit(c[f], unit) });
+    columns.push((f) => math.unit(c[f], unit));
   }
-  out.table = math.matrix(mr.t.map((_, f) => columns.map((col) => col.cell(f))) as never);
+  out.table = math.matrix(mr.t.map((_, f) => columns.map((cell) => cell(f))) as never);
   // a joint's value as a function of the first track's: solved from the frame nearest that input
   const tr = st.tracks[0];
   const input = tr && mr.values[tr.joint]?.[tr.dof];
   if (tr && input) {
     const of: Record<string, unknown> = {};
+    // a plot asks for every joint at the same inputs: each input solved once
+    const seen = new Map<number, Record<string, DofValues>>();
     const solveAt = (x: unknown) => {
       const xv = dimensionValue(x, unit, isAngleDof(tr.dof));
+      const got = seen.get(xv);
+      if (got) return got;
       let best = 0;
       input.forEach((v, i) => Math.abs(v - xv) < Math.abs(input[best] - xv) && (best = i));
       const from = Object.fromEntries(Object.keys(mr.values).map((jid) => [jid, at(jid, best)]));
-      return solveKinematics(kin.model, { drive: { [tr.joint]: { [tr.dof]: xv } }, from }).values;
+      const values = solveKinematics(kin.model, { drive: { [tr.joint]: { [tr.dof]: xv } }, from }).values;
+      if (seen.size < 4096) seen.set(xv, values);
+      return values;
     };
     for (const j of joints) {
       const id = identifier(j.name);

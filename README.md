@@ -1107,21 +1107,60 @@ base made longer keeps its rounded edge rounded. Every size is a worksheet expre
 
 - **New component** adds a component and makes it active. **Insert copy** adds another
   occurrence of the active component.
-- **Joints:** rigid, revolute, slider and cylindrical. A joint origin is either picked on
-  the model or chosen from a list: the component origin, or any sketch point or circle
-  centre with Z along the sketch normal or a sketch axis.
+- **Joints:** rigid, revolute, slider, cylindrical, pin-slot (turns about Z and slides
+  along X), planar (slides in XY and turns about Z) and ball (yaw, pitch and roll about Z,
+  Y′ and X″, ISO 1151-2). A joint origin is either picked on the model or chosen from a
+  list: the component origin, or any sketch point or circle centre with Z along the sketch
+  normal or a sketch axis.
   - Picking works as in Fusion. Hover a face or edge and its snap points show as small
     glyphs: the face's centre, a cylinder's axis, circle and arc centres, edge midpoints
     and vertices. The one nearest the pointer is marked with its Z axis, and a click
     takes it.
   - A joint on a snap point follows its geometry. Move or resize the hole a pin sits in,
     and the pin goes with it.
-  - The angle and offset are worksheet expressions, so a calculation can drive the
-    mechanism. A slider drives revolute joints by hand.
+  - Every DOF is a worksheet expression, so a calculation can drive the mechanism, or
+    **Solved**: the assembly finds it (the pins of a linkage).
+  - **Limits:** a DOF can have a min, a max and a rest value (where a solved DOF starts).
+    A driven value outside its limits is clamped to them, with a yellow warning on the
+    joint. The selected joint's glyph shows its frame, its DOFs and the limits (red
+    ticks).
+  - **Drive** turns or slides one driven DOF by hand (a slider and a field), the
+    mechanism following in the view. The document changes only with **Set as value**.
+  - **As-built:** pick one origin; the other side's origin is put where it stands now, so
+    nothing moves.
   - **Flip** makes mating faces point at each other.
+- **Motion links:** one DOF follows another, b = ratio·a + offset. A pair of gears
+  turns opposite ways, angle₂ = −r·angle₁ with r = z₁/z₂ (ratio −r; +r for an internal
+  gear or a belt). A rack moves offset = r·angle, r the pinion's pitch radius (typed as
+  a length, or in mm/deg). Links in a chain follow in order, and a cycle is reported.
+- **Rigid groups** lock occurrences together where they stand.
 - **Placement:** grounded occurrences stay fixed and joints carry the rest along the joint
-  tree. A joint that closes a loop which does not fit is reported, not forced.
-  Unconstrained occurrences take typed positions and rotations.
+  tree, exactly as before for assemblies without loops. A joint that closes a loop with
+  solved DOFs is solved with it (Levenberg–Marquardt on how far its two frames are apart
+  in position and orientation). The solve follows the mechanism in steps of at most 5°
+  from where it was assembled, so it keeps its branch: a four-bar does not snap from open
+  to crossed.
+  - A loop that cannot close is reported with how far apart it stays (over-constrained,
+    or out of reach). A drive past a dead point or a solved DOF's limit stops there, with
+    a warning. A loop without solved DOFs that does not fit is reported, not forced.
+  - The joint panel shows the mobility, the DOFs the loops leave free (unknowns less the
+    rank of the loop Jacobian).
+  - Unconstrained occurrences take typed positions and rotations.
+- **Motion studies:** keyframes of driven DOFs over time, straight or smooth (a monotone
+  cubic that eases in and out and never overshoots a key), sampled at n frames, each
+  solved from the one before.
+  - Play, pause, loop, speed and a scrubber.
+  - With **Track clearance**, every frame's least distance between occurrences (pairs a
+    joint joins can be left out) and the volume they overlap. It is drawn as a chart, and
+    parts that overlap turn red in the view.
+  - Export as a PNG sequence (zip) or as WebM video.
+- **Exploded view:** each occurrence moves out along a direction by a distance (a
+  worksheet expression), taking along what the joint tree hangs on it. **Auto** explodes
+  along the joint axes. A slider sets how far, with optional trails. It changes the views
+  only, never the placements. A drawing takes it with **Exploded assembly**, for an
+  exploded isometric view with balloons and a parts list.
+- **BOM:** the components with quantity, material and mass, in the browser. Copy it as a
+  worksheet table or as CSV.
 - **Interference** lists overlapping occurrences with the shared volume.
 
 **Inspect:** measure between picked points (snapping to corners, with the line drawn in
@@ -1306,8 +1345,13 @@ as before (a section clips the mesh and closes it).
     part puts its bodies and sketches directly on the part.
   - each sketch's section, `asm.Disc.A`; the first sketch's section is also on the part
     itself (`shaft.A`, `shaft.Ix`, `shaft.Wx` …)
-  - every named dimension (`asm.D_f`) and every moving joint (`asm.Spin` in degrees, a
-    slider in length)
+  - every named dimension (`asm.D_f`) and every moving joint as placed, solved DOFs as
+    found: `asm.Spin` in degrees, a slider in length, the others as records: cylindrical
+    `{θ, s}`, pin-slot `{θ, x}`, planar `{x, y, θ}`, ball `{ψ, θ, φ}`
+  - each motion study, `asm.Sweep`: the times `t`, every moving joint's values per frame
+    (`asm.Sweep.θ4`), the least clearance per frame `c`, the overlapping volume `V_int`,
+    `c_min` and when it comes `t_cmin`, all of it as a `table`, and `asm.Sweep.of.θ4(x)`:
+    a joint as a function of the first track's DOF, solved from the nearest frame
   - each thread and tapped hole: `bolt.Thread1.P`, the pitch diameter `d2`, the minor
     diameters `d1` (nut) and `d3` (bolt), the stress area `As` = π/4·((d2+d3)/2)² and the
     tap drill `drill`
@@ -1439,6 +1483,13 @@ plate's edges projected into the hole's sketch: make the plate wider and the hol
 its distance from the edge. A cam on a closed spline (its volume against the sketch's
 area times the thickness) and a tag with engraved text are next to it.
 
+The **CAD: four-bar linkage (motion)** example is a crank-rocker driven by `θ_2`, with
+two solved pins and a solved rocker pivot. Its rocker angle is checked against
+Freudenstein's equation (a plot of the part's `of.θ4` over the closed form). The study
+**Sweep** turns the crank once round, and its least clearance against a stop is read into
+the math. The page also has a drawing with an exploded isometric view, balloons and the
+parts list.
+
 What it is not, honestly:
 
 - **Modify features, the limits:**
@@ -1534,7 +1585,22 @@ What it is not, honestly:
     finds a referenced face or edge only where it has not moved, and the timeline says so.
     A sketch or joint picked while it draws the part gets no name either, so it follows
     its face only by place.
-- **Joints:** no joint limits, motion studies or contact.
+- **Assemblies and motion, the limits:**
+  - Kinematics only: no forces, dynamics or contact. Interference is measured, not
+    prevented, so parts pass through each other unless a joint or a limit stops them.
+  - Clearance needs OpenCascade (the mesh kernel measures none). Frames are screened on
+    the tessellation, within 5·10⁻⁴ of each body's size, and only the closest frames and
+    the touching pairs are measured on the exact shapes. So the clearance of a frame
+    that is not the closest can be off by that much. Between frames nothing is measured:
+    a part can pass through another between two frames.
+  - A ball joint's angles are Euler angles: at a pitch of ±90° yaw and roll turn about the
+    same axis (gimbal lock), and the values there are not unique.
+  - The solver keeps the branch it was assembled on: it stops at a dead point (toggle)
+    rather than going through onto the other branch.
+  - Drive moves driven DOFs only, not solved ones. A link's follower outside a loop
+    stops at its limit without holding its leader back.
+  - A drawing explodes all its views or none; there are no explode steps. The BOM has
+    one level (no sub-assemblies).
 - **Drawings:** no tolerance stack-up or GD&T analysis; one sheet per drawing (sheet n of m
   is written as entered).
 

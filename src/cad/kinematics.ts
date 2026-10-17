@@ -103,18 +103,6 @@ export function motionMatrix(q: DofValues, flip?: boolean): M4 {
 }
 
 /**
- * The DOF values of a relative placement T (the moving frame in the parent's), the inverse
- * of motionMatrix for the joint type: Z–Y′–X″ angles of the rotation, the translation.
- */
-export function motionValues(type: JointType, T: M4, flip?: boolean): DofValues {
-  const M = flip ? m4Mul(T, m4Rotate(ORIGIN, [1, 0, 0], -Math.PI)) : T;
-  // R = Rz(ψ)·Ry(θ)·Rx(φ): R31 = −sin θ, R21/R11 = tan ψ, R32/R33 = tan φ (column-major: Rij = M[4(j−1) + i − 1])
-  const yaw = Math.atan2(M[1], M[0]), pitch = Math.asin(Math.max(-1, Math.min(1, -M[2]))), roll = Math.atan2(M[6], M[10]);
-  const all: Record<DofKey, number> = { angle: yaw, angle2: pitch, angle3: roll, offset: M[14], x: M[12], y: M[13] };
-  return Object.fromEntries(JOINT_DOFS[type].map((k) => [k, all[k]]));
-}
-
-/**
  * An as-built joint's origin on the far occurrence: where the picked origin (frame F on the
  * occurrence placed by Mpick) is now, in the far occurrence's coordinates (placed by Mfar).
  * With every value 0 the joint then holds the two as they stand.
@@ -534,13 +522,20 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
           t = tn;
           continue;
         }
-        // bisect for where it stops: the last place the loop closes within the limits
+        // bisect for where it stops: the last place the loop closes within the limits. A
+        // mechanism that cannot move at all (locked by another loop, or at a stop already)
+        // fails a millionth of the step on: no need to bisect
         let lo = t, hi = tn, xl = x;
-        for (let b = 0; b < 40; b++) {
+        const goes = (to: number) => {
+          const m = solveAt(to, xl);
+          if (!m.ok || within(withX(m.base, m.x))) return false;
+          [lo, xl] = [to, m.x];
+          return true;
+        };
+        if (!goes(lo + (hi - lo) * 1e-6)) hi = lo + (hi - lo) * 1e-6;
+        else for (let b = 0; b < 30; b++) {
           const mid = (lo + hi) / 2;
-          const m = solveAt(mid, xl);
-          if (m.ok && !within(withX(m.base, m.x))) [lo, xl] = [mid, m.x];
-          else hi = mid;
+          if (!goes(mid)) hi = mid;
         }
         x = xl;
         t = lo;

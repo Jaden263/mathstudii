@@ -49,9 +49,6 @@ export function dofWord(type: JointType, k: DofKey): string {
   return k;
 }
 
-/** Short names the worksheet uses for a joint's DOFs (part.Joint1.θ, part.Joint1.s …). */
-export const DOF_SYMBOL: Record<DofKey, string> = { angle: 'θ', angle2: 'θ2', angle3: 'θ3', offset: 's', x: 'x', y: 'y' };
-
 /** One DOF's settings: solved by the assembly instead of driven, its limits and rest value (worksheet expressions). */
 export interface JointDof {
   /** The assembly finds the value (a joint in a closed loop); its expression is not used. */

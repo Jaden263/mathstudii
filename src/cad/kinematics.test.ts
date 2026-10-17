@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { JOINT_DOFS, type DofKey } from './assembly';
 import { linkRatio } from './assemblyParams';
 import { jointFrame, type CadDesign, type CadJoint, type DesignNumbers, type JointType, type Placement } from './design';
-import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, motionValues, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
+import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
 import { math } from '../engine/math';
 import { IDENTITY, m4Frame, m4Inv, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, type M4, type Vec3 } from './solid';
 
@@ -308,8 +308,6 @@ describe('planar, pin-slot and ball joints', () => {
       [-sth, cth * sph, cth * cph],
     ];
     for (let i = 0; i < 3; i++) for (let k = 0; k < 3; k++) expect(M[4 * k + i]).toBeCloseTo(R[i][k], 14);
-    const v = motionValues('ball', M);
-    expect([v.angle!, v.angle2!, v.angle3!].map((x) => x / D)).toEqual([expect.closeTo(30, 12), expect.closeTo(20, 12), expect.closeTo(10, 12)]);
     // the centre stays put whatever the angles
     expect(m4Point(at('ball', { angle: ps, angle2: th, angle3: ph }), [0, 0, 0]).map((x) => +x.toFixed(12))).toEqual([10, 0, 5]);
   });
@@ -354,6 +352,22 @@ describe('as-built joints', () => {
     p0.forEach((v, i) => expect(p1[i]).toBeCloseTo(v, 12));
     const x0 = m4Point(B, [13, 4, 0]), x1 = m4Point(at90, [13, 4, 0]);
     x0.forEach((v, i) => expect(x1[i]).toBeCloseTo(v, 12));
+  });
+
+  it('lock a mechanism: a rigid one from the ground to the coupler fits, and the crank then cannot turn', () => {
+    const [a, b, c, d] = [40, 120, 80, 100];
+    const m = fourBar(a, b, c, d, 40 * D, open(a, b, c, d, 40 * D));
+    const free = solveKinematics(m);
+    const Mc = free.placements.coupler.matrix;
+    m.joints.push(joint('L', 'ground', 'coupler', jointFrame({ sketches: {}, frames: {}, params: {}, errors: {} }, asBuiltOrigin(IDENTITY, Mc, IDENTITY)), IDENTITY, { type: 'rigid' }));
+    const held = solveKinematics(m);
+    expect(held.errors).toEqual({});
+    expect(held.mobility).toBe(0);
+    held.placements.coupler.matrix.forEach((v, i) => expect(v).toBeCloseTo(Mc[i], 9));
+    // driven on, it stops where it stands: no movement at all is possible
+    const on = solveKinematics(m, { drive: { J1: { angle: 60 * D } }, from: held.values });
+    expect(on.warnings.J1).toMatch(/^the angle stops at J1 = 40°: the loop cannot close beyond/);
+    on.placements.coupler.matrix.forEach((v, i) => expect(v).toBeCloseTo(Mc[i], 6));
   });
 });
 

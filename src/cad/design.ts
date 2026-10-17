@@ -39,7 +39,7 @@ import type { CadResult } from './evaluate';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
 import type { DofKey, ExplodeOffset, JointDof, MotionLink, MotionStudy, RigidGroup } from './assembly';
-import { kinModel, motionMatrix, solveKinematics, type KinState } from './kinematics';
+import { kinModel, solveKinematics, type KinState } from './kinematics';
 
 export type { Helix };
 
@@ -1948,11 +1948,6 @@ export function jointFrame(numbers: DesignNumbers, o: JointOrigin, bodies?: Body
   const at = framePoint(f, { x: q[0], y: q[1] });
   const [x, z] = o.axis === 'u' ? [f.v, f.u] : o.axis === 'v' ? [f.n, f.v] : [f.u, f.n];
   return m4Frame(at, x, cross3(z, x), z);
-}
-
-/** Joint motion in the parent's joint frame (the first four joint types: angle about Z, offset along it). */
-export function jointMotion(j: CadJoint, angle: number, offset: number): M4 {
-  return motionMatrix({ angle, offset }, j.flip);
 }
 
 export interface Placement {
