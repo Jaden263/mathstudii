@@ -7,6 +7,7 @@ import {
   buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type RebuiltSketch, type ThreadMark, type TimelineBody, type TimelineTool,
 } from '../design';
 import { designKey } from '../keys';
+import type { KinState } from '../kinematics';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
 import { failedComponent, placeBuilt, timelineCache } from './cache';
 import { hasSolid, occBox, renewOcc, scratch, trsf, volumeProperties, xyz, type OC } from './kernel';
@@ -41,6 +42,8 @@ export interface OccBuiltDesign {
   errors: Record<string, string>;
   /** Joints whose origin on geometry was lost. */
   warnings: Record<string, string>;
+  /** The joints' kinematic model and values (drives, motions and exploded views solve it again). */
+  kin?: KinState;
   free(): void;
 }
 
@@ -57,8 +60,8 @@ export function buildDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbers
       components.set(c.id, failedComponent(c.id, e));
     }
   }
-  const { placements, errors, warnings } = placeBuilt(oc, design, numbers, components);
-  return { oc, arena, components, placements, errors, warnings, free: () => arena.free() };
+  const { placements, errors, warnings, kin } = placeBuilt(oc, design, numbers, components);
+  return { oc, arena, components, placements, errors, warnings, kin, free: () => arena.free() };
 }
 
 export const isEmptyShape = (oc: OC, s: TopoDS_Shape) => !hasSolid(oc, s);
@@ -121,6 +124,7 @@ export interface MeasuredDesign {
   /** Sketches whose projected references moved, as the timeline solved them again. */
   sketches?: Record<string, RebuiltSketch>;
   placements: Record<string, Placement>;
+  kin?: KinState;
   /** Bounding box of the visible occurrences (assembly coordinates). */
   box?: { min: Vec3; max: Vec3 };
 }
@@ -145,7 +149,7 @@ export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbe
   }
   const built = buildDesignCached(oc, design, numbers);
   try {
-    const out: MeasuredDesign = { bodies: {}, errors: { ...built.errors }, warnings: { ...built.warnings }, frames: {}, placements: built.placements };
+    const out: MeasuredDesign = { bodies: {}, errors: { ...built.errors }, warnings: { ...built.warnings }, frames: {}, placements: built.placements, ...(built.kin ? { kin: built.kin } : {}) };
     let box: { min: Vec3; max: Vec3 } | null = null;
     for (const c of design.components) {
       const cb = built.components.get(c.id)!;

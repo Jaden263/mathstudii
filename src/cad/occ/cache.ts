@@ -137,8 +137,8 @@ export class TimelineCache {
       this.sink.free();
       this.evict(tick, oc.wasmMemory.buffer.byteLength > HEAP_SOFT ? 0 : this.maxSteps);
     }
-    const { placements, errors, warnings } = placeBuilt(oc, design, numbers, components);
-    return { oc, arena: this.root.arena, components, placements, errors, warnings, free: () => {} };
+    const { placements, errors, warnings, kin } = placeBuilt(oc, design, numbers, components);
+    return { oc, arena: this.root.arena, components, placements, errors, warnings, kin, free: () => {} };
   }
 
   /** Evict the ends of branches not used by build `tick` until at most `keep` steps are left. */

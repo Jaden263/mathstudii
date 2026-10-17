@@ -12,7 +12,7 @@ import { findProfiles, type ProfileRegion, type Vec2 } from './profile';
 import { extrudeProps, revolveProps, type MassProps } from './features';
 import {
   Arena, IDENTITY, add3, combineMass, cross3, dot3, frameDir, frameFromNormal, frameMatrix, framePoint,
-  len3, m4Dir, m4Frame, m4Inv, m4Mirror, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, massFromProps, norm3, propsFromMass,
+  len3, m4Dir, m4Frame, m4Mirror, m4Mul, m4Point, m4Rotate, m4Translate, massFromProps, norm3, propsFromMass,
   scale3, solidMass, sub3, transformMass, transformSolid,
   type Frame, type M4, type Manifold, type ManifoldToplevel, type Mass3, type Vec3,
 } from './solid';
@@ -38,6 +38,8 @@ import { sketchSolution } from './sketchSolve';
 import type { CadResult } from './evaluate';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
+import type { DofKey, ExplodeOffset, JointDof, MotionLink, MotionStudy, RigidGroup } from './assembly';
+import { kinModel, motionMatrix, solveKinematics, type KinState } from './kinematics';
 
 export type { Helix };
 
@@ -471,6 +473,8 @@ export interface CadOccurrence {
   /** Rotation about X, Y, Z (degrees). */
   rot?: Vec3;
   hidden?: boolean;
+  /** Where it goes in the exploded view. */
+  explode?: ExplodeOffset;
 }
 
 export type JointOrigin =
@@ -484,7 +488,7 @@ export type JointOrigin =
   /** Construction geometry of the component: a point (Z up), an axis (Z along it) or a plane (Z its normal). */
   | { kind: 'datum'; id: string };
 
-export type JointType = 'rigid' | 'revolute' | 'slider' | 'cylindrical';
+export type JointType = 'rigid' | 'revolute' | 'slider' | 'cylindrical' | 'pinslot' | 'planar' | 'ball';
 
 export interface CadJoint {
   id: string;
@@ -501,6 +505,14 @@ export interface CadJoint {
   /** Turn the moving part over (its Z axis opposite the parent's): faces mating. */
   flip?: boolean;
   suppressed?: boolean;
+  /** Slides along the joint X and Y (pin-slot, planar). */
+  x?: string;
+  y?: string;
+  /** Ball joints: pitch about the turned Y and roll about the turned X, after the yaw `angle`. */
+  angle2?: string;
+  angle3?: string;
+  /** Per DOF: solved by the assembly, limits, rest value. */
+  dofs?: Partial<Record<DofKey, JointDof>>;
 }
 
 export interface CadDesign {
@@ -508,6 +520,9 @@ export interface CadDesign {
   components: CadComponent[];
   occurrences: CadOccurrence[];
   joints: CadJoint[];
+  links?: MotionLink[];
+  groups?: RigidGroup[];
+  motions?: MotionStudy[];
 }
 
 export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch';
@@ -1934,11 +1949,9 @@ export function jointFrame(numbers: DesignNumbers, o: JointOrigin, bodies?: Body
   return m4Frame(at, x, cross3(z, x), z);
 }
 
-/** Joint motion in the parent's joint frame. */
+/** Joint motion in the parent's joint frame (the first four joint types: angle about Z, offset along it). */
 export function jointMotion(j: CadJoint, angle: number, offset: number): M4 {
-  let M = m4Mul(m4Translate([0, 0, offset]), m4Rotate([0, 0, 0], [0, 0, 1], angle));
-  if (j.flip) M = m4Mul(M, m4Rotate([0, 0, 0], [1, 0, 0], Math.PI));
-  return M;
+  return motionMatrix({ angle, offset }, j.flip);
 }
 
 export interface Placement {
@@ -1948,10 +1961,10 @@ export interface Placement {
 
 /**
  * Place the occurrences: grounded ones (or the first, if none is) stay where they are,
- * joints then carry their neighbours along the joint tree. Loops that disagree are reported.
+ * joints then carry their neighbours along the joint tree, and the DOFs set to be solved
+ * close the loops the joints make (kinematics.ts). Loops that disagree are reported.
  */
-export function placeOccurrences(design: CadDesign, numbers: DesignNumbers, geo?: PlacementGeometry): { placements: Record<string, Placement>; errors: Record<string, string>; warnings: Record<string, string> } {
-  const placements: Record<string, Placement> = {};
+export function placeOccurrences(design: CadDesign, numbers: DesignNumbers, geo?: PlacementGeometry): { placements: Record<string, Placement>; errors: Record<string, string>; warnings: Record<string, string>; kin: KinState } {
   const errors: Record<string, string> = {};
   const warnings: Record<string, string> = {};
   const compOf = (occ: string) => design.occurrences.find((o) => o.id === occ)?.component ?? '';
@@ -1963,52 +1976,28 @@ export function placeOccurrences(design: CadDesign, numbers: DesignNumbers, geo?
     return topo.get(cid);
   };
   const occ = design.occurrences;
-  const pose = (o: CadOccurrence) => m4Pose(o.pos, o.rot);
-  for (const o of occ) if (o.grounded) placements[o.id] = { matrix: pose(o), by: 'ground' };
-  if (!Object.keys(placements).length && occ.length) placements[occ[0].id] = { matrix: pose(occ[0]), by: 'ground' };
   const live = design.joints.filter((j) => !j.suppressed);
-  const frames = new Map<string, { Fa: M4; Fb: M4; M: M4 }>();
+  const frames = new Map<string, { Fa: M4; Fb: M4 }>();
   for (const j of live) {
     try {
       if (!occ.some((o) => o.id === j.a.occ) || !occ.some((o) => o.id === j.b.occ)) throw new Error('a jointed occurrence no longer exists');
       if (j.a.occ === j.b.occ) throw new Error('a joint needs two different occurrences');
-      const p = numbers.params[j.id] ?? {};
       if (numbers.errors[j.id]) throw new Error(numbers.errors[j.id]);
       const lost = (why: string) => (warnings[j.id] ??= why);
       const datumsOf = (occ: string) => geo?.datums?.(compOf(occ));
       frames.set(j.id, {
         Fa: jointFrame(numbers, j.a.origin, bodiesOf(j.a.occ), geo?.frames, lost, datumsOf(j.a.occ)),
         Fb: jointFrame(numbers, j.b.origin, bodiesOf(j.b.occ), geo?.frames, lost, datumsOf(j.b.occ)),
-        M: jointMotion(j, p.angle ?? 0, p.offset ?? 0),
       });
     } catch (e) {
       errors[j.id] = msg(e);
     }
   }
-  const done = new Set<string>();
-  let progress = true;
-  while (progress) {
-    progress = false;
-    for (const j of live) {
-      const fr = frames.get(j.id);
-      if (!fr || done.has(j.id)) continue;
-      const A = placements[j.a.occ], B = placements[j.b.occ];
-      if (A && B) {
-        done.add(j.id);
-        const want = m4Mul(m4Mul(m4Mul(A.matrix, fr.Fa), fr.M), m4Inv(fr.Fb));
-        const err = Math.max(...want.map((v, k) => Math.abs(v - B.matrix[k]) / (k >= 12 ? 1 + Math.abs(v) : 1)));
-        if (err > 1e-6) errors[j.id] = 'this joint closes a loop that does not fit — it is ignored';
-        continue;
-      }
-      if (A) placements[j.b.occ] = { matrix: m4Mul(m4Mul(m4Mul(A.matrix, fr.Fa), fr.M), m4Inv(fr.Fb)), by: 'joint' };
-      else if (B) placements[j.a.occ] = { matrix: m4Mul(m4Mul(m4Mul(B.matrix, fr.Fb), m4Inv(fr.M)), m4Inv(fr.Fa)), by: 'joint' };
-      else continue;
-      done.add(j.id);
-      progress = true;
-    }
-  }
-  for (const o of occ) placements[o.id] ??= { matrix: pose(o), by: 'free' };
-  return { placements, errors, warnings };
+  const model = kinModel(design, numbers, frames, errors);
+  const sol = solveKinematics(model);
+  for (const [id, e] of Object.entries(sol.errors)) errors[id] ??= e;
+  for (const [id, w] of Object.entries(sol.warnings)) warnings[id] ??= w;
+  return { placements: sol.placements, errors, warnings, kin: { model, values: sol.values, parent: sol.parent, mobility: sol.mobility } };
 }
 
 // ------------------------------------------------------------ properties
@@ -2048,6 +2037,7 @@ export interface BuiltDesign {
   errors: Record<string, string>;
   /** Joints whose origin on geometry was lost. */
   warnings: Record<string, string>;
+  kin?: KinState;
   free(): void;
 }
 
@@ -2063,12 +2053,12 @@ export function buildDesign(K: ManifoldToplevel, design: CadDesign, numbers: Des
       components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map(), sketches: {} });
     }
   }
-  const { placements, errors, warnings } = placeOccurrences(design, numbers, {
+  const { placements, errors, warnings, kin } = placeOccurrences(design, numbers, {
     frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
     bodies: (cid) => (components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)),
     datums: (cid) => components.get(cid)?.datums ?? {},
   });
-  return { arena, components, placements, errors, warnings, free: () => arena.free() };
+  return { arena, components, placements, errors, warnings, kin, free: () => arena.free() };
 }
 
 export function bodyMass(b: Body): Mass3 {

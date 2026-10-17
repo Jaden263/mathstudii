@@ -1200,3 +1200,85 @@ function flangeDrawingNotes(): Partial<DrawingRegion> {
     ] as Annotation[]).map((a) => ({ ...a, k: a.view.startsWith('det:') ? 2 : 0.4 })),
   };
 }
+
+// ------------------------------------------------------------ CAD: assembly motion
+
+/**
+ * A link of a linkage: a bar from its pin at the origin to the pin at L along x (both
+ * sketch points, the joints' origins), w wide with the pin holes, every size from the
+ * worksheet.
+ */
+function linkBar(p: string, L: number, lExpr: string, w: number, wExpr: string): CadSketch {
+  const sk = outline(p, [[-w / 2, -w / 2], [L + w / 2, -w / 2], [L + w / 2, w / 2], [-w / 2, w / 2]]);
+  sk.points.push({ id: `${p}o`, x: 0, y: 0 }, { id: `${p}e`, x: L, y: 0 });
+  sk.entities.push({ id: `${p}ho`, type: 'circle', c: `${p}o`, r: 3 }, { id: `${p}he`, type: 'circle', c: `${p}e`, r: 3 });
+  sk.constraints.push(
+    { id: `${p}fo`, type: 'fix', refs: [`${p}o`], at: { x: 0, y: 0 } },
+    { id: `${p}h0`, type: 'horizontal', refs: [`${p}l0`] }, { id: `${p}v1`, type: 'vertical', refs: [`${p}l1`] },
+    { id: `${p}h2`, type: 'horizontal', refs: [`${p}l2`] }, { id: `${p}v3`, type: 'vertical', refs: [`${p}l3`] },
+    { id: `${p}dl`, type: 'distanceX', refs: [`${p}o`, `${p}e`], value: lExpr, offset: { x: 0, y: -w } },
+    { id: `${p}dy`, type: 'distanceY', refs: [`${p}o`, `${p}e`], value: '0' },
+    { id: `${p}d0`, type: 'distanceX', refs: [`${p}p0`, `${p}o`], value: `(${wExpr})/2` },
+    { id: `${p}d1`, type: 'distanceY', refs: [`${p}p0`, `${p}o`], value: `(${wExpr})/2` },
+    { id: `${p}d2`, type: 'distanceX', refs: [`${p}e`, `${p}p1`], value: `(${wExpr})/2` },
+    { id: `${p}d3`, type: 'distanceY', refs: [`${p}o`, `${p}p3`], value: `(${wExpr})/2` },
+    { id: `${p}dh`, type: 'diameter', refs: [`${p}ho`], value: 'd_p' },
+    { id: `${p}de`, type: 'diameter', refs: [`${p}he`], value: 'd_p' },
+  );
+  return sk;
+}
+
+/**
+ * A four-bar linkage (crank-rocker): the ground bar with the crank and rocker pivots d
+ * apart, the crank driven by θ_2, the coupler and rocker pins and the rocker's pivot solved
+ * (the loop closes), each link on its own layer with a washer's gap between, and a stop
+ * the rocker may hit. A motion study turns the crank once round, tracking the clearance.
+ */
+export function fourBarDesign(): CadDesign {
+  const comp = (id: string, name: string, color: string, L: number, lExpr: string, w: number, wExpr: string, t: string) => ({
+    id, name, color, items: [
+      { kind: 'sketch' as const, id: `s${id}`, name: `${name}Sketch`, plane: { ref: 'XY' as const }, sketch: linkBar(id, L, lExpr, w, wExpr) },
+      { kind: 'extrude' as const, id: `f${id}`, name: `${name}Bar`, sketch: `s${id}`, extent: { type: 'one' as const, d: t, dir: '+' as const }, op: 'new' as const },
+    ],
+  });
+  const stop = rings('st', [[10, 'd_s']], (sk) => {
+    sk.points.push({ id: 'sto', x: -60, y: 0 });
+    sk.constraints.push({ id: 'stx', type: 'distanceX', refs: ['sto', 'stc'], value: 'r_s', offset: { x: 0, y: -10 } }, { id: 'sty', type: 'distanceY', refs: ['sto', 'stc'], value: '0' });
+  });
+  const pin = (side: string, sketch: string, point: string) => ({ occ: side, origin: { kind: 'point' as const, sketch, point } });
+  return {
+    version: 2,
+    components: [
+      comp('g', 'Ground', '#8fa3bf', 100, 'r_1', 30, '30 mm', 't_g'),
+      comp('k', 'Crank', '#e8590c', 40, 'r_2', 12, 'w_l', 't_l'),
+      comp('b', 'Coupler', '#2f6fdf', 120, 'r_3', 12, 'w_l', 't_l'),
+      comp('r', 'Rocker', '#2f9e44', 80, 'r_4', 12, 'w_l', 't_l'),
+      {
+        id: 'st', name: 'Stop', color: '#c92a2a', items: [
+          { kind: 'sketch', id: 'sst', name: 'StopSketch', plane: { ref: 'XY' }, sketch: stop },
+          { kind: 'extrude', id: 'fst', name: 'StopPin', sketch: 'sst', extent: { type: 'one', d: 't_l', dir: '+' }, op: 'new' },
+        ],
+      },
+    ],
+    occurrences: [
+      { id: 'og', component: 'g', grounded: true },
+      { id: 'ok', component: 'k', pos: [0, -80, 0] },
+      { id: 'ob', component: 'b', pos: [0, -110, 0] },
+      { id: 'or', component: 'r', pos: [0, -140, 0] },
+      { id: 'ost', component: 'st', pos: [150, 0, 0] },
+    ],
+    joints: [
+      { id: 'j1', name: 'θ2', type: 'revolute', a: pin('og', 'sg', 'go'), b: pin('ok', 'sk', 'ko'), angle: 'θ_2', offset: 't_g + s_g' },
+      { id: 'j2', name: 'Pin_A', type: 'revolute', a: pin('ok', 'sk', 'ke'), b: pin('ob', 'sb', 'bo'), angle: '0', offset: 't_l + s_g', dofs: { angle: { free: true } } },
+      { id: 'j3', name: 'Pin_B', type: 'revolute', a: pin('ob', 'sb', 'be'), b: pin('or', 'sr', 're'), angle: '0', offset: 't_l + s_g', dofs: { angle: { free: true } } },
+      // the rocker's pivot closes the loop: it starts from where the rocker was assembled
+      { id: 'j4', name: 'θ4', type: 'revolute', a: pin('og', 'sg', 'ge'), b: pin('or', 'sr', 'ro'), angle: '0', offset: 't_g + 2 t_l + 3 s_g', dofs: { angle: { free: true, rest: '60 deg' } } },
+      // the stop, on a bracket over the ground at the rocker's layer, r_s from its pivot at φ_s
+      { id: 'j5', name: 'StopMount', type: 'rigid', a: pin('og', 'sg', 'ge'), b: { occ: 'ost', origin: { kind: 'point', sketch: 'sst', point: 'sto' } }, angle: 'φ_s', offset: 't_g + 2 t_l + 3 s_g' },
+    ],
+    motions: [{
+      id: 'm1', name: 'Sweep', duration: 4, steps: 180, interp: 'linear', clearance: true,
+      tracks: [{ joint: 'j1', dof: 'angle', keys: [{ t: 0, v: '0 deg' }, { t: 4, v: '360 deg' }] }],
+    }],
+  };
+}
