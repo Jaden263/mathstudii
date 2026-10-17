@@ -20,6 +20,7 @@ import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc } from '../occ/que
 import { cachedResultOcc } from '../occ/result';
 import { drawViewOcc } from '../occ/drawing';
 import { interferenceMesh, meshBuilt, outlineMesh, sectionMesh, stlMesh } from './meshFallback';
+import { addInterference, hasMeshBodies, meshInterference, sectionMeshBodies } from '../meshQueries';
 import { buffersOf, NO_KERNEL, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
 
 let loadBrep: () => Promise<unknown> = () => initOcc();
@@ -162,12 +163,20 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
   switch (req.op) {
     case 'section': {
       const value = oc ? sectionOcc(oc, buildDesignCached(oc, design, numbers), design, req.plane) : sectionMesh(meshBuilt(K!, design, numbers), design, req.plane);
+      // imported mesh bodies are clipped here, whichever kernel built the rest
+      const shown = displayFor(design, numbers);
+      if (hasMeshBodies(shown)) value.push(...sectionMeshBodies(shown!, design, req.plane));
       return { value, kernel: which, transfer: buffersOf(value) };
     }
     case 'outline':
       return { value: oc ? outlineOcc(oc, buildDesignCached(oc, design, numbers), req.component, req.frame) : outlineMesh(meshBuilt(K!, design, numbers), req.component, req.frame), kernel: which, transfer: [] };
-    case 'interference':
-      return { value: oc ? interferenceOcc(oc, buildDesignCached(oc, design, numbers), design) : interferenceMesh(meshBuilt(K!, design, numbers), design), kernel: which, transfer: [] };
+    case 'interference': {
+      let rows = oc ? interferenceOcc(oc, buildDesignCached(oc, design, numbers), design) : interferenceMesh(meshBuilt(K!, design, numbers), design);
+      // pairs with an imported mesh body: Manifold's booleans on the closed meshes
+      const shown = displayFor(design, numbers);
+      if (hasMeshBodies(shown) && (await ensureMesh()) && kernel()) rows = addInterference(rows, meshInterference(kernel()!, shown!, design).rows);
+      return { value: rows, kernel: which, transfer: [] };
+    }
     case 'distance': {
       if (oc) return { value: distanceOcc(oc, buildDesignCached(oc, design, numbers), design, req.a, req.b), kernel: which, transfer: [] };
       const shown = displayFor(design, numbers);

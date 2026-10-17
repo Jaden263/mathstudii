@@ -9,18 +9,20 @@
 // The exact HLR takes minutes on helical faces (a modeled M12 thread seen along its axis:
 // over two), so bodies with coils and modeled threads are drawn from their facets: their
 // lines are hidden by every body's facets, and the others' exact lines where a coil's
-// facets lie in front of them.
+// facets lie in front of them. Imported mesh bodies have nothing else to be drawn from,
+// and are drawn the same way (a section clips their facets).
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import type { BuildResult } from '../buildResult';
 import type { CadDesign, ThreadMark } from '../design';
-import { Occluder, projectView, type DrawMesh, type ViewSpec } from '../drawing';
+import { Occluder, clipMesh, projectView, type DrawMesh, type ViewSpec } from '../drawing';
+import { meshBodyResult } from '../meshBody';
 import {
   overlayPrims, primAt, primLength, primsBox, recognise, subPrim, type DrawView, type DrawViewRequest, type Prim, type ViewAxis,
 } from '../drawing2d';
 import { weldedMesh } from '../display';
 import { chainLoops } from '../outline';
 import { add3, cross3, dot3, frameFromNormal, len3, m4Dir, m4Point, norm3, scale3, sub3, type Arena, type M4, type Vec3 } from '../solid';
-import { occBox, type OccBuiltDesign } from './build';
+import { occBox, withMeshBoxes as withBoxes, type OccBuiltDesign } from './build';
 import { ax2, guard, hasSolid, pnt, scratch, subShapes, trsf, xyz, type OC } from './kernel';
 import { cleared, common, placedBodies } from './query';
 import { cachedResultOcc, heap } from './result';
@@ -54,6 +56,17 @@ function helical(design: CadDesign, component: string, tags: { key: string }[]):
   });
 }
 
+/** The box of a mesh's vertices. */
+function meshBox(m: DrawMesh): { min: Vec3; max: Vec3 } | null {
+  if (!m.pos.length) return null;
+  const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < m.pos.length; i += 3) for (let k = 0; k < 3; k++) {
+    min[k] = Math.min(min[k], m.pos[i + k]);
+    max[k] = Math.max(max[k], m.pos[i + k]);
+  }
+  return { min, max };
+}
+
 /** The axes of a view in assembly coordinates. */
 function frameOf(req: DrawViewRequest) {
   const d = norm3(req.dir);
@@ -73,7 +86,17 @@ export function drawViewOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, re
       const tags = built.components.get(pb.component)?.bodies.find((b) => b.id === pb.id)?.solid.tags ?? [];
       placed.push({ occ: pb.occ, component: pb.component, body: pb.id, index, M: pb.M, shape, helical: helical(design, pb.component, tags) });
     });
-    const box = occBox(oc, placed.map((p) => p.shape));
+    // imported mesh bodies, placed (numbered after the solids, for the hatching)
+    let meshBodies: { occ: string; body: string; index: number; mesh: DrawMesh }[] = [];
+    for (const o of design.occurrences) {
+      const comp = design.components.find((c) => c.id === o.component);
+      const M = built.placements[o.id]?.matrix;
+      if (o.hidden || !comp || !M) continue;
+      for (const m of built.components.get(comp.id)?.meshes ?? []) {
+        if (!comp.hiddenBodies?.includes(m.id)) meshBodies.push({ occ: o.id, body: m.id, index: placed.length + meshBodies.length, mesh: weldedMesh(meshBodyResult(m), M) });
+      }
+    }
+    const box = withBoxes(occBox(oc, placed.map((p) => p.shape)), meshBodies.map((m) => meshBox(m.mesh)));
     const view: DrawView = { name: req.name, visible: [], hidden: [], tangent: [], thin: [], axes: [], box: { x0: 0, y0: 0, x1: 0, y1: 0 } };
     if (!box) return view;
     const size = len3(sub3(box.max, box.min)) || 1;
@@ -92,6 +115,12 @@ export function drawViewOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, re
         const loops = cutLoops(oc, t, p.shape, o, d, right, size);
         if (loops.length) view.cuts.push({ body: `${p.occ}/${p.body}`, index: p.index, loops });
       }
+      meshBodies = meshBodies.flatMap((m) => {
+        const c = clipMesh(m.mesh, o, d, right, up);
+        if (!c) return [];
+        if (c.loops.length) view.cuts!.push({ body: `${m.occ}/${m.body}`, index: m.index, loops: c.loops });
+        return [{ ...m, mesh: c.mesh }];
+      });
     }
     const exact = shown.filter((p) => !p.helical), facetted = shown.filter((p) => p.helical);
 
@@ -137,12 +166,14 @@ export function drawViewOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, re
       if (lines.ends) read(t.add(h.VCompound(lines.ends)), thin);
     }
 
-    if (facetted.length) {
+    if (facetted.length || meshBodies.length) {
       view.mesh = exact.length ? 'some' : 'all';
       const display = req.cut ? null : cachedResultOcc(oc, built);
-      const meshes = shown.map((p) => meshOf(oc, t, display, p, size));
+      const meshes = [...shown.map((p) => meshOf(oc, t, display, p, size)), ...meshBodies.map((m) => m.mesh)];
       const spec: ViewSpec = { name: req.name, dir: d, up };
-      const fromMesh = projectView(meshes, spec, { hidden: req.hidden, drawn: (i) => shown[i].helical });
+      // drawn from facets: coils, threads and mesh bodies (the rest are drawn exactly above)
+      const faceted = (i: number) => i >= shown.length || shown[i].helical;
+      const fromMesh = projectView(meshes, spec, { hidden: req.hidden, drawn: faceted });
       const segs = (s: number[]): Prim[] => {
         const out: Prim[] = [];
         for (let i = 0; i + 3 < s.length; i += 4) out.push({ k: 'line', x1: s[i], y1: s[i + 1], x2: s[i + 2], y2: s[i + 3] });
@@ -150,8 +181,8 @@ export function drawViewOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, re
       };
       // the exact lines where a coil's facets lie in front of them
       if (exact.length) {
-        const front = new Occluder(meshes.filter((_, i) => !shown[i].helical), spec);
-        const coils = new Occluder(meshes.filter((_, i) => shown[i].helical), spec);
+        const front = new Occluder(meshes.filter((_, i) => !faceted(i)), spec);
+        const coils = new Occluder(meshes.filter((_, i) => faceted(i)), spec);
         const split = (ps: Prim[], keep: Prim[], behind: Prim[] | null) => {
           const out: Prim[] = [];
           for (const p of ps) {
