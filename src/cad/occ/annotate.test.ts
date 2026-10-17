@@ -20,7 +20,7 @@ import { autoDimensions } from '../autoDims';
 import { bomRows, type Annotation, type DimAnnotation, type DrawPick } from '../annotations';
 import { newDimension } from '../annotationTools';
 import { pickAt, pickOf, type DrawnPart } from '../drawingRefs';
-import { points, poly, rect, roundedRect, single, solve, withCircles } from './fixtures';
+import { circles, points, poly, rect, roundedRect, single, solve, withCircles } from './fixtures';
 
 const { PI } = Math;
 
@@ -231,6 +231,43 @@ describe('hole callouts from the hole feature', () => {
     expect(placed.every((p) => !p.lost && !p.error)).toBe(true);
     // the symbols are drawn as lines, the rest as text set to its width
     expect(ownLabels(sheet, 'c3').map((l) => l.text)).toEqual(['Ø8.5', 'Ø14', '8']);
+  });
+});
+
+describe('round parts seen side-on, threads', () => {
+  it('the ends of a disc and a hub seen edge-on (no vertices there): the step (200 − 100)/2 = 50 and the hub 20 high', async () => {
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'Disc', plane: { ref: 'XY' }, sketch: circles('d', [[0, 0, 100]]) },
+      { kind: 'extrude', id: 'f1', name: 'Disc', sketch: 's1', extent: { type: 'one', d: '12' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'Hub', plane: { ref: 'XY', offset: '12' }, sketch: circles('h', [[0, 0, 50]]) },
+      { kind: 'extrude', id: 'f2', name: 'Hub', sketch: 's2', extent: { type: 'one', d: '20' }, op: 'join' },
+    ]);
+    const r = drawing({ views: { front: true, top: false, side: false, iso: false } });
+    const { sheet, parts } = await sheetOf(design, r);
+    const disc = pick(r, sheet, parts, 'front', -100, 12), hub = pick(r, sheet, parts, 'front', -50, 32);
+    expect([disc.snap, hub.snap].every((q) => q === 'end0' || q === 'end1')).toBe(true);
+    const step: DimAnnotation = { ...newDimension('s', 'front', [disc, hub], [-75, 50])!, orient: 'h' };
+    const high: DimAnnotation = { ...newDimension('h', 'front', [disc, hub], [-120, 22])!, orient: 'v' };
+    expect(annotateSheet(sheet, { ...r, annotations: [step, high] }, { unit: 'mm', parts }).map((p) => p.text)).toEqual(['50', '20']);
+  });
+
+  it('a thread feature on a shaft and in a hole: "M12 – 6g", "M8 – 6H ↧ 12 LH"', async () => {
+    const shaft = (face: string): CadDesign => single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: withCircles(rect('a', -30, -30, 30, 30), 'h', [[20, 20, 4]]) },
+      { kind: 'extrude', id: 'f1', name: 'Block', sketch: 's1', extent: { type: 'one', d: '20' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'P', plane: { ref: 'XY', offset: '20' }, sketch: circles('c', [[0, 0, 6]]) },
+      { kind: 'extrude', id: 'f2', name: 'Pin', sketch: 's2', extent: { type: 'one', d: '30' }, op: 'join' },
+      { kind: 'thread', id: 't1', name: 'Thread', faces: [{ kind: 'face', body: 'f1', key: 'f2/side:ck0', hint: { p: [0, 0, 35], type: 'cylinder', d: [0, 0, 1], r: 6 } }], size: 'M12' },
+      { kind: 'thread', id: 't2', name: 'Tapped', faces: [{ kind: 'face', body: 'f1', key: face, hint: { p: [20, 20, 10], type: 'cylinder', d: [0, 0, 1], r: 4 } }], size: 'M8', length: '12', hand: 'left' },
+    ]);
+    const r = drawing({ views: { front: true, top: true, side: false, iso: false } });
+    const design = shaft('f1/side:hk0');
+    const { sheet, parts, res } = await sheetOf(design, r);
+    const pin = pick(r, sheet, parts, 'front', 6, 40, { points: false });
+    const bore = pick(r, sheet, parts, 'top', 24, 20, { points: false });
+    expect([pin.snap, bore.snap]).toEqual(['cyl', 'circle']);
+    const placed = annotateSheet(sheet, { ...r, annotations: [{ id: 'a', kind: 'hole', view: 'front', a: pin, at: [30, 60] }, { id: 'b', kind: 'hole', view: 'top', a: bore, at: [30, 40] }] }, { unit: 'mm', parts, design, params: res.design!.params });
+    expect(placed.map((p) => [p.text, p.error ?? null])).toEqual([['M12 – 6g', null], ['M8 – 6H ↧ 12 LH', null]]);
   });
 });
 

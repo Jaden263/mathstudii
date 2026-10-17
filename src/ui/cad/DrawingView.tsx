@@ -21,7 +21,7 @@ import {
   type Layer, type PlacedView, type Sheet, type SheetInfo,
 } from '../../cad/drawingSheet';
 import { sheetDxf } from '../../cad/drawingDxf';
-import { bomRows, materialOf, MM, type Annotation, type DrawPick, type XY } from '../../cad/annotations';
+import { bomRows, materialOf, MM, threadOn, type Annotation, type DrawPick, type XY } from '../../cad/annotations';
 import { annotateSheet, annotationAt, annotationParts, autoBalloons, viewPicks, type PlacedAnnotation, type ViewPicks } from '../../cad/drawingAnnotate';
 import { autoDimensions } from '../../cad/autoDims';
 import { continueDimension, movedAnnotation, newDimension, nextDatumLetter } from '../../cad/annotationTools';
@@ -176,7 +176,7 @@ const BalloonIcon = () => glyph('M2 15l4-4', <><circle cx={10} cy={6} r={5} /><p
 const ANNOT_TOOLS: { tool: AnnotTool; label: string; icon: React.ReactNode; title: string }[] = [
   { tool: 'dim', label: 'Dimension', icon: <Ruler size={13} />, title: 'Dimension: pick a circle, a line, or two points, edges or lines; click again to place the text (D)' },
   { tool: 'note', label: 'Note', icon: <StickyNote size={13} />, title: 'Note: pick an edge for its leader (or click where the note goes); type the text in the side panel' },
-  { tool: 'hole', label: 'Hole', icon: <CircleDot size={13} />, title: 'Hole callout from the hole feature: pick a hole, then place the text' },
+  { tool: 'hole', label: 'Hole', icon: <CircleDot size={13} />, title: 'Hole or thread callout from its feature: pick a hole or a threaded shaft, then place the text' },
   { tool: 'gdt', label: 'GD&T', icon: <GdtIcon />, title: 'Feature control frame (ISO 1101): pick an edge or a dimension, then place the frame' },
   { tool: 'datum', label: 'Datum', icon: <DatumIcon />, title: 'Datum feature symbol (ISO 5459): pick an edge or a dimension, then place the letter' },
   { tool: 'surface', label: 'Surface', icon: <SurfaceIcon />, title: 'Surface texture (ISO 1302 / ISO 21920-1): pick a surface edge, then place the symbol on it or on a leader' },
@@ -187,7 +187,7 @@ const ANNOT_TOOLS: { tool: AnnotTool; label: string; icon: React.ReactNode; titl
 const HINTS: Record<AnnotTool, [string, string]> = {
   dim: ['Pick a circle, a line, or a point or edge (Esc cancels)', 'Pick a second point or edge, or click to place the text'],
   note: ['Pick an edge for the leader, or click where the note goes', 'Click where the note goes'],
-  hole: ['Pick a hole (its circle or its outline)', 'Click where the callout goes'],
+  hole: ['Pick a hole or a threaded shaft (its circle or its outline)', 'Click where the callout goes'],
   gdt: ['Pick an edge or a dimension, or click where the frame goes', 'Click where the frame goes'],
   datum: ['Pick the datum edge or a dimension', 'Click where the letter goes'],
   surface: ['Pick the surface (its edge)', 'Click on the edge, or away from it for a leader'],
@@ -213,12 +213,12 @@ function snapIn(pv: PlacedView, x: number, y: number): [number, number] {
   return best;
 }
 
-/** Which entities a tool takes. */
-function accepts(tool: AnnotTool, e: ViewEntity): boolean {
+/** Which entities a tool takes (`threaded`: a face the thread feature threads). */
+function accepts(tool: AnnotTool, e: ViewEntity, threaded: (e: ViewEntity) => boolean): boolean {
   const s = e.shape.k;
   switch (tool) {
     case 'hole':
-      return !!e.hole && (s === 'circle' || s === 'cyl');
+      return (s === 'circle' || s === 'cyl') && (!!e.hole || threaded(e));
     case 'centre':
       return s === 'circle';
     case 'datum':
@@ -391,7 +391,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     if (vp && !dim) {
       // tools that need a curve (a hole's circle, a surface's edge) take the curve, not a point on it
       const curves = t === 'hole' || t === 'centre' || t === 'datum' || t === 'surface';
-      hit = pickAt(vp.ents, at[0], at[1], 2 / pv.k, 1.2 / pv.k, { accept: (e) => accepts(t, e), points: !curves });
+      const threaded = (e: ViewEntity) => !!threadOn(design.components.find((c) => c.id === parts?.find((q) => q.occ === e.occ)?.component), e.faces);
+      hit = pickAt(vp.ents, at[0], at[1], 2 / pv.k, 1.2 / pv.k, { accept: (e) => accepts(t, e, threaded), points: !curves });
       // a point of the line work that is no model entity (a dimension only): flagged should it move
       if (!hit && t === 'dim') {
         let bd = 1.6 / pv.k;
@@ -725,7 +726,7 @@ function PickMark({ pv, H, shape, snap, at, done }: { pv: PlacedView; H: number;
     if (snap === 'centre') marker = <><circle cx={x} cy={y} r={s} /><path d={`M${x - s * 1.6} ${y}H${x + s * 1.6}M${x} ${y - s * 1.6}V${y + s * 1.6}`} /></>;
     else if (snap === 'mid') marker = <path d={`M${x} ${y - s * 1.2}L${x + s * 1.1} ${y + s * 0.8}L${x - s * 1.1} ${y + s * 0.8}Z`} />;
     else if (/^q\d$/.test(snap)) marker = <path d={`M${x} ${y - s * 1.3}L${x + s * 1.3} ${y}L${x} ${y + s * 1.3}L${x - s * 1.3} ${y}Z`} />;
-    else if (snap === 'vertex' || snap.startsWith('cut') || snap === 'free') marker = <rect x={x - s} y={y - s} width={2 * s} height={2 * s} className={snap === 'free' ? 'free' : undefined} />;
+    else if (snap === 'vertex' || snap.startsWith('cut') || snap.startsWith('end') || snap === 'free') marker = <rect x={x - s} y={y - s} width={2 * s} height={2 * s} className={snap === 'free' ? 'free' : undefined} />;
   }
   return <g className={cls}>{curve}{marker}</g>;
 }

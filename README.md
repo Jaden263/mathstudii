@@ -974,7 +974,7 @@ landscape or portrait, ISO 5457 frame) with:
   occurrences, name, material from the density, mass each), all edited in the side panel.
 
 **Annotating:** the tools under the selected drawing pick the model on the views: corners,
-edge middles, circle centres and quadrants, lines, circles and arcs, the outlines of a
+edge ends and middles (also of a round edge seen edge-on), circle centres and quadrants, lines, circles and arcs, the outlines of a
 cylinder seen side-on, and in a section view the corners of the cut faces. The entity under
 the pointer is highlighted with a marker for the snap (square at a corner, circle at a
 centre, triangle at a middle, diamond at a quadrant), and the annotation being made follows
@@ -991,7 +991,9 @@ the pointer until the click that places it.
   its deviations or limits if wanted; reference (in parentheses) and theoretically exact
   (framed) dimensions.
 - **Note** with a leader, **Hole** callouts made from the hole feature ("4× M8 – 6H ↧ 12"
-  with the drill on a second line when it goes deeper, "Ø8.5 ⌴ Ø14 ↧ 8", "2× Ø6.6 ⌵ Ø13 × 90°").
+  with the drill on a second line when it goes deeper, "Ø8.5 ⌴ Ø14 ↧ 8", "2× Ø6.6 ⌵ Ø13 × 90°")
+  or from the thread feature ("M12 – 6g" on a shaft, "M8 – 6H ↧ 12 LH" in a hole); the
+  tolerance class is written as given (6H and 6g by default), not checked.
 - **GD&T:** ISO 1101 feature control frames with all fifteen characteristics, a Ø zone,
   Ⓜ Ⓛ Ⓟ, up to three datums, on a leader to an edge or under a dimension; the side panel
   says when a datum is missing or not allowed. **Datum** feature symbols (ISO 5459) on an

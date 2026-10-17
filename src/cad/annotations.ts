@@ -8,8 +8,8 @@
 // through edits and is flagged when what it measures is gone. Positions are view
 // coordinates (model units on the paper of the view), so they move with the view, and are
 // kept beside their geometry as it changes (drawingRefs.ts followText, followPoint).
-import type { HoleFeature, CadDesign } from './design';
-import type { TopoRef } from './topology';
+import type { CadComponent, HoleFeature, CadDesign, ThreadFeature } from './design';
+import { baseName, type TopoRef } from './topology';
 import { MATERIALS } from './model';
 import { parseThread } from './threads';
 import { fitDeviations, parseFit } from './fits';
@@ -32,7 +32,7 @@ export type Shape2 =
  * cylinder seen side-on; where an edge goes through a section's plane (its first or
  * second crossing: a corner of the cut face).
  */
-export type PickSnap = 'vertex' | 'mid' | 'centre' | 'q0' | 'q1' | 'q2' | 'q3' | 'line' | 'circle' | 'cyl' | 'cut0' | 'cut1';
+export type PickSnap = 'vertex' | 'mid' | 'end0' | 'end1' | 'centre' | 'q0' | 'q1' | 'q2' | 'q3' | 'line' | 'circle' | 'cyl' | 'cut0' | 'cut1';
 
 /**
  * A pick on a view: a face, edge or vertex of an occurrence (it follows the model), or a
@@ -108,7 +108,7 @@ export interface HoleAnnotation extends Base {
   kind: 'hole';
   a: DrawPick;
   at: XY;
-  /** Thread tolerance class of a tapped hole (ISO 965-1; 6H the medium class). */
+  /** Thread tolerance class (ISO 965-1; missing: the medium classes, 6H inside, 6g outside). */
   cls?: string;
   /** Text in place of the generated one (<> stands for it). */
   override?: string;
@@ -370,6 +370,29 @@ export function holeCallout(h: HoleData, count: number, fmt: (v: number) => stri
   if (h.cbD !== undefined) lines[0] += ` ⌴ Ø${fmt(h.cbD)}${deep(h.cbDepth)}`;
   if (h.csD !== undefined) lines[0] += ` ⌵ Ø${fmt(h.csD)} × ${+(((h.csAngle ?? Math.PI / 2) * 180) / Math.PI).toFixed(1)}°`;
   return lines.join('\n');
+}
+
+/** The thread feature on a face (named by any of `faceKeys`), if one threads it. */
+export function threadOn(comp: CadComponent | undefined, faceKeys: string[]): ThreadFeature | undefined {
+  const names = new Set(faceKeys.filter(Boolean).map(baseName));
+  return comp?.items.find((i): i is ThreadFeature => i.kind === 'thread' && i.faces.some((f) => names.has(baseName(f.key))));
+}
+
+/**
+ * The callout of a thread made by the thread feature (ISO 965-1, ISO 6410-1): "M12 – 6g"
+ * on a shaft, "2× M8 – 6H ↧ 12" in holes (its length as the depth), "LH" for a left-hand one.
+ */
+export function threadCallout(item: ThreadFeature, internal: boolean, p: Record<string, number> | undefined, fmt: (v: number) => string, cls?: string): string {
+  let name = item.size.trim();
+  try {
+    name = parseThread(item.size).name;
+  } catch {
+    /* written as given */
+  }
+  const n = item.faces.length > 1 ? `${item.faces.length}× ` : '';
+  const c = (cls ?? (internal ? '6H' : '6g')).trim();
+  const deep = internal && p?.length && p.length > 0 ? ` ↧ ${fmt(p.length)}` : '';
+  return `${n}${name.replace(/x/i, '×')}${c ? ` – ${c}` : ''}${deep}${item.hand === 'left' ? ' LH' : ''}`;
 }
 
 /** A hole named in a face key: `${copies}${feature}/hole${n}:${role}` (a pattern's copy carries `${pattern}.${k}.`). */

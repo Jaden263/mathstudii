@@ -341,7 +341,8 @@ export function viewSnapPoints(v: DrawView, hidden: boolean): XY[] {
 export function entitySnaps(e: ViewEntity): { snap: PickSnap; x: number; y: number }[] {
   const s = e.shape;
   if (s.k === 'point') return [{ snap: e.cut !== undefined ? (`cut${e.cut}` as PickSnap) : 'vertex', x: s.x, y: s.y }];
-  if (s.k === 'line') return [{ snap: 'mid', x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 }];
+  // a line's ends too: an edge seen edge-on (a circle) has no vertices there
+  if (s.k === 'line') return [{ snap: 'mid', x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 }, { snap: 'end0', x: s.x1, y: s.y1 }, { snap: 'end1', x: s.x2, y: s.y2 }];
   if (s.k === 'circle') {
     const out: { snap: PickSnap; x: number; y: number }[] = [{ snap: 'centre', x: s.cx, y: s.cy }];
     for (let q = 0; q < 4; q++) if (onArc(s, (q * PI) / 2)) out.push({ snap: `q${q}` as PickSnap, x: s.cx + s.r * cos((q * PI) / 2), y: s.cy + s.r * sin((q * PI) / 2) });
@@ -435,6 +436,7 @@ function snapShape(s: Shape2, snap: PickSnap | 'free'): Shape2 | null {
   if (snap === 'circle') return s.k === 'circle' ? s : null;
   if (snap === 'cyl') return s.k === 'cyl' ? s : null;
   if (snap === 'vertex' || snap === 'cut0' || snap === 'cut1') return s.k === 'point' ? s : null;
+  if (snap === 'end0' || snap === 'end1') return s.k === 'line' ? (snap === 'end0' ? { k: 'point', x: s.x1, y: s.y1 } : { k: 'point', x: s.x2, y: s.y2 }) : null;
   if (snap === 'mid') {
     if (s.k === 'line') return { k: 'point', x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 };
     if (s.k === 'circle') return { k: 'point', x: s.cx + s.r * cos((s.a0 + s.a1) / 2), y: s.cy + s.r * sin((s.a0 + s.a1) / 2) };
@@ -478,7 +480,7 @@ export function resolvePick(pick: DrawPick, parts: DrawnPart[], f: ViewFrame, sn
   const shape = g && snapShape(g.shape, pick.snap);
   if (!g || !shape) return { ok: false, why: cut !== undefined ? 'its edge no longer goes through the cutting plane' : `the view no longer shows its ${pick.ref.kind} that way` };
   const e: ViewEntity = { occ: part.occ, body: body.id, kind: pick.ref.kind, index: r.index, ...g };
-  const p3 = pick.snap === 'vertex' || pick.snap === 'line' || cut !== undefined ? g.p3 : pick.snap === 'centre' ? g.p3.slice(0, 1) : undefined;
+  const p3 = pick.snap === 'vertex' || pick.snap === 'line' || cut !== undefined ? g.p3 : pick.snap === 'centre' || pick.snap === 'end0' ? g.p3.slice(0, 1) : pick.snap === 'end1' ? g.p3.slice(1, 2) : undefined;
   return { ok: true, shape, e, ...(p3 ? { p3 } : {}) };
 }
 

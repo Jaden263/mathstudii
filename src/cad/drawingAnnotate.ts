@@ -9,7 +9,7 @@
 // balloons on TEXT.
 import type { DrawingRegion } from '../model/types';
 import {
-  dimText, fmtSize, gdtLayout, holeCallout, holeCount, holeData, holeOfKey, GDT_INFO,
+  dimText, fmtSize, gdtLayout, holeCallout, holeCount, holeData, holeOfKey, threadCallout, threadOn, GDT_INFO,
   type Annotation, type BomRow, type DimAnnotation, type DimText, type DrawPick, type Shape2, type XY,
 } from './annotations';
 import type { CadDesign, HoleFeature } from './design';
@@ -661,9 +661,9 @@ function surfaceSymbol(pen: Pen, a: Extract<Annotation, { kind: 'surface' }>, ti
 }
 
 /**
- * A hole callout from the hole feature that made the picked hole: how many the part has,
- * the drill or thread, counterbore or countersink and depths. A round hole made otherwise
- * (an extruded cut) gives its diameter alone.
+ * A hole callout from the feature that made the picked hole or thread: a thread feature's
+ * thread, else the hole feature's count, drill or tapping, counterbore or countersink and
+ * depths. A round hole made otherwise (an extruded cut) gives its diameter alone.
  */
 function calloutText(p: DrawPick, pk: Picked, ctx: AnnotationContext, fmt: (v: number) => string, cls?: string): { text: string; error?: string } {
   const s = pk.a.shape;
@@ -671,9 +671,11 @@ function calloutText(p: DrawPick, pk: Picked, ctx: AnnotationContext, fmt: (v: n
   const plain = r !== undefined ? `Ø${fmt(2 * r)}` : '?';
   const part = ctx.parts?.find((q) => q.occ === p.occ);
   const keys = pk.a.e?.faces ?? [];
+  const comp = part && ctx.design?.components.find((c) => c.id === part.component);
+  const thread = threadOn(comp, keys);
+  if (thread) return { text: threadCallout(thread, !!pk.a.e?.hole, ctx.params?.[thread.id], fmt, cls) };
   const hole = keys.map(holeOfKey).find(Boolean);
-  if (!hole || !part || !ctx.design) return { text: plain, ...(part && !hole ? { error: 'not made by a hole feature: its diameter alone' } : {}) };
-  const comp = ctx.design.components.find((c) => c.id === part.component);
+  if (!hole || !part || !ctx.design) return { text: plain, ...(part && !hole ? { error: 'not made by a hole or thread feature: its diameter alone' } : {}) };
   const item = comp?.items.find((i) => i.id === hole.feature);
   const data = item?.kind === 'hole' ? holeData(item as HoleFeature, ctx.params?.[item.id]) : null;
   if (!data) return { text: plain, error: 'its hole feature did not build' };
