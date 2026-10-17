@@ -120,6 +120,11 @@ export function DrivePanel({ joint: j, dof, value, unit, size, values, onValue }
   );
 }
 
+/** The DOFs of a joint a drive can move: neither solved by the assembly nor following a link. */
+export function drivenDofs(design: CadDesign, j: CadJoint): DofKey[] {
+  return JOINT_DOFS[j.type].filter((k) => !j.dofs?.[k]?.free && !(design.links ?? []).some((l) => !l.suppressed && l.b.joint === j.id && l.b.dof === k));
+}
+
 /** The joints' moving DOFs as choices: `${joint}/${dof}`. */
 export function dofChoices(design: CadDesign): [string, string][] {
   return design.joints.flatMap((j) => JOINT_DOFS[j.type].map((k) => [`${j.id}/${k}`, `${j.name} · ${dofLabel(j.type, k)}`] as [string, string]));

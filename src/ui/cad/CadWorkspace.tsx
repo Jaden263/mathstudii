@@ -50,14 +50,14 @@ import { BuildFields, emptyDef, isBuildFeature, withPick, type FieldPick } from 
 import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate } from './jointPick';
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
-import { JOINT_DOFS, JOINT_LABEL, isAngleDof, type DofKey } from '../../cad/assembly';
+import { JOINT_DOFS, JOINT_LABEL, dofLabel, isAngleDof, type DofKey } from '../../cad/assembly';
 import { bomCsv, bomTable, bomTsv } from '../../cad/bom';
 import { autoExplode } from '../../cad/explode';
 import { m4Mul } from '../../cad/solid';
 import { sampleTimes } from '../../cad/motion';
-import { asBuiltOrigin } from '../../cad/kinematics';
+import { asBuiltOrigin, solveKinematics } from '../../cad/kinematics';
 import { paintHits, useAssemblyView } from './assemblyView';
-import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, motionTsv, useMotionPlayer } from './AssemblyPanels';
+import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
 import { canRecord, exportPngFrames, recordWebm } from './motionExport';
 
 interface Props {
@@ -619,7 +619,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     setDesign({ ...d, occurrences: [...d.occurrences, { id, component: cid, pos: [box ? box.max[0] + w * 0.3 : 0, 0, 0] }] });
     setSel(`occ:${id}`);
   };
-  const startJoint = () => {
+  const startJoint = (asBuilt = false) => {
     const d = cur();
     if (d.occurrences.length < 2) return setMsg('A joint needs two occurrences: Assemble → New component or Insert copy first');
     const ground = d.occurrences.find((o) => o.grounded) ?? d.occurrences[0];
@@ -627,14 +627,12 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     const id = cadId('j');
     seal();
     const m = mark();
-    setDesign({ ...d, joints: [...d.joints, { id, name: nextName(d, 'Joint'), type: 'rigid', a: { occ: ground.id, origin: { kind: 'origin' } }, b: { occ: other.id, origin: { kind: 'origin' } }, angle: '0', offset: '0' }] });
-    openDialog({ kind: 'joint', id, mark: m, isNew: true, picking: 'b' });
+    // an as-built joint holds nothing until its origin is picked: a free part must not jump onto the other's origin first
+    setDesign({ ...d, joints: [...d.joints, { id, name: nextName(d, 'Joint'), type: 'rigid', a: { occ: ground.id, origin: { kind: 'origin' } }, b: { occ: other.id, origin: { kind: 'origin' } }, angle: '0', offset: '0', ...(asBuilt ? { suppressed: true } : {}) }] });
+    openDialog({ kind: 'joint', id, mark: m, isNew: true, picking: 'b', ...(asBuilt ? { asBuilt: true } : {}) });
   };
   /** An as-built joint: one origin picked, the other side's frame put where it is now, so nothing moves. */
-  const startAsBuilt = () => {
-    startJoint();
-    setDialog((dl) => (dl?.kind === 'joint' ? { ...dl, asBuilt: true } : dl));
-  };
+  const startAsBuilt = () => startJoint(true);
 
   // ------------------------------------------------------------ motion
 
@@ -644,9 +642,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   /** Drive a DOF by hand, from where it is now. */
   const startDrive = (jid?: string, dof?: DofKey) => {
     const d = cur();
-    const j = d.joints.find((q) => q.id === jid) ?? d.joints.find((q) => JOINT_DOFS[q.type].some((k) => !q.dofs?.[k]?.free));
-    const k = dof ?? (j && JOINT_DOFS[j.type].find((x) => !j.dofs?.[x]?.free));
+    const j = d.joints.find((q) => q.id === jid) ?? d.joints.find((q) => drivenDofs(d, q).length);
+    const k = dof ?? (j && drivenDofs(d, j)[0]);
     if (!j || !k) return setMsg('Drive moves a joint by hand: make a revolute, slider or other moving joint first');
+    if (!drivenDofs(d, j).includes(k)) return setMsg(`${j.name}: the ${dofLabel(j.type, k)} follows a motion link — drive the DOF it follows`);
     if (!kinJoint(j.id)) return setMsg(dr?.errors[j.id] ? `${j.name}: ${dr.errors[j.id]}` : 'The joint is not placed yet');
     openDialog({ kind: 'drive', joint: j.id, dof: k, value: placedValues(j.id)?.[k] ?? 0 });
   };
@@ -1028,11 +1027,14 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         // the other side's origin put where the picked one is now: the joint holds the parts as they stand
         const side = dialog.picking, far = side === 'a' ? 'b' : 'a';
         const farOcc = occ === other ? j[side].occ : other;
-        const placed = (id: string) => build?.placements[id]?.matrix ?? dr?.placements[id]?.matrix;
+        // where the parts stand without this joint (not where its present origins put them)
+        const kin = build?.kin ?? dr?.kin;
+        const now = kin && solveKinematics({ ...kin.model, joints: kin.model.joints.filter((q) => q.id !== j.id) }).placements;
+        const placed = (id: string) => now?.[id]?.matrix ?? build?.placements[id]?.matrix ?? dr?.placements[id]?.matrix;
         const Mp = placed(occ), Mf = placed(farOcc), cid = occOf(occ)?.component;
         if (farOcc === occ || !Mp || !Mf || !cid || !dr) return setMsg('Pick a part of one of the two occurrences the joint holds');
         const at = asBuiltOrigin(Mf, Mp, jointFrame(designNumbers(dr), origin, build?.components[cid]?.bodies, dr.frames, undefined, build?.components[cid]?.datums));
-        patchJoint(j.id, { [side]: { occ, origin }, [far]: { occ: farOcc, origin: at }, angle: '0', offset: '0', flip: undefined } as Partial<CadJoint>);
+        patchJoint(j.id, { [side]: { occ, origin }, [far]: { occ: farOcc, origin: at }, angle: '0', offset: '0', x: undefined, y: undefined, angle2: undefined, angle3: undefined, flip: undefined, suppressed: undefined } as Partial<CadJoint>);
         setSnapHover(null);
         setDialog({ ...dialog, picking: null, snap: `As built on the ${c.label}: the parts stay where they are` });
         return;
@@ -1194,7 +1196,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // a slider or a check box takes no typing: Esc still leaves the dialog (a drive's slider)
+    const typing = tag === 'SELECT' || tag === 'TEXTAREA' || (tag === 'INPUT' && !['range', 'checkbox'].includes((e.target as HTMLInputElement).type));
+    if (typing || (tag === 'INPUT' && e.key !== 'Escape')) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) onRedo(); else onUndo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); onRedo(); }
@@ -1544,7 +1548,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       return (
         <Dialog title={`Joint — ${activeJoint.name}`} error={dr?.errors[activeJoint.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
           <label className="check" title="Pick one origin: the other side's goes where it is now, so the parts stay where they are">
-            <input type="checkbox" checked={!!dialog.asBuilt} onChange={(e) => setDialog({ ...dialog, asBuilt: e.target.checked || undefined, picking: e.target.checked ? 'b' : dialog.picking })} /> As built (nothing moves)
+            <input type="checkbox" checked={!!dialog.asBuilt} onChange={(e) => {
+              // a new joint holds nothing until its as-built origin is picked
+              if (dialog.isNew) patchJoint(activeJoint.id, { suppressed: e.target.checked || undefined });
+              setDialog({ ...dialog, asBuilt: e.target.checked || undefined, picking: e.target.checked ? 'b' : dialog.picking });
+            }} /> As built (nothing moves)
           </label>
           <JointFields design={design} joint={activeJoint} picking={dialog.picking} onPick={(p) => setDialog({ ...dialog, picking: p })}
             onChange={(p, k) => patchJoint(activeJoint.id, p, k ? `${activeJoint.id}:${k}` : undefined)}
@@ -1565,8 +1573,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           patchJoint(j.id, { [field]: dofExpr(field, sol?.values[j.id]?.[field] ?? dialog.value, u) } as Partial<CadJoint>);
           setDialog(null);
         }} onCancel={() => setDialog(null)}>
-          {JOINT_DOFS[j.type].filter((k) => !j.dofs?.[k]?.free).length > 1 && (
-            <Pick label="DOF" value={dialog.dof} options={JOINT_DOFS[j.type].filter((k) => !j.dofs?.[k]?.free).map((k) => [k, k] as [DofKey, string])}
+          {drivenDofs(design, j).length > 1 && (
+            <Pick label="DOF" value={dialog.dof} options={drivenDofs(design, j).map((k) => [k, dofLabel(j.type, k)] as [DofKey, string])}
               onChange={(dof) => setDialog({ ...dialog, dof, value: placedValues(j.id)?.[dof] ?? 0 })} />
           )}
           <DrivePanel joint={j} dof={dialog.dof} value={dialog.value} unit={u} size={sceneSize} values={{ min: kj.min[dialog.dof], max: kj.max[dialog.dof], rest: kj.rest[dialog.dof] }}
@@ -1803,7 +1811,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           <p className="hint">In the worksheet: <code>{region.name || 'part'}.{j.name}</code> {j.type === 'rigid' ? '(rigid joints export nothing)' : ''}</p>
           <div className="cadd-actions">
             <button className="btn primary" onClick={() => { seal(); openDialog({ kind: 'joint', id: j.id, mark: mark(), isNew: false, picking: null }); }}>Edit joint</button>
-            {JOINT_DOFS[j.type].some((k) => !j.dofs?.[k]?.free) && <button className="btn" onClick={() => startDrive(j.id)}><SlidersHorizontal size={13} /> Drive</button>}
+            {drivenDofs(design, j).length > 0 && <button className="btn" onClick={() => startDrive(j.id)}><SlidersHorizontal size={13} /> Drive</button>}
             <button className="btn" onClick={() => patchJoint(j.id, { suppressed: j.suppressed ? undefined : true })}>{j.suppressed ? 'Unsuppress' : 'Suppress'}</button>
             <button className="btn danger" onClick={() => { setDesign({ ...cur(), joints: cur().joints.filter((q) => q.id !== j.id) }); setSel(null); }}><Trash2 size={13} /> Delete</button>
           </div>
@@ -2082,7 +2090,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<Box size={20} />} label="Insert copy" title="Another occurrence of the active component" onClick={() => insertOccurrence()} />
             </Group>
             <Group label="Position">
-              <RibbonButton icon={<Link2 size={20} />} label="Joint" title="Join two occurrences: rigid, revolute, slider, cylindrical, pin-slot, planar, ball (J)" onClick={startJoint} />
+              <RibbonButton icon={<Link2 size={20} />} label="Joint" title="Join two occurrences: rigid, revolute, slider, cylindrical, pin-slot, planar, ball (J)" onClick={() => startJoint()} />
               <RibbonButton icon={<Link size={20} />} label="As-built" title="A joint where the parts are now: pick one origin, nothing moves" onClick={startAsBuilt} />
               <RibbonButton icon={<Anchor size={20} />} label="Ground" title="Fix the selected occurrence in place" disabled={!selOcc}
                 onClick={() => { const o = selOcc && occOf(selOcc); if (o) patchOcc(o.id, { grounded: o.grounded ? undefined : true }); }} />

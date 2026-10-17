@@ -460,10 +460,10 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
     applyLinks(q);
     return q;
   };
-  const residual = (q: Map<string, Record<DofKey, number>>): number[] => {
+  const residual = (q: Map<string, Record<DofKey, number>>, loops = solved): number[] => {
     const P = place(q);
     const r: number[] = [];
-    for (const c of solved) {
+    for (const c of loops) {
       const T = m4Mul(m4Inv(m4Mul(P.get(c.a)!, c.Fa)), m4Mul(P.get(c.b)!, c.Fb));
       const W = motionMatrix(q.get(c.id)!, c.flip);
       for (const i of [12, 13, 14]) r.push((T[i] - W[i]) / S);
@@ -477,94 +477,140 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
   applyLinks(q);
 
   if (solved.length && unknowns.length) {
-    // driven DOFs of the loops go from where the mechanism was assembled (or the previous frame) to their values
-    const drivers: { j: KinJoint; k: DofKey; from: number; to: number }[] = [];
-    for (const j of joints) for (const k of JOINT_DOFS[j.type]) {
-      if (free.get(j.id)!.has(k) || follows.has(key(j.id, k)) || !onLoop.has(key(j.id, k))) continue;
-      const to = target.get(j.id)![k];
-      const from = o.from?.[j.id]?.[k] ?? j.rest[k] ?? 0;
-      if (Math.abs(to - from) > 1e-12 * (1 + Math.abs(to))) drivers.push({ j, k, from, to });
+    // mechanisms that share no joint and no link are followed apart: one stopping at a dead
+    // point or a limit must not hold another back
+    const up = new Map<string, string>();
+    const find = (id: string): string => {
+      let r = id;
+      while (up.has(r)) r = up.get(r)!;
+      return r;
+    };
+    const join = (p: string, s: string) => {
+      const [x, y] = [find(p), find(s)];
+      if (x !== y) up.set(x, y);
+    };
+    for (const c of solved) for (const id of loopOf.get(c.id)!) join(c.id, id);
+    for (const l of links) join(l.a.joint, l.b.joint);
+    interface Mech {
+      loops: KinJoint[];
+      /** Its unknowns (indices into x). */
+      idx: number[];
+      drivers: { j: KinJoint; k: DofKey; from: number; to: number }[];
+      /** Solved DOFs and links' followers with limits. */
+      watched: { j: KinJoint; k: DofKey }[];
+      /** How far its drivers got (0: where it started, 1: their values). */
+      t: number;
+      ok: boolean;
     }
-    const at = (t: number) => {
+    const mechs = new Map<string, Mech>();
+    for (const c of solved) {
+      const g = find(c.id);
+      if (!mechs.has(g)) mechs.set(g, { loops: [], idx: [], drivers: [], watched: [], t: 0, ok: false });
+      mechs.get(g)!.loops.push(c);
+    }
+    const mechOf = (id: string) => mechs.get(find(id));
+    unknowns.forEach((u, i) => mechOf(u.j.id)?.idx.push(i));
+    for (const j of joints) for (const k of JOINT_DOFS[j.type]) {
+      // driven DOFs of the loops go from where the mechanism was assembled (or the previous frame) to their values
+      if (!free.get(j.id)!.has(k) && !follows.has(key(j.id, k)) && onLoop.has(key(j.id, k))) {
+        const to = target.get(j.id)![k];
+        const from = o.from?.[j.id]?.[k] ?? j.rest[k] ?? 0;
+        if (Math.abs(to - from) > 1e-12 * (1 + Math.abs(to))) mechOf(j.id)?.drivers.push({ j, k, from, to });
+      }
+      // a solved DOF (or a link's follower) past its limit stops the mechanism where it gets there
+      if ((free.get(j.id)!.has(k) || follows.has(key(j.id, k))) && (j.min[k] !== undefined || j.max[k] !== undefined)) mechOf(j.id)?.watched.push({ j, k });
+    }
+    /** The driven values, each mechanism as far as it got, `m` at `tm`. */
+    const at = (m?: Mech, tm = 0) => {
       const base = values();
-      for (const d of drivers) base.get(d.j.id)![d.k] = d.from + t * (d.to - d.from);
+      for (const mm of mechs.values()) for (const d of mm.drivers) base.get(d.j.id)![d.k] = d.from + (mm === m ? tm : mm.t) * (d.to - d.from);
       return base;
     };
-    const x0 = unknowns.map((u) => (o.from?.[u.j.id]?.[u.k] ?? u.j.rest[u.k] ?? 0) / scaleOf(u.k));
-    const solveAt = (t: number, from: number[]) => {
-      const base = at(t);
-      const res = levenbergMarquardt((x) => residual(withX(base, x)), from);
-      return { x: res.x, ok: normInf(res.r) < CLOSED, base };
-    };
-    // a solved DOF (or a link's follower) past its limit stops the mechanism where it gets there
-    const watched = joints.flatMap((j) => JOINT_DOFS[j.type].filter((k) => (free.get(j.id)!.has(k) || follows.has(key(j.id, k))) && (j.min[k] !== undefined || j.max[k] !== undefined)).map((k) => ({ j, k })));
-    const within = (qq: Map<string, Record<DofKey, number>>) => watched.find(({ j, k }) => {
-      const v = qq.get(j.id)![k];
-      return (j.min[k] !== undefined && v < j.min[k]! - 1e-9 * scaleOf(k)) || (j.max[k] !== undefined && v > j.max[k]! + 1e-9 * scaleOf(k));
-    });
-    let x = x0, t = 0, ok = false, stop: string | null = null;
-    // a start in line (every solved angle 0, the links straight out) can be a saddle the loop
-    // never leaves: nudge the solved angles one way, then the other
-    const nudged = (k: number) => x0.map((v, i) => (isAngleDof(unknowns[i].k) ? v + k * 0.5 : v));
-    let start = solveAt(0, x0);
-    for (const k of [1, -1]) if (!start.ok) start = solveAt(0, nudged(k));
-    if (start.ok) {
-      x = start.x;
-      ok = true;
-      const span = Math.max(0, ...drivers.map((d) => Math.abs(d.to - d.from) / (isAngleDof(d.k) ? Math.PI / 36 : S / 20)));
-      const n = Math.min(720, Math.max(1, Math.ceil(span)));
-      for (let s = 1; s <= n && !stop; s++) {
-        const tn = s / n;
-        const step = solveAt(tn, x);
-        const past = step.ok ? within(withX(step.base, step.x)) : undefined;
-        if (step.ok && !past) {
-          x = step.x;
-          t = tn;
-          continue;
+    let X = unknowns.map((u) => (o.from?.[u.j.id]?.[u.k] ?? u.j.rest[u.k] ?? 0) / scaleOf(u.k));
+    for (const m of mechs.values()) {
+      const drivers = m.drivers;
+      const full = (xm: number[]) => {
+        const xx = [...X];
+        m.idx.forEach((i, n) => (xx[i] = xm[n]));
+        return xx;
+      };
+      const solveAt = (t: number, from: number[]) => {
+        const base = at(m, t);
+        const res = levenbergMarquardt((xm) => residual(withX(base, full(xm)), m.loops), from);
+        return { x: res.x, ok: normInf(res.r) < CLOSED, base };
+      };
+      const within = (qq: Map<string, Record<DofKey, number>>) => m.watched.find(({ j, k }) => {
+        const v = qq.get(j.id)![k];
+        return (j.min[k] !== undefined && v < j.min[k]! - 1e-9 * scaleOf(k)) || (j.max[k] !== undefined && v > j.max[k]! + 1e-9 * scaleOf(k));
+      });
+      const x0 = m.idx.map((i) => X[i]);
+      let x = x0, t = 0, ok = false, stop: string | null = null;
+      // a start in line (every solved angle 0, the links straight out) can be a saddle the loop
+      // never leaves: nudge the solved angles one way, then the other
+      const nudged = (k: number) => x0.map((v, n) => (isAngleDof(unknowns[m.idx[n]].k) ? v + k * 0.5 : v));
+      let start = solveAt(0, x0);
+      for (const k of [1, -1]) if (!start.ok) start = solveAt(0, nudged(k));
+      if (start.ok) {
+        x = start.x;
+        ok = true;
+        const span = Math.max(0, ...drivers.map((d) => Math.abs(d.to - d.from) / (isAngleDof(d.k) ? Math.PI / 36 : S / 20)));
+        const n = Math.min(720, Math.max(1, Math.ceil(span)));
+        for (let s = 1; s <= n && !stop; s++) {
+          const tn = s / n;
+          const step = solveAt(tn, x);
+          const past = step.ok ? within(withX(step.base, full(step.x))) : undefined;
+          if (step.ok && !past) {
+            x = step.x;
+            t = tn;
+            continue;
+          }
+          // bisect for where it stops: the last place the loop closes within the limits. A
+          // mechanism that cannot move at all (locked by another loop, or at a stop already)
+          // fails a millionth of the step on: no need to bisect
+          let lo = t, hi = tn, xl = x;
+          const goes = (to: number) => {
+            const r = solveAt(to, xl);
+            if (!r.ok || within(withX(r.base, full(r.x)))) return false;
+            [lo, xl] = [to, r.x];
+            return true;
+          };
+          if (!goes(lo + (hi - lo) * 1e-6)) hi = lo + (hi - lo) * 1e-6;
+          else for (let b = 0; b < 30; b++) {
+            const mid = (lo + hi) / 2;
+            if (!goes(mid)) hi = mid;
+          }
+          x = xl;
+          t = lo;
+          // why: a limit (the loop still closes just past it) or the loop itself
+          const after = solveAt(hi, xl);
+          const hit = after.ok ? within(withX(after.base, full(after.x))) : undefined;
+          const reached = drivers.map((d) => `${d.j.name} = ${say(d.k, d.from + t * (d.to - d.from))}`).join(', ');
+          if (hit) {
+            const lim = withX(at(m, t), full(x)).get(hit.j.id)![hit.k];
+            warnings[report(hit.j)] ??= `${label(hit.j, hit.k)} reaches its limit ${say(hit.k, lim)} at ${reached}: the mechanism stops there`;
+            stop = `stops at ${reached}: ${hit.j.name} reaches its limit`;
+          } else {
+            stop = `stops at ${reached}: the loop cannot close beyond (a dead point, or out of reach)`;
+          }
+          for (const d of drivers) warnings[report(d.j)] ??= `${label(d.j, d.k)} ${stop}`;
         }
-        // bisect for where it stops: the last place the loop closes within the limits. A
-        // mechanism that cannot move at all (locked by another loop, or at a stop already)
-        // fails a millionth of the step on: no need to bisect
-        let lo = t, hi = tn, xl = x;
-        const goes = (to: number) => {
-          const m = solveAt(to, xl);
-          if (!m.ok || within(withX(m.base, m.x))) return false;
-          [lo, xl] = [to, m.x];
-          return true;
-        };
-        if (!goes(lo + (hi - lo) * 1e-6)) hi = lo + (hi - lo) * 1e-6;
-        else for (let b = 0; b < 30; b++) {
-          const mid = (lo + hi) / 2;
-          if (!goes(mid)) hi = mid;
-        }
-        x = xl;
-        t = lo;
-        // why: a limit (the loop still closes just past it) or the loop itself
-        const after = solveAt(hi, xl);
-        const hit = after.ok ? within(withX(after.base, after.x)) : undefined;
-        const reached = drivers.map((d) => `${d.j.name} = ${say(d.k, d.from + t * (d.to - d.from))}`).join(', ');
-        if (hit) {
-          const lim = withX(at(t), x).get(hit.j.id)![hit.k];
-          warnings[report(hit.j)] ??= `${label(hit.j, hit.k)} reaches its limit ${say(hit.k, lim)} at ${reached}: the mechanism stops there`;
-          stop = `stops at ${reached}: ${hit.j.name} reaches its limit`;
-        } else {
-          stop = `stops at ${reached}: the loop cannot close beyond (a dead point, or out of reach)`;
-        }
-        for (const d of drivers) warnings[report(d.j)] ??= `${label(d.j, d.k)} ${stop}`;
-      }
-    } else {
-      // it does not close where it was assembled: try the driven values straight away
-      const direct = solveAt(1, x0);
-      if (direct.ok) {
+      } else {
+        // it does not close where it was assembled: try the driven values straight away (and
+        // show it there, as near to closing as it comes, when it cannot)
+        const direct = solveAt(1, x0);
         x = direct.x;
         t = 1;
-        ok = true;
+        ok = direct.ok;
       }
+      X = full(x);
+      m.t = t;
+      m.ok = ok;
     }
-    q = withX(at(t), x);
-    if (!ok) {
-      const P = place(q);
-      for (const c of solved) {
+    q = withX(at(), X);
+    const P = place(q);
+    for (const m of mechs.values()) {
+      if (m.ok) continue;
+      for (const c of m.loops) {
         const T = m4Mul(m4Inv(m4Mul(P.get(c.a)!, c.Fa)), m4Mul(P.get(c.b)!, c.Fb));
         const W = motionMatrix(q.get(c.id)!, c.flip);
         const gap = Math.hypot(T[12] - W[12], T[13] - W[13], T[14] - W[14]), turn = rotationGap(T, W);
@@ -575,7 +621,7 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
       }
     }
     // what the loops leave free stays where it started
-    const J = jacobian((xx) => residual(withX(at(t), xx)), x, residual(q).length);
+    const J = jacobian((xx) => residual(withX(at(), xx)), X, residual(q).length);
     mobility = unknowns.length - rankOf(J, 1e-7);
   }
 

@@ -153,7 +153,7 @@ export function motionValue(st: MotionStudy, mr: MotionResult, kin: KinState, un
   if (tr && input) {
     const of: Record<string, unknown> = {};
     // a plot asks for every joint at the same inputs: each input solved once
-    const seen = new Map<number, Record<string, DofValues>>();
+    const seen = new Map<number, Record<string, DofValues> | Error>();
     const solveAt = (x: unknown) => {
       const xv = dimensionValue(x, unit, isAngleDof(tr.dof));
       const got = seen.get(xv);
@@ -161,13 +161,25 @@ export function motionValue(st: MotionStudy, mr: MotionResult, kin: KinState, un
       let best = 0;
       input.forEach((v, i) => Math.abs(v - xv) < Math.abs(input[best] - xv) && (best = i));
       const from = Object.fromEntries(Object.keys(mr.values).map((jid) => [jid, at(jid, best)]));
-      const values = solveKinematics(kin.model, { drive: { [tr.joint]: { [tr.dof]: xv } }, from }).values;
+      const sol = solveKinematics(kin.model, { drive: { [tr.joint]: { [tr.dof]: xv } }, from });
+      // an input the mechanism cannot reach (past a dead point or a limit) has no value: a
+      // gap in a plot, not the place where it stopped
+      const reached = sol.values[tr.joint]?.[tr.dof];
+      const name = kin.model.joints.find((j) => j.id === tr.joint)?.name ?? tr.joint;
+      const why = reached === undefined || Math.abs(reached - xv) > 1e-9 * (isAngleDof(tr.dof) ? 1 : kin.model.size)
+        ? `${name}: ${sol.warnings[tr.joint] ?? Object.values(sol.errors)[0] ?? 'out of reach'}`
+        : Object.values(sol.errors)[0];
+      const values = why ? new Error(why) : sol.values;
       if (seen.size < 4096) seen.set(xv, values);
       return values;
     };
     for (const j of joints) {
       const id = identifier(j.name);
-      if (id && !(id in of)) of[id] = (x: unknown) => jointExport(j.type, solveAt(x)[j.id] ?? {}, unit);
+      if (id && !(id in of)) of[id] = (x: unknown) => {
+        const v = solveAt(x);
+        if (v instanceof Error) throw v;
+        return jointExport(j.type, v[j.id] ?? {}, unit);
+      };
     }
     out.of = of;
   }

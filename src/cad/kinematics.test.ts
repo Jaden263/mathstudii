@@ -5,9 +5,11 @@
 // assemblies without loops, which must stay exactly what they were.
 import { describe, expect, it } from 'vitest';
 import { JOINT_DOFS, type DofKey } from './assembly';
-import { linkRatio } from './assemblyParams';
+import { linkRatio, motionValue } from './assemblyParams';
+import { motionResult, runMotion } from './motion';
 import { jointFrame, type CadDesign, type CadJoint, type DesignNumbers, type JointType, type Placement } from './design';
 import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
+import type { Unit } from 'mathjs';
 import { math } from '../engine/math';
 import { IDENTITY, m4Frame, m4Inv, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, type M4, type Vec3 } from './solid';
 
@@ -150,6 +152,25 @@ describe('four-bar linkage', () => {
     const sol = solveKinematics(model(['g', 'c1', 'k1', 'k2', 'c2'], joints));
     expect(sol.errors).toEqual({});
     expect(sol.mobility).toBe(1);
+  });
+
+  it('moves two linkages of one assembly apart: one stopping at its dead point does not hold the other back', () => {
+    // the triple rocker above, driven from 90° down past its stop at acos(16500/18000), and
+    // beside it the crank-rocker driven to 200°
+    const [A, B, C, Dd] = [90, 120, 80, 100];
+    const stuck = fourBar(A, B, C, Dd, 10 * D, open(A, B, C, Dd, 90 * D));
+    const free = fourBar(a, b, c, d, 200 * D, open0);
+    const rename = (m: KinModel, p: string, at: M4) => m.joints.map((j) => ({
+      ...j, id: p + j.id, name: p + j.name, a: j.a === 'ground' ? 'ground' : p + j.a, b: p + j.b, Fa: j.a === 'ground' ? m4Mul(at, j.Fa) : j.Fa,
+    }));
+    const both = model(['ground', ...['crank', 'coupler', 'rocker'].flatMap((o) => ['X' + o, 'Y' + o])], [...rename(stuck, 'X', IDENTITY), ...rename(free, 'Y', T(0, 500))]);
+    const sol = solveKinematics(both);
+    expect(sol.errors).toEqual({});
+    expect(sol.values.XJ1.angle!).toBeCloseTo(Math.acos(16500 / 18000), 6);
+    expect(sol.warnings.XJ1).toMatch(/^the angle stops at XJ1 = [\d.]+°: the loop cannot close beyond/);
+    expect(sol.warnings.YJ1).toBeUndefined();
+    expect(sol.values.YJ1.angle! / D).toBeCloseTo(200, 12);
+    expect(Math.abs(wrap(sol.values.YJ4.angle! - theta4(a, b, c, d, 200 * D, true)))).toBeLessThan(1e-8);
   });
 });
 
@@ -325,6 +346,28 @@ describe('planar, pin-slot and ball joints', () => {
     const end = m4Point(sol.placements.rod.matrix, [Math.hypot(80 - crank * Math.cos(40 * D), 20 - crank * Math.sin(40 * D), 50), 0, 0]);
     expect(Math.hypot(...end.map((v, i) => v - far[i]))).toBeLessThan(1e-8);
     expect(sol.mobility).toBe(1);
+  });
+});
+
+// ------------------------------------------------------------ a study's results
+
+describe('a motion study in the worksheet', () => {
+  it('has no value of a joint at an input the mechanism cannot reach', () => {
+    // the triple rocker from 90° down to 0°: it stops at θ2 = acos(16500/18000) ≈ 23.56°
+    const [A, B, C, Dd] = [90, 120, 80, 100];
+    const m = fourBar(A, B, C, Dd, 90 * D, open(A, B, C, Dd, 90 * D));
+    const study = { id: 's', name: 'Swing', duration: 1, steps: 18, tracks: [{ joint: 'J1', dof: 'angle' as const, keys: [{ t: 0, v: '90' }, { t: 1, v: '0' }] }] };
+    const params = { s: { 'v:0:0': 90 * D, 'v:0:1': 0 } };
+    const sol = solveKinematics(m);
+    const kin = { model: m, values: sol.values, parent: sol.parent, mobility: sol.mobility };
+    const r = motionResult(kin, study, runMotion(kin, study, params));
+    expect(r.warning).toMatch(/stops at J1 = 23\.5\d*°/);
+    const of = (motionValue(study, r, kin, 'mm').of as Record<string, (x: unknown) => unknown>).J4;
+    // within reach: Freudenstein's θ4 (open circuit) at θ2 = 50°
+    const t4 = (of(math.unit(50, 'deg')) as Unit).toNumber('rad');
+    expect(Math.abs(wrap(t4 - theta4(A, B, C, Dd, 50 * D, true)))).toBeLessThan(1e-8);
+    // past the dead point: an error (a gap in a plot), not the angle where it stopped
+    expect(() => of(math.unit(10, 'deg'))).toThrow(/J1: the angle stops at J1 = 23\.5\d*°/);
   });
 });
 
