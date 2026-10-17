@@ -4,7 +4,8 @@
 // cutting through itself: OCCT builds such a solid without complaint, with a volume that
 // counts the overlap twice.
 import type { CadSketch } from './model';
-import type { ProfileRegion, Seg } from './profile';
+import { reverseSeg, type ProfileRegion, type Seg } from './profile';
+import { entityEnds, entitySegs } from './sketchCurves';
 import { add3, cross3, dot3, len3, norm3, scale3, sub3, type Frame, type Vec3 } from './solid';
 import type { BodyTopology } from './topology';
 import type { FaceInfo } from './buildResult';
@@ -47,11 +48,17 @@ export function helixTangent(h: Helix, phi: number): Vec3 {
 /** Length of a helix: turns · √((2πr)² + p²). */
 export const helixLength = (h: Helix) => h.turns * Math.hypot(2 * PI * h.r, h.pitch);
 
-/** A piece of a path in component coordinates: a line, an arc through three points, a whole circle. */
+/**
+ * A piece of a path in component coordinates: a line, an arc through three points, a whole
+ * circle, a B-spline (its poles mapped into the plane: a plane map keeps the curve) or an
+ * elliptical arc (semi-axes ra along x and rb along y, parameter t0 to t1; whole when t1 − t0 = 2π).
+ */
 export type PathSeg =
   | { kind: 'line'; a: Vec3; b: Vec3 }
   | { kind: 'arc'; a: Vec3; m: Vec3; b: Vec3 }
-  | { kind: 'circle'; c: Vec3; n: Vec3; x: Vec3; r: number };
+  | { kind: 'circle'; c: Vec3; n: Vec3; x: Vec3; r: number }
+  | { kind: 'bspline'; deg: number; poles: Vec3[]; knots: number[]; closed?: boolean }
+  | { kind: 'ellipse'; c: Vec3; n: Vec3; x: Vec3; y: Vec3; ra: number; rb: number; t0: number; t1: number };
 
 /** A path as the kernel takes it: pieces joined end to end, a helix, or edges of a body in order. */
 export type PathGeom<S> =
@@ -88,11 +95,19 @@ export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number,
   const ents = sk.entities.filter((e) => e.type !== 'point' && (curves?.length ? curves.includes(e.id) : !e.construction));
   if (!ents.length) throw new Error('the path sketch has no curves');
   const at = (id: string) => sol.points[id];
-  const circle = ents.find((e) => e.type === 'circle');
-  if (circle?.type === 'circle') {
-    if (ents.length > 1) throw new Error('a circle is a path of its own: pick it alone, or the lines and arcs of one chain');
-    const [cx, cy] = at(circle.c);
-    return { segs: [{ kind: 'circle', c: P3(f, cx, cy), n: f.n, x: f.u, r: sol.radii[circle.id] ?? circle.r }], closed: true, ids: [circle.id] };
+  const P2 = (id: string) => (sol.points[id] ? { x: sol.points[id][0], y: sol.points[id][1] } : undefined);
+  const R2 = (id: string) => sol.radii[id];
+  if (ents.some((e) => e.type === 'text')) throw new Error('text is not a path: pick lines, arcs, splines or one closed curve');
+  const circle = ents.find((e) => e.type === 'circle' || (e.type === 'ellipse' && !(e.p1 && e.p2)) || (e.type === 'spline' && e.closed));
+  if (circle) {
+    if (ents.length > 1) throw new Error(`a closed ${circle.type === 'circle' ? 'circle' : circle.type} is a path of its own: pick it alone, or the curves of one chain`);
+    if (circle.type === 'circle') {
+      const [cx, cy] = at(circle.c);
+      return { segs: [{ kind: 'circle', c: P3(f, cx, cy), n: f.n, x: f.u, r: sol.radii[circle.id] ?? circle.r }], closed: true, ids: [circle.id] };
+    }
+    const seg = entitySegs(circle, P2, R2)[0];
+    if (!seg) throw new Error('the path curve has no size');
+    return { segs: [pathOf(seg, f, true)], closed: true, ids: [circle.id] };
   }
   // ends of every curve; points are the same where their ids or their places are
   type Piece = { id: string; ends: [string, string]; seg: (fwd: boolean) => PathSeg };
@@ -101,7 +116,12 @@ export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number,
       const a = at(e.p1), b = at(e.p2);
       return { id: e.id, ends: [e.p1, e.p2], seg: (fwd) => ({ kind: 'line', a: P3(f, ...(fwd ? a : b)), b: P3(f, ...(fwd ? b : a)) }) };
     }
-    if (e.type !== 'arc') throw new Error('the path has a curve that is not a line, arc or circle');
+    if (e.type === 'spline' || e.type === 'ellipse') {
+      const seg = entitySegs(e, P2, R2)[0], ends = entityEnds(e);
+      if (!seg || !ends) throw new Error('a path curve has no size');
+      return { id: e.id, ends, seg: (fwd) => pathOf(fwd ? seg : reverseSeg(seg), f, false) };
+    }
+    if (e.type !== 'arc') throw new Error('the path has a curve that is not a line, arc, spline or circle');
     const c = at(e.c), a = at(e.p1), b = at(e.p2);
     const r = Math.hypot(a[0] - c[0], a[1] - c[1]);
     const a0 = Math.atan2(a[1] - c[1], a[0] - c[0]);
@@ -142,15 +162,39 @@ export function sketchPath(sk: CadSketch, sol: { points: Record<string, [number,
   return { segs, closed: open.length === 0, ids };
 }
 
-const segStart = (s: PathSeg): Vec3 => (s.kind === 'circle' ? add3(s.c, scale3(s.x, s.r)) : s.a);
-const segEnd = (s: PathSeg): Vec3 => (s.kind === 'circle' ? add3(s.c, scale3(s.x, s.r)) : s.b);
-const reverseSeg = (s: PathSeg): PathSeg => (s.kind === 'line' ? { kind: 'line', a: s.b, b: s.a } : s.kind === 'arc' ? { kind: 'arc', a: s.b, m: s.m, b: s.a } : { ...s, n: scale3(s.n, -1) });
+/** A sketch segment (sketch coordinates) as a path piece in the plane f. */
+function pathOf(s: Seg, f: Frame, closed: boolean): PathSeg {
+  if (s.kind === 'bspline') return { kind: 'bspline', deg: s.deg, poles: s.poles.map((q) => P3(f, q.x, q.y)), knots: s.knots, ...(closed ? { closed } : {}) };
+  if (s.kind === 'ellipse') {
+    const x = add3(scale3(f.u, cos(s.rot)), scale3(f.v, sin(s.rot))), y = add3(scale3(f.u, -sin(s.rot)), scale3(f.v, cos(s.rot)));
+    return { kind: 'ellipse', c: P3(f, s.c.x, s.c.y), n: f.n, x, y, ra: s.ra, rb: s.rb, t0: s.t0, t1: s.t1 };
+  }
+  throw new Error('only splines and ellipses are mapped this way');
+}
+
+/** Point of a path's elliptical piece at parameter t. */
+export const ellipseAt = (s: Extract<PathSeg, { kind: 'ellipse' }>, t: number): Vec3 => add3(s.c, add3(scale3(s.x, s.ra * cos(t)), scale3(s.y, s.rb * sin(t))));
+
+export const segStart = (s: PathSeg): Vec3 => (s.kind === 'circle' ? add3(s.c, scale3(s.x, s.r)) : s.kind === 'bspline' ? s.poles[0] : s.kind === 'ellipse' ? ellipseAt(s, s.t0) : s.a);
+export const segEnd = (s: PathSeg): Vec3 => (s.kind === 'circle' ? add3(s.c, scale3(s.x, s.r)) : s.kind === 'bspline' ? s.poles[s.poles.length - 1] : s.kind === 'ellipse' ? ellipseAt(s, s.t1) : s.b);
+const reverseSeg3 = (s: PathSeg): PathSeg => {
+  switch (s.kind) {
+    case 'line': return { kind: 'line', a: s.b, b: s.a };
+    case 'arc': return { kind: 'arc', a: s.b, m: s.m, b: s.a };
+    case 'circle': return { ...s, n: scale3(s.n, -1) };
+    case 'bspline': {
+      const a = s.knots[0], b = s.knots[s.knots.length - 1];
+      return { ...s, poles: [...s.poles].reverse(), knots: s.knots.map((k) => a + b - k).reverse() };
+    }
+    case 'ellipse': return { ...s, t0: s.t1, t1: s.t0 };
+  }
+};
 
 /** The path run from the end nearer to `p` (a sweep starts where its profile is). */
 export function startNear(segs: PathSeg[], closed: boolean, p: Vec3): PathSeg[] {
   if (closed || !segs.length) return segs;
   const d0 = len3(sub3(segStart(segs[0]), p)), d1 = len3(sub3(segEnd(segs[segs.length - 1]), p));
-  return d1 < d0 * (1 - 1e-9) ? segs.map(reverseSeg).reverse() : segs;
+  return d1 < d0 * (1 - 1e-9) ? segs.map(reverseSeg3).reverse() : segs;
 }
 
 /**

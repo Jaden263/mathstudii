@@ -1,5 +1,5 @@
 // Mass properties of the 3-D features, from exact profile integrals.
-import { frameMoment, profileProperties, type ProfileRegion, type Vec2 } from './profile';
+import { frameMoment, profileProperties, segPolyline, type ProfileRegion, type Vec2 } from './profile';
 
 export interface MassProps {
   /** Volume, sketch units³. */
@@ -94,26 +94,14 @@ export function revolveProps(regions: ProfileRegion[], axis: { p: Vec2; d: Vec2 
 
 function crossesAxis(regions: ProfileRegion[], o: Vec2, a: Vec2): boolean {
   let pos = false, neg = false;
+  const pts = regions.flatMap((r) => [r.outer, ...r.holes]).flatMap((loop) => loop.segs.flatMap((s) => segPolyline(s, Math.PI / 16)));
   let size = 0;
-  for (const r of regions) for (const s of r.outer.segs) {
-    const q = s.kind === 'line' ? s.a : s.c;
-    size = Math.max(size, Math.abs(q.x - o.x), Math.abs(q.y - o.y), s.kind === 'arc' ? s.r : 0);
-  }
+  for (const p of pts) size = Math.max(size, Math.abs(p.x - o.x), Math.abs(p.y - o.y));
   const tol = 1e-7 * Math.max(size, 1e-300);
-  for (const r of regions) {
-    for (const loop of [r.outer, ...r.holes]) {
-      for (const s of loop.segs) {
-        const pts = s.kind === 'line' ? [s.a, s.b] : Array.from({ length: 33 }, (_, k) => {
-          const t = s.a0 + ((s.a1 - s.a0) * k) / 32;
-          return { x: s.c.x + s.r * Math.cos(t), y: s.c.y + s.r * Math.sin(t) };
-        });
-        for (const p of pts) {
-          const w = -(p.x - o.x) * a.y + (p.y - o.y) * a.x;
-          if (w > tol) pos = true;
-          if (w < -tol) neg = true;
-        }
-      }
-    }
+  for (const p of pts) {
+    const w = -(p.x - o.x) * a.y + (p.y - o.y) * a.x;
+    if (w > tol) pos = true;
+    if (w < -tol) neg = true;
   }
   return pos && neg;
 }

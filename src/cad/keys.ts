@@ -38,8 +38,8 @@ const solidJson = (v: unknown) => JSON.stringify(v, function (this: unknown, k, 
   return PRESENTATION.has(k) || (k === 'offset' && isConstraint(this)) ? undefined : x;
 });
 
-/** A sketch's curves without the positions it stores (points by id, circles without radius). */
-const curves = (sk: CadSketch) => ({ ...sk, points: sk.points.map((p) => p.id), entities: sk.entities.map((e) => (e.type === 'circle' ? { ...e, r: undefined } : e)) });
+/** A sketch's curves without the positions it stores (points by id, circles and ellipses without radius). */
+const curves = (sk: CadSketch) => ({ ...sk, points: sk.points.map((p) => p.id), entities: sk.entities.map((e) => (e.type === 'circle' || e.type === 'ellipse' ? { ...e, r: undefined } : e)) });
 
 /**
  * Solved geometry on a 10⁻⁹ grid (sketch units): the solver started from other positions
@@ -112,9 +112,10 @@ export function stepKey(prev: string, item: DesignItem, numbers: DesignNumbers, 
 
 /**
  * The numbers a design result was built from: a build needs them without the errors the
- * build itself added (`resolveErrors`; results without it have only resolve errors) and
- * with the sketch planes as resolved, not as the build moved them onto their faces.
+ * build itself added (`resolveErrors`; results without it have only resolve errors), with
+ * the sketch planes as resolved, not as the build moved them onto their faces, and the
+ * sketches as resolved, not as the build solved them again.
  */
-export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string>; resolveFrames?: DesignNumbers['frames'] }): DesignNumbers {
-  return { sketches: dr.sketches, frames: dr.resolveFrames ?? dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors, ...(dr.unit ? { unit: dr.unit } : {}) };
+export function designNumbers(dr: DesignNumbers & { resolveErrors?: Record<string, string>; resolveFrames?: DesignNumbers['frames']; resolveSketches?: DesignNumbers['sketches'] }): DesignNumbers {
+  return { sketches: dr.resolveSketches ?? dr.sketches, frames: dr.resolveFrames ?? dr.frames, params: dr.params, errors: dr.resolveErrors ?? dr.errors, ...(dr.unit ? { unit: dr.unit } : {}) };
 }

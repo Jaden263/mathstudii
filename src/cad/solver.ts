@@ -10,9 +10,11 @@
 // its null space tells which points are fully determined, and dependent rows show
 // redundant constraints. Unsatisfiable constraints keep a residual and are reported
 // as conflicting.
-import type { CadConstraint, CadEntity, CadSketch } from './model';
-import { isDimension } from './model';
+import type { CadConstraint, CadEntity, CadSketch, CadSpline } from './model';
+import { entityPoints, hasRadius, isDimension } from './model';
 import type { Vec2 } from './profile';
+import { bsClosest, bsDomain, bsEval, bsPoint, ellipseDeriv, ellipseParam, ellipsePoint, ellipseRho, type BSpline, type Ellipse } from './curves';
+import { splineOf } from './sketchCurves';
 
 export interface SolveOptions {
   /** Driving dimension values, constraint id → sketch units (angles in radians). */
@@ -42,12 +44,18 @@ export interface SolveResult {
 }
 
 interface Sys {
-  /** Variable index of each point's x (y is x + 1) and of each circle's radius. */
+  /** Variable index of each point's x (y is x + 1) and of each circle's radius (an ellipse's minor semi-axis). */
   px: Map<string, number>;
   rad: Map<string, number>;
   q: Float64Array;
-  /** Residual blocks: owner id, count, evaluator. */
-  blocks: { owner: string; count: number; f: (q: Float64Array, out: Float64Array, o: number) => void; vars: number[] }[];
+  /** Variables of reference geometry, held where they are (projected from the model). */
+  fixed: Set<number>;
+  /**
+   * Residual blocks: owner id, count, evaluator. Quiet blocks restate what the rows before
+   * them already imply where the geometry meets smoothly (an offset arc's radius between
+   * offset lines): they come last and are never the redundant ones.
+   */
+  blocks: { owner: string; count: number; f: (q: Float64Array, out: Float64Array, o: number) => void; vars: number[]; quiet?: boolean }[];
   scale: number;
 }
 
@@ -62,10 +70,21 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
     init.push(p.x, p.y);
   }
   for (const e of sk.entities) {
-    if (e.type === 'circle') {
+    if (hasRadius(e)) {
       rad.set(e.id, init.length);
       init.push(Math.abs(e.r));
     }
+  }
+  // reference geometry does not move: its points and sizes are no unknowns
+  const fixed = new Set<number>();
+  for (const e of sk.entities) {
+    if (!e.ref) continue;
+    for (const id of entityPoints(e)) {
+      const i = px.get(id);
+      if (i !== undefined) fixed.add(i).add(i + 1);
+    }
+    const r = rad.get(e.id);
+    if (r !== undefined) fixed.add(r);
   }
   let size = 1;
   for (const p of sk.points) size = Math.max(size, Math.abs(p.x), Math.abs(p.y));
@@ -94,27 +113,37 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
     throw new Error(`${id} is not a circle or arc`);
   };
   const pv = (i: number) => [i, i + 1];
-  const add = (owner: string, count: number, vars: number[], f: Sys['blocks'][number]['f']) => blocks.push({ owner, count, vars, f });
+  const add = (owner: string, count: number, vars: number[], f: Sys['blocks'][number]['f'], quiet = false) => blocks.push({ owner, count, vars, f, ...(quiet ? { quiet } : {}) });
+  /** Quiet blocks, added after every other constraint. */
+  const later: (() => void)[] = [];
+  const at = (q: Float64Array, i: number): Vec2 => ({ x: q[i], y: q[i + 1] });
+  const pointsOf = (q: Float64Array) => (id: string) => {
+    const i = px.get(id);
+    return i === undefined ? undefined : at(q, i);
+  };
 
-  // arcs keep both ends on the circle
-  for (const e of sk.entities) {
-    if (e.type !== 'arc') continue;
-    const c = X(e.c), a = X(e.p1), b = X(e.p2);
-    add(e.id, 1, [...pv(c), ...pv(a), ...pv(b)], (q, o, k) => {
-      o[k] = Math.hypot(q[b] - q[c], q[b + 1] - q[c + 1]) - Math.hypot(q[a] - q[c], q[a + 1] - q[c + 1]);
-    });
-  }
-
-  for (const c of sk.constraints) {
-    if (isDimension(c.type) && (!includeDims || c.driving === false)) continue;
-    const v = opt.values?.get(c.id) ?? NaN;
-    if (isDimension(c.type) && !Number.isFinite(v)) continue; // unresolved value: reported by the caller
-    try {
-      addConstraint(c, v);
-    } catch {
-      /* a constraint whose references are gone is ignored */
-    }
-  }
+  /** Direction of a line, or of an ellipse's first axis: indices of its two points. */
+  const axisOf = (id: string) => {
+    const e = ents.get(id);
+    if (e?.type === 'line') return [X(e.p1), X(e.p2)] as const;
+    if (e?.type === 'ellipse') return [X(e.c), X(e.a)] as const;
+    throw new Error(`${id} is not a line`);
+  };
+  /** An ellipse's geometry from the variables. */
+  const ellipseVars = (id: string) => {
+    const e = ents.get(id);
+    if (e?.type !== 'ellipse') throw new Error(`${id} is not an ellipse`);
+    const c = X(e.c), a = X(e.a), ri = rad.get(e.id)!;
+    const geo = (q: Float64Array): Ellipse => ({ c: at(q, c), ra: Math.hypot(q[a] - q[c], q[a + 1] - q[c + 1]), rb: Math.abs(q[ri]) || EPS, rot: Math.atan2(q[a + 1] - q[c + 1], q[a] - q[c]) });
+    return { e, c, a, ri, geo, vars: [...pv(c), ...pv(a), ri] };
+  };
+  /** A spline's curve from the variables (its points and handles). */
+  const splineVars = (id: string) => {
+    const e = ents.get(id);
+    if (e?.type !== 'spline') throw new Error(`${id} is not a spline`);
+    const vars = entityPoints(e).flatMap((p) => pv(X(p)));
+    return { e, vars, curve: (q: Float64Array): BSpline | null => splineOf(e, pointsOf(q)) };
+  };
 
   function addConstraint(c: CadConstraint, v: number) {
     const [r0, r1, r2] = c.refs;
@@ -125,13 +154,13 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       }
       case 'horizontal':
       case 'vertical': {
-        const [a, b] = c.refs.length === 1 ? lineOf(r0) : [X(r0), X(r1)];
+        const [a, b] = c.refs.length === 1 ? axisOf(r0) : [X(r0), X(r1)];
         const d = c.type === 'horizontal' ? 1 : 0;
         return add(c.id, 1, [...pv(a), ...pv(b)], (q, o, k) => { o[k] = q[a + d] - q[b + d]; });
       }
       case 'parallel':
       case 'perpendicular': {
-        const [a1, b1] = lineOf(r0), [a2, b2] = lineOf(r1);
+        const [a1, b1] = axisOf(r0), [a2, b2] = axisOf(r1);
         const par = c.type === 'parallel';
         return add(c.id, 1, [...pv(a1), ...pv(b1), ...pv(a2), ...pv(b2)], (q, o, k) => {
           const ux = q[b1] - q[a1], uy = q[b1 + 1] - q[a1 + 1], vx = q[b2] - q[a2], vy = q[b2 + 1] - q[a2 + 1];
@@ -141,6 +170,17 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       }
       case 'equal': {
         const e0 = ents.get(r0), e1 = ents.get(r1);
+        if (e0?.type === 'ellipse' && e1?.type === 'ellipse') {
+          // both semi-axes; only the minor one when the first axes are one already (the pieces of
+          // a broken arc) or mirror images of each other
+          const twin = (p: string, q: string) => p === q || sk.constraints.some((k) => k.type === 'symmetric' && ((k.refs[0] === p && k.refs[1] === q) || (k.refs[0] === q && k.refs[1] === p)));
+          const g0 = ellipseVars(r0), g1 = ellipseVars(r1), shared = twin(e0.c, e1.c) && twin(e0.a, e1.a);
+          return add(c.id, shared ? 1 : 2, [...g0.vars, ...g1.vars], (q, o, k) => {
+            const a = g0.geo(q), b = g1.geo(q);
+            o[k] = a.rb - b.rb;
+            if (!shared) o[k + 1] = a.ra - b.ra;
+          });
+        }
         if (e0?.type === 'line' && e1?.type === 'line') {
           const [a1, b1] = lineOf(r0), [a2, b2] = lineOf(r1);
           return add(c.id, 1, [...pv(a1), ...pv(b1), ...pv(a2), ...pv(b2)], (q, o, k) => {
@@ -182,11 +222,54 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
         });
       }
       case 'concentric': {
-        const g0 = roundOf(r0), g1 = roundOf(r1);
-        return add(c.id, 2, [...pv(g0.c), ...pv(g1.c)], (q, o, k) => { o[k] = q[g0.c] - q[g1.c]; o[k + 1] = q[g0.c + 1] - q[g1.c + 1]; });
+        const centre = (id: string) => {
+          const e = ents.get(id);
+          if (e?.type === 'ellipse') return X(e.c);
+          return roundOf(id).c;
+        };
+        const c0 = centre(r0), c1 = centre(r1);
+        return add(c.id, 2, [...pv(c0), ...pv(c1)], (q, o, k) => { o[k] = q[c0] - q[c1]; o[k + 1] = q[c0 + 1] - q[c1 + 1]; });
       }
+      case 'collinear': {
+        // the second line's ends on the first (an end they share is on it already: no row)
+        const [a, b] = lineOf(r0), ends = lineOf(r1).filter((p) => p !== a && p !== b);
+        return add(c.id, ends.length, [...pv(a), ...pv(b), ...ends.flatMap(pv)], (q, o, k) => {
+          const dx = q[b] - q[a], dy = q[b + 1] - q[a + 1], n = Math.hypot(dx, dy) + EPS;
+          ends.forEach((p, i) => { o[k + i] = (dx * (q[p + 1] - q[a + 1]) - dy * (q[p] - q[a])) / n; });
+        });
+      }
+      case 'pointOnCurve': {
+        const p = X(r0), e = ents.get(r1);
+        if (e?.type === 'ellipse') {
+          const g = ellipseVars(r1);
+          return add(c.id, 1, [...pv(p), ...g.vars], (q, o, k) => {
+            const el = g.geo(q);
+            o[k] = (ellipseRho(el, at(q, p)) - 1) * el.rb;
+          });
+        }
+        // a spline: the point is the curve's point at a parameter of its own (one more unknown,
+        // two equations), held inside the curve: a distance to the nearest point would let it
+        // slide off past an end along the end's tangent and still read as on the curve
+        const g = splineVars(r1), closed = !!g.e.closed;
+        const ti = init.length, cv0 = g.curve(Float64Array.from(init));
+        if (cv0) {
+          const [u0, u1] = bsDomain(cv0);
+          init.push((bsClosest(cv0, { x: init[p], y: init[p + 1] }) - u0) / (u1 - u0));
+        } else init.push(0.5);
+        return add(c.id, 2, [...pv(p), ...g.vars, ti], (q, o, k) => {
+          const cv = g.curve(q);
+          if (!cv) return void (o[k] = o[k + 1] = 0);
+          const [u0, u1] = bsDomain(cv), t = closed ? ((q[ti] % 1) + 1) % 1 : Math.min(1, Math.max(0, q[ti]));
+          const C = bsPoint(cv, u0 + (u1 - u0) * t);
+          o[k] = q[p] - C.x;
+          o[k + 1] = q[p + 1] - C.y;
+        });
+      }
+      case 'curvature':
+        return addCurvature(c);
       case 'tangent': {
         const e0 = ents.get(r0), e1 = ents.get(r1);
+        if ([e0, e1].some((e) => e?.type === 'spline' || e?.type === 'ellipse')) return addSmooth(c);
         const lineFirst = e0?.type === 'line' ? [r0, r1] : e1?.type === 'line' ? [r1, r0] : null;
         // Joined at an end (fillets, slots): "distance to the line = radius" can never be exceeded
         // there, so it is stationary at the solution and its Jacobian row vanishes. State the
@@ -248,10 +331,22 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
         const g = roundOf(r0), m = c.type === 'diameter' ? 2 : 1;
         return add(c.id, 1, g.vars, (q, o, k) => { o[k] = m * g.r(q) - v; });
       }
+      case 'majorRadius':
+      case 'minorRadius': {
+        const g = ellipseVars(r0), major = c.type === 'majorRadius';
+        return add(c.id, 1, g.vars, (q, o, k) => {
+          const el = g.geo(q);
+          o[k] = (major ? el.ra : el.rb) - v;
+        });
+      }
+      case 'offset':
+        return addOffset(c, v);
+      case 'pattern':
+        return addPattern(c, v);
       case 'angle': {
         // sin(θ − v) = 0 with θ the CCW angle from the first line (or the x axis) to the second
-        const [a2, b2] = lineOf(c.refs.length === 1 ? r0 : r1);
-        const first = c.refs.length === 1 ? null : lineOf(r0);
+        const [a2, b2] = axisOf(c.refs.length === 1 ? r0 : r1);
+        const first = c.refs.length === 1 ? null : axisOf(r0);
         const cv = Math.cos(v), sv = Math.sin(v);
         const vars = first ? [...pv(first[0]), ...pv(first[1]), ...pv(a2), ...pv(b2)] : [...pv(a2), ...pv(b2)];
         return add(c.id, 1, vars, (q, o, k) => {
@@ -264,7 +359,232 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
       }
     }
   }
-  return { px, rad, q: Float64Array.from(init), blocks, scale: L };
+
+  // ------------------------------------------------ tangency and curvature with splines and ellipses
+
+  /** Which end of a spline a constraint means: stored, or the end it shares with the other curve. */
+  const splineEnd = (c: CadConstraint, i: number, sp: CadSpline): number => {
+    const stored = c.ends?.[i];
+    if (stored === 0 || stored === 1) return stored;
+    const other = ents.get(c.refs[1 - i]);
+    const pts = other ? entityPoints(other) : [];
+    return pts.includes(sp.pts[sp.pts.length - 1]) && !pts.includes(sp.pts[0]) ? 1 : 0;
+  };
+  /** What tangency and curvature need of a curve at a point j: its direction there and its curvature vector. */
+  type Local = { vars: number[]; joint?: (q: Float64Array) => Vec2; dir: (q: Float64Array, j: Vec2) => Vec2; curv: (q: Float64Array, j: Vec2) => Vec2 };
+  const localOf = (c: CadConstraint, i: number): Local => {
+    const id = c.refs[i], e = ents.get(id);
+    if (e?.type === 'line') {
+      const a = X(e.p1), b = X(e.p2);
+      return { vars: [...pv(a), ...pv(b)], dir: (q) => ({ x: q[b] - q[a], y: q[b + 1] - q[a + 1] }), curv: () => ({ x: 0, y: 0 }) };
+    }
+    if (e?.type === 'circle' || e?.type === 'arc') {
+      const g = roundOf(id);
+      return {
+        vars: g.vars,
+        dir: (q, j) => ({ x: -(j.y - q[g.c + 1]), y: j.x - q[g.c] }),
+        curv: (q, j) => {
+          const r = g.r(q) || EPS;
+          return { x: (q[g.c] - j.x) / (r * r), y: (q[g.c + 1] - j.y) / (r * r) };
+        },
+      };
+    }
+    if (e?.type === 'ellipse') {
+      const g = ellipseVars(id);
+      return {
+        vars: g.vars,
+        dir: (q, j) => {
+          const el = g.geo(q);
+          return ellipseDeriv(el, ellipseParam(el, j));
+        },
+        curv: (q, j) => {
+          const el = g.geo(q), t = ellipseParam(el, j), p = ellipsePoint(el, t);
+          // C″ = −(C − c) for C(t) = c + ra cos t·u + rb sin t·v
+          return curvatureVector(ellipseDeriv(el, t), { x: el.c.x - p.x, y: el.c.y - p.y });
+        },
+      };
+    }
+    if (e?.type === 'spline') {
+      const g = splineVars(id), end = splineEnd(c, i, e);
+      const pid = X(end ? e.pts[e.pts.length - 1] : e.pts[0]);
+      const hid = end ? e.h2 : e.h1;
+      const h = hid ? X(hid) : -1;
+      const deriv = (q: Float64Array, nd: number) => {
+        const cv = g.curve(q);
+        if (!cv) return null;
+        const [u0, u1] = bsDomain(cv);
+        return bsEval(cv, end ? u1 : u0, nd);
+      };
+      return {
+        vars: g.vars,
+        joint: (q) => at(q, pid),
+        // a handle gives the direction directly; else the end of the interpolated curve
+        dir: (q) => (h >= 0 ? (end ? { x: q[pid] - q[h], y: q[pid + 1] - q[h + 1] } : { x: q[h] - q[pid], y: q[h + 1] - q[pid + 1] }) : deriv(q, 1)?.[1] ?? { x: 1, y: 0 }),
+        curv: (q) => {
+          const d = deriv(q, 2);
+          return d ? curvatureVector(d[1], d[2]) : { x: 0, y: 0 };
+        },
+      };
+    }
+    throw new Error(`${id} cannot be tangent`);
+  };
+  /** The point both curves meet at: a spline's end, else a point they share. */
+  const jointOf = (c: CadConstraint, a: Local, b: Local): ((q: Float64Array) => Vec2) | null => {
+    if (a.joint) return a.joint;
+    if (b.joint) return b.joint;
+    const e0 = ents.get(c.refs[0]), e1 = ents.get(c.refs[1]);
+    const ends = (e: CadEntity | undefined) => (e?.type === 'line' || e?.type === 'arc' ? [e.p1, e.p2] : e?.type === 'ellipse' && e.p1 && e.p2 ? [e.p1, e.p2] : []);
+    const shared = ends(e0).find((p) => ends(e1).includes(p));
+    if (shared === undefined) return null;
+    const j = X(shared);
+    return (q) => at(q, j);
+  };
+  function addSmooth(c: CadConstraint) {
+    const a = localOf(c, 0), b = localOf(c, 1);
+    const joint = jointOf(c, a, b);
+    if (joint) {
+      return add(c.id, 1, [...a.vars, ...b.vars], (q, o, k) => {
+        const j = joint(q), d1 = a.dir(q, j), d2 = b.dir(q, j);
+        o[k] = (L * (d1.x * d2.y - d1.y * d2.x)) / (Math.hypot(d1.x, d1.y) * Math.hypot(d2.x, d2.y) + EPS);
+      });
+    }
+    // a line and an ellipse anywhere: in the ellipse's frame the line n·x = d touches it when d² = ra²nx² + rb²ny²
+    const [li, ei] = ents.get(c.refs[0])?.type === 'line' ? [0, 1] : [1, 0];
+    if (ents.get(c.refs[li])?.type !== 'line' || ents.get(c.refs[ei])?.type !== 'ellipse') throw new Error('tangent needs a shared point');
+    const [p1, p2] = lineOf(c.refs[li]), g = ellipseVars(c.refs[ei]);
+    return add(c.id, 1, [...pv(p1), ...pv(p2), ...g.vars], (q, o, k) => {
+      const el = g.geo(q), cr = Math.cos(el.rot), sr = Math.sin(el.rot);
+      const dx = q[p2] - q[p1], dy = q[p2 + 1] - q[p1 + 1], l = Math.hypot(dx, dy) + EPS;
+      const nx = -dy / l, ny = dx / l;
+      const d = nx * (q[p1] - el.c.x) + ny * (q[p1 + 1] - el.c.y);
+      const nu = nx * cr + ny * sr, nv = -nx * sr + ny * cr;
+      o[k] = Math.abs(d) - Math.hypot(el.ra * nu, el.rb * nv);
+    });
+  }
+  function addCurvature(c: CadConstraint) {
+    const a = localOf(c, 0), b = localOf(c, 1);
+    const joint = jointOf(c, a, b);
+    if (!joint) throw new Error('curvature needs a spline end');
+    return add(c.id, 1, [...a.vars, ...b.vars], (q, o, k) => {
+      const j = joint(q), d = a.dir(q, j), l = Math.hypot(d.x, d.y) + EPS;
+      const n = { x: -d.y / l, y: d.x / l };
+      const ka = a.curv(q, j), kb = b.curv(q, j);
+      o[k] = L * L * ((ka.x - kb.x) * n.x + (ka.y - kb.y) * n.y);
+    });
+  }
+
+  // ------------------------------------------------ offsets and patterns
+
+  /** Each copy the offset of its source by v: lines parallel at v, arcs and circles round the same centre v further out (or in). */
+  function addOffset(c: CadConstraint, v: number) {
+    for (let i = 0; i + 1 < c.refs.length; i += 2) {
+      const src = ents.get(c.refs[i]), dst = ents.get(c.refs[i + 1]), side = c.sides?.[i / 2] ?? 1;
+      if (src?.type === 'line' && dst?.type === 'line') {
+        const a = X(src.p1), b = X(src.p2), p = X(dst.p1), r = X(dst.p2);
+        add(c.id, 2, [...pv(a), ...pv(b), ...pv(p), ...pv(r)], (q, o, k) => {
+          const ux = q[b] - q[a], uy = q[b + 1] - q[a + 1], vx = q[r] - q[p], vy = q[r + 1] - q[p + 1];
+          const lu = Math.hypot(ux, uy) + EPS;
+          o[k] = (L * (ux * vy - uy * vx)) / (lu * (Math.hypot(vx, vy) + EPS));
+          o[k + 1] = (ux * (q[p + 1] - q[a + 1]) - uy * (q[p] - q[a])) / lu - side * v;
+        });
+      } else if ((src?.type === 'arc' || src?.type === 'circle') && (dst?.type === 'arc' || dst?.type === 'circle')) {
+        const g0 = roundOf(src.id), g1 = roundOf(dst.id);
+        const shared = g0.c === g1.c;
+        const rows = () => add(c.id, shared ? 1 : 3, [...g0.vars, ...g1.vars], (q, o, k) => {
+          o[k] = g1.r(q) - g0.r(q) - side * v;
+          if (!shared) {
+            o[k + 1] = q[g1.c] - q[g0.c];
+            o[k + 2] = q[g1.c + 1] - q[g0.c + 1];
+          }
+        }, dst.type === 'arc');
+        // an arc joined smoothly to offset lines (a slot) already has its radius from them
+        if (dst.type === 'arc') later.push(rows);
+        else rows();
+      }
+    }
+  }
+  /** Every copy's points where the pattern's move (k · spacing, or k turns of its step) puts the source's. */
+  function addPattern(c: CadConstraint, v: number) {
+    const pt = c.pattern;
+    if (!pt || pt.n < 1) return;
+    const src = c.refs.slice(0, pt.n).map(X);
+    const along = pt.along ? lineOf(pt.along) : null;
+    const about = pt.about ? X(pt.about) : -1;
+    if (pt.kind === 'circ' && about < 0) throw new Error('a circular pattern needs its centre');
+    // a whole turn either way spreads the copies evenly (the last does not land on the source)
+    const full = Math.abs(Math.abs(v) - 2 * Math.PI) < 1e-9;
+    const step = pt.kind === 'circ' ? v / (full ? pt.count : Math.max(1, pt.count - 1)) : v;
+    for (let k = 1; k < pt.count; k++) {
+      const dst = c.refs.slice(k * pt.n, (k + 1) * pt.n).map(X);
+      if (dst.length < pt.n) break;
+      const vars = [...src.flatMap(pv), ...dst.flatMap(pv), ...(along ? [...pv(along[0]), ...pv(along[1])] : []), ...(about >= 0 ? pv(about) : [])];
+      const ca = Math.cos(k * step), sa = Math.sin(k * step);
+      add(c.id, 2 * pt.n, vars, (q, o, o0) => {
+        let ux = pt.dir === 'y' ? 0 : 1, uy = pt.dir === 'y' ? 1 : 0;
+        if (along) {
+          const dx = q[along[1]] - q[along[0]], dy = q[along[1] + 1] - q[along[0] + 1], l = Math.hypot(dx, dy) + EPS;
+          ux = dx / l;
+          uy = dy / l;
+        }
+        for (let i = 0; i < pt.n; i++) {
+          const s0 = src[i], d0 = dst[i];
+          let x: number, y: number;
+          if (pt.kind === 'rect') {
+            x = q[s0] + k * step * ux;
+            y = q[s0 + 1] + k * step * uy;
+          } else {
+            const rx = q[s0] - q[about], ry = q[s0 + 1] - q[about + 1];
+            x = q[about] + rx * ca - ry * sa;
+            y = q[about + 1] + rx * sa + ry * ca;
+          }
+          o[o0 + 2 * i] = q[d0] - x;
+          o[o0 + 2 * i + 1] = q[d0 + 1] - y;
+        }
+      });
+    }
+  }
+  // (after the helpers above: they are consts)
+  for (const c of sk.constraints) {
+    if (isDimension(c.type) && (!includeDims || c.driving === false)) continue;
+    const v = opt.values?.get(c.id) ?? NaN;
+    if (isDimension(c.type) && !Number.isFinite(v)) continue; // unresolved value: reported by the caller
+    try {
+      addConstraint(c, v);
+    } catch {
+      /* a constraint whose references are gone is ignored */
+    }
+  }
+
+  for (const f of later) f();
+
+  // arcs keep both ends on the circle, elliptical arcs on the ellipse: after the constraints, so a
+  // constraint that implies them (an offset's corner arc, a mirror image) is not the one the
+  // analysis calls redundant
+  for (const e of sk.entities) {
+    if (e.type === 'arc') {
+      const c = X(e.c), a = X(e.p1), b = X(e.p2);
+      add(e.id, 1, [...pv(c), ...pv(a), ...pv(b)], (q, o, k) => {
+        o[k] = Math.hypot(q[b] - q[c], q[b + 1] - q[c + 1]) - Math.hypot(q[a] - q[c], q[a + 1] - q[c + 1]);
+      });
+    } else if (e.type === 'ellipse' && e.p1 && e.p2) {
+      const g = ellipseVars(e.id), a = X(e.p1), b = X(e.p2);
+      add(e.id, 2, [...g.vars, ...pv(a), ...pv(b)], (q, o, k) => {
+        const el = g.geo(q);
+        o[k] = (ellipseRho(el, at(q, a)) - 1) * el.rb;
+        o[k + 1] = (ellipseRho(el, at(q, b)) - 1) * el.rb;
+      });
+    }
+  }
+
+  return { px, rad, q: Float64Array.from(init), fixed, blocks, scale: L };
+}
+
+/** Curvature vector (towards the centre of curvature, length 1/ρ) from the first and second derivative. */
+function curvatureVector(d1: Vec2, d2: Vec2): Vec2 {
+  const s2 = d1.x * d1.x + d1.y * d1.y;
+  if (!(s2 > 0)) return { x: 0, y: 0 };
+  const t = (d2.x * d1.x + d2.y * d1.y) / s2;
+  return { x: (d2.x - t * d1.x) / s2, y: (d2.y - t * d1.y) / s2 };
 }
 
 // ------------------------------------------------------------ linear algebra
@@ -514,14 +834,14 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
   const sys = buildSystem(sk, opt);
   const q = sys.q;
   const maxIt = opt.maxIterations ?? 100;
-  const frozen = new Set<number>();
+  const frozen = new Set<number>(sys.fixed);
 
   // dragging: hold the dragged points where the pointer is, if the constraints allow it
   if (opt.drag?.size) {
     const held = new Map<number, Vec2>();
     for (const [id, p] of opt.drag) {
       const i = sys.px.get(id);
-      if (i === undefined) continue;
+      if (i === undefined || sys.fixed.has(i)) continue;
       held.set(i, p);
       q[i] = p.x;
       q[i + 1] = p.y;
@@ -538,6 +858,7 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
       // so the point ends as close to the pointer as the constraints allow
       q.set(before);
       frozen.clear();
+      for (const i of sys.fixed) frozen.add(i);
       const hard = sys.blocks.length;
       const w = 1e-2;
       for (const [i, p] of held) {
@@ -548,6 +869,7 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
     }
   }
   frozen.clear();
+  for (const i of sys.fixed) frozen.add(i);
   const comps = components(sys, frozen);
   const resid: { c: Component; f: Float64Array }[] = [];
   for (const c of comps) resid.push({ c, f: solveComponent(c, q, sys.scale, maxIt) });
@@ -568,7 +890,7 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
     const rowOwner: string[] = [];
     for (const b of c.blocks) {
       for (let j = 0; j < b.count; j++) {
-        rowOwner.push(b.owner);
+        rowOwner.push(b.quiet ? '' : b.owner);
         if (Math.abs(f[k + j]) > tolF) conflicting.add(b.owner);
       }
       k += b.count;
@@ -578,9 +900,11 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
     const an = analyse(J, c.m, c.vars.length);
     rankTotal += an.rank;
     an.determined.forEach((d, i) => d && detVar.add(c.vars[i]));
-    for (const row of an.dependentRows) if (!conflicting.has(rowOwner[row])) redundant.add(rowOwner[row]);
+    for (const row of an.dependentRows) if (rowOwner[row] && !conflicting.has(rowOwner[row])) redundant.add(rowOwner[row]);
   }
-  const arcIds = new Set(sk.entities.filter((e) => e.type === 'arc').map((e) => e.id));
+  // reference geometry is fully determined (it does not move at all)
+  for (const i of sys.fixed) detVar.add(i);
+  const arcIds = new Set(sk.entities.filter((e) => e.type === 'arc' || e.type === 'ellipse').map((e) => e.id));
   const determined = new Set<string>();
   for (const [id, i] of sys.px) if (detVar.has(i) && detVar.has(i + 1)) determined.add(id);
   const determinedRadii = new Set<string>();
@@ -588,7 +912,7 @@ export function solveSketch(sk: CadSketch, opt: SolveOptions = {}): SolveResult 
   return {
     points, radii,
     ok: conflicting.size === 0,
-    dof: q.length - rankTotal,
+    dof: q.length - sys.fixed.size - rankTotal,
     determined, determinedRadii,
     conflicting: [...conflicting].filter((id) => !arcIds.has(id)),
     redundant: [...redundant].filter((id) => !arcIds.has(id)),
@@ -602,8 +926,11 @@ export function measure(sk: CadSketch, c: CadConstraint, P: Map<string, Vec2>, R
   const ents = new Map(sk.entities.map((e) => [e.id, e]));
   const pt = (id: string) => P.get(id)!;
   const line = (id: string) => {
-    const e = ents.get(id) as Extract<CadEntity, { type: 'line' }>;
-    return [pt(e.p1), pt(e.p2)] as const;
+    const e = ents.get(id)!;
+    // an ellipse's first axis measures like a line (angles to it)
+    if (e.type === 'ellipse') return [pt(e.c), pt(e.a)] as const;
+    const l = e as Extract<CadEntity, { type: 'line' }>;
+    return [pt(l.p1), pt(l.p2)] as const;
   };
   const radius = (id: string) => {
     const e = ents.get(id)!;
@@ -628,6 +955,38 @@ export function measure(sk: CadSketch, c: CadConstraint, P: Map<string, Vec2>, R
     }
     case 'radius': return radius(r0);
     case 'diameter': return 2 * radius(r0);
+    case 'majorRadius':
+    case 'minorRadius': {
+      const e = ents.get(r0);
+      if (e?.type !== 'ellipse') return NaN;
+      return c.type === 'majorRadius' ? Math.hypot(pt(e.a).x - pt(e.c).x, pt(e.a).y - pt(e.c).y) : R?.get(e.id) ?? Math.abs(e.r);
+    }
+    case 'offset': {
+      const src = ents.get(r0), dst = ents.get(r1), side = c.sides?.[0] ?? 1;
+      if (src?.type === 'line' && dst?.type === 'line') {
+        const [a, b] = line(r0), p = pt(dst.p1);
+        return (side * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x))) / Math.hypot(b.x - a.x, b.y - a.y);
+      }
+      return src && dst ? side * (radius(dst.id) - radius(src.id)) : NaN;
+    }
+    case 'pattern': {
+      const pt0 = c.pattern;
+      if (!pt0 || c.refs.length < 2 * pt0.n) return NaN;
+      const a = pt(c.refs[0]), b = pt(c.refs[pt0.n]);
+      if (pt0.kind === 'circ') {
+        const o = pt(pt0.about!);
+        // the turn from the source to the first copy, clockwise negative
+        const step = Math.atan2((a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x), (a.x - o.x) * (b.x - o.x) + (a.y - o.y) * (b.y - o.y));
+        const full = Math.abs(Math.abs(step * pt0.count) - 2 * Math.PI) < 1e-6;
+        return step * (full ? pt0.count : pt0.count - 1);
+      }
+      let u = pt0.dir === 'y' ? { x: 0, y: 1 } : { x: 1, y: 0 };
+      if (pt0.along) {
+        const [p, q] = line(pt0.along), l = Math.hypot(q.x - p.x, q.y - p.y);
+        u = { x: (q.x - p.x) / l, y: (q.y - p.y) / l };
+      }
+      return (b.x - a.x) * u.x + (b.y - a.y) * u.y;
+    }
     case 'angle': {
       const [a2, b2] = line(c.refs.length === 1 ? r0 : r1);
       const u = c.refs.length === 1 ? { x: 1, y: 0 } : (() => { const [a, b] = line(r0); return { x: b.x - a.x, y: b.y - a.y }; })();

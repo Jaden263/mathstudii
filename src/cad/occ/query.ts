@@ -24,7 +24,7 @@ export interface SectionBody {
 }
 
 /** Bodies of the visible occurrences that a placement puts in the assembly. */
-function placedBodies(built: OccBuiltDesign, design: CadDesign) {
+export function placedBodies(built: OccBuiltDesign, design: CadDesign) {
   const out: { occ: string; component: string; M: M4; id: string; name: string; feature: string; shape: TopoDS_Shape }[] = [];
   for (const o of design.occurrences) {
     const comp = design.components.find((c) => c.id === o.component);
@@ -39,7 +39,7 @@ function placedBodies(built: OccBuiltDesign, design: CadDesign) {
 }
 
 /** Clear a boolean before deleting it (this build keeps its data structure otherwise). */
-function cleared(oc: OC, op: { Clear(): void }) {
+export function cleared(oc: OC, op: { Clear(): void }) {
   try {
     op.Clear();
   } catch (e) {
@@ -48,7 +48,7 @@ function cleared(oc: OC, op: { Clear(): void }) {
 }
 
 /** The common part of two shapes, or null when there is none. */
-function common(oc: OC, t: Arena, a: TopoDS_Shape, b: TopoDS_Shape, what: string): TopoDS_Shape | null {
+export function common(oc: OC, t: Arena, a: TopoDS_Shape, b: TopoDS_Shape, what: string): TopoDS_Shape | null {
   const op = t.add(new oc.BRepAlgoAPI_Common(a, b, t.add(new oc.Message_ProgressRange())));
   try {
     const s = t.add(guard(oc, what, () => op.Shape()));
@@ -207,13 +207,5 @@ export function interferenceOcc(oc: OC, built: OccBuiltDesign, design: CadDesign
       if (v > 0) rows.push({ a: ids[i], b: ids[k], v });
     }
     return rows;
-  });
-}
-
-/** The exact box of the visible bodies, placed in the assembly (drawings dimension it). */
-export function visibleBoxOcc(oc: OC, built: OccBuiltDesign, design: CadDesign): { min: Vec3; max: Vec3 } | null {
-  return scratch((t) => {
-    const placed = placedBodies(built, design).filter((pb) => hasSolid(oc, pb.shape));
-    return occBox(oc, placed.map((pb) => t.add(t.add(new oc.BRepBuilderAPI_Transform(pb.shape, trsf(oc, t, pb.M), false, false)).Shape())));
   });
 }

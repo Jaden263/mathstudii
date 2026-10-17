@@ -4,6 +4,8 @@
 // Import rebuilds topology: endpoints that coincide become one CadPoint, so outlines
 // drawn as separate LINEs/ARCs or as polylines arrive connected, as if sketched here.
 import { cadId, entityPoints, pointMap, type CadEntity, type CadPoint, type CadSketch, type CadUnit } from './model';
+import { segPolyline } from './profile';
+import { entitySegs } from './sketchCurves';
 
 interface Vec {
   x: number;
@@ -55,11 +57,14 @@ export function sketchToDxf(
     xmin = Math.min(xmin, p.x - r); xmax = Math.max(xmax, p.x + r);
     ymin = Math.min(ymin, p.y - r); ymax = Math.max(ymax, p.y + r);
   };
+  // splines, ellipses and text have no R12 entity: they go out as polylines through their curve
+  const polylines = (e: CadEntity) => entitySegs(e, P, (id) => radii?.get(id)).map((sg) => segPolyline(sg, Math.PI / 90));
   for (const e of sketch.entities) {
     if (e.type === 'circle') grow(P(e.c), R(e.id, e.r));
     else if (e.type === 'arc') grow(P(e.c), Math.hypot(P(e.p1).x - P(e.c).x, P(e.p1).y - P(e.c).y));
     else if (e.type === 'line') { grow(P(e.p1)); grow(P(e.p2)); }
-    else grow(P(e.p));
+    else if (e.type === 'point') grow(P(e.p));
+    else for (const pl of polylines(e)) pl.forEach((q) => grow(q));
   }
 
   g(0, 'SECTION'); g(2, 'HEADER');
@@ -102,6 +107,12 @@ export function sketchToDxf(
       case 'point':
         g(0, 'POINT'); g(8, layer); xy(10, P(e.p));
         break;
+      default:
+        for (const pl of polylines(e)) {
+          g(0, 'POLYLINE'); g(8, layer); g(66, 1); xy(10, { x: 0, y: 0 }); g(70, 0);
+          for (const q of pl) { g(0, 'VERTEX'); g(8, layer); xy(10, q); }
+          g(0, 'SEQEND'); g(8, layer);
+        }
     }
   }
   g(0, 'ENDSEC');

@@ -1004,8 +1004,17 @@ workspace opens full screen in the page. Its layout follows Fusion:
 
 - **Sketch:** click an origin plane (XY, XZ, YZ, with an optional offset expression) or any
   flat face of a body. The sketch opens looking straight at its plane. The bodies it cuts
-  show as grey reference outlines, and **Project** turns them into fixed sketch geometry
-  (circles come back as circles).
+  show as grey reference outlines.
+  - **Project** (Sketch tab): click edges or faces of the bodies in the 3-D view (the
+    model rolls back to the sketch while you pick), or include construction points and
+    axes. Their curves, a face's outer loop for a face, come into the sketch as purple
+    reference geometry. It is fixed in the sketch but follows the model: dimension a hole
+    to a projected edge, make the plate wider, and the edge and the hole move along.
+    **Intersect** brings in the section of the bodies with the sketch plane the same way.
+  - Circles come back as circles (or ellipses, seen at an angle), straight edges as lines;
+    other curves as splines through points on them.
+  - A projected edge that is gone after an edit says so (*reference lost*) and keeps its
+    last place.
   - A sketch on a face follows the face. Make the base taller and the sketch, with the
     holes and bosses on it, moves up. Make it wider and the sketch stays where it was:
     its origin is the component origin projected onto the face.
@@ -1021,7 +1030,8 @@ workspace opens full screen in the page. Its layout follows Fusion:
 - **Hole:** at sketch points — simple, counterbore or countersink, a depth or through all.
   **Tapped** picks an ISO metric size: the hole is drilled to the tap drill (8.5 mm for
   M10) and threaded to a depth, cosmetic (rings in the view) or modeled.
-- **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs and circles, a
+- **Sweep:** a sketch profile along a path — a chain of sketch lines, arcs, circles, splines
+  and ellipses, a
   chain of body edges (they follow edits) or the helix of a coil. The profile stays
   perpendicular to the path (corrected Frenet) or parallel to itself; a twist angle (a
   positive one turns it by the right-hand rule about the path) or an end scale (taper) on
@@ -1035,9 +1045,9 @@ workspace opens full screen in the page. Its layout follows Fusion:
   outside the diameter. Path only gives just the helix, for a sweep to follow.
 - **Thread:** ISO metric coarse and fine (ISO 261/262, M1.6 to M64, profile by ISO 68-1)
   on picked cylinders: external on a shaft, internal in a hole, the size suggested from
-  the diameter. Cosmetic threads are listed in the inspector and drawn as rings; modeled
-  ones cut the real groove (it takes a few seconds).
-- **Rib:** an open line or arc drawn on a plane through the middle of the rib grows in that
+  the diameter. Cosmetic threads are listed in the inspector, drawn as rings in the 3-D
+  view and per ISO 6410 on drawings; modeled ones cut the real groove (it takes a few seconds).
+- **Rib:** an open line, arc, spline or elliptical arc drawn on a plane through the middle of the rib grows in that
   plane until the body closes it off (or to a depth), as thick as asked across the plane
   (both sides, one or the other) — the gusset in the corner of a bracket. Both sides of the
   curve are tried and the one the body closes off is taken; Flip takes the other.
@@ -1130,19 +1140,104 @@ size.
 - **Loft** joins the first profile of one sketch to the first profile of another, on a
   different plane, with a ruled surface (a square to a circle, for example).
 
-**Drawings:** right-click a part → **Make a drawing**. You get a sheet (A4 or A3
-landscape) with:
+**Drawings:** right-click a part → **Make a drawing**. You get a sheet (A4 to A0,
+landscape or portrait, ISO 5457 frame) with:
 
 - front, top and side views in first-angle (ISO) or third-angle projection, plus an
-  isometric view;
-- visible lines solid and hidden lines dashed, with overall dimensions;
-- a standard scale and an ISO 7200-style title block with the projection symbol.
+  isometric view, at the largest standard scale that fits (or one you pick), of true size
+  whatever unit the part is drawn in;
+- lines from OpenCascade's exact hidden-line removal on the solids: straight edges are
+  lines, circles and arcs stay true circles and arcs, a circle seen at an angle is a true
+  ellipse, only B-spline edges become fine polylines;
+- ISO 128 line types and widths by sheet size (line group 0.5 on A4–A2, 0.7 on A1 and
+  A0): visible edges and outlines wide, hidden lines narrow dashed, tangent edges narrow
+  (can be switched off), centre lines narrow long-dash dotted, hatching narrow;
+- centre marks on holes and shafts seen end-on and centre lines along them seen side-on,
+  3 mm past the outline (switchable per view); a section, or a view without hidden lines,
+  leaves out those of holes it does not show;
+- cosmetic threads (the thread feature without geometry, tapped holes) per ISO 6410: a
+  narrow line at the root (d3 of a bolt, D of a nut), a ¾ circle seen end-on, a wide
+  line where the full thread ends, dashed where the material hides them;
+- automatic dimensions from the model (switchable): each overall size once (the width on
+  the front view, the height on the front or side, the depth on the top), a round outline
+  by its diameter, each hole feature's callout and other round holes by their diameter
+  with how many there are, and where the holes are: the diameter of their pitch circle, or
+  their distances from the view's left and bottom edges. **Make editable** keeps them as
+  the drawing's own;
+- an ISO 7200 title block (title, drawing number, revision, scale, sheet size, units,
+  projection symbol, created / checked / approved by, date of issue, legal owner, document
+  type, material from the part and the mass of what the parts list holds, sheet n of m), an optional revision table, and for
+  assemblies an ISO 7573 parts list over the title block (item, quantity counting repeated
+  occurrences, name, material from the density, mass each), all edited in the side panel.
 
-The drawing follows the part. Select it to print at true scale (or save it as PDF), or
-to export SVG or DXF (layers VISIBLE, HIDDEN, DIM, FRAME). The lines are the mesh's
-sharp edges and the silhouettes of curved walls. Each line is tested in short pieces
-against every triangle in front of it, then merged, so hidden pieces that lie under
-visible lines disappear.
+**Annotating:** the tools under the selected drawing pick the model on the views: corners,
+edge ends and middles (also of a round edge seen edge-on), circle centres and quadrants, lines, circles and arcs, the outlines of a
+cylinder seen side-on, and in a section view the corners of the cut faces. The entity under
+the pointer is highlighted with a marker for the snap (square at a corner, circle at a
+centre, triangle at a middle, diamond at a quadrant), and the annotation being made follows
+the pointer until the click that places it.
+
+- **Dimension:** a circle gives its Ø, an arc its R (or its arc length), a line its length,
+  a cylinder's outline its Ø, two points, edges or circle centres their distance
+  (horizontal, vertical or aligned by where the text goes), two lines their angle.
+  **Chain** and **Baseline** dimension each further point from the last, or from the
+  first a row further out. Values are the model's own in the part's unit, whatever the
+  scale (the isometric view, and a detail of it, foreshortens everything: lengths and
+  angles there are measured in space between model corners and edges and drawn aligned),
+  with the drawing's or the dimension's decimals; tolerances ±t, deviations (equal ones
+  written once with ±), limits, or an ISO 286-1/-2 class or fit on a diameter or width (hole H,
+  shafts c d e f g h js k m n p r s, IT5 to IT11, sizes up to 500 mm) written "Ø20 H7" with
+  its deviations or limits if wanted; angles with their tolerances in degrees ("30° ±0.5°");
+  reference (in parentheses) and theoretically exact (framed) dimensions.
+- **Note** with a leader, **Hole** callouts made from the hole feature ("4× M8 – 6H ↧ 12"
+  with the drill on a second line when it goes deeper, "Ø8.5 ⌴ Ø14 ↧ 8", "2× Ø6.6 ⌵ Ø13 × 90°")
+  or from the thread feature ("M12 – 6g" on a shaft, "M8 – 6H ↧ 12 LH" in a hole); the
+  tolerance class is written as given (6H and 6g by default), not checked.
+- **GD&T:** ISO 1101 feature control frames with all fifteen characteristics, a Ø zone,
+  Ⓜ Ⓛ Ⓟ, up to three datums, on a leader to an edge or under a dimension; the side panel
+  says when a datum is missing or not allowed. **Datum** feature symbols (ISO 5459) on an
+  edge or on a dimension of a feature of size. **Surface** texture symbols (ISO 1302 /
+  ISO 21920-1): Ra or Rz, removal required, not permitted or any process, lay, method,
+  standing on the edge or on a leader.
+- **Centre:** add a centre mark to any circle or arc, or take an automatic one away.
+- **Balloon:** item numbers of the parts list on leaders ending in a dot; **Add balloons**
+  in the side panel puts one for every part of a view in columns beside it (on an edge, or
+  on a circle for a part the view shows only end-on, such as a pin).
+- Click an annotation to select it, drag it to move it, Delete removes it, and the side
+  panel edits it (a fit's deviations at the size and the kind of fit are shown there).
+
+Annotations follow the part: their picks name the model's faces, edges and vertices
+(the same persistent names the 3-D picks use), so after an edit a dimension reads the new
+size and its text keeps its place beside its geometry (its distance off the geometry stays
+the same on the paper should the scale change). One whose edge is gone, or that no longer
+measures what it did, is drawn where it was in orange, counted under the drawing ("1 lost")
+and says why in the side panel, rather than showing a wrong value. Symbols are drawn as
+lines (they print and export the same everywhere), text by ISO 3098 heights (3.5 mm, 5 mm
+on A1 and A0; titles 5 and 7 mm), set to its laid-out width.
+
+Select the drawing for its tools:
+
+- **Section:** click two points on the front, top or side view for the cutting line (it
+  snaps to centres, ends and middles of lines, and straight across or up within 5°). The
+  section view A–A keeps what lies beyond the plane: the cut faces hatched at 45° (each
+  body of an assembly at its own angle or spacing, ISO 128-50, the spacing set on the
+  paper), the rest drawn as seen. The cutting line on the parent is long-dash dotted,
+  wide at its ends, with arrows and letters. Flip it in the side panel.
+- **Detail:** click a centre and then the size of a circle on any view. The detail B
+  (2:1) is that circle of the view clipped exactly (lines, arcs and ellipses are cut where
+  they cross it), at its own scale (change it in the side panel); the circle and letter
+  stay on the parent.
+- Drag section and detail views to place them; otherwise they line up to the right.
+- **Print** at true scale on the sheet's size (or save as PDF), **SVG** in millimetres,
+  **DXF** R2000 in paper millimetres with true CIRCLE, ARC and ELLIPSE entities, layers
+  VISIBLE, HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT and BORDER with ISO
+  lineweights and line types. Dimensions, frames and symbols go on DIM, notes, callouts,
+  balloons and tables on TEXT (as lines, SOLIDs and fitted TEXT; lost ones in orange).
+
+The drawing follows the part: the views are computed in the worker and kept by design
+and view, so redrawing an unchanged part costs nothing. The flange assembly's four views
+and a section take about 0.3 s. Without OpenCascade the views come from the display mesh
+as before (a section clips the mesh and closes it).
 
 **The 2-D sketcher** (also used for every sketch):
 
@@ -1155,24 +1250,49 @@ visible lines disappear.
 - **Selecting:** drag right for window select, drag left for crossing select.
 - **Sketching:** line chains, corner and centre rectangles, circles, centre and
   3-point arcs, regular polygons, slots, points and construction geometry.
+  - **Splines** through fit points (N), or on control points (Shift+N). A fit spline is a
+    cubic through its points with natural ends; select it to drag tangent handles out of
+    its ends (their length sets how far the tangent reaches). Click the first point again
+    to close it. The points are ordinary sketch points: they snap, take constraints and
+    dimensions, and the solver moves them.
+  - **Ellipses** (Shift+E) by centre, end of the major axis and minor radius, with a
+    construction line along the major axis; **elliptical arcs** too. Both are exact
+    ellipses in the solid.
+  - **Text** (Shift+P): a string at a size (capitals are 0.694 of it) and angle, in KaTeX Sans
+    Serif. Its letters are closed profiles with their holes (o, a, e, B), to extrude or
+    to cut into a face.
+  - Splines, ellipses and text are exact in the B-rep kernel (B-spline and ellipse edges,
+    the font's quadratic outlines as B-splines); the mesh kernel uses fine polylines.
   - New points snap to existing points (shared, so outlines are connected), to
     midpoints (with a midpoint relation) and onto curves.
   - Nearly horizontal or vertical lines get that constraint automatically.
   - Each tool adds the relations that keep its shape: a polygon stays regular, a slot
     stays tangent, a centre rectangle stays centred.
 - **Modify:**
-  - **Fillet** keeps a virtual sharp, so dimensions to the corner survive.
-  - **Trim** splits at crossings and turns circles into arcs.
+  - **Fillet** keeps a virtual sharp, so dimensions to the corner survive. **Chamfer** too,
+    with its two distances as dimensions.
+  - **Trim** splits at crossings (with splines and ellipses too) and turns circles into arcs.
+  - **Extend** lengthens a line or arc to the next curve; **Break** splits a curve where
+    you click (a control spline exactly, by knot insertion).
   - **Mirror** creates the copies with symmetry relations.
-- **Constraints:** coincident, point on line/circle, horizontal, vertical, parallel,
-  perpendicular, tangent, equal, midpoint, symmetric, concentric and fix.
+  - **Offset** (Shift+O) copies a chain of lines and arcs at a distance: convex corners get an
+    arc tangent to both sides, concave ones are trimmed. The distance is one dimension,
+    so changing it moves the whole copy, and the copy follows the original.
+  - **Rectangular and circular patterns** of the selection, with constraints that keep
+    the copies spaced. The count is in the side panel and can be changed afterwards.
+- **Constraints:** coincident, point on line/circle/ellipse/spline, horizontal, vertical,
+  parallel, perpendicular, collinear, tangent (lines, circles, arcs, ellipses and a
+  spline's end to any of them), curvature (G2, at a spline's end), equal (also ellipses),
+  midpoint, symmetric, concentric (also ellipses) and fix.
 - **Dimensions:** length, distance (aligned, horizontal, vertical, point to line), angle,
-  radius and diameter. They can be driving or reference. Names are unique across the part.
+  radius and diameter, an ellipse's major and minor radii, offsets and pattern spacings.
+  They can be driving or reference (shown in parentheses). Names are unique across the part.
 - **Solver:** a Levenberg–Marquardt solver keeps every constraint while you drag
   geometry, and moves the geometry as little as possible.
 - **Constraint status:** the rank of the constraint Jacobian gives the degrees of freedom.
   Under-defined geometry is drawn blue and fully defined geometry black. Conflicting
-  constraints are red, and redundant ones are reported.
+  constraints are red, and redundant ones are reported (not one that only repeats what an
+  arc is already, such as a point on its own end: the arc takes the blame, silently).
 
 **Linked to the worksheet:**
 
@@ -1256,8 +1376,8 @@ shaded, and edges are the true edges as crisp lines (no seams). In the CAD windo
   - **Sketch on a face** takes the face's exact plane, and follows it.
   - **Joints** snap to face centres, axes, circle centres, edge midpoints and vertices.
   - **Fillet, chamfer, shell, draft, press-pull** start from the picked edges or faces.
-- **Drawings:** the hidden-line views come from the worker and are dimensioned from the
-  exact box.
+- **Drawings:** the views are OpenCascade's exact hidden-line removal, computed in the
+  worker.
 
 **References that survive edits.** Every face, edge and vertex has a name from the feature
 history, the same after every rebuild. Sketches on faces, joints on geometry, the modify
@@ -1289,7 +1409,7 @@ features and the selection store these names:
 **Exchange:**
 
 - **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
-  POLYLINE with bulges).
+  POLYLINE with bulges). Splines, ellipses and text are exported as fine polylines.
 - **STEP AP214:** exact solids with names, colours and the assembly structure.
 - **STL:** binary, tessellated finely from the exact surfaces, always in millimetres (STL
   has no units, and slicers read millimetres), whatever the part's unit.
@@ -1313,6 +1433,12 @@ from the wire and coil sizes), an M12 bolt with a modeled thread whose stress ar
 a tension check, and a pipe swept round a bend on a construction plane normal to its path
 (its volume against the closed form).
 
+The **CAD: splines, ellipses, text, projected edges** example has a plate with an
+elliptical pocket (its volume against π·a·b·d) and a hole dimensioned from one of the
+plate's edges projected into the hole's sketch: make the plate wider and the hole keeps
+its distance from the edge. A cam on a closed spline (its volume against the sketch's
+area times the thickness) and a tag with engraved text are next to it.
+
 What it is not, honestly:
 
 - **Modify features, the limits:**
@@ -1332,10 +1458,35 @@ What it is not, honestly:
   - There is no Delete face: this OpenCascade build has no defeaturing algorithm.
   - The mesh kernel (only while OpenCascade loads, or if it cannot) makes no fillets,
     chamfers, shells, drafts or press-pulls; it splits and moves bodies.
-- **Faceted where it matters little:** drawings are hidden-line views of the display
-  mesh, so circles in them are fine polylines (their dimensions are exact). The section
-  view's cut bodies cannot be picked. No splines; lofts are ruled (straight between the
-  two profiles).
+- **Faceted where it matters little:** the 3-D section view's cut bodies cannot be
+  picked. Lofts are ruled (straight between the two profiles).
+- **Drawings, the limits:**
+  - Coils, sweeps along coils and modeled threads are drawn from their facets (the exact
+    hidden-line removal takes minutes on helical faces: over two for an M12 thread seen
+    along its axis), with the other bodies still exact; the drawing's tool row says
+    *partly mesh*. A modeled thread is drawn as its geometry, not per ISO 6410.
+  - Cosmetic threads (tapped holes too) follow their body through patterns, mirrors, moves,
+    splits and joins; the threads of a tool body that a Combine cuts or intersects with go
+    with it.
+  - Section lines are straight (no stepped or aligned sections), only on the front, top
+    and side views; one on the side view stays on the side view when the projection
+    changes (left becomes right). Shafts and bolts cut lengthwise are hatched like everything else.
+    Section views leave hidden lines out.
+  - Annotations need OpenCascade's build of the part (with the mesh kernel only the overall
+    sizes from the views' boxes are drawn). They pick lines, circles, arcs, corners and
+    cylinder outlines: not circles seen at an angle, B-splines or the isometric view's
+    curves; a pick on line work that is no model entity (a thread line) stays where it was
+    and is flagged when that line work moves.
+  - A detail's circle stays where it was drawn: a dimension in it whose geometry moves out
+    is flagged. Places along the geometry scale with the view, so after a large change of
+    scale hand-placed annotations may need moving.
+  - Automatic dimensions cover the overall sizes and the holes of the front, top and side
+    views (not steps, bosses or sections); a hidden automatic centre mark is found again
+    by its place. ISO 286 classes: H and c to s only (no other holes, no a, b or t to zc).
+    The frame's semantics are not checked beyond datums, and DXF dimensions are lines and
+    text, not DIMENSION entities.
+  - Centre lines are drawn for cylinders and cones going at least half round; there are
+    no bolt-circle centre lines, and none in the isometric view.
 - **Sweeps, coils, threads, ribs, the limits:**
   - A sweep takes a twist or a taper, not both, and neither on a closed path. Coils have
     no taper angle and no flat spiral.
@@ -1344,12 +1495,31 @@ What it is not, honestly:
     Web.
   - Threads are the basic ISO profile: no tolerance classes, no runout, only metric. A
     modeled thread on a mesh-kernel build waits for OpenCascade (a tapped hole is drilled
-    to its tap drill until then). Cosmetic threads are not in drawings yet.
+    to its tap drill until then).
   - The tangent plane is for cylinders only. A vertex is picked as the corner nearest the
     click on a face or edge; sketch points and curves are chosen from the dialog's lists.
   - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix
     (ribs it makes too).
 - **Sketching:** sketches look straight at their plane in a 2-D editor, not in the 3-D view.
+  - Offsets of splines and ellipses are one-time copies (fit splines through points of the
+    offset curve); only offsets of lines and arcs stay linked to their distance. A linked
+    offset assumes its corners stay convex or concave as they were.
+  - Extend works on lines and arcs; trim cuts lines, circles and arcs (at crossings with
+    any curve). Breaking a fit spline puts two fit splines through its points, which is
+    close to the original but not the same curve.
+  - Curvature (G2) needs the spline end's tangent handle. A circular pattern copies text
+    at its original angle.
+  - Text uses one font, KaTeX Sans Serif, with its 121 characters: Latin letters, digits,
+    ASCII punctuation except `< > \ { | }` and backtick, and Greek capitals. Others are
+    left out, and the side panel says which.
+  - Projected curves other than lines, circles and ellipses are fit splines through at
+    most 25 points on them (32 when closed). The mesh kernel's projections and sections are polylines, with
+    circles recognised.
+  - Volumes of bodies with general B-spline faces (not extruded or revolved, such as
+    lofts or sweeps along splines) are accurate to about 1e-5. A revolved spline's volume
+    is exact but takes seconds to integrate, and its moments of inertia come from OCCT's
+    quicker default integration (about 1e-3 off for a spline, a few per cent for revolved
+    text).
 - **References:**
   - Names come from history. An edit that rebuilds a face from another sketch line (a
     line deleted and drawn again) gives it a new name. A reference to it is then lost
@@ -1365,8 +1535,8 @@ What it is not, honestly:
     A sketch or joint picked while it draws the part gets no name either, so it follows
     its face only by place.
 - **Joints:** no joint limits, motion studies or contact.
-- **Drawings:** only the overall sizes are dimensioned automatically. There are no section
-  views on the sheet and no GD&T.
+- **Drawings:** no tolerance stack-up or GD&T analysis; one sheet per drawing (sheet n of m
+  is written as entered).
 
 It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
 calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
@@ -1502,7 +1672,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste, CSV and .xlsx import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings from the exact solids (views, hidden and centre lines, sections, details, cosmetic threads; associative dimensions with ISO 286 fits, GD&T, datum and surface symbols, hole callouts, ISO 7200 title block, parts list and balloons; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Run on 72 real files: 500 of 702 Prime and 159 of 203 Mathcad 15 saved results reproduced. Script controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Run on 36 real files and SMath's bundled examples: 325 of 454 saved results reproduced. SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert |
 | Export to Mathcad Prime `.mcdx`, Mathcad 15 `.xmcd`, SMath `.sm` | ⚠️ Read back and recalculated here with the same values; not yet opened in Mathcad or SMath. Regions they lack become a picture with their values |
@@ -1563,5 +1733,11 @@ for symbolics and [KaTeX](https://katex.org) for typesetting. The integrator,
 solvers, ODE methods, FFT, distributions and special functions are implemented
 in `src/engine/numeric.ts`. Section properties (Green's theorem for polygons, closed
 forms for circles) are in `src/engine/geometry.ts`.
+
+Sketch text uses the KaTeX Sans Serif font (`src/cad/fonts/KaTeX_SansSerif-Regular.ttf`,
+Copyright (c) 2009-2010 Design Science, Inc., Copyright (c) 2014-2018 Khan Academy),
+bundled unmodified under the SIL Open Font License 1.1, whose full text is in
+`src/cad/fonts/OFL.txt`. Its outlines are read with [opentype.js](https://opentype.js.org)
+(MIT).
 
 mathstudii is an independent project and is not affiliated with PTC (Mathcad) or SMath.

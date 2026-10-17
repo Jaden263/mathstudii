@@ -5,7 +5,10 @@
 // between a face turned to the viewer and one turned away). Each line is cut into short
 // pieces and every piece is tested against all triangles in front of it (a 2-D grid
 // keeps that fast), so lines come out split into visible and hidden runs.
+import earcut from 'earcut';
 import type { M4, Vec3 } from './solid';
+import { overlayPrims, pointInLoop, primsBox, type DrawView, type DrawViewRequest, type Prim } from './drawing2d';
+import { chainLoops } from './outline';
 
 /** A closed triangle mesh with shared vertices, in drawing coordinates. */
 export interface DrawMesh {
@@ -71,32 +74,146 @@ interface ProjTri {
   x0: number; x1: number; y0: number; y1: number;
 }
 
-/** The visible and hidden lines of meshes seen in one direction. */
-export function projectView(meshes: DrawMesh[], spec: ViewSpec, opts: { hidden?: boolean } = {}): ViewLines {
+/** The axes of a view: across the paper, up it, and the direction looked in. */
+export function viewAxes(spec: ViewSpec): { right: Vec3; up: Vec3; dir: Vec3 } {
   const dir = norm(spec.dir);
   const right = norm(cross(dir, spec.up));
-  const up = cross(right, dir);
-  const tris: ProjTri[] = [];
-  const triOwner: number[] = [];
+  return { right, up: cross(right, dir), dir };
+}
+
+/**
+ * The triangles of meshes seen along a view, on a grid over the paper: what lies in front
+ * of a point (hidden lines) and how deep the nearest surface is there.
+ */
+export class Occluder {
+  readonly tris: ProjTri[] = [];
+  /** First triangle of each mesh (and the end). */
+  readonly starts: number[] = [];
+  box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  private grid: number[][] = [];
+  private G = 96;
+  private w = 1;
+  private h = 1;
+  readonly size: number;
+  private eps: number;
+
+  constructor(meshes: DrawMesh[], spec: ViewSpec) {
+    const { right, up, dir } = viewAxes(spec);
+    const box = this.box;
+    for (const { pos, tri } of meshes) {
+      this.starts.push(this.tris.length);
+      const P = (i: number): Vec3 => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];
+      for (let t = 0; t < tri.length / 3; t++) {
+        const a = P(tri[3 * t]), b = P(tri[3 * t + 1]), c = P(tri[3 * t + 2]);
+        const xs = [dot(a, right), dot(b, right), dot(c, right)] as [number, number, number];
+        const ys = [dot(a, up), dot(b, up), dot(c, up)] as [number, number, number];
+        const ds = [dot(a, dir), dot(b, dir), dot(c, dir)] as [number, number, number];
+        const tr = { x: xs, y: ys, d: ds, x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+        this.tris.push(tr);
+        box.x0 = Math.min(box.x0, tr.x0); box.y0 = Math.min(box.y0, tr.y0); box.x1 = Math.max(box.x1, tr.x1); box.y1 = Math.max(box.y1, tr.y1);
+      }
+    }
+    this.starts.push(this.tris.length);
+    this.w = box.x1 - box.x0 || 1;
+    this.h = box.y1 - box.y0 || 1;
+    this.size = Math.max(this.w, this.h);
+    this.eps = this.size * 1e-6;
+    const G = this.G;
+    this.grid = Array.from({ length: G * G }, () => []);
+    if (!this.tris.length) return;
+    this.tris.forEach((t, k) => {
+      const i0 = Math.max(0, Math.floor(((t.x0 - box.x0) / this.w) * G)), i1 = Math.min(G - 1, Math.floor(((t.x1 - box.x0) / this.w) * G));
+      const j0 = Math.max(0, Math.floor(((t.y0 - box.y0) / this.h) * G)), j1 = Math.min(G - 1, Math.floor(((t.y1 - box.y0) / this.h) * G));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) this.grid[j * G + i].push(k);
+    });
+  }
+
+  private cell(x: number, y: number): number[] {
+    const { box, G } = this;
+    if (!this.tris.length || x < box.x0 - this.eps || x > box.x1 + this.eps || y < box.y0 - this.eps || y > box.y1 + this.eps) return [];
+    const i = Math.min(G - 1, Math.max(0, Math.floor(((x - box.x0) / this.w) * G)));
+    const j = Math.min(G - 1, Math.max(0, Math.floor(((y - box.y0) / this.h) * G)));
+    return this.grid[j * G + i];
+  }
+
+  /** Barycentric coordinates of (x, y) in triangle t, or null for an edge-on triangle. */
+  private bary(t: ProjTri, x: number, y: number): [number, number, number] | null {
+    const [x1, x2, x3] = t.x, [y1, y2, y3] = t.y;
+    const den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
+    if (Math.abs(den) < 1e-18 * this.size * this.size) return null;
+    const l1 = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / den;
+    const l2 = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / den;
+    return [l1, l2, 1 - l1 - l2];
+  }
+
+  /** Is the point (x, y) at depth d behind some triangle (other than those listed)? */
+  hiddenAt(x: number, y: number, d: number, own: number[] = []): boolean {
+    const eps = this.eps;
+    for (const k of this.cell(x, y)) {
+      if (own.includes(k)) continue;
+      const t = this.tris[k];
+      if (x < t.x0 - eps || x > t.x1 + eps || y < t.y0 - eps || y > t.y1 + eps) continue;
+      const l = this.bary(t, x, y);
+      // strictly inside: a line along a triangle's border is not behind it
+      const tol = 1e-7;
+      if (!l || l[0] <= tol || l[1] <= tol || l[2] <= tol) continue;
+      const dt = l[0] * t.d[0] + l[1] * t.d[1] + l[2] * t.d[2];
+      if (dt < d - eps * 10) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Depth of the nearest surface at (x, y), Infinity where there is none; triangles within
+   * `reach` of the point count too (a curve's outline lies a chord's height outside its facets).
+   */
+  frontDepth(x: number, y: number, reach = 0): number {
+    let best = Infinity;
+    for (const k of this.cell(x, y)) {
+      const t = this.tris[k];
+      if (x < t.x0 - reach || x > t.x1 + reach || y < t.y0 - reach || y > t.y1 + reach) continue;
+      const l = this.bary(t, x, y);
+      if (!l) continue;
+      const inside = l[0] >= -1e-9 && l[1] >= -1e-9 && l[2] >= -1e-9;
+      if (!inside) {
+        if (!(reach > 0)) continue;
+        let dmin = Infinity;
+        for (let e = 0; e < 3; e++) dmin = Math.min(dmin, segDist2(x, y, t.x[e], t.y[e], t.x[(e + 1) % 3], t.y[(e + 1) % 3]));
+        if (dmin > reach) continue;
+      }
+      // the plane of the triangle there (just outside it, its extension)
+      const dt = l[0] * t.d[0] + l[1] * t.d[1] + l[2] * t.d[2];
+      if (dt < best) best = dt;
+    }
+    return best;
+  }
+}
+
+const segDist2 = (x: number, y: number, ax: number, ay: number, bx: number, by: number) => {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const t = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0;
+  return Math.hypot(x - ax - t * dx, y - ay - t * dy);
+};
+
+/**
+ * The visible and hidden lines of meshes seen in one direction. `drawn` picks the meshes
+ * whose lines are drawn (all by default); the others only hide.
+ */
+export function projectView(meshes: DrawMesh[], spec: ViewSpec, opts: { hidden?: boolean; drawn?: (mesh: number) => boolean } = {}): ViewLines {
+  const { right, up, dir } = viewAxes(spec);
+  const occ = new Occluder(meshes, spec);
   // candidate edges: [mesh, a, b, tri1, tri2]
   const edges: { m: number; a: number; b: number; t: number[] }[] = [];
-  let box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
-  let base = 0;
   meshes.forEach((mesh, mi) => {
+    if (opts.drawn && !opts.drawn(mi)) return;
     const { pos, tri } = mesh;
+    const base = occ.starts[mi];
     const nt = tri.length / 3;
     const nrm: Vec3[] = [];
     const P = (i: number): Vec3 => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];
     for (let t = 0; t < nt; t++) {
       const a = P(tri[3 * t]), b = P(tri[3 * t + 1]), c = P(tri[3 * t + 2]);
-      const n = cross([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
-      nrm.push(norm(n));
-      const xs = [dot(a, right), dot(b, right), dot(c, right)] as [number, number, number];
-      const ys = [dot(a, up), dot(b, up), dot(c, up)] as [number, number, number];
-      const ds = [dot(a, dir), dot(b, dir), dot(c, dir)] as [number, number, number];
-      tris.push({ x: xs, y: ys, d: ds, x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) });
-      triOwner.push(mi);
-      box = { x0: Math.min(box.x0, ...xs), y0: Math.min(box.y0, ...ys), x1: Math.max(box.x1, ...xs), y1: Math.max(box.y1, ...ys) };
+      nrm.push(norm(cross([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]])));
     }
     const map = new Map<string, number[]>();
     for (let t = 0; t < nt; t++) {
@@ -120,47 +237,10 @@ export function projectView(meshes: DrawMesh[], spec: ViewSpec, opts: { hidden?:
       const [a, b] = key.split(',').map(Number);
       edges.push({ m: mi, a, b, t: ts.map((q) => q + base) });
     }
-    base += nt;
   });
-  if (!tris.length) return { name: spec.name, visible: [], hidden: [], box: { x0: 0, y0: 0, x1: 0, y1: 0 } };
-
-  // grid of triangles over the view
-  const G = 96;
-  const w = box.x1 - box.x0 || 1, h = box.y1 - box.y0 || 1;
-  const size = Math.max(w, h);
-  const cell = (x: number, y: number) => {
-    const i = Math.min(G - 1, Math.max(0, Math.floor(((x - box.x0) / w) * G)));
-    const j = Math.min(G - 1, Math.max(0, Math.floor(((y - box.y0) / h) * G)));
-    return j * G + i;
-  };
-  const grid: number[][] = Array.from({ length: G * G }, () => []);
-  tris.forEach((t, k) => {
-    const i0 = Math.max(0, Math.floor(((t.x0 - box.x0) / w) * G)), i1 = Math.min(G - 1, Math.floor(((t.x1 - box.x0) / w) * G));
-    const j0 = Math.max(0, Math.floor(((t.y0 - box.y0) / h) * G)), j1 = Math.min(G - 1, Math.floor(((t.y1 - box.y0) / h) * G));
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) grid[j * G + i].push(k);
-  });
-  const eps = size * 1e-6;
-
-  /** Is the point (x, y) at depth d behind some triangle (other than the edge's own)? */
-  const hiddenAt = (x: number, y: number, d: number, own: number[]): boolean => {
-    for (const k of grid[cell(x, y)]) {
-      if (own.includes(k)) continue;
-      const t = tris[k];
-      if (x < t.x0 - eps || x > t.x1 + eps || y < t.y0 - eps || y > t.y1 + eps) continue;
-      const [x1, x2, x3] = t.x, [y1, y2, y3] = t.y;
-      const den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
-      if (Math.abs(den) < 1e-18 * size * size) continue; // edge-on triangle
-      const l1 = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / den;
-      const l2 = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / den;
-      const l3 = 1 - l1 - l2;
-      // strictly inside: a line along a triangle's border is not behind it
-      const tol = 1e-7;
-      if (l1 <= tol || l2 <= tol || l3 <= tol) continue;
-      const dt = l1 * t.d[0] + l2 * t.d[1] + l3 * t.d[2];
-      if (dt < d - eps * 10) return true;
-    }
-    return false;
-  };
+  const box = occ.box;
+  if (!occ.tris.length) return { name: spec.name, visible: [], hidden: [], box: { x0: 0, y0: 0, x1: 0, y1: 0 } };
+  const size = occ.size;
 
   const visible: number[] = [], hidden: number[] = [];
   const step = size / 300;
@@ -180,7 +260,7 @@ export function projectView(meshes: DrawMesh[], spec: ViewSpec, opts: { hidden?:
     };
     for (let i = 0; i < n; i++) {
       const t = (i + 0.5) / n;
-      const hid = hiddenAt(ax + (bx - ax) * t, ay + (by - ay) * t, ad + (bd - ad) * t, e.t);
+      const hid = occ.hiddenAt(ax + (bx - ax) * t, ay + (by - ay) * t, ad + (bd - ad) * t, e.t);
       if (runHidden === null) runHidden = hid;
       else if (hid !== runHidden) {
         flush(runStart, i / n, runHidden);
@@ -191,7 +271,7 @@ export function projectView(meshes: DrawMesh[], spec: ViewSpec, opts: { hidden?:
     if (runHidden !== null) flush(runStart, 1, runHidden);
   }
   const [vis, hid] = overlay(visible, hidden, size);
-  return { name: spec.name, visible: vis, hidden: opts.hidden === false ? [] : hid, box };
+  return { name: spec.name, visible: vis, hidden: opts.hidden === false ? [] : hid, box: { ...box } };
 }
 
 /**
@@ -263,6 +343,122 @@ export function overlay(visible: number[], hidden: number[], size: number): [num
     emit(h, outH);
   }
   return [outV, outH];
+}
+
+// ------------------------------------------------------------ the mesh's drawing views
+
+/**
+ * A drawing view from triangle meshes (when OpenCascade is not there): the hidden-line
+ * lines above as line primitives. A section clips the meshes at the plane and closes them
+ * with caps on the cut faces, whose outlines are the hatched loops.
+ */
+export function meshDrawView(meshes: DrawMesh[], req: DrawViewRequest): DrawView {
+  const spec: ViewSpec = { name: req.name, dir: req.dir, up: req.up };
+  let cuts: DrawView['cuts'];
+  let drawn = meshes;
+  if (req.cut) {
+    const { right, up, dir } = viewAxes(spec);
+    cuts = [];
+    drawn = [];
+    meshes.forEach((m, index) => {
+      const c = clipMesh(m, req.cut!, dir, right, up);
+      if (!c) return;
+      drawn.push(c.mesh);
+      if (c.loops.length) cuts!.push({ body: String(index), index, loops: c.loops });
+    });
+  }
+  const v = projectView(drawn, spec, { hidden: req.hidden });
+  const lines = (s: number[]): Prim[] => {
+    const out: Prim[] = [];
+    for (let i = 0; i + 3 < s.length; i += 4) out.push({ k: 'line', x1: s[i], y1: s[i + 1], x2: s[i + 2], y2: s[i + 3] });
+    return out;
+  };
+  const size = Math.max(v.box.x1 - v.box.x0, v.box.y1 - v.box.y0, 1e-9);
+  const [visible, hidden] = overlayPrims([lines(v.visible), lines(v.hidden)], size);
+  const box = primsBox(visible, hidden);
+  return {
+    name: req.name, visible, hidden, tangent: [], thin: [], axes: [], ...(cuts ? { cuts } : {}),
+    box: box.x1 >= box.x0 ? box : { x0: 0, y0: 0, x1: 0, y1: 0 }, mesh: 'all',
+  };
+}
+
+/**
+ * The part of a mesh beyond the plane through o square to n, closed by caps where the
+ * plane cut it; the caps' outlines in view coordinates. Null when nothing is left.
+ */
+function clipMesh(m: DrawMesh, o: Vec3, n: Vec3, right: Vec3, up: Vec3): { mesh: DrawMesh; loops: number[][] } | null {
+  const { pos, tri } = m;
+  const nv = pos.length / 3;
+  const side = new Float64Array(nv);
+  let size = 0;
+  for (let i = 0; i < nv; i++) {
+    side[i] = (pos[3 * i] - o[0]) * n[0] + (pos[3 * i + 1] - o[1]) * n[1] + (pos[3 * i + 2] - o[2]) * n[2];
+    size = Math.max(size, Math.abs(side[i]));
+  }
+  const tol = size * 1e-9;
+  const out: number[] = Array.from(pos);
+  const tris: number[] = [];
+  // a point where an edge crosses the plane, made once for both triangles on the edge
+  const crossing = new Map<string, number>();
+  const at = (a: number, b: number) => {
+    const key = a < b ? `${a},${b}` : `${b},${a}`;
+    let k = crossing.get(key);
+    if (k === undefined) {
+      const s = side[a] / (side[a] - side[b]);
+      k = out.length / 3;
+      for (let c = 0; c < 3; c++) out.push(pos[3 * a + c] + (pos[3 * b + c] - pos[3 * a + c]) * s);
+      crossing.set(key, k);
+    }
+    return k;
+  };
+  const cut: [number, number][] = [];
+  for (let t = 0; t < tri.length; t += 3) {
+    const v = [tri[t], tri[t + 1], tri[t + 2]];
+    const keep = v.map((i) => side[i] >= -tol);
+    if (keep.every(Boolean)) {
+      tris.push(...v);
+      continue;
+    }
+    if (!keep.some(Boolean)) continue;
+    // Sutherland–Hodgman on one triangle, keeping its turn
+    const poly: number[] = [], onPlane: number[] = [];
+    for (let k = 0; k < 3; k++) {
+      const a = v[k], b = v[(k + 1) % 3];
+      if (keep[k]) poly.push(a);
+      if (keep[k] !== keep[(k + 1) % 3]) {
+        const c = at(a, b);
+        poly.push(c);
+        onPlane.push(c);
+      }
+    }
+    for (let k = 1; k + 1 < poly.length; k++) tris.push(poly[0], poly[k], poly[k + 1]);
+    if (onPlane.length === 2) cut.push([onPlane[0], onPlane[1]]);
+  }
+  if (!tris.length) return null;
+  // the cut's outline, chained into loops in the view's coordinates
+  const P2 = (i: number) => ({ x: out[3 * i] * right[0] + out[3 * i + 1] * right[1] + out[3 * i + 2] * right[2], y: out[3 * i] * up[0] + out[3 * i + 1] * up[1] + out[3 * i + 2] * up[2] });
+  const loops = chainLoops(cut.map(([a, b]) => [P2(a), P2(b)]), size * 1e-7 + 1e-12).filter((l) => l.length >= 3).map((l) => l.flatMap((q) => [q.x, q.y]));
+  // caps: each outer loop with the loops right inside it as holes (even–odd), at the plane
+  const depth = o[0] * n[0] + o[1] * n[1] + o[2] * n[2];
+  const within = loops.map((l, i) => loops.filter((q, j) => j !== i && pointInLoop(l[0], l[1], q)).length);
+  loops.forEach((l, i) => {
+    if (within[i] % 2) return;
+    const holes = loops.filter((q, j) => within[j] === within[i] + 1 && pointInLoop(q[0], q[1], l));
+    const flat = [...l, ...holes.flat()];
+    const starts: number[] = [];
+    let s = l.length / 2;
+    for (const h of holes) {
+      starts.push(s);
+      s += h.length / 2;
+    }
+    const base = out.length / 3;
+    for (let k = 0; k < flat.length; k += 2) {
+      const x = flat[k], y = flat[k + 1];
+      for (let c = 0; c < 3; c++) out.push(x * right[c] + y * up[c] + depth * n[c]);
+    }
+    for (const q of earcut(flat, starts, 2)) tris.push(base + q);
+  });
+  return { mesh: { pos: new Float64Array(out), tri: Uint32Array.from(tris) }, loops };
 }
 
 /** The largest standard scale (1:1, 1:2, 1:5 … or 2:1, 5:1 …) at which a size fits. */

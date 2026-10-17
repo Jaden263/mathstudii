@@ -14,8 +14,8 @@
 import type { NCollection_List_TopoDS_Shape, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire } from 'replicad-opencascadejs';
 import type { ProfileRegion } from '../profile';
 import { add3, cross3, len3, norm3, scale3, sub3, type Arena, type Frame, type Vec3 } from '../solid';
-import { sweepClash, twistGuide, type Helix, type PathGeom, type PathSample, type SweepOptions, type ThreadGeom } from '../sweep';
-import { loopWire, reversedLoop, type TaggedEdge } from './geometry';
+import { segEnd, segStart, sweepClash, twistGuide, type Helix, type PathGeom, type PathSample, type SweepOptions, type ThreadGeom } from '../sweep';
+import { bsplineCurve, ellipseEdge, loopWire, occEllipse, reversedLoop, type TaggedEdge } from './geometry';
 import { ax2, dir, guard, pnt, scratch, shapeIndex, xyz, type OC } from './kernel';
 import type { FaceTag, OccSolid } from './ops';
 
@@ -107,15 +107,26 @@ export function sweepOps(oc: OC, kit: SweepKit) {
           edges.push(t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(circ)).Edge()));
           return;
         }
-        const s0 = path.segs[0] as { a: Vec3 };
-        const closes = i === path.segs.length - 1 && i > 0 && len3(sub3(s.b, s0.a)) <= 1e-9 * (1 + len3(s.b));
-        const v1 = prev ?? vertex(t, s.a);
+        // a closed spline or a whole ellipse is a path of its own: one closed edge
+        if (s.kind === 'bspline' && s.closed) {
+          edges.push(t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(bsplineCurve(oc, t, s.deg, s.poles, s.knots))).Edge()));
+          return;
+        }
+        if (s.kind === 'ellipse' && Math.abs(Math.abs(s.t1 - s.t0) - 2 * Math.PI) < 1e-12) {
+          edges.push(ellipseEdge(oc, t, occEllipse(oc, t, s.c, s.n, s.x, s.ra, s.rb), s.t0, s.t1));
+          return;
+        }
+        const a = segStart(s), b = segEnd(s);
+        const closes = i === path.segs.length - 1 && i > 0 && len3(sub3(b, segStart(path.segs[0]))) <= 1e-9 * (1 + len3(b));
+        const v1 = prev ?? vertex(t, a);
         first ??= v1;
-        const v2 = closes ? first : vertex(t, s.b);
-        const mk = s.kind === 'line'
-          ? t.add(new oc.BRepBuilderAPI_MakeEdge(v1, v2))
-          : t.add(new oc.BRepBuilderAPI_MakeEdge(t.add(t.add(new oc.GC_MakeArcOfCircle(pnt(oc, t, s.a), pnt(oc, t, s.m), pnt(oc, t, s.b))).Value()), v1, v2));
-        edges.push(t.add(mk.Edge()));
+        const v2 = closes ? first : vertex(t, b);
+        let edge: TopoDS_Edge;
+        if (s.kind === 'line') edge = t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(v1, v2)).Edge());
+        else if (s.kind === 'arc') edge = t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(t.add(t.add(new oc.GC_MakeArcOfCircle(pnt(oc, t, s.a), pnt(oc, t, s.m), pnt(oc, t, s.b))).Value()), v1, v2)).Edge());
+        else if (s.kind === 'bspline') edge = t.add(t.add(new oc.BRepBuilderAPI_MakeEdge(bsplineCurve(oc, t, s.deg, s.poles, s.knots), v1, v2)).Edge());
+        else edge = ellipseEdge(oc, t, occEllipse(oc, t, s.c, s.n, s.x, s.ra, s.rb), s.t0, s.t1, [v1, v2]);
+        edges.push(edge);
         prev = v2;
       });
       for (const e of edges) mw.Add(e);

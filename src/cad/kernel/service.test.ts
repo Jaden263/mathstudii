@@ -169,7 +169,7 @@ describe('kernel requests', () => {
       { op: 'outline', ...B, component: 'c1', frame: { o: [0, 0, 10], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] } },
       { op: 'distance', ...B, a: { kind: 'face', occ: 'o1', body: 'f1', index: 0 }, b: { kind: 'edge', occ: 'o2', body: 'f2', index: 1 } },
       { op: 'interference', ...B },
-      { op: 'views', ...B, specs: [{ key: 'f', view: 'front', hidden: true }] },
+      { op: 'drawing', ...B, views: [{ key: 'f', name: 'Front', dir: [0, 1, 0], up: [0, 0, 1], hidden: true }, { key: 's', name: 'A–A', dir: [1, 0, 0], up: [0, 0, 1], hidden: false, cut: [50, 0, 0] }] },
       { op: 'export', ...B, format: 'step', scope: { kind: 'assembly' }, unit: 'mm', name: 'P' },
       { op: 'export', ...B, format: 'stl', scope: { kind: 'assembly' }, unit: 'mm', name: 'P' },
     ];
@@ -184,14 +184,18 @@ describe('kernel requests', () => {
     }
   });
 
-  it('drawing views: lines from the display mesh, dimensions from the exact box', async () => {
-    // a Ø20 × 30 cylinder: its facets lie inside the circle, the exact box does not
+  it('drawing views: exact silhouettes and sizes', async () => {
+    // a Ø20 × 30 cylinder: its facets lie inside the circle, the exact lines do not
     const design = single([
       { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: circles('c', [[0, 0, 10]]) },
       { kind: 'extrude', id: 'f1', name: 'Pin', sketch: 's1', extent: { type: 'one', d: '30' }, op: 'new' },
     ]);
     const { numbers } = solve(design);
-    const v = (await ask({ op: 'views', design, numbers, specs: [{ key: 'front', view: 'front', hidden: true }, { key: 'side', view: 'left', hidden: true }, { key: 'iso', view: 'iso', hidden: false }] }))!;
+    const v = (await ask({ op: 'drawing', design, numbers, views: [
+      { key: 'front', name: 'Front', dir: [0, 1, 0], up: [0, 0, 1], hidden: true },
+      { key: 'side', name: 'Left', dir: [1, 0, 0], up: [0, 0, 1], hidden: true },
+      { key: 'iso', name: 'Isometric', dir: [-1, 1, -1], up: [0, 0, 1], hidden: false },
+    ] }))!;
     expect(v.front.visible.length).toBeGreaterThan(0);
     near(v.front.box.x1 - v.front.box.x0, 20, 1e-9);
     near(v.front.box.y1 - v.front.box.y0, 30, 1e-9);

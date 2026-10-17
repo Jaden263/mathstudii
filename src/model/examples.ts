@@ -1,6 +1,7 @@
-import { createRegion, emptyWorksheet, PX_PER_MM, type Frame3DRegion, type PlateRegion, type Region, type Worksheet } from './types';
+import { createRegion, emptyWorksheet, PX_PER_MM, type DrawingRegion, type Frame3DRegion, type PlateRegion, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
+import type { Annotation, DrawPick } from '../cad/annotations';
 import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
 import { windCases, type F3Load, type F3Member, type F3Node } from '../frame3d/model';
 import { collapseArea } from './areas';
@@ -401,10 +402,17 @@ export function cadExample(): Worksheet {
     ['math', L, mm(455), { source: 'asm.Imz = kg*cm^2' }],
     ['math', mm(85), mm(455), { source: 'asm.Spin = deg' }],
     ['math', mm(130), mm(455), { source: 'asm.Lz = mm' }],
-    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: standard views with hidden lines, overall dimensions and a title block, kept up to date with the part. Select it to print it on A4 at true scale or export SVG / DXF.' }],
+    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: exact standard views with hidden and centre lines, automatic dimensions and a title block, kept up to date with the part. Here a section A–A cut through two bolt holes on the top view, a detail B of a counterbore, the shaft Ø40 g6 with a perpendicularity to datum A, surface textures, the parts list and balloons: change `T` and they follow. Select it to annotate (**Dimension**, **Hole**, **GD&T**, **Datum**, **Surface** …), print it on A3 at true scale or export SVG / DXF.' }],
   ]);
   const asm = ws.regions.find((r) => r.kind === 'cad' && r.name === 'asm');
-  if (asm) ws.regions.push(createRegion('drawing', L, mm(492), { cad: asm.id, title: 'Flange with shaft', partNo: 'FA-001', material: 'EN-GJL-250 / C45' }));
+  if (asm) {
+    ws.regions.push(createRegion('drawing', L, mm(510), {
+      cad: asm.id, title: 'Flange with shaft', partNo: 'FA-001', material: 'EN-GJL-250 / C45', sheet: 'A3',
+      sections: [{ id: 'sa', letter: 'A', view: 'top', a: { x: -115, y: 0 }, b: { x: 115, y: 0 } }],
+      details: [{ id: 'db', letter: 'B', view: 'sec:sa', c: { x: 75, y: 8 }, r: 13, scale: 2 }],
+      ...flangeDrawingNotes(),
+    }));
+  }
   return ws;
 }
 
@@ -927,6 +935,7 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: '3-D steel frame', make: frame3dExample },
   { name: 'Flat slab with an opening (plate)', make: plateExample },
   { name: 'Differential equations (odesolve)', make: odeExample },
+  { name: 'CAD: splines, ellipses, text, projected edges', make: curvesExample },
 ];
 
 // ---------------------------------------------------------------- areas, protection, symbolic units
@@ -1039,3 +1048,155 @@ export function pdeExample(): Worksheet {
 }
 
 EXAMPLES.push({ name: 'Heat flow in a slab (Pdesolve)', make: pdeExample });
+
+// ------------------------------------------------------------ CAD sketcher: curves, text, references
+
+/**
+ * A plate with an elliptical pocket and a hole dimensioned from one of its edges projected
+ * into the hole's sketch, a cam on a closed spline, and a tag with engraved text.
+ */
+function curvesDesign(): CadDesign {
+  const pocket: CadSketch = {
+    points: [{ id: 'ec', x: 0, y: 0 }, { id: 'ea', x: 30, y: 0 }],
+    entities: [{ id: 'el', type: 'ellipse', c: 'ec', a: 'ea', r: 18 }, { id: 'ex', type: 'line', p1: 'ec', p2: 'ea', construction: true }],
+    constraints: [
+      { id: 'ef', type: 'fix', refs: ['ec'], at: { x: 0, y: 0 } },
+      { id: 'eh', type: 'horizontal', refs: ['ex'] },
+      { id: 'eA', type: 'majorRadius', refs: ['el'], value: 'a_e', offset: { x: 0, y: -8 } },
+      { id: 'eB', type: 'minorRadius', refs: ['el'], value: 'b_e', offset: { x: -12, y: 0 } },
+    ],
+  };
+  // the plate's right-hand top edge, projected: the hole keeps e_h from it however wide the plate is
+  const hole: CadSketch = {
+    points: [{ id: 'r1.p0', x: 60, y: -40 }, { id: 'r1.p1', x: 60, y: 40 }, { id: 'hm', x: 60, y: 0 }, { id: 'hc', x: 45, y: 0 }],
+    entities: [
+      { id: 'r1.e0', type: 'line', p1: 'r1.p0', p2: 'r1.p1', ref: 'r1', construction: true },
+      { id: 'hk', type: 'circle', c: 'hc', r: 5 },
+      { id: 'hmp', type: 'point', p: 'hm', construction: true },
+    ],
+    constraints: [
+      { id: 'hmid', type: 'midpoint', refs: ['hm', 'r1.e0'] },
+      { id: 'hh', type: 'horizontal', refs: ['hc', 'hm'] },
+      { id: 'hx', type: 'distanceX', refs: ['hc', 'hm'], value: 'e_h', offset: { x: 0, y: 10 } },
+      { id: 'hd', type: 'diameter', refs: ['hk'], value: 'd_h', offset: { x: 4, y: 4 } },
+    ],
+    sources: [{
+      id: 'r1', kind: 'edge', label: 'edge between the end face and the side face of Plate',
+      ref: { kind: 'edge', body: 'fq0', key: 'fq0/end|fq0/side:bl1', hint: { p: [60, 0, 10], type: 'line', d: [0, 1, 0], size: 80 } },
+    }],
+  };
+  // a cam: a closed fit spline through fixed points round a bore
+  const camPts: [number, number][] = [[40, 0], [18, 26], [-16, 24], [-26, 0], [-16, -24], [18, -26]];
+  const cam = rings('m', [[16, 'd_b']], (sk) => {
+    camPts.forEach(([x, y], i) => {
+      sk.points.push({ id: `mq${i}`, x, y });
+      sk.constraints.push({ id: `mf${i}`, type: 'fix', refs: [`mq${i}`], at: { x, y } });
+    });
+    sk.entities.push({ id: 'ms', type: 'spline', pts: camPts.map((_, i) => `mq${i}`), closed: true });
+  });
+  const label: CadSketch = {
+    points: [{ id: 'tp', x: -22, y: -3.5 }],
+    entities: [{ id: 'tx', type: 'text', p: 'tp', text: 'mathstudii', size: 10 }],
+    constraints: [{ id: 'tf', type: 'fix', refs: ['tp'], at: { x: -22, y: -3.5 } }],
+  };
+  return {
+    version: 2,
+    components: [
+      {
+        id: 'cpl', name: 'Plate', color: '#8d99ae',
+        items: [
+          { kind: 'sketch', id: 'sq0', name: 'Base', plane: { ref: 'XY' }, sketch: centredRect('b', 120, 80, 'w_p', 'h_p') },
+          { kind: 'extrude', id: 'fq0', name: 'Plate', sketch: 'sq0', extent: { type: 'one', d: 't_p' }, op: 'new' },
+          { kind: 'sketch', id: 'sq1', name: 'Pocket', plane: { ref: 'XY', offset: 't_p' }, sketch: pocket },
+          { kind: 'extrude', id: 'fq1', name: 'Pocket', sketch: 'sq1', extent: { type: 'one', d: 'd_e' }, op: 'cut' },
+          { kind: 'sketch', id: 'sq2', name: 'Hole', plane: { ref: 'XY', offset: 't_p' }, sketch: hole },
+          { kind: 'extrude', id: 'fq2', name: 'Hole', sketch: 'sq2', extent: { type: 'all' }, op: 'cut' },
+        ],
+      },
+      {
+        id: 'ccm', name: 'Cam', color: '#e9c46a',
+        items: [
+          { kind: 'sketch', id: 'sm0', name: 'Profile', plane: { ref: 'XY' }, sketch: cam },
+          { kind: 'extrude', id: 'fm0', name: 'Cam', sketch: 'sm0', extent: { type: 'one', d: 't_c' }, op: 'new' },
+        ],
+      },
+      {
+        id: 'ctg', name: 'Tag', color: '#90be6d',
+        items: [
+          { kind: 'sketch', id: 'st0', name: 'Blank', plane: { ref: 'XY' }, sketch: centredRect('g', 70, 24, '70 mm', '24 mm') },
+          { kind: 'extrude', id: 'ft0', name: 'Blank', sketch: 'st0', extent: { type: 'one', d: '3 mm' }, op: 'new' },
+          { kind: 'sketch', id: 'st1', name: 'Label', plane: { ref: 'XY', offset: '3 mm' }, sketch: label },
+          { kind: 'extrude', id: 'ft1', name: 'Engrave', sketch: 'st1', extent: { type: 'one', d: '0.8 mm' }, op: 'cut' },
+        ],
+      },
+    ],
+    occurrences: [
+      { id: 'opl', component: 'cpl', grounded: true },
+      { id: 'ocm', component: 'ccm', grounded: true, pos: [120, 0, 0] },
+      { id: 'otg', component: 'ctg', grounded: true, pos: [0, -75, 0] },
+    ],
+    joints: [],
+  };
+}
+
+export function curvesExample(): Worksheet {
+  return build('CAD: splines, ellipses, text, projected edges', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Sketch curves and references\nA plate with an **elliptical** pocket and a hole placed from a **projected edge**, a cam whose outline is a closed **spline**, and a tag with **engraved text**. Make the plate wider: the projected edge moves, and the hole keeps its distance from it.' }],
+    ['math', L, mm(42), { source: 'w_p := 120 mm' }],
+    ['math', mm(55), mm(42), { source: 'h_p := 80 mm' }],
+    ['math', mm(90), mm(42), { source: 't_p := 10 mm' }],
+    ['math', mm(125), mm(42), { source: 'e_h := 15 mm' }],
+    ['math', mm(160), mm(42), { source: 'd_h := 10 mm' }],
+    ['math', L, mm(54), { source: 'a_e := 30 mm' }],
+    ['math', mm(55), mm(54), { source: 'b_e := 18 mm' }],
+    ['math', mm(90), mm(54), { source: 'd_e := 4 mm' }],
+    ['math', mm(125), mm(54), { source: 'd_b := 16 mm' }],
+    ['math', mm(160), mm(54), { source: 't_c := 12 mm' }],
+    ['cad', L, mm(66), { name: 'cs', width: mm(170), height: mm(90), mode: '3d', view3d: { yaw: -30, pitch: 35 }, density: '7850 kg/m^3', design: curvesDesign() }],
+    ['text', L, mm(162), { width: mm(80), markdown: '**Plate**: the box less the elliptical pocket π·a·b·d and the hole, against the solid\'s exact volume.' }],
+    ['math', mm(105), mm(162), { source: 'cs.Plate.V = cm^3' }],
+    ['math', mm(105), mm(174), { source: 'w_p * h_p * t_p - π * a_e * b_e * d_e - π / 4 * d_h^2 * t_p = cm^3' }],
+    ['text', L, mm(190), { width: mm(80), markdown: '**Cam**: the spline profile\'s area (from the sketch) times the thickness, against the solid\'s volume.' }],
+    ['math', mm(105), mm(190), { source: 'cs.Cam.Profile.A = cm^2' }],
+    ['math', mm(105), mm(202), { source: 'cs.Cam.Profile.A * t_c = cm^3' }],
+    ['math', mm(105), mm(214), { source: 'cs.Cam.V = cm^3' }],
+    ['text', L, mm(230), { width: mm(80), markdown: '**Tag**: the volume the engraving removed, 0.8 mm deep (the letters\' holes stay).' }],
+    ['math', mm(105), mm(230), { source: '70 mm * 24 mm * 3 mm - cs.Tag.V = mm^3' }],
+  ]);
+}
+
+// ------------------------------------------------------------ CAD drawing: annotations
+
+/**
+ * What the flange assembly's drawing says besides its views: the shaft Ø40 g6 with its
+ * deviations and a perpendicularity to datum A (the flange's seat), surface textures, the
+ * counterbore depth in detail B (between corners of the cut), a general note, balloons with
+ * the parts list, and a filled ISO 7200 title block. Picks name the model's faces and
+ * edges, so they follow the part when the worksheet changes its sizes.
+ */
+function flangeDrawingNotes(): Partial<DrawingRegion> {
+  const edge = (occ: string, body: string, key: string, p: [number, number, number], type: 'circle', r: number) => ({ occ, ref: { kind: 'edge' as const, body, key, hint: { p, type, d: [0, 0, 1] as [number, number, number], r } } });
+  const shaft: DrawPick = { occ: 'os', ref: { kind: 'face', body: 'fs1', key: 'fs1/side:sk0', hint: { p: [0, 0, 90], type: 'cylinder', d: [0, 0, -1], r: 20 } }, snap: 'cyl', shape: { k: 'cyl', x1: 0, y1: 140, x2: 0, y2: -40, r: 20 } };
+  const rim: DrawPick = { occ: 'of', ref: { kind: 'face', body: 'ff1', key: 'ff1/side:fk0', hint: { p: [0, 0, 6], type: 'cylinder', d: [0, 0, -1], r: 100 } }, snap: 'cyl', shape: { k: 'cyl', x1: 0, y1: 12, x2: 0, y2: 0, r: 100 } };
+  const seat: DrawPick = { ...edge('of', 'ff1', 'ff1/side:fk0|ff1/start', [-100, 0, 0], 'circle', 100), snap: 'line', shape: { k: 'line', x1: -100, y1: 0, x2: 100, y2: 0 } };
+  const face: DrawPick = { ...edge('of', 'ff1', 'ff1/end|ff1/side:fk0', [-100, 0, 12], 'circle', 100), snap: 'line', shape: { k: 'line', x1: -100, y1: 12, x2: 100, y2: 12 } };
+  const cbTop: DrawPick = { ...edge('of', 'ff1', 'ff1/end|ff3/hole0:cb', [67.5, 0, 12], 'circle', 7.5), snap: 'cut1', shape: { k: 'point', x: 82.5, y: 12 } };
+  const cbFloor: DrawPick = { ...edge('of', 'ff1', 'ff3/hole0:cb|ff3/hole0:cbFloor', [67.5, 0, 8], 'circle', 7.5), snap: 'cut1', shape: { k: 'point', x: 82.5, y: 8 } };
+  return {
+    drawnBy: 'Example', bom: { show: true },
+    titleBlock: { owner: 'mathstudii', checkedBy: 'P. Novak', approvedBy: 'M. Weber', revisions: true },
+    revisions: [{ rev: 'A', text: 'First issue', date: '2026-10-17', by: 'Example' }],
+    // placed on the sheet at 1:2.5 (detail B at 2:1): at another scale they keep their distances on the paper
+    annotations: ([
+      { id: 'n_d', kind: 'dim', view: 'front', type: 'diameter', a: shaft, text: [62, 112], tol: { kind: 'fit', code: 'g6', show: 'dev' } },
+      { id: 'n_g', kind: 'gdt', view: 'front', char: 'perpendicularity', tol: 0.05, dia: true, datums: [{ letter: 'A' }], at: [62, 90], dim: 'n_d' },
+      { id: 'n_a', kind: 'datum', view: 'front', letter: 'A', at: [-82, -24], leader: seat },
+      { id: 'n_r1', kind: 'surface', view: 'front', param: 'Ra', value: 0.8, process: 'removal', method: 'ground', at: [48, 52], leader: shaft },
+      { id: 'n_r2', kind: 'surface', view: 'front', param: 'Ra', value: 3.2, process: 'removal', at: [51, 12], leader: face },
+      { id: 'n_cb', kind: 'dim', view: 'det:db', type: 'linear', orient: 'v', a: cbTop, b: cbFloor, text: [90, 10] },
+      { id: 'n_n', kind: 'note', view: 'top', text: 'General tolerances ISO 2768-mK\nBreak sharp edges 0.3', at: [-100, -132] },
+      { id: 'n_b1', kind: 'balloon', view: 'front', occ: 'of', a: rim, at: [-132, 6] },
+      { id: 'n_b2', kind: 'balloon', view: 'front', occ: 'os', a: shaft, at: [-55, 118] },
+    ] as Annotation[]).map((a) => ({ ...a, k: a.view.startsWith('det:') ? 2 : 0.4 })),
+  };
+}

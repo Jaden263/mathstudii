@@ -6263,3 +6263,314 @@ div.pl-cutplot {
     overflow: hidden !important;
   }
 }
+
+
+/* ---------------------------------------------------------------- CAD sketcher: references, splines, text */
+
+.cad-region,
+.cadw {
+  --cad-refgeo: #8e44ad;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .cad-region,
+  :root:not([data-theme='light']) .cadw {
+    --cad-refgeo: #c792ea;
+  }
+}
+
+:root[data-theme='dark'] .cad-region,
+:root[data-theme='dark'] .cadw {
+  --cad-refgeo: #c792ea;
+}
+
+/* projected geometry: fixed, in the reference colour whatever its constraint state */
+.cad-svg .cad-ent.ref,
+.cad-svg .cad-ent.ref.det,
+.cad-svg .cad-pt.ref {
+  stroke: var(--cad-refgeo);
+}
+
+.cad-svg .cad-ent.ref.sel {
+  stroke: var(--accent);
+}
+
+.cad-svg .cad-ent.text {
+  fill: color-mix(in srgb, var(--cad-free) 10%, transparent);
+  fill-rule: evenodd;
+  stroke-width: 1.2;
+}
+
+.cad-svg .cad-ent.text.det {
+  fill: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.cad-svg .cad-handle {
+  fill: none;
+  stroke: var(--cad-free);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.cadw-options input.cadw-text {
+  width: 110px;
+}
+
+.cad-sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cad-sources li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+/* ---------------------------------------------------------------- drawings: section and detail tools */
+
+.dw-sheet.dw-picking .dw-svg {
+  cursor: crosshair;
+}
+
+.dw-svg .dw-movable {
+  fill: transparent;
+  stroke: var(--accent);
+  stroke-width: 0.35;
+  stroke-dasharray: 2 1.5;
+  cursor: move;
+}
+
+.dw-svg .dw-view {
+  fill: none;
+  stroke: none;
+  pointer-events: none;
+}
+
+.dw-svg .dw-draft {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.5;
+  stroke-dasharray: 3 1.5;
+  pointer-events: none;
+}
+
+.dw-hint {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: 12px var(--font);
+  pointer-events: none;
+}
+
+.dw-tools .btn {
+  white-space: nowrap;
+}
+
+.dw-tools .dw-scale {
+  white-space: nowrap;
+}
+
+.dw-tools .btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dw-item small {
+  color: var(--text-muted);
+}
+
+.cad-clist .dw-item {
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cad-clist li > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cad-clist select {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 1px 2px;
+}
+
+@media print {
+  .dw-hint,
+  .dw-svg .dw-movable,
+  .dw-svg .dw-draft {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------- drawings: annotations */
+
+.dw-tools.dw-annot {
+  flex-wrap: wrap;
+}
+
+.dw-tools .btn:disabled {
+  opacity: 0.5;
+}
+
+.dw-seg {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 4px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+
+.dw-lost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font: 12px var(--font);
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.dw-svg .dw-hl path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.45;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.dw-svg .dw-hl path.fill {
+  fill: var(--accent);
+  stroke: none;
+}
+
+.dw-svg .dw-hl text {
+  fill: var(--accent);
+  pointer-events: none;
+}
+
+.dw-svg .dw-preview {
+  opacity: 0.85;
+}
+
+.dw-svg .dw-pick line,
+.dw-svg .dw-pick circle,
+.dw-svg .dw-pick path,
+.dw-svg .dw-pick rect {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.6;
+  pointer-events: none;
+}
+
+.dw-svg .dw-pick rect.free {
+  stroke-dasharray: 0.6 0.4;
+}
+
+.dw-svg .dw-picked line,
+.dw-svg .dw-picked circle,
+.dw-svg .dw-picked path,
+.dw-svg .dw-picked rect {
+  stroke: var(--ok);
+}
+
+.dw-ann-list li.on .dw-item {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dw-ann-list .dw-lost-mark {
+  color: var(--warn);
+}
+
+.dw-ann-edit {
+  margin: 6px 0 10px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.dw-ann-edit textarea {
+  width: 100%;
+  min-height: 52px;
+  font: 12px var(--font);
+  resize: vertical;
+}
+
+.dw-ann-note {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.dw-ann-note.warn {
+  color: var(--warn);
+}
+
+.dw-ann-note.err {
+  color: var(--error);
+}
+
+.dw-bom {
+  width: 100%;
+  margin: 4px 0 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.dw-bom th {
+  font-weight: 600;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.dw-bom th,
+.dw-bom td {
+  padding: 2px 3px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dw-bom td input {
+  width: 100%;
+  min-width: 0;
+}
+
+.dw-rev {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.dw-rev-by {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dw-rev-by input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media print {
+  .dw-svg .dw-hl,
+  .dw-svg .dw-pick {
+    display: none;
+  }
+}

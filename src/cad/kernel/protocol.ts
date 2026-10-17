@@ -10,7 +10,7 @@ import type { Vec2 } from '../profile';
 import type { Frame } from '../solid';
 import type { ExportScope } from '../occ/exchange';
 import type { Interference, SectionBody } from '../occ/query';
-import type { ViewLines } from '../drawing';
+import type { DrawView, DrawViewRequest } from '../drawing2d';
 
 export type { Distance, EntityRef, ExportScope, Interference, SectionBody, SectionPlane };
 
@@ -28,14 +28,8 @@ export type KernelRequest =
   | ({ op: 'export'; format: 'step' | 'stl'; scope: ExportScope; unit: CadUnit; name: string } & Built)
   | ({ op: 'distance'; a: EntityRef; b: EntityRef } & Built)
   | ({ op: 'interference' } & Built)
-  /** Drawing views (visible and hidden lines) of the visible bodies. */
-  | ({ op: 'views'; specs: ViewSpecRequest[] } & Built);
-
-export interface ViewSpecRequest {
-  key: string;
-  view: 'front' | 'top' | 'left' | 'right' | 'iso';
-  hidden: boolean;
-}
+  /** Drawing views of the visible bodies: exact: hidden-line removal on the B-rep (the display mesh's without OpenCascade). */
+  | ({ op: 'drawing'; views: DrawViewRequest[] } & Built);
 
 /** What a request that needs a kernel fails with when neither could load. */
 export const NO_KERNEL = 'the 3-D kernel could not load';
@@ -54,7 +48,7 @@ export interface KernelValues {
   distance: Distance | null;
   interference: Interference[];
   /** Null while there is nothing built to draw. */
-  views: Record<string, ViewLines> | null;
+  drawing: Record<string, DrawView> | null;
 }
 
 export type KernelOp = KernelRequest['op'];

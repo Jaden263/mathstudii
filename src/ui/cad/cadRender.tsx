@@ -1,10 +1,10 @@
 // SVG drawing of a CAD sketch: geometry coloured by how constrained it is, the
 // closed profile, dimensions with extension lines, and constraint glyphs.
 import type { CadConstraint, CadEntity, CadView } from '../../cad/model';
-import { isDimension } from '../../cad/model';
+import { isAngleDim, isDimension } from '../../cad/model';
 import type { Geo } from '../../cad/edit';
-import { GLYPH, entityRadius, isPlainNumber } from '../../cad/edit';
-import { loopPolygon, type ProfileRegion, type Vec2 } from '../../cad/profile';
+import { GLYPH, entityRadius, isPlainNumber, segsOf } from '../../cad/edit';
+import { loopPolygon, segPoint, segPolyline, type ProfileRegion, type Vec2 } from '../../cad/profile';
 
 export interface Vp {
   view: CadView;
@@ -56,6 +56,14 @@ export function entityPath(g: Geo, e: CadEntity, vp: Vp): string {
     }
     case 'point':
       return '';
+    default: {
+      // splines, ellipses and text: through their curve (text loop by loop)
+      const z = vp.view.zoom;
+      return segsOf(g, e).map((sg) => {
+        const pts = segPolyline(sg, Math.min(Math.PI / 60, Math.max(Math.PI / 720, 2 / (z * 20)))).map((p) => toS(vp, p));
+        return `M${pts.map((p) => `${f(p.x)} ${f(p.y)}`).join('L')}`;
+      }).join('');
+    }
   }
 }
 
@@ -96,9 +104,13 @@ const unitVec = (a: Vec2, b: Vec2) => {
 /** Text shown on a dimension: the value, plus the expression when it is not a plain number. */
 export function dimText(c: CadConstraint, value: number, error?: string): string {
   if (error) return `${c.value ?? '?'} ⚠`;
-  const ang = c.type === 'angle';
+  const ang = isAngleDim(c);
   const v = ang ? (value * 180) / Math.PI : value;
-  let s = `${c.type === 'radius' ? 'R' : c.type === 'diameter' ? 'Ø' : ''}${fmtNum(Math.abs(v))}${ang ? '°' : ''}`;
+  const prefix = c.type === 'radius' ? 'R' : c.type === 'diameter' ? 'Ø' : c.type === 'majorRadius' ? 'a ' : c.type === 'minorRadius' ? 'b ' : '';
+  // a pattern's sign is its direction (clockwise, or against its line)
+  let s = `${prefix}${fmtNum(c.type === 'pattern' ? v : Math.abs(v))}${ang ? '°' : ''}`;
+  // a pattern shows its count too
+  if (c.type === 'pattern' && c.pattern) s = `${c.pattern.count} × ${s}`;
   if (c.driving === false) return `(${s})`;
   // a constant (with or without a unit) is just the value; show the expression only when it has variables
   if (!isPlainNumber(c.value) && !/^\s*-?\d*\.?\d+(e[+-]?\d+)?\s*(mm|cm|m|in|ft|deg|°|rad)?\s*$/i.test(c.value ?? '')) {
@@ -197,6 +209,45 @@ export function dimDrawing(c: CadConstraint, g: Geo, vp: Vp, value: number, erro
         text, at: label,
       };
     }
+    case 'majorRadius':
+    case 'minorRadius': {
+      // along the semi-axis, from the centre
+      const e = ents(c.refs[0]);
+      if (e?.type !== 'ellipse') return null;
+      const cc = P(e.c), a = P(e.a), r = c.type === 'majorRadius' ? Math.hypot(a.x - cc.x, a.y - cc.y) : entityRadius(g, e);
+      const u = unitVec(cc, a), d = c.type === 'majorRadius' ? u : { x: -u.y, y: u.x };
+      return linear(cc, { x: cc.x + d.x * r, y: cc.y + d.y * r }, 'aligned');
+    }
+    case 'offset': {
+      // across the first pair: from the source's middle square to its copy
+      const src = ents(c.refs[0]), dst = ents(c.refs[1]);
+      if (src?.type === 'line' && dst?.type === 'line') {
+        const a = P(src.p1), b = P(src.p2), m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const p = P(dst.p1), q = P(dst.p2), dx = q.x - p.x, dy = q.y - p.y, L2 = dx * dx + dy * dy || 1;
+        const t = ((m.x - p.x) * dx + (m.y - p.y) * dy) / L2;
+        return linear(m, { x: p.x + t * dx, y: p.y + t * dy }, 'aligned');
+      }
+      if ((src?.type === 'circle' || src?.type === 'arc') && (dst?.type === 'circle' || dst?.type === 'arc')) {
+        const cc = P(src.c), r0 = entityRadius(g, src), r1 = entityRadius(g, dst);
+        let dir = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+        if (src.type === 'arc') {
+          const a = P(src.p1), b = P(src.p2), a0 = Math.atan2(a.y - cc.y, a.x - cc.x);
+          let a1 = Math.atan2(b.y - cc.y, b.x - cc.x);
+          while (a1 <= a0) a1 += 2 * Math.PI;
+          dir = { x: Math.cos((a0 + a1) / 2), y: Math.sin((a0 + a1) / 2) };
+        }
+        return linear({ x: cc.x + dir.x * r0, y: cc.y + dir.y * r0 }, { x: cc.x + dir.x * r1, y: cc.y + dir.y * r1 }, 'aligned');
+      }
+      return null;
+    }
+    case 'pattern': {
+      const pt = c.pattern;
+      if (!pt || c.refs.length < 2 * pt.n) return null;
+      if (pt.kind === 'rect') return linear(P(c.refs[0]), P(c.refs[pt.n]), 'aligned');
+      // the label by the centre
+      const o = toS(vp, P(pt.about!));
+      return { path: '', arrows: '', text, at: { x: o.x + 22 + off.x * z, y: o.y - 18 - off.y * z } };
+    }
     case 'angle': {
       const l2 = ents(c.refs.length === 1 ? c.refs[0] : c.refs[1]);
       const l1 = c.refs.length === 1 ? null : ents(c.refs[0]);
@@ -268,6 +319,14 @@ export function glyphs(g: Geo, vp: Vp): Glyph[] {
       const c = toS(vp, g.P.get(e.c)!), r = entityRadius(g, e) * vp.view.zoom;
       return { x: c.x + r * 0.71 + 10 + 15 * k, y: c.y + r * 0.71 + 8 };
     }
+    if (e && (e.type === 'ellipse' || e.type === 'spline')) {
+      // beside the middle of the curve
+      const sg = segsOf(g, e)[0];
+      if (sg) {
+        const m = toS(vp, segPoint(sg, 0.5));
+        return { x: m.x + 10 + 15 * k, y: m.y + 12 };
+      }
+    }
     const p = g.P.get(id);
     if (p) {
       const s = toS(vp, p);
@@ -286,13 +345,22 @@ export function glyphs(g: Geo, vp: Vp): Glyph[] {
     if (isDimension(c.type) || c.type === 'coincident') continue;
     const text = GLYPH[c.type];
     if (!text) continue;
-    if ((c.type === 'pointOnLine' || c.type === 'pointOnCircle') && (helperPoints.has(c.refs[0]) || ents.get(c.refs[1])?.construction)) continue;
+    if ((c.type === 'pointOnLine' || c.type === 'pointOnCircle' || c.type === 'pointOnCurve') && (helperPoints.has(c.refs[0]) || ents.get(c.refs[1])?.construction)) continue;
     // symmetry: one marker between the two points (on the axis), so pairs don't pile up
     if (c.type === 'symmetric') {
       const a = g.P.get(c.refs[0]), b = g.P.get(c.refs[1]);
       if (a && b) {
         const m = toS(vp, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
         out.push({ c, at: { x: m.x + 9, y: m.y - 9 }, text });
+        continue;
+      }
+    }
+    // tangency and curvature at a spline's end: by that end
+    if ((c.type === 'tangent' || c.type === 'curvature') && c.ends?.some((x) => x === 0 || x === 1)) {
+      const i = c.ends.findIndex((x) => x === 0 || x === 1), sp = ents.get(c.refs[i]);
+      if (sp?.type === 'spline') {
+        const at = place(c.ends[i] ? sp.pts[sp.pts.length - 1] : sp.pts[0]);
+        if (at) out.push({ c, at, text });
         continue;
       }
     }
@@ -305,7 +373,7 @@ export function glyphs(g: Geo, vp: Vp): Glyph[] {
         continue;
       }
     }
-    let targets = c.type === 'symmetric' ? [c.refs[2]] : c.type === 'midpoint' || c.type === 'pointOnLine' || c.type === 'pointOnCircle' ? [c.refs[0]] : c.refs;
+    let targets = c.type === 'symmetric' ? [c.refs[2]] : c.type === 'midpoint' || c.type === 'pointOnLine' || c.type === 'pointOnCircle' || c.type === 'pointOnCurve' ? [c.refs[0]] : c.refs;
     // a chain of equal sides (polygons): one "=" per side, not one per constraint
     if (c.type === 'equal') {
       targets = targets.filter((id) => !equalShown.has(id));

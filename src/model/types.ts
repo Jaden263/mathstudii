@@ -3,6 +3,7 @@
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
+import type { Annotation, BomSettings, Revision, TitleFields } from '../cad/annotations';
 import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
@@ -208,7 +209,9 @@ export interface DrawingRegion extends RegionBase {
   cad: string;
   width: number;
   height: number;
-  sheet: 'A4' | 'A3';
+  sheet: 'A4' | 'A3' | 'A2' | 'A1' | 'A0';
+  /** Portrait; missing = landscape. */
+  portrait?: boolean;
   /** First angle (ISO, Europe) or third angle (ANSI). */
   projection: 'first' | 'third';
   views: { front: boolean; top: boolean; side: boolean; iso: boolean };
@@ -216,11 +219,56 @@ export interface DrawingRegion extends RegionBase {
   /** Paper / model, e.g. 0.5 for 1:2; missing = the largest standard scale that fits. */
   scale?: number;
   dims: boolean;
+  /** Tangent edges (where faces meet smoothly) as narrow lines; missing = shown. */
+  tangent?: boolean;
+  /** Views drawn without centre marks and centre lines (view keys, section and detail ids). */
+  noCentres?: string[];
+  sections?: DrawingSection[];
+  details?: DrawingDetail[];
   title?: string;
   partNo?: string;
   material?: string;
   drawnBy?: string;
   date?: string;
+  /** Dimensions, tolerances, notes, GD&T and symbols placed on the views (cad/annotations.ts). */
+  annotations?: Annotation[];
+  /** Decimals of dimension values; missing = as many as the value needs, up to 2 in mm. */
+  decimals?: number;
+  /** The rest of the ISO 7200 title block. */
+  titleBlock?: TitleFields;
+  revisions?: Revision[];
+  /** The parts list of an assembly. */
+  bom?: BomSettings;
+}
+
+/** A section view: the part cut along a straight line drawn on one of the standard views. */
+export interface DrawingSection {
+  id: string;
+  /** A for A–A. */
+  letter: string;
+  /** The view the cutting line is drawn on. */
+  view: 'front' | 'top' | 'side';
+  /** Ends of the cutting line in that view (model units, x right and y up on the paper). */
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+  /** Look the other way (the default is the way that shows the part upright, else to the right of a → b). */
+  flip?: boolean;
+  /** Centre of the view on the sheet (mm from its lower left corner); missing = placed automatically. */
+  at?: { x: number; y: number };
+}
+
+/** A detail view: what lies inside a circle on a view, enlarged. */
+export interface DrawingDetail {
+  id: string;
+  letter: string;
+  /** The view it enlarges: a standard view's key or a section view's (`sec:${id}`). */
+  view: string;
+  /** Centre and radius of the circle in that view (model units). */
+  c: { x: number; y: number };
+  r: number;
+  /** Paper / model, e.g. 2 for 2:1. */
+  scale: number;
+  at?: { x: number; y: number };
 }
 
 /** 3-D frame: nodes, members, sections, supports and loads as tables, solved in space. */

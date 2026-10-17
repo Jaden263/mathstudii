@@ -6,12 +6,12 @@ import type { Unit } from 'mathjs';
 import type { CadRegion } from '../model/types';
 import { math, isUnit } from '../engine/math';
 import type { SectionProps } from '../engine/geometry';
-import { isDimension, sketchSig, type CadSketch } from './model';
-import { solveSketch, measure } from './solver';
-import { findProfiles, profileProperties, type ProfileRegion, type Vec2 } from './profile';
+import { isAngleDim, isDimension, type CadSketch } from './model';
+import type { ProfileRegion, Vec2 } from './profile';
+import { sketchSolution } from './sketchSolve';
 import {
   activeItems, buildDesign, buildInputs, bodyMass, designOf, exactComponent, hasFeatures, identifier, isSketch, massOut, offsetFrame, placeOccurrences,
-  placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement,
+  placedSolids, planeFrame, type CadDesign, type DesignNumbers, type MassOut, type Placement, type RebuiltSketch,
 } from './design';
 import { boxOf, kernel, kernelFailure, transformMass, type Frame, type Mass3, type Vec3 } from './solid';
 import { designKey } from './keys';
@@ -85,11 +85,13 @@ export interface DesignResult extends DesignNumbers {
   warnings?: Record<string, string>;
   /** The sketch planes as resolved, before the build moved sketches on faces onto them (`frames` are as built). */
   resolveFrames?: Record<string, Frame>;
+  /** The sketches as resolved, before the build projected their references again (`sketches` are as built). */
+  resolveSketches?: Record<string, CadResult>;
+  /** Sketches whose projected references the build moved: the sketch with its references as built. */
+  rebuilt?: Record<string, CadSketch>;
 }
 
 export { designNumbers } from './keys';
-
-const isAngle = (t: string) => t === 'angle';
 
 export { dimensionValue };
 
@@ -103,37 +105,21 @@ export interface CadSolved {
 type Eval = (src: string) => unknown;
 
 /** Solve one sketch with its dimension expressions. */
-export function solveSketchIn(sk: CadSketch, unit: string, evalExpr: Eval): CadSolved {
+export function solveSketchIn(sk: CadSketch, unit: string, evalExpr: Eval): CadSolved & { values: Map<string, number> } {
   const values = new Map<string, number>();
   const dimErrors: Record<string, string> = {};
   for (const c of sk.constraints) {
     if (!isDimension(c.type) || c.driving === false) continue;
     try {
-      const n = dimensionValue(evalExpr(c.value?.trim() || '0'), unit, isAngle(c.type));
+      const n = dimensionValue(evalExpr(c.value?.trim() || '0'), unit, isAngleDim(c));
       if (!Number.isFinite(n)) throw new Error('not a finite number');
-      if (n < 0 && c.type !== 'distanceX' && c.type !== 'distanceY') throw new Error('must not be negative');
+      if (n < 0 && c.type !== 'distanceX' && c.type !== 'distanceY' && c.type !== 'pattern') throw new Error('must not be negative');
       values.set(c.id, n);
     } catch (e) {
       dimErrors[c.id] = e instanceof Error ? e.message : String(e);
     }
   }
-  const sol = solveSketch(sk, { values });
-  const measured: Record<string, number> = {};
-  for (const c of sk.constraints) if (isDimension(c.type)) measured[c.id] = measure(sk, c, sol.points, sol.radii);
-  const { regions, issues } = findProfiles(sk, sol.points, sol.radii);
-  const result: CadResult = {
-    kind: 'cad',
-    sig: sketchSig(sk),
-    points: Object.fromEntries([...sol.points].map(([id, p]) => [id, [p.x, p.y]])),
-    radii: Object.fromEntries(sol.radii),
-    ok: sol.ok, dof: sol.dof,
-    determined: [...sol.determined], determinedRadii: [...sol.determinedRadii],
-    conflicting: sol.conflicting, redundant: sol.redundant,
-    values: measured, dimErrors, issues,
-  };
-  const section = profileProperties(regions);
-  if (section) result.section = section;
-  return { result, regions, points: sol.points, radii: sol.radii };
+  return { ...sketchSolution(sk, values, dimErrors), values };
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -187,7 +173,10 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
           case 'sketch': {
             p.offset = item.plane.offset?.trim() ? value(item.plane.offset, '0', 'L', 'plane offset') : 0;
             frames[item.id] = offsetFrame(planeFrame(item.plane), p.offset);
-            sketches[item.id] = solveSketchIn(item.sketch, unit, evalExpr).result;
+            const solved = solveSketchIn(item.sketch, unit, evalExpr);
+            sketches[item.id] = solved.result;
+            // a sketch with projected references is solved again on the bodies before it, with these values
+            if (item.sketch.sources?.length) for (const [cid, v] of solved.values) p[`v:${cid}`] = v;
             break;
           }
           case 'extrude': {
@@ -341,6 +330,14 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
   return { sketches, frames, params, errors, unit };
 }
 
+/** Sketches the build solved again replace their resolved results (the sketch first in the part too). */
+function rebuiltInto(dr: DesignResult, rebuilt?: Record<string, RebuiltSketch>) {
+  for (const [id, r] of Object.entries(rebuilt ?? {})) {
+    dr.sketches[id] = r.result;
+    (dr.rebuilt ??= {})[id] = r.sketch;
+  }
+}
+
 const emptyResult = (): CadResult => ({
   kind: 'cad', points: {}, radii: {}, ok: true, dof: 0, determined: [], determinedRadii: [], conflicting: [], redundant: [], values: {}, dimErrors: {}, issues: [],
 });
@@ -358,6 +355,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
 
   const dr: DesignResult = {
     ...numbers, errors: { ...numbers.errors }, resolveErrors: numbers.errors, frames: { ...numbers.frames }, resolveFrames: numbers.frames, warnings: {},
+    sketches: { ...numbers.sketches }, resolveSketches: numbers.sketches,
     display: designKey(design, numbers), bodies: {}, components: {}, placements: {}, kernel: false,
   };
   const density = (cid: string) => numbers.params[cid]?.density;
@@ -390,6 +388,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     Object.assign(dr.errors, m.errors);
     Object.assign(dr.warnings!, m.warnings);
     Object.assign(dr.frames, m.frames);
+    rebuiltInto(dr, m.sketches);
     dr.placements = m.placements;
     dr.box = m.box;
   } else if (K) {
@@ -401,6 +400,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
         Object.assign(dr.errors, cb.errors);
         Object.assign(dr.warnings!, cb.warnings);
         Object.assign(dr.frames, cb.frames);
+        rebuiltInto(dr, cb.sketches);
         const masses: Mass3[] = [];
         dr.bodies[c.id] = cb.bodies.map((b) => {
           if (b.solid.isEmpty()) return { id: b.id, name: b.name, feature: b.feature, empty: true };
@@ -438,6 +438,10 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     const placed = placeOccurrences(design, numbers);
     dr.placements = placed.placements;
     Object.assign(dr.errors, placed.errors);
+  }
+  // the part's own sketch readouts: the first sketch as the build solved it
+  if (first && dr.rebuilt?.[first.id]) {
+    Object.assign(result, dr.sketches[first.id], { dof: Object.values(dr.sketches).reduce((s, x) => s + x.dof, 0), ok: Object.values(dr.sketches).every((x) => x.ok) });
   }
   for (const c of design.components) dr.components[c.id] = massOut((compMass.get(c.id) ?? []).map((m) => ({ m, rho: density(c.id) })));
   const all: { m: Mass3; rho?: number }[] = [];
@@ -528,7 +532,7 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
       if (!isDimension(k.type) || !k.name?.trim()) continue;
       const v = sr.values[k.id];
       if (!Number.isFinite(v)) continue;
-      value[k.name.trim()] = isAngle(k.type) ? math.unit((v * 180) / Math.PI, 'deg') : L(v);
+      value[k.name.trim()] = isAngleDim(k) ? math.unit((v * 180) / Math.PI, 'deg') : L(v);
     }
   }
   return value;

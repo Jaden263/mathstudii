@@ -4,7 +4,8 @@
 //
 // Functions that take a sketch work on (and return) a copy; nothing mutates the input.
 import { cadId, nextDimName, removeFromSketch, type CadConstraint, type CadEntity, type CadSketch, type ConstraintType } from './model';
-import type { Vec2 } from './profile';
+import type { Seg, Vec2 } from './profile';
+import { entitySegs, segCrossings } from './sketchCurves';
 
 /** A picked location: an existing point, a point on a curve, or free space. */
 export interface Ref {
@@ -35,8 +36,9 @@ const unit = (v: Vec2) => {
   return { x: v.x / l, y: v.y / l };
 };
 
+/** A copy to edit (whatever else the sketch carries, its projected sources, goes along). */
 export function cloneSketch(sk: CadSketch): CadSketch {
-  return { points: [...sk.points], entities: [...sk.entities], constraints: [...sk.constraints] };
+  return { ...sk, points: [...sk.points], entities: [...sk.entities], constraints: [...sk.constraints] };
 }
 
 /** Point id for a Ref, adding the point (and its on-curve constraint) to `sk` when needed. Mutates sk. */
@@ -48,6 +50,7 @@ export function pointFor(sk: CadSketch, r: Ref): string {
     const e = sk.entities.find((x) => x.id === r.on);
     if (e?.type === 'line') sk.constraints.push(K('pointOnLine', [id, e.id]));
     else if (e?.type === 'circle' || e?.type === 'arc') sk.constraints.push(K('pointOnCircle', [id, e.id]));
+    else if (e?.type === 'ellipse' || e?.type === 'spline') sk.constraints.push(K('pointOnCurve', [id, e.id]));
   }
   if (r.mid) sk.constraints.push(K('midpoint', [id, r.mid]));
   r.id = id;
@@ -343,13 +346,19 @@ function param(X: Curve, p: Vec2): number {
 export function trim(sk0: CadSketch, P: Map<string, Vec2>, R: Map<string, number>, entityId: string, at: Vec2): ToolResult | string {
   const target = sk0.entities.find((e) => e.id === entityId);
   if (!target || target.type === 'point') return 'Pick a line, circle or arc to trim';
-  const T = curveOf(target, P, R)!;
+  const T = curveOf(target, P, R);
+  if (!T) return 'Trim works on lines, circles and arcs: break splines and ellipses instead';
   const cuts: Cut[] = [];
+  const tSeg: Seg = T.kind === 'line' ? { kind: 'line', a: T.a, b: T.b } : T.kind === 'circle' ? { kind: 'arc', c: T.c, r: T.r, a0: 0, a1: 2 * Math.PI } : { kind: 'arc', c: T.c, r: T.r, a0: T.a0, a1: T.a0 + T.sweep };
   for (const e of sk0.entities) {
-    if (e.id === entityId || e.type === 'point') continue;
+    if (e.id === entityId || e.type === 'point' || e.type === 'text') continue;
     const other = curveOf(e, P, R);
-    if (!other) continue;
-    for (const p of meet(T, other)) cuts.push({ t: param(T, p), p, by: e.id });
+    if (other) {
+      for (const p of meet(T, other)) cuts.push({ t: param(T, p), p, by: e.id });
+      continue;
+    }
+    // splines and ellipses: where their curves cross it
+    for (const sg of entitySegs(e, (id) => P.get(id), (id) => R.get(id))) for (const x of segCrossings(tSeg, sg)) cuts.push({ t: param(T, x.p), p: x.p, by: e.id });
   }
   const span = T.kind === 'line' ? 1 : T.kind === 'circle' ? 2 * Math.PI : T.sweep;
   const eps = 1e-7 * span;
@@ -435,6 +444,7 @@ export function mirror(sk0: CadSketch, P: Map<string, Vec2>, ids: string[], axis
   let size = 1;
   for (const p of P.values()) size = Math.max(size, Math.abs(p.x), Math.abs(p.y));
   const map = new Map<string, string>();
+  const notes: string[] = [];
   const image = (id: string): string => {
     if (map.has(id)) return map.get(id)!;
     const p = P.get(id)!;
@@ -462,8 +472,17 @@ export function mirror(sk0: CadSketch, P: Map<string, Vec2>, ids: string[], axis
       // a mirror image runs the other way round
       sk.entities.push({ id, type: 'arc', c: image(e.c), p1: image(e.p2), p2: image(e.p1), construction: cons });
       sk.constraints.push(K('equal', [e.id, id]));
-    } else sk.entities.push({ id, type: 'point', p: image(e.p), construction: cons });
+    } else if (e.type === 'ellipse') {
+      sk.entities.push({ id, type: 'ellipse', c: image(e.c), a: image(e.a), r: e.r, ...(e.p1 && e.p2 ? { p1: image(e.p2), p2: image(e.p1) } : {}), construction: cons });
+      sk.constraints.push(K('equal', [e.id, id]));
+    } else if (e.type === 'spline') {
+      sk.entities.push({ ...e, id, pts: e.pts.map(image), ...(e.h1 ? { h1: image(e.h1) } : {}), ...(e.h2 ? { h2: image(e.h2) } : {}), ref: undefined });
+    } else if (e.type === 'point') sk.entities.push({ id, type: 'point', p: image(e.p), construction: cons });
+    else {
+      notes.push('Text is not mirrored (it would read backwards)');
+      continue;
+    }
     out.push(id);
   }
-  return { sketch: sk, ids: out, notes: [] };
+  return { sketch: sk, ids: out, notes };
 }

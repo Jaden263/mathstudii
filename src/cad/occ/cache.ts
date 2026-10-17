@@ -128,7 +128,7 @@ export class TimelineCache {
             at = next;
           }
           const st = at.state;
-          components.set(c.id, { bodies: namedBodies(c, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools });
+          components.set(c.id, { bodies: namedBodies(c, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads });
         } catch (e) {
           components.set(c.id, failedComponent(c.id, e));
         }
