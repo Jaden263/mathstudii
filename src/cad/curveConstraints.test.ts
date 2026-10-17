@@ -148,9 +148,26 @@ describe('points on curves and ellipse tangency', () => {
     const sk0: CadSketch = { points: [...splinePts, ...pts({ p: [30, 30] })], entities: [spline, { id: 'pt', type: 'point', p: 'p' }], constraints: [K('k', 'pointOnCurve', ['p', 's'])] };
     const { sol, sk } = solved(sk0);
     expect(sol.ok).toBe(true);
+    // 8 for the spline, 2 for the point, less 1: it slides along the curve
+    expect(sol.dof).toBe(9);
+    expect(sol.determined.has('p')).toBe(false);
     const cv = splineOf(sk.entities[0] as Extract<CadEntity, { type: 'spline' }>, P(sk))!;
     const p = P(sk)('p')!, c = bsPoint(cv, bsClosest(cv, p));
     expect(hypot(p.x - c.x, p.y - c.y)).toBeLessThan(1e-9);
+  });
+
+  it('a point on a spline dragged past its end stops at the end (not on the end\'s tangent, off the curve)', () => {
+    const fixed = splinePts.map((q) => K(`f${q.id}`, 'fix', [q.id], { at: { x: q.x, y: q.y } }));
+    const sk0: CadSketch = { points: [...splinePts, ...pts({ p: [45, 8] })], entities: [spline, { id: 'pt', type: 'point', p: 'p' }], constraints: [...fixed, K('k', 'pointOnCurve', ['p', 's'])] };
+    const cv = splineOf(spline as Extract<CadEntity, { type: 'spline' }>, P(sk0))!;
+    // beyond the end at (60, 30), along its tangent and off to the side; and before the start
+    const [, D] = bsEval(cv, 1, 1), L = hypot(D.x, D.y);
+    for (const [to, end] of [[{ x: 60 + (20 * D.x) / L, y: 30 + (20 * D.y) / L }, { x: 60, y: 30 }], [{ x: 75, y: 20 }, { x: 60, y: 30 }], [{ x: -15, y: -10 }, { x: 0, y: 0 }]] as const) {
+      const sol = solveSketch(sk0, { drag: new Map([['p', to]]) });
+      const p = sol.points.get('p')!, c = bsPoint(cv, bsClosest(cv, p));
+      expect(hypot(p.x - c.x, p.y - c.y)).toBeLessThan(1e-6);
+      expect(hypot(p.x - end.x, p.y - end.y)).toBeLessThan(1e-6);
+    }
   });
 
   it('a line tangent to a turned ellipse: d² = a²n_x² + b²n_y²', () => {

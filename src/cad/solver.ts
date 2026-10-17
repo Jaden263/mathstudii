@@ -13,7 +13,7 @@
 import type { CadConstraint, CadEntity, CadSketch, CadSpline } from './model';
 import { entityPoints, hasRadius, isDimension } from './model';
 import type { Vec2 } from './profile';
-import { bsClosest, bsDomain, bsEval, ellipseDeriv, ellipseParam, ellipsePoint, ellipseRho, type BSpline, type Ellipse } from './curves';
+import { bsClosest, bsDomain, bsEval, bsPoint, ellipseDeriv, ellipseParam, ellipsePoint, ellipseRho, type BSpline, type Ellipse } from './curves';
 import { splineOf } from './sketchCurves';
 
 export interface SolveOptions {
@@ -247,15 +247,22 @@ function buildSystem(sk: CadSketch, opt: SolveOptions, includeDims = true): Sys 
             o[k] = (ellipseRho(el, at(q, p)) - 1) * el.rb;
           });
         }
-        // a spline: the distance across it from the nearest point on it (signed, so smooth at 0)
-        const g = splineVars(r1);
-        return add(c.id, 1, [...pv(p), ...g.vars], (q, o, k) => {
+        // a spline: the point is the curve's point at a parameter of its own (one more unknown,
+        // two equations), held inside the curve: a distance to the nearest point would let it
+        // slide off past an end along the end's tangent and still read as on the curve
+        const g = splineVars(r1), closed = !!g.e.closed;
+        const ti = init.length, cv0 = g.curve(Float64Array.from(init));
+        if (cv0) {
+          const [u0, u1] = bsDomain(cv0);
+          init.push((bsClosest(cv0, { x: init[p], y: init[p + 1] }) - u0) / (u1 - u0));
+        } else init.push(0.5);
+        return add(c.id, 2, [...pv(p), ...g.vars, ti], (q, o, k) => {
           const cv = g.curve(q);
-          if (!cv) return void (o[k] = 0);
-          const pt = at(q, p), u = bsClosest(cv, pt);
-          const [C, D] = bsEval(cv, u, 1);
-          const n = Math.hypot(D.x, D.y) + EPS;
-          o[k] = (D.x * (pt.y - C.y) - D.y * (pt.x - C.x)) / n;
+          if (!cv) return void (o[k] = o[k + 1] = 0);
+          const [u0, u1] = bsDomain(cv), t = closed ? ((q[ti] % 1) + 1) % 1 : Math.min(1, Math.max(0, q[ti]));
+          const C = bsPoint(cv, u0 + (u1 - u0) * t);
+          o[k] = q[p] - C.x;
+          o[k + 1] = q[p + 1] - C.y;
         });
       }
       case 'curvature':
