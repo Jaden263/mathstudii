@@ -24,6 +24,7 @@ import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
 import { ExportReportDialog, type ExportReport } from './ExportReportDialog';
+import { moveSteps, separateKeepingOrder } from './separateOrdered';
 import { regionPictures } from './regionPicture';
 import { exportName, formatLabel, FORMAT_MIME, type Format } from '../exporters';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
@@ -185,7 +186,7 @@ export function App() {
   const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
   const [exportReport, setExportReport] = useState<ExportReport | null>(null);
-  const separateRef = useRef<(quiet?: boolean, coalesce?: string) => void>(() => {});
+  const separateRef = useRef<(quiet?: boolean, coalesce?: string, keepOrder?: boolean) => void>(() => {});
   const separateTimer = useRef<number | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
   const editorRef = useRef<EditorHandle | null>(null);
@@ -456,8 +457,9 @@ export function App() {
       : (await import('../importers/mathcad')).importMathcad(bytes, name);
     loadDoc(res.ws, null);
     setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
-    // the source program lays out math at different sizes: push overlaps apart once rendered
-    window.setTimeout(() => separateRef.current(true), 400);
+    // the source program lays out math at different sizes: push overlaps apart once rendered,
+    // keeping the order in which the regions calculate
+    window.setTimeout(() => separateRef.current(true, 'separate', true), 400);
   };
 
   /**
@@ -518,7 +520,7 @@ export function App() {
   };
 
   /** @param coalesce merge the moves into this undo step (e.g. the resize that caused them) */
-  const separateRegions = (quiet = false, coalesce = 'separate') => {
+  const separateRegions = (quiet = false, coalesce = 'separate', keepOrder = false) => {
     // push overlapping regions down, in reading order (what collapsed areas hide is not on the page)
     const hidden = hiddenIds(ws.regions);
     const boxes = ws.regions
@@ -528,6 +530,15 @@ export function App() {
         return { r, w: el?.offsetWidth ?? 40, h: el?.offsetHeight ?? 24, y: r.y };
       })
       .sort((a, b) => a.y - b.y || a.r.x - b.r.x);
+    if (keepOrder) {
+      const moves = separateKeepingOrder(boxes.map((b) => ({ id: b.r.id, x: b.r.x, y: b.y, w: b.w, h: b.h })), GRID, snap);
+      const steps = moveSteps(ws.regions, moves);
+      for (const f of steps.fits) dispatch({ type: 'areaFit', id: f.id, height: f.height });
+      for (const a of steps.areas) dispatch({ type: 'move', ids: [a.id], dx: 0, dy: a.dy, coalesce });
+      for (const [dy, ids] of steps.others) dispatch({ type: 'move', ids, dx: 0, dy, coalesce });
+      if (moves.size || !quiet) setToast(moves.size ? `Moved ${moves.size} region${moves.size > 1 ? 's' : ''}` : 'No overlapping regions');
+      return;
+    }
     const placed: typeof boxes = [];
     let moved = 0;
     for (const b of boxes) {

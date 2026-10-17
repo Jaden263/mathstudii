@@ -14,7 +14,7 @@ import { splitComparison, parseStatement, splitTop, isIdentifier } from '../engi
 import { odesolveNames } from '../engine/odesolve';
 import { pdesolveNames } from '../engine/pdesolve';
 import { symbolicUnitNames } from '../engine/symbolic';
-import { TreeReader, definedNames, plainNumber, NotRepresentable, type Op, type Statement, type X } from './tree';
+import { TreeReader, definedNames, hasOwnMeaning, plainNumber, NotRepresentable, type Op, type Statement, type X } from './tree';
 
 export type Format = 'mcdx' | 'xmcd' | 'sm';
 
@@ -51,6 +51,8 @@ export interface Plan {
   warnings: string[];
   title: string;
   origin: 0 | 1;
+  /** Every name the worksheet defines (in Mathcad 15, a unit of that name would read as it). */
+  defined: Set<string>;
 }
 
 const KIND_NAME: Record<string, string> = {
@@ -133,6 +135,10 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
     if (r.kind === 'solve') sources.push(...r.guesses.split('\n'), r.solver);
   }
   const names = definedNames(sources);
+  // a name defined once has one value: the worksheet's final value stands in for its definition
+  const definitions = new Map<string, number>();
+  for (const src of sources) for (const n of definedNames([src])) definitions.set(n, (definitions.get(n) ?? 0) + 1);
+  const once = (n: string) => definitions.get(n) === 1;
   // region results (b.M_max), tables, spreadsheet and Python outputs are worksheet values too
   for (const r of regions) {
     if ('name' in r && typeof r.name === 'string' && r.name.trim()) names.add(r.name.trim());
@@ -145,7 +151,47 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
     if (r.kind === 'solve') [...odesolveNames(r.solver), ...pdesolveNames(r.solver)].forEach((n) => names.add(n));
     if (r.kind === 'plot') [r.xExpr, ...r.traces.map((t) => t.xExpr ?? '')].forEach((e) => isIdentifier(e) && names.add(e.trim()));
   }
-  const reader = new TreeReader(names);
+  // where a name that is also a unit or a constant (m, s, t, g …) becomes the worksheet's: above
+  // that it keeps its own meaning (L := 6 m above m := 2 kg), as it does when calculated; the
+  // variables of an odesolve or Pdesolve block and of a plot are that region's only
+  const firstAt = new Map<string, number>();
+  const local = new Map<number, string[]>();
+  const definesAt = (n: string, i: number) => {
+    if (hasOwnMeaning(n) && !((firstAt.get(n) ?? Infinity) <= i)) firstAt.set(n, i);
+  };
+  regions.forEach((r, i) => {
+    for (const src of r.kind === 'math' ? [r.source] : r.kind === 'solve' ? [...r.guesses.split('\n'), r.solver] : []) {
+      let global = false;
+      try {
+        const st = parseStatement(src);
+        global = (st.type === 'define' || st.type === 'program') && st.global;
+      } catch {
+        /* defines nothing */
+      }
+      // a global definition (≡) holds from the top
+      for (const n of definedNames([src])) definesAt(n, global ? -1 : i);
+    }
+    if ('name' in r && typeof r.name === 'string' && r.name.trim()) definesAt(r.name.trim(), i);
+    if (r.kind === 'table' && r.columnVars) (r.headers ?? []).forEach((h) => h.trim() && definesAt(h.trim(), i));
+    if (r.kind === 'spreadsheet') r.outputs.forEach((o) => o.name.trim() && definesAt(o.name.trim(), i));
+    if (r.kind === 'python') {
+      const res = ctx.results?.get(r.id);
+      const assigned = res?.kind === 'python' ? res.outputs.map((o) => o.name) : r.code.split('\n').flatMap((line) => /^([A-Za-z_]\w*)\s*=(?!=)/.exec(line)?.[1] ?? []);
+      assigned.forEach((n) => definesAt(n, i));
+    }
+    if (r.kind === 'solve') local.set(i, [...odesolveNames(r.solver), ...pdesolveNames(r.solver)]);
+    if (r.kind === 'plot') local.set(i, [r.xExpr, ...r.traces.map((t) => t.xExpr ?? '')].filter(isIdentifier).map((e) => e.trim()));
+  });
+  /** The names that are the worksheet's at region i. */
+  const namesAt = (i: number): Set<string> => {
+    const later = [...names].filter((n) => hasOwnMeaning(n) && !((firstAt.get(n) ?? Infinity) <= i));
+    if (!later.length) return names;
+    const own = new Set(local.get(i) ?? []);
+    return new Set([...names].filter((n) => own.has(n) || !later.includes(n)));
+  };
+  const everywhere = new TreeReader(names);
+  let here = names;
+  let reader = everywhere;
   // the fields of region results the worksheet reads: b.M_max, f.combos.ULS2.F1.Rx
   const usedPaths = new Map<string, string[][]>();
   for (const r of regions) {
@@ -169,9 +215,9 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
         /* reported when the statement is read */
       }
     }
-    return new TreeReader([...names, ...[...free].filter((n) => !units.has(n))]);
+    return new TreeReader([...here, ...[...free].filter((n) => !units.has(n))]);
   };
-  const out: Plan = { items: [], warnings: [], title: ws.title || 'worksheet', origin: (ws.settings.origin ?? 0) as 0 | 1 };
+  const out: Plan = { items: [], warnings: [], title: ws.title || 'worksheet', origin: (ws.settings.origin ?? 0) as 0 | 1, defined: names };
   const metric = ctx.metric ?? (ws.settings.unitSystem ?? 'si') === 'si';
   const note = (at: At, md: string, width = 320) => out.items.push({ k: 'text', x: at.x, y: at.y, width, md });
   const failed = (r: Region, what: string, e: unknown) => {
@@ -288,6 +334,8 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
   const group: number[] = [];
   regions.forEach((r, g) => {
     const first = out.items.length;
+    here = namesAt(g);
+    reader = here === names ? everywhere : new TreeReader(here);
     try {
       switch (r.kind) {
         case 'math': {
@@ -309,12 +357,22 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
           } catch (e) {
             // a definition the other program cannot write (b.M(x), section(…).I_y) as the value it has
             const v = target ? valueX(value) : null;
-            if (!(e instanceof NotRepresentable) || !v || pst.type !== 'define') throw e;
+            if (!(e instanceof NotRepresentable) || !v || pst.type !== 'define' || !once(target!)) throw e;
             out.warnings.push(`${target} at ${Math.round(r.y)} px uses ${e.message}: written as its value`);
             out.items.push({ k: 'math', x: r.x, y: r.y, st: { k: 'define', global: pst.global, target: { k: 'var', name: target! }, value: v, show: pst.show, unit: pst.unit ? reader.unit(pst.unit) : undefined }, source: `${target} := ${valueText(value)}`, result: ctx.shown?.get(r.id), regionId: r.id });
             break;
           }
           if (!st) break;
+          if (format === 'sm' && st.k === 'define' && st.target.k === 'list' && !r.disabled) {
+            // [a; b] := …: SMath defines one name at a time, so each is written as the value it has
+            const list = st.target.names;
+            const defs = list.map((n) => ({ name: n, value: ctx.variables?.get(n) })).filter((d) => once(d.name) && valueX(d.value));
+            if (defs.length === list.length) {
+              definitionItems(r, defs);
+              out.warnings.push(`${list.join(', ')} at ${Math.round(r.y)} px: SMath defines one name at a time, so ${list.length > 1 ? 'they were' : 'it was'} written as ${list.length > 1 ? 'their values' : 'its value'}`);
+              break;
+            }
+          }
           if (format === 'sm' && r.disabled) {
             note(r, `\`${r.source.trim()}\` *(disabled)*`);
             break;
@@ -426,7 +484,7 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
       } catch {
         return { k: 'str', v: s };
       }
-      if (x.k === 'id' && !names.has(x.name) && /[A-Za-z]/.test(s) && !/[*/^()+=]/.test(s)) return { k: 'str', v: s };
+      if (x.k === 'id' && !here.has(x.name) && /[A-Za-z]/.test(s) && !/[*/^()+=]/.test(s)) return { k: 'str', v: s };
       const u = unitX[j];
       if (!u) return x;
       return x.k === 'num' ? { k: 'scale', value: x, unit: u } : { k: 'op', op: 'mult', args: [{ k: 'parens', a: x }, u] };

@@ -313,6 +313,9 @@ const clashes = Object.keys(MATHCAD_LIBRARY).filter((k) => k in math);
 if (clashes.length) throw new Error(`Mathcad library names clash: ${clashes.join(', ')}`);
 math.import({
   ...MATHCAD_LIBRARY,
+  // ε₀ and μ₀ by the names the constants palette and the Mathcad importer give them (mathjs has
+  // them as electricConstant and magneticConstant only)
+  vacuumPermittivity: math.electricConstant, vacuumPermeability: math.magneticConstant,
   sinh: hyperbolic('sinh'), cosh: hyperbolic('cosh'), tanh: hyperbolic('tanh'),
   coth: hyperbolic('coth'), sech: hyperbolic('sech'), csch: hyperbolic('csch'),
   // round(x, n) of a quantity rounds its value in SI units, as Mathcad does (mathjs wants the unit)

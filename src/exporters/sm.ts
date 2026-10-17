@@ -18,17 +18,27 @@ const op = (o: string, args = 2) => `<e type="operator" args="${args}">${esc(o)}
 const fn = (name: string, args: number) => `<e type="function" args="${args}">${esc(name)}</e>`;
 const BRACKET = '<e type="bracket">(</e>';
 
+/** A number as SMath writes one: 1.38e-23 is 1.38·10^(−23) there (it reads no exponent notation). */
+function number(v: string): string {
+  const m = /^(\d*\.?\d*)e([+-]?)(\d+)$/i.exec(v);
+  if (!m) return operand(v);
+  return operand(m[1]) + operand('10') + operand(String(Number(m[3]))) + (m[2] === '-' ? op('-', 1) : '') + op('^') + op('*');
+}
+
 const OPS: Record<string, [string, number]> = {
   plus: ['+', 2], minus: ['-', 2], mult: ['*', 2], div: ['/', 2], pow: ['^', 2], neg: ['-', 1], not: ['¬', 1],
   and: ['&', 2], or: ['|', 2], xor: ['⊕', 2], equal: ['≡', 2], notEqual: ['≠', 2], lessThan: ['<', 2], greaterThan: ['>', 2],
   lessOrEqual: ['≤', 2], greaterOrEqual: ['≥', 2], factorial: ['!', 1],
 };
 
-/** Our names of SMath's built-ins (the importer's FN_MAP the other way). */
+/** Our names of SMath's built-ins (the importer's FN_MAP the other way; atan stays atan, as a file SMath 0.99 saved has it). */
 const FN_OUT: Record<string, string> = {
-  asin: 'arcsin', acos: 'arccos', atan: 'arctan', acot: 'arccot', asec: 'arcsec', acsc: 'arccsc', asinh: 'arcsinh',
+  asin: 'arcsin', acos: 'arccos', acot: 'arccot', asec: 'arcsec', acsc: 'arccsc', asinh: 'arcsinh',
   acosh: 'arccosh', atanh: 'arctanh', acoth: 'arccoth', gamma: 'Gamma', Γ: 'Gamma', rnd: 'random', prod: 'product',
 };
+
+/** Built-ins with arguments that are indices (counted from 1 in SMath): submatrix(M, ir, jr, ic, jc), csort(M, j). */
+const INDEX_ARGS: Record<string, number[]> = { submatrix: [1, 2, 3, 4], csort: [1], rsort: [1] };
 
 /** mathjs unit names that SMath spells otherwise. */
 const SM_UNIT: Record<string, string> = {
@@ -60,7 +70,7 @@ class SmWriter {
   x(e: X): string {
     switch (e.k) {
       case 'num':
-        return operand(e.v);
+        return number(e.v);
       case 'imag':
         // i is a variable name here: √(−1) is the imaginary unit in SMath as in mathstudii
         return operand(e.v) + operand('1') + op('-', 1) + fn('sqrt', 1) + op('*');
@@ -81,7 +91,8 @@ class SmWriter {
       case 'call': {
         if (/^(find|minerr|minimize|maximize|odesolve|Odesolve|Pdesolve|pdesolve)$/.test(e.fn)) throw new NotRepresentable(`${e.fn} outside a solve block`);
         const name = e.role === 'var' ? smName(e.fn) : FN_OUT[e.fn] ?? e.fn;
-        return e.args.map((a) => this.x(a)).join('') + fn(name, e.args.length);
+        const at = e.role === 'fn' ? INDEX_ARGS[e.fn] : undefined;
+        return e.args.map((a, i) => (at?.includes(i) ? this.index(a) : this.x(a))).join('') + fn(name, e.args.length);
       }
       case 'index':
         return this.x(e.base) + e.idx.map((i) => this.index(i)).join('') + fn('el', 1 + e.idx.length);
@@ -136,8 +147,8 @@ class SmWriter {
     // standard gravity is a unit in SMath (gₑ)
     if (name === 'g') return unitTok('g.e');
     const v = (math as unknown as Record<string, unknown>)[name];
-    if (PRIME_CONSTANTS[name] && typeof v === 'number') return operand(plainNumber(String(v)));
-    if (!PRIME_CONSTANTS[name] || !isUnit(v)) throw new NotRepresentable(`the constant ${name}`);
+    if (name in PRIME_CONSTANTS && typeof v === 'number') return this.x({ k: 'num', v: plainNumber(String(v)) });
+    if (!(name in PRIME_CONSTANTS) || !isUnit(v)) throw new NotRepresentable(`the constant ${name}`);
     const si = v.toSI();
     const u = si.formatUnits();
     return this.x({ k: 'scale', value: { k: 'num', v: plainNumber(String(si.toNumeric(u))) }, unit: this.units.unit(u) });
@@ -207,7 +218,7 @@ class SmWriter {
 function resultTokens(v: unknown, unit: string, metric: boolean): { tokens: string; contract: string } | null {
   const num = (n: number) => {
     const s = plainNumber(String(+n.toPrecision(12)));
-    return s.startsWith('-') ? operand(s.slice(1)) + op('-', 1) : operand(s);
+    return s.startsWith('-') ? number(s.slice(1)) + op('-', 1) : number(s);
   };
   // a ratio shown in percent: SMath's % is 1/100
   if (typeof v === 'number' && Number.isFinite(v)) return { tokens: num(unit === '%' ? v * 100 : v), contract: '' };

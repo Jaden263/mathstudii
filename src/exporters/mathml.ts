@@ -4,6 +4,7 @@
 // in 15), in how a quantity is written (scale, mult), in the bounds of Σ and ∫ (lowerBound and
 // upperBound, bounds), in the solve block functions (keywords, operator elements) and in
 // programs (if / else if / else in Prime, "if" lines and "otherwise" in 15).
+import type { Unit } from 'mathjs';
 import { math, isUnit } from '../engine/math';
 import { NotRepresentable, PRIME_CONSTANTS, TreeReader, plainNumber, type PStmt, type Role, type Statement, type Target, type X } from './tree';
 
@@ -46,9 +47,54 @@ const COMPARISONS = new Set(['equal', 'notEqual', 'lessThan', 'greaterThan', 'le
 /** Is the expression a check (a comparison or a combination of them)? */
 export const isCheck = (x: X): boolean => (x.k === 'op' && COMPARISONS.has(x.op)) || (x.k === 'parens' && isCheck(x.a));
 
+/** Units of each kind Mathcad has, for a unit whose name the worksheet uses for a variable. */
+const UNIT_KINDS = [
+  'm', 'mm', 'cm', 'km', 'ft', 'inch', 's', 'ms', 'min', 'hr', 'kg', 'gram', 'tonne', 'lb', 'N', 'kN', 'MN', 'lbf', 'Pa', 'kPa', 'MPa',
+  'GPa', 'bar', 'psi', 'J', 'kJ', 'MJ', 'W', 'kW', 'MW', 'A', 'mA', 'V', 'mV', 'kV', 'ohm', 'kohm', 'F', 'uF', 'nF', 'pF', 'C', 'H',
+  'mH', 'Hz', 'kHz', 'MHz', 'L', 'mL', 'rad', 'deg', 'T', 'Wb', 'mol', 'K',
+];
+
+const hasShadowed = (x: X): boolean => (x.k === 'id' && !!x.shadowed) || (x.k === 'op' && x.args.some(hasShadowed)) || (x.k === 'parens' && hasShadowed(x.a));
+const unitText = (x: X): string => (x.k === 'id' ? x.name : x.k === 'num' ? x.v : x.k === 'parens' ? `(${unitText(x.a)})` : x.k === 'op' ? x.args.map(unitText).join(x.op === 'div' ? '/' : x.op === 'pow' ? '^' : '·') : '');
+
 export class MlWriter {
   private units = new TreeReader([]);
-  constructor(readonly prime: boolean) {}
+  /** Units written in another unit of their kind (Mathcad 15), for the export's warnings. */
+  readonly respelled = new Map<string, string>();
+  /** Display units Mathcad 15 would read as variables, left out (for the export's warnings). */
+  readonly droppedUnits = new Set<string>();
+  /** shadowed: the worksheet's names, which in Mathcad 15 hide the units so named. */
+  constructor(readonly prime: boolean, private shadowed = new Set<string>()) {}
+
+  /**
+   * A unit. Mathcad 15 tells units from variables by name only: where the worksheet has a
+   * variable m (a mass), the unit m would read as it, so it is written in another unit of its
+   * kind, (1000 mm), which means the same there.
+   */
+  private unitId(name: string): string {
+    if (this.prime) return this.id(name, 'unit', true);
+    let u: Unit;
+    try {
+      u = math.unit(1, name) as Unit;
+    } catch {
+      return this.id(name, 'unit', true);
+    }
+    for (const alt of UNIT_KINDS) {
+      if (alt === name || this.shadowed.has(alt) || this.shadowed.has(mathcadUnit(alt))) continue;
+      let k: number;
+      try {
+        const v = math.unit(1, alt) as Unit;
+        // an offset scale (°C) is no multiple of another unit
+        if (!u.equalBase(v) || (u.units[0]?.unit as { offset?: number })?.offset || (v.units[0]?.unit as { offset?: number })?.offset) continue;
+        k = u.toNumeric(alt) as number;
+      } catch {
+        continue;
+      }
+      this.respelled.set(name, `${+k.toPrecision(12)} ${mathcadUnit(alt)}`);
+      return this.el('parens', this.apply(this.el('mult'), this.el('real', plainNumber(String(+k.toPrecision(15)))), this.id(alt, 'unit', true)));
+    }
+    return this.id(name, 'unit', true);
+  }
 
   private el(tag: string, inner = '', attrs = ''): string {
     return inner ? `<ml:${tag}${attrs}>${inner}</ml:${tag}>` : `<ml:${tag}${attrs} />`;
@@ -94,7 +140,7 @@ export class MlWriter {
     if (!isUnit(v)) throw new NotRepresentable(`the constant ${name}`);
     const si = v.toSI();
     const u = si.formatUnits();
-    return this.x({ k: 'scale', value: { k: 'num', v: String(si.toNumeric(u)) }, unit: this.units.unit(u) });
+    return this.x({ k: 'scale', value: { k: 'num', v: plainNumber(String(si.toNumeric(u))) }, unit: this.units.unit(u) });
   }
 
   x(e: X): string {
@@ -107,7 +153,7 @@ export class MlWriter {
         return `<ml:str xml:space="preserve">${esc(e.v)}</ml:str>`;
       case 'id':
         if (e.role === 'const') return this.constant(e.name);
-        return this.id(e.name, e.role, e.role === 'unit');
+        return e.role === 'unit' && e.shadowed ? this.unitId(e.name) : this.id(e.name, e.role, e.role === 'unit');
       case 'op': {
         const op = OPS[e.op];
         if (!op) throw new NotRepresentable(`the ${e.op} operator`);
@@ -198,6 +244,11 @@ export class MlWriter {
 
   /** A shown value, with its display unit (Prime writes an empty one as a placeholder). */
   private evalOf(value: string, unit?: X): string {
+    // Mathcad 15 would read a display unit m as the worksheet's m: the result shows in SI units there
+    if (unit && !this.prime && hasShadowed(unit)) {
+      this.droppedUnits.add(unitText(unit));
+      unit = undefined;
+    }
     const u = unit ? this.el('unitOverride', this.x(unit)) : this.prime ? this.el('unitOverride', this.el('placeholder')) : '';
     return this.el('eval', value + u);
   }

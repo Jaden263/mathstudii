@@ -1382,7 +1382,8 @@ The importer converts:
 - text, images, collapsible areas and X-Y plots
 
 It shows a report of anything it could not convert. Results are recalculated rather than
-copied, so compare them with the original. The format knowledge comes from
+copied, so compare them with the original. Regions the other program drew smaller than they
+come out here are pushed apart once shown, without changing the order they calculate in. The format knowledge comes from
 [mcad2py](https://github.com/ChristianCruger/mcad2py) (MIT), which documents real Prime files.
 
 **How it was tested:** on about 110 public worksheets (38 saved by Prime 11/12, 34 by Mathcad
@@ -1442,15 +1443,24 @@ File menu ▾ → **Export to Mathcad Prime (.mcdx)**, **Mathcad 15 (.xmcd)** or
 
 A report lists everything written differently. What the formats cannot hold: SMath has no solve
 blocks (what Find found is written as values; an odesolve or Pdesolve solution is not exported),
-no global definitions and no column assignments in programs, and counts from 1 (indices are
-shifted; functions that return an index, such as `match`, are not); Mathcad 15 matrices hold
-one unit (a table in several units becomes one vector per column) and its plots are a binary
-format (written as pictures); symbolic keywords do not go to SMath. Programs, the solve block
-and plot elements follow files Prime, Mathcad 14/15 and SMath saved, and every file is checked
-by reading it back with the importers above and recalculating (the round-trip tests compare
-every value of a representative worksheet, of four examples and of 11 real files). **They have
-not been opened in Mathcad or SMath themselves**; Prime's prime notation and Mathcad 15's `nth`
-derivative and `on error` elements are the least certain.
+no global definitions and no column assignments in programs, defines one name at a time
+(`[a; b] := …` becomes the values of a and b) and counts from 1 (indices, and the index
+arguments of `submatrix`, `csort` and `rsort`, are shifted; functions that return an index, such
+as `match`, are not); Mathcad 15 matrices hold one unit (a table in several units becomes one
+vector per column), its plots are a binary format (written as pictures), and it tells a unit
+from a variable by name only: where the worksheet has a variable named like a unit (m for a
+mass), a use of that unit is written in another unit of its kind, `(1000 mm)`, and a display
+unit made with it is left out; symbolic keywords do not go to SMath. A unit used above a
+variable of its name (`L := 6 m` above `m := 2 kg`) stays the unit, as it calculates here.
+Programs, the solve block, plot elements, physical constants (Prime's names, `k` for
+Boltzmann's) and the way SMath writes numbers and `atan` follow files Prime, Mathcad 14/15 and
+SMath saved, and every file is checked by reading it back with the importers above and
+recalculating (the round-trip tests compare every value of a representative worksheet, of four
+examples and of 11 real files; run on all 106 real files, 22 of 4812 values differ: 17 in SMath
+exports, for the reasons above, the others an `ORIGIN` variable, which is a setting here, and a
+NaN that never equals itself). **They have not been opened in Mathcad or SMath
+themselves**; Prime's prime notation and Mathcad 15's `nth` derivative and `on error` elements
+are the least certain.
 
 Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values:
 `{{expr | unit}}`.

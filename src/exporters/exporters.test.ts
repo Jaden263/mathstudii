@@ -346,4 +346,128 @@ describe('what the other program has no counterpart for', () => {
   });
 });
 
+describe('against what the programs themselves write', () => {
+  /** A worksheet of math regions, one below the other. */
+  const sheet = (sources: string[]) => {
+    const ws = emptyWorksheet();
+    ws.regions = sources.map((source, i) => createRegion('math', 40, 40 + 40 * i, { source }));
+    return ws;
+  };
+  /** The worksheet part of an exported file, as text. */
+  const written = (ws: Worksheet, format: Format) => {
+    const bytes = exportWorksheet(ws, format).bytes;
+    return format === 'mcdx' ? strFromU8(unzipSync(bytes)['mathcad/worksheet.xml']) : strFromU8(bytes);
+  };
+
+  it('∞ is the symbol, not a number Mathcad cannot read', () => {
+    // ∫₀^∞ e^(−x) dx = 1
+    const ws = sheet(['I_e := integral(exp(-x), x, 0, ∞) =']);
+    expect(written(ws, 'mcdx')).toContain('<ml:upperBound><ml:id labels="CONSTANT" xml:space="preserve">∞</ml:id></ml:upperBound>');
+    expect(written(ws, 'xmcd')).toContain('<ml:id xml:space="preserve">∞</ml:id>');
+    expect(written(ws, 'sm')).toContain('<e type="operand">∞</e>');
+    for (const format of ['mcdx', 'xmcd', 'sm'] as Format[]) {
+      expect(written(ws, format)).not.toMatch(/Infinity/);
+      const r = roundTrip(ws, format);
+      expect(r.errors).toEqual([]);
+      expect(si(r.after.variables.get('I_e'))).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('Prime: physical constants by the names Prime gives them (a file Prime saved: k is Boltzmann’s)', () => {
+    const constants = unzipSync(fixture('mcad2py-Constants.mcdx'));
+    const names = [...strFromU8(constants['mathcad/worksheet.xml']).matchAll(/<ml:id labels="CONSTANT"[^>]*>(.*?)<\/ml:id>/g)].map((m) => m[1].replace(/<[^>]+>/g, ''));
+    expect(names).toContain('k');
+    const text = written(sheet(['k_1 := boltzmann =', 'G_1 := gravitationConstant =', 'e_1 := vacuumPermittivity =']), 'mcdx');
+    expect(text).toContain('<ml:id labels="CONSTANT" xml:space="preserve">k</ml:id>');
+    // ε₀ with its subscript, as in the file
+    expect(text).toContain('<ml:id labels="CONSTANT" xml:space="preserve"><Span xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:pw="clr-namespace:Ptc.Wpf;assembly=Ptc.Core">ε<pw:Subscript>0</pw:Subscript></Span></ml:id>');
+    // G is not among them: its value (CODATA 2018, 6.6743·10⁻¹¹ m³/(kg s²)) is written
+    expect(names).not.toContain('G');
+    expect(text).toContain('<ml:real>0.000000000066743</ml:real>');
+    for (const format of ['mcdx', 'xmcd', 'sm'] as Format[]) {
+      const r = roundTrip(sheet(['k_1 := boltzmann =', 'G_1 := gravitationConstant =', 'e_1 := vacuumPermittivity =']), format);
+      expect(r.errors, format).toEqual([]);
+      // CODATA 2018 (exact): k = 1.380649·10⁻²³ J/K, ε₀ = 8.8541878128·10⁻¹² F/m
+      expect((si(r.after.variables.get('k_1')) as number) / 1.380649e-23).toBeCloseTo(1, 12);
+      expect((si(r.after.variables.get('e_1')) as number) / 8.8541878128e-12).toBeCloseTo(1, 9);
+    }
+  });
+
+  it('a range test a ≤ x < b (the EN 1992 parabola–rectangle law) is written as two comparisons', () => {
+    // σ_c = f_cd (1 − (1 − ε/ε_c2)²) below ε_c2 = 2 ‰, f_cd up to ε_cu2 = 3.5 ‰: 15 MPa at 1 ‰
+    const ws = sheet([
+      'f_cd := 20 MPa', 'ε_c2 := 0.002', 'ε_cu2 := 0.0035',
+      'σ_c(ε) :=\n  if 0 ≤ ε < ε_c2\n    f_cd*(1 - (1 - ε/ε_c2)^2)\n  else if ε_c2 ≤ ε ≤ ε_cu2\n    f_cd\n  else\n    0 MPa',
+      'σ_1 := σ_c(0.001) = MPa', 'σ_2 := σ_c(0.003) = MPa', 'σ_3 := σ_c(0.004) = MPa',
+    ]);
+    for (const format of ['mcdx', 'xmcd', 'sm'] as Format[]) {
+      const r = roundTrip(ws, format);
+      expect(r.warnings, format).toEqual(format === 'sm' ? [expect.stringMatching(/counts from 1/)] : []);
+      expect(r.errors, format).toEqual([]);
+      expect(si(r.after.variables.get('σ_1'))).toBeCloseTo(15e6, 3);
+      expect(si(r.after.variables.get('σ_2'))).toBeCloseTo(20e6, 3);
+      expect(si(r.after.variables.get('σ_3'))).toBe(0);
+    }
+    expect(written(ws, 'mcdx')).toMatch(/<ml:and \/><ml:apply><ml:lessOrEqual \/>/);
+  });
+
+  it('equations inside a symbolic expression are bold equals', () => {
+    const text = written(sheet(['[x = 2*y + 1; y = 3 - x] → solve, x, y']), 'mcdx');
+    expect(text.match(/<ml:equal \/>/g)).toHaveLength(2);
+  });
+
+  it('a unit above a variable of its name stays a unit (L := 6 m above m := 2 kg), as it calculates', () => {
+    const ws = sheet(['L := 6 m', 't_1 := 10 s', 'm := 2 kg', 'p := m*3 = kg', 's := 5', 'q := s*L =']);
+    const prime = written(ws, 'mcdx');
+    expect(prime).toContain('<ml:apply><ml:scale /><ml:real>6</ml:real><ml:id labels="UNIT" xml:space="preserve">m</ml:id></ml:apply>');
+    expect(prime).toContain('<ml:id labels="VARIABLE" xml:space="preserve">m</ml:id><ml:apply><ml:scale /><ml:real>2</ml:real>');
+    expect(written(ws, 'sm')).toContain('<e type="operand">L</e><e type="operand">6</e><e type="operand" style="unit">m</e>');
+    for (const format of ['mcdx', 'xmcd', 'sm'] as Format[]) {
+      const r = roundTrip(ws, format);
+      expect(r.errors, format).toEqual([]);
+      expect(r.differ, format).toEqual([]);
+    }
+  });
+
+  it('Mathcad 15: a unit the worksheet also has as a variable is written in another unit of its kind', () => {
+    // m is a mass here; v uses the unit m (as Prime and SMath files can, with their labels)
+    const ws = sheet(['m := 2 kg', 'v := 3 unit(1, "m")/s', 'p := m*v = kg*unit(1, "m")/s']);
+    const out = exportWorksheet(ws, 'xmcd');
+    expect(strFromU8(out.bytes)).toContain('<ml:parens><ml:apply><ml:mult /><ml:real>1000</ml:real><ml:id xml:space="preserve">mm</ml:id></ml:apply></ml:parens>');
+    expect(out.warnings.join('\n')).toMatch(/unit m was written as \(1000 mm\)/);
+    // the display unit would read as the variable there: left out, the value is the same
+    expect(out.warnings.join('\n')).toMatch(/Display unit kg·m\/s/);
+    const r = roundTrip(ws, 'xmcd');
+    expect(r.errors).toEqual([]);
+    expect(si(r.after.variables.get('v'))).toBeCloseTo(3, 12);
+    expect(si(r.after.variables.get('p'))).toBeCloseTo(6, 12);
+  });
+
+  it('SMath: numbers with exponents as SMath writes them, atan by its name, [a; b] := … one by one', () => {
+    const ws = sheet(['ε_s := 1.5e-40', 'φ := atan(0.5) =', '[u; w] := [2; 3]', 'z := u*w + ε_s*1e40 =']);
+    const text = written(ws, 'sm');
+    // 1.5·10^(−40), as in SMath's own results (calculix-beam.sm: 7.85 10 9 − ^ *)
+    expect(text).toContain('<e type="operand">1.5</e><e type="operand">10</e><e type="operand">40</e><e type="operator" args="1">-</e><e type="operator" args="2">^</e><e type="operator" args="2">*</e>');
+    expect(text).not.toMatch(/<e type="operand">[^<]*\de[+-]?\d/);
+    expect(text).toContain('<e type="function" args="1">atan</e>');
+    expect(fixture('mononobe-okabe.sm').length).toBeGreaterThan(0);
+    expect(strFromU8(fixture('mononobe-okabe.sm'))).toContain('<e type="function" args="1">atan</e>');
+    const r = roundTrip(ws, 'sm');
+    expect(r.errors).toEqual([]);
+    expect(r.differ).toEqual([]);
+    expect(si(r.after.variables.get('z'))).toBeCloseTo(7.5, 12);
+    expect(r.warnings.join('\n')).toMatch(/u, w at \d+ px: SMath defines one name at a time/);
+  });
+
+  it('SMath: index arguments of submatrix and csort count from 1 there', () => {
+    // first index 0: sorted by the second column, rows 0–1 of the second column
+    const ws = sheet(['M := [3, 2; 1, 3; 2, 1]', 'S := csort(M, 1) =', 'B := submatrix(M, 0, 1, 1, 1) =']);
+    expect(written(ws, 'sm')).toContain('<e type="operand">M</e><e type="operand">2</e><e type="function" args="2">csort</e>');
+    const r = roundTrip(ws, 'sm');
+    expect(r.errors).toEqual([]);
+    expect(si(r.after.variables.get('S'))).toEqual([2, 1, 3, 2, 1, 3]);
+    expect(si(r.after.variables.get('B'))).toEqual([2, 3]);
+  });
+});
+
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';

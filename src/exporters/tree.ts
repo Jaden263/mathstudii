@@ -22,7 +22,8 @@ export type X =
   | { k: 'num'; v: string }
   | { k: 'imag'; v: string }
   | { k: 'str'; v: string }
-  | { k: 'id'; name: string; role: Role }
+  /** shadowed: a unit whose name is also a worksheet variable at this point (Mathcad 15 cannot tell them apart). */
+  | { k: 'id'; name: string; role: Role; shadowed?: boolean }
   | { k: 'op'; op: Op; args: X[] }
   /** A number times a unit: 5 kN, (0.85·30) MPa. */
   | { k: 'scale'; value: X; unit: X }
@@ -82,12 +83,16 @@ const FN_NAME: Record<string, string> = { gamma: 'Γ', mag: 'mag' };
 /** Names that are values the worksheet always has (they are not units). */
 const CONSTANTS: Record<string, string> = { pi: 'π', π: 'π', Infinity: '∞', NaN: 'NaN' };
 
-/** Physical constants of mathjs that Mathcad Prime has under its own name (labelled CONSTANT). */
-export const PRIME_CONSTANTS: Record<string, string> = {
-  speedOfLight: 'c', gravitationConstant: 'G', planckConstant: 'h', reducedPlanckConstant: 'ℏ', boltzmann: 'k_B',
-  avogadro: 'N_A', gasConstant: 'R', vacuumPermittivity: 'ε_0', vacuumPermeability: 'μ_0', electronMass: 'm_e',
-  protonMass: 'm_p', atomicMass: 'm_u', elementaryCharge: 'e_c', stefanBoltzmann: 'σ', rydberg: 'R_∞',
-  fineStructure: 'α', magneticFluxQuantum: 'Φ_0',
+/**
+ * Physical constants of mathjs that Mathcad has, by their name in Prime (labelled CONSTANT) as a
+ * file Prime saved lists them (k for Boltzmann's); null where that list has none, so that the
+ * value is written instead of a name Prime may not know.
+ */
+export const PRIME_CONSTANTS: Record<string, string | null> = {
+  speedOfLight: 'c', gravitationConstant: null, planckConstant: 'h', reducedPlanckConstant: 'ℏ', boltzmann: 'k',
+  avogadro: 'N_A', gasConstant: 'R', vacuumPermittivity: 'ε_0', vacuumPermeability: 'μ_0', electricConstant: 'ε_0',
+  magneticConstant: 'μ_0', electronMass: null, protonMass: null, atomicMass: 'm_u', elementaryCharge: 'e_c',
+  stefanBoltzmann: 'σ', rydberg: 'R_∞', fineStructure: 'α', magneticFluxQuantum: 'Φ_0',
 };
 
 /** "1.2e-5" → "0.000012": Mathcad writes numbers out in full. */
@@ -115,6 +120,11 @@ export function plainNumber(s: string): string {
 
 const num = (v: string): X => ({ k: 'num', v: plainNumber(v) });
 const id = (name: string, role: Role): X => ({ k: 'id', name, role });
+
+/** mathjs comparison names in a chain (a < b ≤ c). */
+const RELATIONS: Record<string, Op> = {
+  smaller: 'lessThan', smallerEq: 'lessOrEqual', larger: 'greaterThan', largerEq: 'greaterOrEqual', equal: 'equal', unequal: 'notEqual',
+};
 
 export class TreeReader {
   /** Names the worksheet defines anywhere (they are variables, not units). */
@@ -229,8 +239,10 @@ export class TreeReader {
 
   private symbol(name: string, bound: Set<string>, unitSlot: boolean): X {
     if (!unitSlot && this.isValue(name, bound)) return id(name, 'var');
+    // a display unit is a unit even where a variable has its name
+    if (unitSlot && this.isValue(name, bound)) return { k: 'id', name, role: 'unit', shadowed: true };
     if (CONSTANTS[name]) return id(CONSTANTS[name], 'const');
-    if (name === 'e' || name === 'g' || PRIME_CONSTANTS[name]) return id(name, 'const');
+    if (name === 'e' || name === 'g' || name in PRIME_CONSTANTS) return id(name, 'const');
     if (name === '__I') return { k: 'imag', v: '1' };
     if (name === 'true' || name === 'false') return num(name === 'true' ? '1' : '0');
     if (unitSlot || isUnitName(name)) return id(name, 'unit');
@@ -262,6 +274,8 @@ export class TreeReader {
     switch (n.type) {
       case 'ConstantNode': {
         const v = a.value;
+        // ∞ parses to the number Infinity: Mathcad and SMath write the symbol
+        if (typeof v === 'number' && !Number.isFinite(v)) return Number.isNaN(v) ? id('NaN', 'const') : v > 0 ? id('∞', 'const') : { k: 'op', op: 'neg', args: [id('∞', 'const')] };
         if (typeof v === 'number') return num(String(v));
         if (typeof v === 'string') return { k: 'str', v };
         if (typeof v === 'boolean') return num(v ? '1' : '0');
@@ -305,6 +319,21 @@ export class TreeReader {
         return this.call(a, bound, unitSlot);
       case 'ConditionalNode':
         return { k: 'if', cond: sub(a.condition as MathNode), a: sub(a.trueExpr as MathNode), b: sub(a.falseExpr as MathNode) };
+      case 'RelationalNode': {
+        // a ≤ x < b (a range test, as in a stress–strain law) is a ≤ x and x < b
+        const params = (a.params as MathNode[]).map((c) => sub(c));
+        const pairs = (a.conditionals as string[]).map((c, i): X => {
+          const op = RELATIONS[c];
+          if (!op) throw new NotRepresentable(`the “${c}” comparison`);
+          return { k: 'op', op, args: [params[i], params[i + 1]] };
+        });
+        return pairs.reduce((l, r) => ({ k: 'op', op: 'and', args: [l, r] }));
+      }
+      case 'AssignmentNode': {
+        // an equation inside a symbolic expression ([a = b; c = d] → solve): Mathcad's bold equals
+        const target = a.index ? new math.AccessorNode(a.object as MathNode, a.index as never) : a.object as MathNode;
+        return { k: 'op', op: 'equal', args: [sub(target), sub(a.value as MathNode)] };
+      }
       default:
         throw new NotRepresentable(`a ${n.type.replace(/Node$/, '').toLowerCase()} expression`);
     }
@@ -357,7 +386,7 @@ export class TreeReader {
       case 'unit': {
         // unit(1, "m"): the unit itself where a variable has the unit's name
         const u = (raw[1] as AnyNode)?.value;
-        if (typeof u === 'string') return id(u, 'unit');
+        if (typeof u === 'string') return this.isValue(u, bound) ? { k: 'id', name: u, role: 'unit', shadowed: true } : id(u, 'unit');
         break;
       }
       case 'integral': {
@@ -412,6 +441,14 @@ export class TreeReader {
     const builtin = name in math || /^(find|minerr|minimize|maximize|odesolve|Odesolve|Pdesolve|pdesolve|root|polyroots)$/.test(name);
     return { k: 'call', fn: FN_NAME[name] ?? name, role: builtin ? 'fn' : 'var', args: raw.map((c) => sub(c)) };
   }
+}
+
+/**
+ * Is this a name with a meaning of its own where the worksheet does not define it (a unit, e,
+ * g, a physical constant)? Above its definition it keeps that meaning (L := 6 m above m := 2 kg).
+ */
+export function hasOwnMeaning(name: string): boolean {
+  return isUnitName(name) || name === 'e' || name === 'g' || name in CONSTANTS || name in PRIME_CONSTANTS;
 }
 
 /** Every name a worksheet defines: they are variables wherever they appear. */

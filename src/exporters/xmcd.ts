@@ -41,7 +41,7 @@ function textXml(md: string): string {
 }
 
 export function writeXmcd(plan: Plan): Uint8Array {
-  const w = new MlWriter(false);
+  const w = new MlWriter(false, plan.defined);
   let regionId = 0;
   const binary: string[] = [];
   const regions: string[] = [];
@@ -98,6 +98,8 @@ export function writeXmcd(plan: Plan): Uint8Array {
       write(notExported(it, e, 'Mathcad 15', plan));
     }
   }
+  for (const [unit, as] of w.respelled) plan.warnings.push(`In Mathcad 15 the name ${unit} is the worksheet’s variable, so the unit ${unit} was written as (${as})`);
+  for (const unit of w.droppedUnits) plan.warnings.push(`Display unit ${unit}: Mathcad 15 would read it as the worksheet’s variable, so the result shows in its default units`);
   const head = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ws="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30" xmlns:u="http://schemas.mathsoft.com/units10" xmlns:p="http://schemas.mathsoft.com/provenance10">`;
   const meta = `<pointReleaseData/><metadata><generator>mathstudii</generator><userData><title>${esc(plan.title)}</title><description/><author/><company/><keywords/><revisedBy/></userData><identityInfo><revision>1</revision><documentID>${guid()}</documentID><versionID>${guid()}</versionID><parentVersionID>${ZERO_ID}</parentVersionID><branchID>${ZERO_ID}</branchID></identityInfo></metadata>`;
   const xml = `${head}\n${meta}\n${settings(plan.origin)}\n<regions>\n${regions.join('\n')}\n</regions>${binary.length ? `\n<binaryContent>\n${binary.join('\n')}\n</binaryContent>` : ''}\n</worksheet>\n`;

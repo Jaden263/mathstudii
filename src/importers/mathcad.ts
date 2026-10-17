@@ -100,6 +100,8 @@ class Converter {
       return this.variables.has(raw) && !this.unitSlot && !/[()*/^ ]/.test(u) ? `unit(1, "${u}")` : u;
     }
     if (label === 'CONSTANT' && CONSTANT_MAP[raw]) return CONSTANT_MAP[raw];
+    // Mathcad 15's ∞ has no label (it is no letter, so no name of ours either)
+    if (raw === '∞' && label !== 'VARIABLE') return '∞';
     // unlabelled (Mathcad 15) or auto-labelled (*, sheets converted from 15) names that are units
     if (label === '' || label === '*') {
       const u = unitName(raw);
