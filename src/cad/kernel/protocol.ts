@@ -25,11 +25,16 @@ export type KernelRequest =
   | ({ op: 'display' } & Built)
   | ({ op: 'section'; plane: SectionPlane } & Built)
   | ({ op: 'outline'; component: string; frame: Frame } & Built)
-  | ({ op: 'export'; format: 'step' | 'stl'; scope: ExportScope; unit: CadUnit; name: string } & Built)
+  | ({ op: 'export'; format: ExportFormat; scope: ExportScope; unit: CadUnit; name: string } & Built)
   | ({ op: 'distance'; a: EntityRef; b: EntityRef } & Built)
   | ({ op: 'interference' } & Built)
   /** Drawing views of the visible bodies: exact: hidden-line removal on the B-rep (the display mesh's without OpenCascade). */
-  | ({ op: 'drawing'; views: DrawViewRequest[] } & Built);
+  | ({ op: 'drawing'; views: DrawViewRequest[] } & Built)
+  /** A flat face of a body as a DXF profile (its index in the body's faces). */
+  | ({ op: 'faceDxf'; component: string; body: string; face: number; unit: CadUnit } & Built);
+
+/** Exchange formats the kernel writes (OBJ comes as a zip of the .obj and its .mtl). */
+export type ExportFormat = 'step' | 'stl' | '3mf' | 'obj' | 'glb';
 
 /** What a request that needs a kernel fails with when neither could load. */
 export const NO_KERNEL = 'the 3-D kernel could not load';
@@ -49,6 +54,7 @@ export interface KernelValues {
   interference: Interference[];
   /** Null while there is nothing built to draw. */
   drawing: Record<string, DrawView> | null;
+  faceDxf: string;
 }
 
 export type KernelOp = KernelRequest['op'];

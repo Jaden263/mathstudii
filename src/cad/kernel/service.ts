@@ -14,12 +14,15 @@ import { approxDistance } from '../inspect';
 import { designKey } from '../keys';
 import { initKernel, kernel } from '../solid';
 import { buildDesignCached } from '../occ/build';
-import { mmPerUnit, stepFile, stlFile } from '../occ/exchange';
+import { exportModelOcc, mmPerUnit, stepFile } from '../occ/exchange';
+import { faceDxf } from '../occ/faceDxf';
+import { glbFile, objFile, stlOfModel, threeMF } from '../meshExport';
+import { strToU8, zipSync } from 'fflate';
 import { initOcc, occ, occFailure, renewOcc, type OC } from '../occ/kernel';
 import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc } from '../occ/query';
 import { cachedResultOcc } from '../occ/result';
 import { drawViewOcc } from '../occ/drawing';
-import { interferenceMesh, meshBuilt, outlineMesh, sectionMesh, stlMesh } from './meshFallback';
+import { exportModelMesh, interferenceMesh, meshBuilt, outlineMesh, sectionMesh } from './meshFallback';
 import { addInterference, hasMeshBodies, meshInterference, sectionMeshBodies } from '../meshQueries';
 import { buffersOf, NO_KERNEL, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
 
@@ -188,11 +191,24 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
         if (!oc) throw new Error('STEP export needs the B-rep kernel (OpenCascade did not load)');
         data = new TextEncoder().encode(stepFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { unit: req.unit, name: req.name }));
       } else {
-        // STL has no units: written in millimetres, which slicers assume
-        const scale = mmPerUnit(req.unit);
-        data = oc ? stlFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { name: req.name, scale }) : stlMesh(meshBuilt(K!, design, numbers), design, req.scope, req.name, scale);
+        // the mesh formats are written in millimetres (STL and OBJ have no unit, and slicers read millimetres)
+        const model = oc
+          ? exportModelOcc(oc, buildDesignCached(oc, design, numbers), design, req.scope, { name: req.name, unit: req.unit })
+          : exportModelMesh(meshBuilt(K!, design, numbers), design, req.scope, { name: req.name, mm: mmPerUnit(req.unit) });
+        if (req.format === 'stl') data = stlOfModel(model);
+        else if (req.format === '3mf') data = threeMF(model);
+        else if (req.format === 'glb') data = glbFile(model);
+        else {
+          const base = req.name.replace(/[^\w.-]+/g, '_') || 'part';
+          const { obj, mtl } = objFile(model, `${base}.mtl`);
+          data = zipSync({ [`${base}.obj`]: strToU8(obj), [`${base}.mtl`]: strToU8(mtl) });
+        }
       }
       return { value: data, kernel: which, transfer: [data.buffer as ArrayBuffer] };
+    }
+    case 'faceDxf': {
+      if (!oc) throw new Error('a face DXF needs the B-rep kernel (OpenCascade did not load)');
+      return { value: faceDxf(oc, buildDesignCached(oc, design, numbers), req.component, req.body, req.face, req.unit), kernel: which, transfer: [] };
     }
   }
 }

@@ -10,6 +10,8 @@ import { Arena, boxOf, sectionInPlane, sharedVolume, transformSolid, type Frame,
 import { meshToStl } from '../stl';
 import type { ExportScope } from '../occ/exchange';
 import type { Interference, SectionBody } from '../occ/query';
+import type { ExportMesh, ExportModel, ExportPart } from '../meshExport';
+import { meshBodyResult } from '../meshBody';
 
 let last: { key: string; built: BuiltDesign } | null = null;
 
@@ -106,4 +108,47 @@ function stlOf(arena: Arena, built: BuiltDesign, design: CadDesign, scope: Expor
     at += p.length;
   }
   return meshToStl({ positions: all, normals: all, edges: new Float32Array(0), bounds: { min: [0, 0, 0], max: [0, 0, 0] } }, name);
+}
+
+/** The scope as meshes for the mesh formats, from the mesh kernel's solids (and the mesh bodies as they are). */
+export function exportModelMesh(built: BuiltDesign, design: CadDesign, scope: ExportScope, o: { name?: string; mm?: number } = {}): ExportModel {
+  const parts: ExportPart[] = [];
+  const instances: ExportModel['instances'] = [];
+  const of = new Map<string, number>();
+  const partFor = (cid: string, only?: string) => {
+    const key = `${cid}/${only ?? ''}`;
+    if (of.has(key)) return of.get(key)!;
+    const comp = design.components.find((c) => c.id === cid);
+    const cb = built.components.get(cid);
+    const shown = (id: string) => (only ? id === only : !comp?.hiddenBodies?.includes(id));
+    const meshes: ExportMesh[] = [];
+    for (const b of cb?.bodies ?? []) {
+      if (!shown(b.id) || b.solid.isEmpty()) continue;
+      const m = b.solid.getMesh();
+      const positions = new Float32Array(m.vertProperties.length / m.numProp * 3);
+      for (let v = 0; v < positions.length / 3; v++) for (let d = 0; d < 3; d++) positions[3 * v + d] = m.vertProperties[v * m.numProp + d];
+      meshes.push({ name: b.name, positions, indices: new Uint32Array(m.triVerts) });
+    }
+    for (const mb of cb?.meshes ?? []) {
+      if (!shown(mb.id)) continue;
+      const r = meshBodyResult(mb);
+      meshes.push({ name: mb.name, positions: r.mesh.positions, normals: r.mesh.normals, indices: r.mesh.indices });
+    }
+    of.set(key, parts.length);
+    parts.push({ name: only ? meshes[0]?.name ?? 'Body' : comp?.name ?? 'Part', ...(comp?.color ? { color: comp.color } : {}), meshes });
+    return parts.length - 1;
+  };
+  if (scope.kind === 'assembly') {
+    design.occurrences.forEach((occ, i) => {
+      const M = built.placements[occ.id]?.matrix;
+      if (occ.hidden || !M) return;
+      const name = occ.name?.trim() || `${design.components.find((c) => c.id === occ.component)?.name ?? 'Part'}:${i + 1}`;
+      instances.push({ name, part: partFor(occ.component), M });
+    });
+  } else {
+    const p = partFor(scope.component, scope.kind === 'body' ? scope.body : undefined);
+    instances.push({ name: parts[p].name, part: p, M: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] });
+  }
+  if (!instances.some((x) => parts[x.part]?.meshes.some((m) => m.indices.length))) throw new Error('there is nothing to export');
+  return { name: o.name?.trim() || (scope.kind === 'assembly' ? 'Assembly' : parts[0]?.name ?? 'Part'), parts, instances, mm: o.mm ?? 1 };
 }
