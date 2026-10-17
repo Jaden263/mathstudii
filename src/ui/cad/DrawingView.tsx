@@ -274,7 +274,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     }, 100);
   };
 
-  const status = !cad ? 'The part this drawing belongs to was deleted.' : failed && !views ? `The drawing failed: ${failed}` : !all ? (cadResult?.needsBrep ? 'Loading the 3-D kernel…' : 'Drawing the part…') : !views ? 'The part has no bodies yet.' : null;
+  const status = !cad ? 'The part this drawing belongs to was deleted.' : failed && !views ? `The drawing failed: ${failed}` : !all ? (cadResult?.needsBrep ? 'Loading the 3-D kernel…' : 'Drawing the part…') : !views ? (Object.values(region.views).some(Boolean) ? 'The part has no bodies yet.' : 'Switch on a view in the side panel.') : null;
   const orient = region.portrait ? 'portrait' : 'landscape';
   const hint = tool === 'section' ? (draft ? 'Click the other end of the cutting line (Esc cancels)' : 'Click on the front, top or side view where the cutting line starts')
     : tool === 'detail' ? (draft ? 'Click to set the size of the circle (Esc cancels)' : 'Click the centre of the detail on a view') : null;
