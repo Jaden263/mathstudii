@@ -1435,7 +1435,8 @@ right-click menu. They download in the browser and open a save dialog in the des
   origin becomes an **Import** feature in the active component's timeline (a new, empty
   part takes its name and colour); an assembly becomes a component per part with a
   grounded occurrence for every instance where the file places it (nested assemblies are
-  flattened, their placements multiplied out).
+  flattened, their placements multiplied out). A 5 MB file (a plate with 576
+  counterbored holes) is read and measured in about 3.5 s, once: rebuilds reuse it.
 - Imported faces have no history, so they are named after their body and their surface: a
   plane by its normal and offset, a cylinder by its axis and radius, and so on. Sketches on
   them, fillets, holes, joints and drawing dimensions hold on through every rebuild.
@@ -1455,7 +1456,8 @@ right-click menu. They download in the browser and open a save dialog in the des
   unit: the dialog asks (millimetres by default).
 - **Convert to solid** sews a closed mesh of up to 20 000 triangles into a B-rep solid, its
   coplanar triangles merged into faces (a cube's twelve triangles become six faces), which
-  the features can then round, cut and drill.
+  the features can then round, cut and drill. It takes seconds (about 10 s at 20 000
+  triangles); its volume is the mesh's to 10⁻⁸.
 - The file is kept in the worksheet (deflated, in base64, once however many components use
   it), so the worksheet opens anywhere; above 5 MB the dialog warns that the file grows by
   about as much and that saving in the browser's storage may then fail.
@@ -1581,8 +1583,8 @@ What it is not, honestly:
   - This OpenCascade build has no XCAF reader: names, colours and the assembly are read
     from the STEP text itself (products, styled items, usages and their placements), not
     from layers, PMI, validation properties or per-face colours (a part takes its solid's
-    colour, else that of most of its faces). Mirrored or scaled placements are placed
-    without the mirror. There is no IGES.
+    colour, else that of most of its faces). A mirrored or scaled placement puts its part where
+    the file has it, but not turned. There is no IGES.
   - Imported faces are found again by their surface: a face whose surface moved is lost,
     even when a human would call it the same face.
   - Mesh bodies are not B-rep: no feature works on them, joints snap to their faces by

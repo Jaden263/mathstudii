@@ -12,7 +12,7 @@ import { readMeshFile, type MeshFile } from './meshFiles';
 /** Millimetres per part unit. */
 export const MM_PER_UNIT: Record<string, number> = { mm: 1, cm: 10, m: 1000, in: 25.4 };
 
-/** Above this many triangles a mesh is not sewn into a solid (sewing takes about a second per 20 000). */
+/** Above this many triangles a mesh is not sewn into a solid (sewing 20 000 takes about 10 s, 2 000 about 2 s). */
 export const SEW_LIMIT = 20_000;
 
 const files = new Map<string, MeshFile>();

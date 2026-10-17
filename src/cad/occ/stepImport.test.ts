@@ -6,12 +6,14 @@ import { describe, expect, it } from 'vitest';
 import { evaluateWorksheet, type CadResult } from '../../engine/evaluator';
 import { cadExample } from '../../model/examples';
 import type { CadRegion } from '../../model/types';
-import { designOf, emptyDesign, facePlane, type CadDesign, type DesignItem } from '../design';
+import { designOf, emptyDesign, facePlane, type CadDesign, type CadJoint, type DesignItem } from '../design';
+import { snapsOn } from '../snaps';
+import { refTo } from '../topology';
 import { designNumbers } from '../keys';
 import { m4Pose, type M4 } from '../solid';
 import { insertImport, planImport, poseOf, replaceImport } from '../importDesign';
-import { stepStructure } from '../step21';
-import { circles, rect, solve, watchHandles, withCircles } from './fixtures';
+import { decodeString, parseEntity, stepStructure } from '../step21';
+import { circles, rect, single, solve, watchHandles, withCircles } from './fixtures';
 import { occ } from './kernel';
 import { buildDesignOcc, occMass } from './build';
 import { stepFile } from './exchange';
@@ -52,6 +54,147 @@ function imported(text: string, name = 'part.step', into = emptyDesign()): CadDe
   const plan = planImport(name, 'step', enc(text));
   return insertImport(into, plan, { unit: 'mm', active: into.components[0].id }).design;
 }
+
+
+/** A flange plate (#8fa3bf) and a shaft (Ø20 × 80) placed twice, once turned to lie along X. */
+function rig(shaftAt: [number, number, number] = [0, 0, -20], extra = false): CadDesign {
+  return {
+    version: 2,
+    components: [
+      { id: 'cf', name: 'Flange', color: '#8fa3bf', items: [
+        { kind: 'sketch', id: 's1', name: 'Plate', plane: { ref: 'XY' }, sketch: withCircles(rect('p', -50, -50, 50, 50), 'b', [[0, 0, 12]]) },
+        { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+      ] },
+      { id: 'cs', name: 'Shaft', items: [
+        { kind: 'sketch', id: 's2', name: 'Shaft', plane: { ref: 'XY' }, sketch: circles('s', [[0, 0, 10]]) },
+        { kind: 'extrude', id: 'f2', name: 'Shaft', sketch: 's2', extent: { type: 'one', d: '80' }, op: 'new' },
+      ] },
+      ...(extra ? [{ id: 'ck', name: 'Key', items: [
+        { kind: 'sketch' as const, id: 's3', name: 'Key', plane: { ref: 'XY' as const }, sketch: rect('k', 0, 0, 6, 6) },
+        { kind: 'extrude' as const, id: 'f3', name: 'Key', sketch: 's3', extent: { type: 'one' as const, d: '20' }, op: 'new' as const },
+      ] }] : []),
+    ],
+    occurrences: [
+      { id: 'o1', component: 'cf', grounded: true },
+      { id: 'o2', component: 'cs', grounded: true, pos: shaftAt, name: 'Main shaft' },
+      { id: 'o3', component: 'cs', grounded: true, pos: [200, 0, 0], rot: [0, 90, 0] },
+      ...(extra ? [{ id: 'o4', component: 'ck', grounded: true, pos: [60, 0, 0] as [number, number, number] }] : []),
+    ],
+    joints: [],
+  };
+}
+
+describe('Replace file of an assembly', () => {
+  it('moves the occurrences the import placed and adds the parts new to the file', () => {
+    const first = exported(rig(), { kind: 'assembly' }, 'mm', 'Rig');
+    const d = imported(first, 'rig.step');
+    const shaft = d.occurrences.find((o) => o.name === 'Main shaft')!;
+    expect(shaft.pos).toEqual([0, 0, -20]);
+    const file = (d.components[0].items[0] as { file: string }).file;
+    // version 2: the main shaft 30 lower, and a key
+    const plan = planImport('rig-v2.step', 'step', enc(exported(rig([0, 0, -50], true), { kind: 'assembly' }, 'mm', 'Rig')));
+    const r = replaceImport(d, file, plan, { unit: 'mm' });
+    expect(r.added).toEqual(['Key']);
+    expect(r.missing).toEqual([]);
+    expect(r.design.components.map((c) => c.name)).toEqual(['Flange', 'Shaft', 'Key']);
+    // the same occurrence (its id kept), where the new file has it; one more for the key
+    expect(r.design.occurrences.find((o) => o.id === shaft.id)!.pos).toEqual([0, 0, -50]);
+    expect(r.design.occurrences).toHaveLength(4);
+    const { res } = solve(r.design);
+    expect(res.design!.errors).toEqual({});
+    near(res.design!.total!.V, 100 * 100 * 10 - PI * 144 * 10 + 2 * PI * 100 * 80 + 6 * 6 * 20, 1e-9);
+  });
+});
+
+describe('references to imported geometry', () => {
+  /** An imported plate, and what the test adds on it, solved; then the plate's file replaced by another file of the same plate. */
+  function throughReplace(add: (d: CadDesign, topo: ReturnType<typeof topologyOcc>) => CadDesign) {
+    const oc = occ()!;
+    const text = exported(plate(), { kind: 'component', component: 'cf' });
+    const d0 = imported(text, 'plate.step');
+    const built = buildDesignOcc(oc, d0, solve(d0).numbers);
+    const topo = topologyOcc(oc, built.components.get('c1')!.bodies[0].solid, d0.components[0].items[0].id);
+    built.free();
+    const d = add(d0, topo);
+    const before = solve(d).res.design!;
+    const again = text.replace(/'\d{4}-\d\d-\d\dT[\d:]+'/, "'2030-01-01T00:00:00'");
+    const r = replaceImport(d, (d.components[0].items[0] as { file: string }).file, planImport('plate-v2.step', 'step', enc(again)), { unit: 'mm' });
+    return { before, after: solve(r.design).res.design! };
+  }
+
+  it('a fillet on an imported edge keeps rounding it', () => {
+    const { before, after } = throughReplace((d, topo) => {
+      // the straight bottom edge along x at y = −50
+      const e = topo.edges.find((q) => q.line && Math.abs(q.mid[1] + 50) < 1e-9 && Math.abs(q.mid[2]) < 1e-9)!;
+      return { ...d, components: [{ ...d.components[0], items: [...d.components[0].items, { kind: 'fillet', id: 'r', name: 'Round', sets: [{ edges: [refTo('edge', topo.id, e)], r: '4' }] }] }] };
+    });
+    for (const x of [before, after]) {
+      expect(x.errors).toEqual({});
+      expect(x.warnings).toEqual({});
+    }
+    // the plate less (1 − π/4) r² along its 100 mm edge
+    near(after.bodies.c1[0].mass!.V, before.bodies.c1[0].mass!.V, 1e-12);
+    near(before.bodies.c1[0].mass!.V, solve(plateOnly()).res.design!.bodies.cf[0].mass!.V - (1 - PI / 4) * 16 * 100, 1e-9);
+  });
+
+  it('a joint on an imported circle keeps the shaft in the bore', () => {
+    const { before, after } = throughReplace((d, topo) => {
+      // a shaft component jointed to the centre of the bore's bottom circle
+      const bore = topo.edges.find((q) => q.circle && Math.abs(q.circle.r - 12) < 1e-9 && Math.abs(q.circle.c[2]) < 1e-9)!;
+      const snap = snapsOn(topo, { edge: bore.index }).find((q) => q.snap === 'centre')!;
+      const shaft = single([
+        { kind: 'sketch', id: 'ss', name: 'S', plane: { ref: 'XY' }, sketch: circles('s', [[0, 0, 10]]) },
+        { kind: 'extrude', id: 'fs', name: 'Shaft', sketch: 'ss', extent: { type: 'one', d: '50' }, op: 'new' },
+      ]).components[0];
+      const joint: CadJoint = { id: 'j', name: 'Seat', type: 'revolute', a: { occ: d.occurrences[0].id, origin: { kind: 'snap', ...snap } }, b: { occ: 'os', origin: { kind: 'origin' } }, angle: '0', offset: '0' };
+      return { ...d, components: [...d.components, { ...shaft, id: 'cs', name: 'Shaft' }], occurrences: [...d.occurrences, { id: 'os', component: 'cs', pos: [300, 0, 0] }], joints: [joint] };
+    });
+    for (const x of [before, after]) {
+      expect(x.errors).toEqual({});
+      expect(x.warnings).toEqual({});
+      expect(x.placements.os.by).toBe('joint');
+      // at the bore's centre on the bottom face, its axis down out of the plate
+      expect(x.placements.os.matrix.slice(12, 15).map((v) => +v.toFixed(9))).toEqual([0, 0, 0]);
+      expect(x.placements.os.matrix[10]).toBeCloseTo(-1, 9);
+    }
+  });
+});
+
+/** The plate without its import, to measure the closed forms against (built from its own timeline). */
+const plateOnly = () => plate();
+
+
+describe('STEP text reader', () => {
+  it('decodes strings and complex entities', () => {
+    expect(decodeString("B\\X2\\00FC\\X0\\gel \\X2\\00D8\\X0\\")).toBe('Bügel Ø');
+    expect(decodeString('\\X4\\0001D6FC\\X0\\ \\X\\E9 \\S\\i')).toBe('𝛼 é é');
+    const e = parseEntity(28, " ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) )")!;
+    expect(e.types).toEqual(['LENGTH_UNIT', 'NAMED_UNIT', 'SI_UNIT']);
+    expect(e.parts.SI_UNIT).toEqual([{ e: 'MILLI' }, { e: 'METRE' }]);
+    const p = parseEntity(7, "PRODUCT('it''s','x /* not a comment */',$,(#8,#9))")!;
+    expect(p.parts.PRODUCT).toEqual(["it's", 'x /* not a comment */', null, [{ ref: 8 }, { ref: 9 }]]);
+  });
+
+  it('reads placements whichever way round a writer puts the representations', () => {
+    const text = exported(rig(), { kind: 'assembly' }, 'in', 'Rig');
+    const want = stepStructure(text);
+    expect(want.unit).toBe(25.4);
+    // ITEM_DEFINED_TRANSFORMATION from the parent's placement to the child's, and the
+    // representations swapped to match (what some writers do); and a name holding ENDSEC;
+    const swapped = text
+      .replace(/REPRESENTATION_RELATIONSHIP\('([^']*)','([^']*)',(#\d+),(#\d+)\)/g, "REPRESENTATION_RELATIONSHIP('$1','$2',$4,$3)")
+      .replace(/ITEM_DEFINED_TRANSFORMATION\('([^']*)','([^']*)',(#\d+),(#\d+)\)/g, "ITEM_DEFINED_TRANSFORMATION('$1','$2',$4,$3)")
+      .replace("'Main shaft'", "'Main shaft; ENDSEC;'");
+    // (each of the three usages' relationships was turned round)
+    expect(text.match(/REPRESENTATION_RELATIONSHIP\('[^']*','[^']*',#\d+,#\d+\)/g)).toHaveLength(3);
+    expect(swapped.split('\n').filter((l, i) => l !== text.split('\n')[i]).length).toBeGreaterThanOrEqual(7);
+    const got = stepStructure(swapped);
+    expect(got.instances.map((i) => i.name)).toEqual(['Flange:1', 'Main shaft; ENDSEC;', 'Shaft:3']);
+    got.instances.forEach((inst, k) => inst.M.forEach((v, i) => expect(v).toBeCloseTo(want.instances[k].M[i], 9)));
+    // in inches: the main shaft 20 in down is 508 mm
+    expect(got.instances[1].M[14]).toBeCloseTo(-508, 9);
+  });
+});
 
 describe('STEP import', () => {
   it('reads a filleted body back with its volume, centroid and name', () => {

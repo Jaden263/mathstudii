@@ -7,6 +7,8 @@ import { insertImport, planImport } from '../importDesign';
 import { boxTriangles } from '../meshFixtures';
 import { meshToStl } from '../stl';
 import { answer, displayFor } from './service';
+import { snapsOn } from '../snaps';
+import { m4Point } from '../solid';
 import type { KernelRequest, KernelValues } from './protocol';
 
 async function ask<K extends KernelRequest['op']>(req: Extract<KernelRequest, { op: K }>): Promise<KernelValues[K]> {
@@ -76,5 +78,27 @@ describe('mesh bodies', () => {
     expect(v.box.x1).toBeCloseTo(100, 6);
     expect(v.box.y0).toBeCloseTo(-5, 6);
     expect(v.box.y1).toBeCloseTo(60, 6);
+  });
+
+  it('joints: a snap point on the mesh body sets it on the plate', () => {
+    const design = plateAndCube();
+    const { numbers } = solve(design);
+    const shown = displayFor(design, numbers)!;
+    const plate = shown.components.c1.bodies[0], cube = shown.components.cm.bodies[0];
+    const top = plate.faces.find((f) => f.frame && f.frame.n[2] > 0.999)!;
+    const bottom = cube.faces.find((f) => f.frame && f.frame.n[2] < -0.999)!;
+    const a = snapsOn(plate, { face: top.index }).find((q) => q.snap === 'centroid')!;
+    const b = snapsOn(cube, { face: bottom.index }).find((q) => q.snap === 'centroid')!;
+    const jointed: CadDesign = {
+      ...design,
+      occurrences: design.occurrences.map((o) => (o.id === 'om' ? { id: 'om', component: 'cm' } : o)),
+      joints: [{ id: 'j', name: 'Seat', type: 'rigid', a: { occ: 'o1', origin: { kind: 'snap', ...a } }, b: { occ: 'om', origin: { kind: 'snap', ...b } }, angle: '0', offset: '0', flip: true }],
+    };
+    const { res } = solve(jointed);
+    expect(res.design!.errors).toEqual({});
+    expect(res.design!.warnings).toEqual({});
+    expect(res.design!.placements.om.by).toBe('joint');
+    // the cube's bottom on the plate's top, centred: its centre at (50, 30, 15)
+    expect(m4Point(res.design!.placements.om.matrix, [5, 5, 5]).map((v) => +v.toFixed(9))).toEqual([50, 30, 15]);
   });
 });

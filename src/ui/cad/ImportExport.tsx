@@ -166,7 +166,7 @@ export function useImportExport(p: Props) {
     const res = live.current.result?.design;
     for (const c of d.components) {
       out.push([`c:${c.id}`, `Component ${c.name}`]);
-      for (const b of res?.bodies[c.id] ?? []) if (!b.empty || b.mesh) out.push([`b:${c.id}:${b.id}`, `  Body ${b.name}${b.mesh ? ' (mesh)' : ''}`]);
+      for (const b of res?.bodies[c.id] ?? []) if (!b.empty || b.mesh) out.push([`b:${c.id}:${b.id}`, `Body ${c.name} › ${b.name}${b.mesh ? ' (mesh)' : ''}`]);
     }
     return out;
   };
@@ -279,7 +279,7 @@ export function useImportExport(p: Props) {
         {mesh && plan.unit !== null && <p className="hint">The file is in {unitWords(plan.unit)}; it is converted to {live.current.region.unit}.</p>}
         {f.format === 'step' && <p className="hint">Its numbers are converted from the file's unit to {live.current.region.unit}; names and colours come along.</p>}
         {mesh && (
-          <label className="check" title={triangles > SEW_LIMIT ? `Only meshes of up to ${SEW_LIMIT} triangles are sewn into solids` : 'Sew each closed mesh into a B-rep solid whose flat faces the features can work on'}>
+          <label className="check" title={triangles > SEW_LIMIT ? `Only meshes of up to ${SEW_LIMIT} triangles are sewn into solids` : 'Sew each closed mesh into a B-rep solid whose flat faces the features can work on (seconds: about 10 s for 20 000 triangles)'}>
             <input type="checkbox" checked={panel.solid} disabled={triangles > SEW_LIMIT} onChange={(e) => setPanel({ ...panel, solid: e.target.checked })} />
             Convert to solid{triangles > SEW_LIMIT ? ` (up to ${SEW_LIMIT} triangles)` : ''}
           </label>

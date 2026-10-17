@@ -155,17 +155,20 @@ export function insertImport(design: CadDesign, plan: ImportPlan, o: ImportOptio
   const warnings: string[] = [];
   let reused = reuse ? d.occurrences.find((oc) => oc.component === reuse.id) : undefined;
   for (const inst of plan.instances) {
-    const pose = poseOf(inst.M, o.unit);
-    if (!pose) warnings.push(`${inst.name} is mirrored or scaled in the file: it is placed without that`);
+    const pose = poseOf(inst.M, o.unit) ?? movedOnly(inst.M, o.unit);
+    if (!poseOf(inst.M, o.unit)) warnings.push(`${inst.name} is mirrored or scaled in the file: it is placed where the file has it, but not turned`);
     const id = reused?.id ?? cadId('o');
     reused = undefined;
-    occs.push({ id, component: compOf(inst.part), name: inst.name, grounded: true, ...(pose ? place(pose) : {}) });
+    occs.push({ id, component: compOf(inst.part), name: inst.name, grounded: true, ...place(pose) });
     placed[inst.path || `#${occs.length}`] = id;
   }
   d = withFiles({ ...d, components: [...d.components.filter((c) => c !== reuse), ...comps], occurrences: occs }, [{ ...plan.file, placed }]);
   plan.warnings.push(...warnings);
   return { design: d, components: comps.map((c) => c.id), features };
 }
+
+/** The position of a placement alone (part units), for one that mirrors or scales. */
+const movedOnly = (M: M4, unit: CadUnit) => ({ pos: [M[12], M[13], M[14]].map((v) => v / (MM_PER_UNIT[unit] ?? 1)) as Vec3, rot: [0, 0, 0] as Vec3 });
 
 /** Position and rotation fields, left out when zero. */
 const place = (pose: { pos: Vec3; rot: Vec3 }): Partial<CadOccurrence> => ({
@@ -225,17 +228,17 @@ export function replaceImport(design: CadDesign, old: string, plan: ImportPlan, 
     }
     const seen = new Set<string>();
     for (const inst of plan.instances) {
-      const pose = poseOf(inst.M, o.unit);
+      const pose = poseOf(inst.M, o.unit) ?? movedOnly(inst.M, o.unit);
       const path = inst.path || inst.name;
       seen.add(path);
       const at = placed[path] ? occs.findIndex((q) => q.id === placed[path]) : -1;
       if (at >= 0) {
         // where the new file has it (a grounded occurrence the user has not moved off the file's placement)
         const { pos: _, rot: __, ...rest } = occs[at];
-        occs[at] = { ...rest, ...(pose ? place(pose) : {}) };
+        occs[at] = { ...rest, ...place(pose) };
       } else {
         const id = cadId('o');
-        occs.push({ id, component: compOfPart.get(inst.part)!, name: inst.name, grounded: true, ...(pose ? place(pose) : {}) });
+        occs.push({ id, component: compOfPart.get(inst.part)!, name: inst.name, grounded: true, ...place(pose) });
         placed[path] = id;
       }
     }

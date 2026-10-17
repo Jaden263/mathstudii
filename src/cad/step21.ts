@@ -62,11 +62,14 @@ export class Part21 {
     if (i < 0) throw new Error('this is not a STEP file (no DATA section)');
     i += 5;
     const n = s.length;
+    // where the section ends (searched again only once the entities have gone past it: a
+    // string may hold the word)
+    let endsec = s.indexOf('ENDSEC;', i);
     while (i < n) {
       // the next entity: #id = …;
       const h = s.indexOf('#', i);
       if (h < 0) break;
-      const endsec = s.indexOf('ENDSEC;', i);
+      if (endsec >= 0 && endsec < i) endsec = s.indexOf('ENDSEC;', i);
       if (endsec >= 0 && endsec < h) break;
       let j = h + 1, id = 0;
       while (j < n && s.charCodeAt(j) >= 48 && s.charCodeAt(j) <= 57) id = id * 10 + s.charCodeAt(j++) - 48;
