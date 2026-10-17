@@ -1213,7 +1213,8 @@ What it is not, honestly:
   - Cosmetic threads follow their body through patterns, mirrors, moves and joins; the
     threads of a tool body that a Combine cuts or intersects with go with it.
   - Section lines are straight (no stepped or aligned sections), only on the front, top
-    and side views. Shafts and bolts cut lengthwise are hatched like everything else.
+    and side views; one on the side view stays on the side view when the projection
+    changes (left becomes right). Shafts and bolts cut lengthwise are hatched like everything else.
     Section views leave hidden lines out.
   - Centre lines are drawn for cylinders and cones going at least half round; there are
     no bolt-circle centre lines, and none in the isometric view.

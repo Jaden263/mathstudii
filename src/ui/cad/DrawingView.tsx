@@ -178,7 +178,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
       e.stopPropagation();
       e.preventDefault();
       if (!draft) {
-        if (!pv || (tool === 'section' && !['front', 'top', 'side'].includes(pv.key))) return;
+        // sections cut the standard views; details enlarge any view but another detail
+        if (!pv || (tool === 'section' ? !['front', 'top', 'side'].includes(pv.key) : pv.kind === 'detail')) return;
         const a = snapIn(pv, x, y);
         setDraft({ view: pv, a, b: a });
         return;
