@@ -12,7 +12,7 @@ import {
   Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash, FileBox,
   Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate, TriangleRight,
   LineSquiggle, SplinePointer, Ellipse as EllipseIcon, CircleDotDashed, Type, VectorSquare, CornerRightDown, MoveHorizontal, ScissorsLineDashed,
-  Grid2x2, Rotate3d, ScanLine,
+  Grid2x2, Rotate3d, ScanLine, FileInput,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -192,6 +192,7 @@ const ICON: Record<DesignItem['kind'], ReactNode> = {
   presspull: <ArrowUpDown size={14} />, split: <Slice size={14} />, move: <Move size={14} />,
   sweep: <Route size={14} />, coil: <Tornado size={14} />, thread: <Screw size={14} />, rib: <TriangleRight size={14} />,
   plane: <Diamond size={14} />, axis: <MoveDiagonal size={14} />, point: <Locate size={14} />,
+  import: <FileInput size={14} />,
 };
 
 /** Where a sketch is: "the XY plane", "the end face of Extrude1", "face of Body1" (made before sketches followed faces). */

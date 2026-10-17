@@ -36,10 +36,13 @@ import { ribCurve, ribRegion, type RibCurve } from './rib';
 import { reproject, sameReferences, type ReferenceContext, type RefCurve3 } from './reference';
 import { sketchSolution } from './sketchSolve';
 import type { CadResult } from './evaluate';
+import type { CadUnit } from './model';
+import { meshBodyTopology, type MeshBody } from './meshBody';
+import { runImport } from './importFeature';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
 
-export type { Helix };
+export type { Helix, MeshBody };
 
 // ------------------------------------------------------------ document
 
@@ -444,8 +447,42 @@ export type Datum =
   | { kind: 'point'; p: Vec3 }
   | { kind: 'helix'; helix: Helix };
 
+// ------------------------------------------------------------ imported geometry
+
+export type ImportFormat = 'step' | 'stl' | 'obj' | '3mf';
+
+/** A file imported into the design, kept in the document (imported.ts): deflated, in base64, filed under `hash`. */
+export interface ImportedFile {
+  name: string;
+  format: ImportFormat;
+  /** Bytes before compression. */
+  size: number;
+  /** `${format}:${hash of the bytes}`, its key in `CadDesign.files`. */
+  hash: string;
+  data: string;
+  /** Occurrences the import placed, by their path in the file's assembly (Replace file moves them along). */
+  placed?: Record<string, string>;
+}
+
+/**
+ * Fusion's Insert → Import: the bodies of one part of an imported file as the base of a
+ * component. STEP parts become exact B-rep bodies; STL, OBJ and 3MF meshes become mesh
+ * bodies (meshBody.ts), or B-rep solids sewn from their triangles (`solid`).
+ */
+export interface ImportFeature extends FeatureBase {
+  kind: 'import';
+  /** Key (hash) of the file in `CadDesign.files`. */
+  file: string;
+  /** Which part of the file: its key there (product id or name, 3MF object id) and, should the key be gone, its place. */
+  part?: { key: string; index: number };
+  /** Unit of the numbers of a file that has none (STL, OBJ); default mm. */
+  unit?: CadUnit;
+  /** Sew closed meshes into B-rep solids (small meshes only). */
+  solid?: boolean;
+}
+
 export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature
-  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem;
+  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem | ImportFeature;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -508,6 +545,8 @@ export interface CadDesign {
   components: CadComponent[];
   occurrences: CadOccurrence[];
   joints: CadJoint[];
+  /** Imported files by their hash (import features build from them). */
+  files?: Record<string, ImportedFile>;
 }
 
 export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch';
@@ -515,6 +554,7 @@ export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
   sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine', loft: 'Loft',
   fillet: 'Fillet', chamfer: 'Chamfer', shell: 'Shell', draft: 'Draft', presspull: 'Press pull', split: 'Split', move: 'Move',
   sweep: 'Sweep', coil: 'Coil', thread: 'Thread', rib: 'Rib', plane: 'Plane', axis: 'Axis', point: 'Point',
+  import: 'Import',
 };
 
 /** Features that work on what is picked on the bodies: they are edited with the timeline rolled back to them. */
@@ -696,6 +736,8 @@ export interface ComponentBuild {
   tools: Map<string, ToolRec>;
   /** Sketches the timeline solved again (their projected references moved). */
   sketches: Record<string, RebuiltSketch>;
+  /** Imported mesh bodies. */
+  meshes?: MeshBody[];
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -853,6 +895,10 @@ export interface SolidOps<S> {
   edgeAt(s: S, edge: number, t: number): { p: Vec3; d: Vec3 };
   /** The curves the plane f cuts from a solid (component coordinates): lines, circles and ellipses exactly, other curves as points along them. */
   section(s: S, f: Frame): RefCurve3[];
+  /** The solids of one part of a STEP file in part units, their faces named after their body and surface (B-rep kernel only). */
+  stepBodies?(file: ImportedFile, part: { key: string; index: number } | undefined, unit: string, tag: string): { solids: S[]; warnings: string[] };
+  /** A closed mesh sewn into a solid of plane triangles merged into faces (B-rep kernel only). */
+  meshSolid?(mesh: MeshBody, body: number, unit: string, tag: string): S;
 }
 
 export interface TimelineBody<S> {
@@ -883,6 +929,8 @@ export interface Timeline<S> {
   /** Sketches the timeline solved again (their projected references moved). */
   sketches: Record<string, RebuiltSketch>;
   threads: ThreadMark[];
+  /** Imported mesh bodies (not B-rep: no feature works on them). */
+  meshes: MeshBody[];
 }
 
 /** z-range of a box in a sketch frame. */
@@ -967,6 +1015,8 @@ export interface TimelineState<S> {
   sketches: Record<string, RebuiltSketch>;
   /** Cosmetic threads so far (drawings draw them per ISO 6410). */
   threads: ThreadMark[];
+  /** Imported mesh bodies so far. */
+  meshes?: MeshBody[];
 }
 
 /**
@@ -1004,7 +1054,7 @@ export interface RebuiltSketch {
   result: CadResult;
 }
 
-export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {}, threads: [] });
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {}, threads: [], meshes: [] });
 
 /** The face a sketch follows, if it does (sketches made on faces before references existed do not). */
 export const sketchFace = (s: DesignSketch): TopoRef | undefined => ('frame' in s.plane ? s.plane.face : undefined);
@@ -1520,6 +1570,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   const made = [...prev.made];
   // old cached states (made before threads were kept) have none
   let threads = prev.threads ?? [];
+  let meshes = prev.meshes ?? [];
   const built = prev.frames;
   // construction items and coils add planes and datums
   let frames = prev.frames, datums = prev.datums;
@@ -1531,6 +1582,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   };
   const targetsOf = (ids?: string[]) => {
     const ts = ids?.length ? bodies.filter((b) => ids.includes(b.id)) : bodies;
+    if (ids?.some((id) => meshes.some((m) => m.id === id))) throw new Error('a mesh body cannot be cut, joined or intersected: convert it to a solid in its import');
     if (ids?.length && ts.length < ids.length) throw new Error('a target body no longer exists');
     return ts;
   };
@@ -1758,6 +1810,13 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         }
         break;
       }
+      case 'import': {
+        const got = runImport(ops, design, item, inp.numbers.unit);
+        got.solids.forEach((solid, k) => created(k ? `${item.id}.b${k}` : item.id, item.id, solid));
+        if (got.meshes.length) meshes = [...meshes, ...got.meshes];
+        if (got.warnings.length) warnings[item.id] = got.warnings.join('; ');
+        break;
+      }
       case 'combine': {
         const t = bodies.find((b) => b.id === item.target);
         const ts = bodies.filter((b) => item.tools.includes(b.id) && b !== t);
@@ -1817,7 +1876,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads };
+  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads, meshes };
 }
 
 /**
@@ -1831,11 +1890,17 @@ export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): Timeli
   return st.bodies.map((b) => ({ ...b, name: names.get(b.id) ?? b.id }));
 }
 
+/** The mesh bodies of a finished timeline with their names: the component's own, else the file's, else Mesh1, Mesh2 … */
+export function namedMeshes<S>(comp: CadComponent, st: TimelineState<S>): MeshBody[] {
+  let n = 0;
+  return (st.meshes ?? []).map((m) => ({ ...m, name: comp.bodyNames?.[m.id] ?? (m.name || `Mesh${++n}`) }));
+}
+
 /** Run the timeline of one component with a solid kernel. */
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads, meshes: namedMeshes(comp, st) };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */
@@ -1843,7 +1908,7 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
   const t = runTimeline(meshOps(K, arena), design, comp, inp);
   return {
     bodies: t.bodies.map((b) => ({ id: b.id, name: b.name, feature: b.feature, solid: b.solid.m, exact: b.solid.exact })),
-    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums, sketches: t.sketches,
+    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums, sketches: t.sketches, meshes: t.meshes,
     tools: new Map([...t.tools].map(([id, r]) => [id, { tool: r.tool.m, exact: r.tool.exact, op: r.op, targets: r.targets }])),
   };
 }
@@ -2060,12 +2125,12 @@ export function buildDesign(K: ManifoldToplevel, design: CadDesign, numbers: Des
     try {
       components.set(c.id, buildComponent(K, arena, design, c, inp));
     } catch (e) {
-      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map(), sketches: {} });
+      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map(), sketches: {}, meshes: [] });
     }
   }
   const { placements, errors, warnings } = placeOccurrences(design, numbers, {
     frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
-    bodies: (cid) => (components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)),
+    bodies: (cid) => [...(components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)), ...(components.get(cid)?.meshes ?? []).map(meshBodyTopology)],
     datums: (cid) => components.get(cid)?.datums ?? {},
   });
   return { arena, components, placements, errors, warnings, free: () => arena.free() };

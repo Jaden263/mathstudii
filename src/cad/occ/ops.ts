@@ -18,6 +18,8 @@ import { alignLoop, loopWire, regionFace, reversedLoop, wireFaces, type ProfileF
 import { ShapeIndex, ax1, compound, dir, guard, hasSolid, listShapes, occBox, occError, pnt, scratch, shapeIndex, subShapes, trsf, vec, xyz, type OC } from './kernel';
 import { edgeInfo, faceInfo, topologyOcc } from './topology';
 import { sweepOps } from './sweep';
+import { stepBodiesOcc } from './stepImport';
+import { meshSolidOcc } from './meshSolid';
 
 export interface FaceTag {
   face: TopoDS_Shape;
@@ -1136,6 +1138,10 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
         return { min: [bb.GetXMin(), bb.GetYMin(), bb.GetZMin()], max: [bb.GetXMax(), bb.GetYMax(), bb.GetZMax()] };
       });
     },
+
+    // imported geometry (stepImport.ts, meshSolid.ts)
+    stepBodies: (file, part, unit, tag) => stepBodiesOcc(oc, arena, file, part, unit, tag),
+    meshSolid: (mesh, body, unit, tag) => meshSolidOcc(oc, arena, mesh, body, unit, tag),
   };
   // an OCCT exception from a step without its own message still becomes a readable Error
   for (const k of Object.keys(ops) as (keyof SolidOps<OccSolid>)[]) {

@@ -38,6 +38,12 @@ function rgb(hex?: string): [number, number, number] | undefined {
   return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
+/**
+ * sRGB (what #rrggbb means) to linear RGB, which OCCT's colours hold: its STEP writer turns
+ * them back into the sRGB numbers other programs read from COLOUR_RGB.
+ */
+export const linearRgb = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+
 /** The visible bodies of a component (all bodies when asked for one). */
 function partOf(built: OccBuiltDesign, design: CadDesign, cid: string, only?: string): Part | null {
   const comp = design.components.find((c) => c.id === cid);
@@ -113,7 +119,7 @@ function stepDocument(oc: OC, t: Arena, built: OccBuiltDesign, design: CadDesign
   const addPart = (p: Part) => {
     const label = t.add(shapes.AddShape(compound(oc, t, p.shapes), false, true));
     name(label, p.name);
-    if (p.color) colors.SetColor(label, t.add(new oc.Quantity_ColorRGBA(p.color[0], p.color[1], p.color[2], 1)), oc.XCAFDoc_ColorType.XCAFDoc_ColorSurf);
+    if (p.color) colors.SetColor(label, t.add(new oc.Quantity_ColorRGBA(linearRgb(p.color[0]), linearRgb(p.color[1]), linearRgb(p.color[2]), 1)), oc.XCAFDoc_ColorType.XCAFDoc_ColorSurf);
     return label;
   };
   if (scope.kind === 'assembly') {

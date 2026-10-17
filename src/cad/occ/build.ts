@@ -4,8 +4,9 @@
 // from the feature that changed, cache.ts).
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import {
-  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type RebuiltSketch, type ThreadMark, type TimelineBody, type TimelineTool,
+  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type MeshBody, type Placement, type RebuiltSketch, type ThreadMark, type TimelineBody, type TimelineTool,
 } from '../design';
+import { meshBodyResult } from '../meshBody';
 import { designKey } from '../keys';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
 import { failedComponent, placeBuilt, timelineCache } from './cache';
@@ -30,6 +31,8 @@ export interface OccComponentBuild {
   sketches?: Record<string, RebuiltSketch>;
   /** Cosmetic threads (drawings draw them). */
   threads?: ThreadMark[];
+  /** Imported mesh bodies (no B-rep). */
+  meshes?: MeshBody[];
 }
 
 export interface OccBuiltDesign {
@@ -107,6 +110,37 @@ export interface MeasuredBody {
   feature: string;
   mass?: Mass3;
   empty?: boolean;
+  /** An imported mesh body. */
+  mesh?: boolean;
+}
+
+/** A box moved by a placement (the box of its moved corners). */
+export function placedBox(b: { min: Vec3; max: Vec3 } | null, M: number[]): { min: Vec3; max: Vec3 } | null {
+  if (!b) return null;
+  const out = { min: [Infinity, Infinity, Infinity] as Vec3, max: [-Infinity, -Infinity, -Infinity] as Vec3 };
+  for (let k = 0; k < 8; k++) {
+    const p: Vec3 = [k & 1 ? b.max[0] : b.min[0], k & 2 ? b.max[1] : b.min[1], k & 4 ? b.max[2] : b.min[2]];
+    for (let i = 0; i < 3; i++) {
+      const v = M[i] * p[0] + M[4 + i] * p[1] + M[8 + i] * p[2] + M[12 + i];
+      out.min[i] = Math.min(out.min[i], v);
+      out.max[i] = Math.max(out.max[i], v);
+    }
+  }
+  return out;
+}
+
+/** The box around a box and others (any of them may be null). */
+export function withMeshBoxes(b: { min: Vec3; max: Vec3 } | null, more: ({ min: Vec3; max: Vec3 } | null)[]): { min: Vec3; max: Vec3 } | null {
+  let out = b && { min: [...b.min] as Vec3, max: [...b.max] as Vec3 };
+  for (const m of more) {
+    if (!m) continue;
+    if (!out) out = { min: [...m.min] as Vec3, max: [...m.max] as Vec3 };
+    else for (let i = 0; i < 3; i++) {
+      out.min[i] = Math.min(out.min[i], m.min[i]);
+      out.max[i] = Math.max(out.max[i], m.max[i]);
+    }
+  }
+  return out;
 }
 
 export interface MeasuredDesign {
@@ -156,11 +190,14 @@ export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbe
       out.bodies[c.id] = cb.bodies.map((b) => (isEmptyShape(oc, b.solid.shape)
         ? { id: b.id, name: b.name, feature: b.feature, empty: true }
         : { id: b.id, name: b.name, feature: b.feature, mass: shapeMass(oc, b.solid.shape) }));
+      // mesh bodies: volume properties only when closed
+      for (const m of cb.meshes ?? []) out.bodies[c.id].push({ id: m.id, name: m.name, feature: m.feature, mesh: true, ...(m.mass ? { mass: m.mass } : { empty: true }) });
       // the box of each visible occurrence: its bodies moved into place
       for (const o of design.occurrences) {
         const M = built.placements[o.id]?.matrix;
         if (o.hidden || o.component !== c.id || !M) continue;
-        const bb = scratch((t) => occBox(oc, cb.bodies.map((b) => t.add(t.add(new oc.BRepBuilderAPI_Transform(b.solid.shape, trsf(oc, t, M), false, false)).Shape()))));
+        const solidBox = scratch((t) => occBox(oc, cb.bodies.map((b) => t.add(t.add(new oc.BRepBuilderAPI_Transform(b.solid.shape, trsf(oc, t, M), false, false)).Shape()))));
+        const bb = withMeshBoxes(solidBox, (cb.meshes ?? []).map((m) => placedBox(meshBodyResult(m).box, M)));
         if (!bb) continue;
         if (!box) box = { min: [...bb.min], max: [...bb.max] };
         for (let i = 0; i < 3; i++) {

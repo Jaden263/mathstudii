@@ -9,6 +9,7 @@ import { kernel } from '../solid';
 import { buildDesignOcc, isEmptyShape, occMass, type OccBody, type OccBuiltDesign } from './build';
 import { occ, scratch, shapeIndex, type OC } from './kernel';
 import { props, topologyOcc } from './topology';
+import { meshBodyResult } from '../meshBody';
 
 export interface MeshOptions {
   /** Chord deviation of the display mesh as a fraction of the body's size (default 5·10⁻⁴). */
@@ -113,7 +114,7 @@ export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
         let r = shown.get(b.solid.shape);
         if (!r) shown.set(b.solid.shape, (r = bodyResultOcc(oc, b)));
         return { ...r, id: b.id, name: b.name, feature: b.feature };
-      }),
+      }).concat((cb.meshes ?? []).map(meshBodyResult)),
       errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums,
     };
   }
@@ -123,7 +124,7 @@ export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
 /** BuildResult of a built design (it stays built; free it yourself). */
 export function builtResultOcc(oc: OC, built: OccBuiltDesign, o: MeshOptions = {}): BuildResult {
   const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
-  for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map((b) => bodyResultOcc(oc, b, o)), errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
+  for (const [cid, cb] of built.components) out.components[cid] = { bodies: [...cb.bodies.map((b) => bodyResultOcc(oc, b, o)), ...(cb.meshes ?? []).map(meshBodyResult)], errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
   return out;
 }
 

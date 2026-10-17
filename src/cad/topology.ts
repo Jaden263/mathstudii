@@ -339,6 +339,12 @@ export function faceWords(key: string, featureName: (id: string) => string | und
   const copy = path.includes('.') ? ` (copy ${path.split('.')[1]} of ${featureName(path.split('.')[0]) ?? 'a pattern'})` : '';
   const feature = featureName(path.split('.').pop()!) ?? 'a feature';
   const hole = /^hole(\d+):(\w+)/.exec(role);
+  // an imported face: named after its body and surface (occ/stepImport.ts)
+  const imported = /^b(\d+):([a-z])/.exec(role);
+  if (imported) {
+    const kind = ({ p: 'flat', c: 'cylindrical', k: 'conical', s: 'spherical', t: 'toroidal' } as Record<string, string>)[imported[2]] ?? 'curved';
+    return `a ${kind} face of ${feature}${+imported[1] ? ` (body ${+imported[1] + 1})` : ''}${copy}`;
+  }
   const what = role === 'start' ? 'start face' : role === 'end' ? 'end face' : role.startsWith('side') ? 'side face'
     : role.startsWith('round') ? 'rounding' : role.startsWith('chamfer') ? 'chamfer'
       : role.startsWith('in:') ? 'inner wall' : role.startsWith('out:') ? 'outer wall' : role === 'split' ? 'cut face'

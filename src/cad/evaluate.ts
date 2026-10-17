@@ -58,6 +58,8 @@ export interface BodyInfo {
   feature: string;
   mass?: MassOut;
   empty?: boolean;
+  /** An imported mesh body: shown and measured, but no feature works on it. */
+  mesh?: boolean;
 }
 
 export interface DesignResult extends DesignNumbers {
@@ -379,9 +381,10 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     for (const c of design.components) {
       const masses: Mass3[] = [];
       dr.bodies[c.id] = (m.bodies[c.id] ?? []).map((b) => {
-        if (!b.mass) return { id: b.id, name: b.name, feature: b.feature, empty: true };
+        const mesh = b.mesh ? { mesh: true } : {};
+        if (!b.mass) return { id: b.id, name: b.name, feature: b.feature, empty: true, ...mesh };
         masses.push(b.mass);
-        return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m: b.mass, rho: density(c.id) }]) ?? undefined };
+        return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m: b.mass, rho: density(c.id) }]) ?? undefined, ...mesh };
       });
       compMass.set(c.id, masses);
     }
@@ -408,6 +411,11 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
           masses.push(m);
           return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m, rho: density(c.id) }]) ?? undefined };
         });
+        // imported mesh bodies: volume properties only when closed
+        for (const mb of cb.meshes ?? []) {
+          if (mb.mass) masses.push(mb.mass);
+          dr.bodies[c.id].push({ id: mb.id, name: mb.name, feature: mb.feature, mesh: true, ...(mb.mass ? { mass: massOut([{ m: mb.mass, rho: density(c.id) }]) ?? undefined } : { empty: true }) });
+        }
         compMass.set(c.id, masses);
       }
       Object.assign(dr.errors, built.errors);

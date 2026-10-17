@@ -9,6 +9,7 @@
 // geometry beyond planes, and no names.
 import { buildDesign, type CadDesign, type Datum, type DesignNumbers, type Placement } from './design';
 import { meshBody, polylineMid } from './meshTopology';
+import { meshBodyResult } from './meshBody';
 import type { Frame, ManifoldToplevel, Mass3, Vec3 } from './solid';
 import { edgeKey } from './topology';
 
@@ -93,6 +94,8 @@ export interface BodyResult {
   mass: Mass3;
   area: number;
   box: { min: Vec3; max: Vec3 } | null;
+  /** An imported mesh body (meshBody.ts): no exact faces, not editable by the features. */
+  meshOnly?: boolean;
 }
 
 export interface BuildResult {
@@ -118,7 +121,7 @@ export function meshBuildResult(K: ManifoldToplevel, design: CadDesign, numbers:
   const built = buildDesign(K, design, numbers);
   try {
     const out: BuildResult = { kernel: 'mesh', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
-    for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map(meshBody), errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
+    for (const [cid, cb] of built.components) out.components[cid] = { bodies: [...cb.bodies.map(meshBody), ...(cb.meshes ?? []).map(meshBodyResult)], errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
     return out;
   } finally {
     built.free();
