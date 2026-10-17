@@ -188,6 +188,8 @@ export async function findLinked(handle: FileHandle): Promise<string | null> {
     }
   });
   for (const [id, h] of pairs) {
+    // spreadsheet components keep their linked workbooks here too
+    if (id.startsWith('xlsx:')) continue;
     if (typeof handle === 'string' ? h === handle : h && typeof h !== 'string' && (await handle.isSameEntry(h).catch(() => false))) return id;
   }
   return null;

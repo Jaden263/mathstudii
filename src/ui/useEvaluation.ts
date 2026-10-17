@@ -4,6 +4,9 @@ import type { RegionResult } from '../engine/evaluator';
 import type { EvalRequest, EvalResponse } from '../engine/worker';
 import { isDisplayMessage, type DisplayMessage } from '../cad/kernel/protocol';
 import { kernelHostStopped, receiveDisplay, setKernelHost } from './cad/kernelClient';
+import { isExportResponse, type ExportRequest, type ExportResponse } from '../sheet/exportWorker';
+import { isWorksheetExportResponse, type WorksheetExportRequest, type WorksheetExportResponse } from '../exporters/exportWorker';
+import type { Format, Picture } from '../exporters';
 
 export interface EvaluationState {
   results: Map<string, RegionResult>;
@@ -31,11 +34,23 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
   const slowTimer = useRef<number | undefined>(undefined);
   const latest = useRef(ws);
   latest.current = ws;
+  const exports = useRef(new Map<number, (r: ExportResponse) => void>());
+  const wsExports = useRef(new Map<number, (r: WorksheetExportResponse) => void>());
 
   const attach = useCallback((w: Worker) => {
-    w.onmessage = (e: MessageEvent<EvalResponse | DisplayMessage>) => {
+    w.onmessage = (e: MessageEvent<EvalResponse | DisplayMessage | ExportResponse>) => {
       // CAD display data follows the results it belongs to
       if (isDisplayMessage(e.data)) return receiveDisplay(e.data);
+      if (isExportResponse(e.data)) {
+        exports.current.get(e.data.xlsxExport)?.(e.data);
+        exports.current.delete(e.data.xlsxExport);
+        return;
+      }
+      if (isWorksheetExportResponse(e.data)) {
+        wsExports.current.get(e.data.worksheetExport)?.(e.data);
+        wsExports.current.delete(e.data.worksheetExport);
+        return;
+      }
       const msg = e.data;
       if (msg.id !== reqId.current) return;
       if (!msg.partial) window.clearTimeout(slowTimer.current);
@@ -78,6 +93,10 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
   const interrupt = useCallback(() => {
     workerRef.current?.terminate();
     workerRef.current = null;
+    for (const done of exports.current.values()) done({ xlsxExport: 0, error: 'The calculation was interrupted' });
+    exports.current.clear();
+    for (const done of wsExports.current.values()) done({ worksheetExport: 0, error: 'The calculation was interrupted' });
+    wsExports.current.clear();
     kernelHostStopped();
     reqId.current++;
     window.clearTimeout(slowTimer.current);
@@ -90,10 +109,24 @@ export function useEvaluation(ws: Worksheet, auto: boolean) {
     return () => window.clearTimeout(t);
   }, [ws, auto, calculate]);
 
+  /** The worksheet's values as an .xlsx file, made by the calculation worker. */
+  const exportXlsx = useCallback((doc: Worksheet) => new Promise<Uint8Array>((resolve, reject) => {
+    const id = Date.now() + Math.random();
+    exports.current.set(id, (r) => (r.bytes ? resolve(r.bytes) : reject(new Error(r.error ?? 'Export failed'))));
+    getWorker().postMessage({ xlsxExport: id, ws: doc } satisfies ExportRequest);
+  }), [getWorker]);
+
+  /** The worksheet as a Mathcad or SMath file, with the pictures of the regions those programs do not have. */
+  const exportWorksheet = useCallback((doc: Worksheet, format: Format, pictures: Map<string, Picture>) => new Promise<{ bytes: Uint8Array; warnings: string[] }>((resolve, reject) => {
+    const id = Date.now() + Math.random();
+    wsExports.current.set(id, (r) => (r.bytes ? resolve({ bytes: r.bytes, warnings: r.warnings ?? [] }) : reject(new Error(r.error ?? 'Export failed'))));
+    getWorker().postMessage({ worksheetExport: id, ws: doc, format, pictures: [...pictures] } satisfies WorksheetExportRequest);
+  }), [getWorker]);
+
   useEffect(() => () => workerRef.current?.terminate(), []);
   // the calculation worker also answers the CAD views' kernel requests (set while rendering:
   // the views below ask in their effects, which run before this hook's)
   setKernelHost(getWorker);
 
-  return { ...state, calculate, interrupt };
+  return { ...state, calculate, interrupt, exportXlsx, exportWorksheet };
 }

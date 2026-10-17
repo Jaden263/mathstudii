@@ -210,6 +210,14 @@ const ifFn: Raw = (args, _m, scope) => {
 };
 ifFn.rawArgs = true;
 
+/** min, sec, pF … written as a value: the worksheet's variable of that name, else the unit. */
+const unitName: Raw = (args, _m, scope) => {
+  const name = String((args[0] as unknown as { value: unknown }).value);
+  // sec is the second: shown as s, like any other time
+  return scope.has(name) ? scope.get(name) : math.unit(name === 'sec' ? 's' : name);
+};
+unitName.rawArgs = true;
+
 // ---------------------------------------------------------------- indexing
 
 function zeroBased(i: unknown, len: number): number | number[] {
@@ -349,37 +357,65 @@ function numMatrix(A: unknown): number[][] {
   return matrix2D(A).map((r) => r.map((x) => num(x, 'matrix element')));
 }
 
-function eigs(A: unknown) {
-  const r = math.eigs(math.matrix(matrix2D(A) as never)) as unknown as {
-    values: unknown;
-    eigenvectors?: { value: unknown; vector: unknown }[];
-    vectors?: unknown;
-  };
-  return r;
+type EigenPair = { value: unknown; vector: unknown[] };
+
+/**
+ * Eigenvalues and vectors in Mathcad's order. Mathcad reports LAPACK's order: the diagonal of a
+ * triangular matrix as it stands, otherwise (as LAPACK's QR iteration leaves them) largest real
+ * part first — checked against the values Mathcad Prime saved for symmetric and general matrices.
+ */
+function eigenPairs(A: unknown): EigenPair[] {
+  const M = matrix2D(A);
+  const r = math.eigs(math.matrix(M as never)) as unknown as { values: unknown; eigenvectors?: { value: unknown; vector: unknown }[] };
+  if (!r.eigenvectors) throw new Error('The eigenvectors of this matrix are not available');
+  const pairs = r.eigenvectors.map((e) => ({ value: e.value, vector: toVector(e.vector) }));
+  const n = M.length;
+  const triangular = M.every((row, i) => row.every((x, j) => j >= i || math.equal(x as never, 0 as never))) || M.every((row, i) => row.every((x, j) => j <= i || math.equal(x as never, 0 as never)));
+  const re = (z: unknown) => (isComplex(z) ? z.re : Number(z));
+  const im = (z: unknown) => (isComplex(z) ? z.im : 0);
+  if (triangular) {
+    // the diagonal's order: match each diagonal element to its eigenpair
+    const left = pairs.slice();
+    return Array.from({ length: n }, (_, i) => {
+      const d = M[i][i];
+      let k = 0;
+      for (let q = 1; q < left.length; q++) if (Math.abs(re(left[q].value) - num(d)) < Math.abs(re(left[k].value) - num(d))) k = q;
+      return left.splice(k, 1)[0];
+    });
+  }
+  return pairs.sort((a, b) => re(b.value) - re(a.value) || im(b.value) - im(a.value));
 }
 
-function eigenvecs(A: unknown) {
-  const r = eigs(A);
-  if (r.eigenvectors) {
-    const vs = r.eigenvectors.map((e) => toVector(e.vector));
-    const n = vs.length;
-    return math.matrix(Array.from({ length: vs[0].length }, (_, i) => Array.from({ length: n }, (_, j) => vs[j][i])) as never);
-  }
-  return r.vectors;
+/** Unit length, the largest component positive (as LAPACK reports a real eigenvector). */
+function unitVector(v: unknown[]): unknown[] {
+  const nrm = Number(math.norm(v as never));
+  let lead = v[0];
+  for (const x of v) if (Number(math.abs(x as never)) > Number(math.abs(lead as never)) + 1e-12) lead = x;
+  const sign = !isComplex(lead) && Number(lead) < 0 ? -1 : 1;
+  return v.map((x) => math.divide(x as never, sign * nrm));
+}
+
+function eigs(A: unknown) {
+  return { values: vec(eigenPairs(A).map((p) => p.value)) };
+}
+
+/** eigenvecs(M) or eigenvecs(M, "L"): right (or left) eigenvectors as columns, in eigenvals' order. */
+function eigenvecs(A: unknown, side?: unknown) {
+  const left = typeof side === 'string' && /^l/i.test(side);
+  const pairs = eigenPairs(left ? math.transpose(math.matrix(matrix2D(A) as never)) : A);
+  const vs = pairs.map((p) => unitVector(p.vector));
+  return math.matrix(Array.from({ length: vs[0].length }, (_, i) => vs.map((v) => v[i])) as never);
 }
 
 function eigenvec(A: unknown, lambda: unknown) {
-  const r = eigs(A);
-  if (!r.eigenvectors) throw new Error('eigenvec not supported for this matrix');
-  let best = r.eigenvectors[0];
+  const pairs = eigenPairs(A);
+  let best = pairs[0];
   let bestD = Infinity;
-  for (const e of r.eigenvectors) {
+  for (const e of pairs) {
     const d = Number(math.abs(math.subtract(e.value as never, lambda as never) as never));
     if (d < bestD) { bestD = d; best = e; }
   }
-  const v = toVector(best.vector);
-  const nrm = Number(math.norm(v as never));
-  return vec(v.map((x) => math.divide(x as never, nrm)));
+  return vec(unitVector(best.vector));
 }
 
 function sortVec(v: unknown) {
@@ -467,11 +503,12 @@ function linterpFn(vx: unknown, vy: unknown, x: unknown) {
   return joinUnit(N.linterp(X.vals, Y.vals, xv.value), Y.unit);
 }
 
-/** cspline returns a coefficient vector; interp(vs, vx, vy, x) evaluates it (Mathcad convention). */
-function cspline(vx: unknown, vy: unknown) {
+/** lspline, pspline, cspline return a coefficient vector; interp(vs, vx, vy, x) evaluates it (Mathcad convention). */
+const spline = (end: 'natural' | 'parabolic' | 'cubic') => (vx: unknown, vy: unknown) => {
   const X = numVec(vx, 'vx'), Y = numVec(vy, 'vy');
-  return vec(N.splineSecondDerivs(X.vals, Y.vals));
-}
+  return vec(N.splineSecondDerivs(X.vals, Y.vals, end));
+};
+const cspline = spline('cubic');
 
 function interp(vs: unknown, vx: unknown, vy: unknown, x: unknown) {
   const X = numVec(vx, 'vx'), Y = numVec(vy, 'vy');
@@ -644,6 +681,7 @@ const LIBRARY: Record<string, unknown> = {
     mcSum,
     mcProd,
     if: ifFn,
+    __unitName: unitName,
     mcTranspose: transposeMc,
     mcLn: (x: unknown) => math.log(x as never),
     mcLog: (x: unknown, b?: unknown) => (b === undefined ? math.log10(x as never) : math.log(x as never, b as never)),
@@ -688,7 +726,8 @@ const LIBRARY: Record<string, unknown> = {
     },
     norme: (A: unknown) => math.norm(math.matrix(matrix2D(A) as never), 'fro'),
     normi: (A: unknown) => math.norm(math.matrix(matrix2D(A) as never), Infinity),
-    reverse: (v: unknown) => vec([...toVector(v)].reverse()),
+    // a matrix's rows in reverse order, as Mathcad does
+    reverse: (v: unknown) => (isMatrix(v) && v.size().length === 2 && v.size()[1] > 1 ? math.matrix([...matrix2D(v)].reverse() as never) : vec([...toVector(v)].reverse())),
     csort,
     rsort,
     mcMatrix: matrixFn,
@@ -701,8 +740,8 @@ const LIBRARY: Record<string, unknown> = {
     // interpolation & fitting
     linterp: linterpFn,
     cspline,
-    lspline: cspline,
-    pspline: cspline,
+    lspline: spline('natural'),
+    pspline: spline('parabolic'),
     interp,
     polyfit: polyfitFn,
     regress: polyfitFn,

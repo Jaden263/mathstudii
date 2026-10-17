@@ -3,6 +3,7 @@ import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
 import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
 import { windCases, type F3Load, type F3Member, type F3Node } from '../frame3d/model';
+import { collapseArea } from './areas';
 
 const L = Math.round(20 * PX_PER_MM);
 const C2 = Math.round(110 * PX_PER_MM);
@@ -927,3 +928,114 @@ export const EXAMPLES: { name: string; make: () => Worksheet }[] = [
   { name: 'Flat slab with an opening (plate)', make: plateExample },
   { name: 'Differential equations (odesolve)', make: odeExample },
 ];
+
+// ---------------------------------------------------------------- areas, protection, symbolic units
+
+export function areasExample(): Worksheet {
+  const ws = build('Areas, protection, units in symbolics', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Areas, protection and units in symbolics\nSelect regions and right-click → **Group into area** to fold intermediate steps away (click ▸ to open it again). **Protect worksheet** (file menu ▾) leaves only the regions marked as inputs — dashed while protected — editable. `→` keeps units.' }],
+    ['text', L, mm(42), { width: mm(170), markdown: '## Glulam beam GL24h, simply supported (EN 1995-1-1)' }],
+    ['math', L, mm(54), { source: 'L := 6 m', input: true }],
+    ['math', mm(65), mm(54), { source: 'q := 12 kN/m', input: true }],
+    ['math', mm(110), mm(54), { source: 'b := 200 mm', input: true }],
+    ['math', mm(150), mm(54), { source: 'h := 400 mm', input: true }],
+    ['area', mm(13), mm(66), { title: 'Section, moment and design strength', height: mm(48) }],
+    ['math', L, mm(76), { source: 'W := b * h^2 / 6 = cm^3' }],
+    ['math', mm(100), mm(76), { source: 'M_Ed := q * L^2 / 8 = kN*m' }],
+    ['math', L, mm(92), { source: 'k_mod := 0.8' }],
+    ['math', mm(55), mm(92), { source: 'γ_M := 1.25' }],
+    ['math', mm(100), mm(92), { source: 'f_md := k_mod * 24 MPa / γ_M = MPa' }],
+    ['math', L, mm(122), { source: 'σ_md := M_Ed / W = MPa' }],
+    ['math', mm(90), mm(122), { source: 'σ_md ≤ f_md' }],
+    ['text', L, mm(140), { width: mm(170), markdown: '## Units in symbolic results\nNumbers with units come out as `=` shows them; symbols keep their units; mismatched units are an error.' }],
+    ['math', L, mm(160), { source: 'q * L^2 / 8 →' }],
+    ['math', mm(100), mm(160), { source: '1 m + 10 cm →' }],
+    ['math', L, mm(174), { source: 'x * kN/m + 2 kN/m →' }],
+    ['math', mm(100), mm(174), { source: 'sqrt(4 m^2) →' }],
+    ['math', L, mm(188), { source: 'y(t) := 5 m/s^2 * t^2' }],
+    ['math', mm(100), mm(188), { source: "y'(t) →" }],
+  ]);
+  // the intermediate steps start folded away
+  return collapseArea(ws, ws.regions.find((r) => r.kind === 'area')!.id);
+}
+
+EXAMPLES.push({ name: 'Areas, protection, units in symbolics', make: areasExample });
+
+// ---------------------------------------------------------------- Excel: spreadsheet component, tables
+
+export function excelExample(): Worksheet {
+  // a simply supported beam tabulated at x = 0, L/8 … L: M(x) = q x (L − x) / 2, w(x) = q x (L³ − 2 L x² + x³) / (24 E I)
+  const cells: Record<string, string> = {
+    A1: 'L [m]', A2: 'q [kN/m]', A3: 'EI [kN·m²]', C1: 'M max [kN·m]', C2: 'w max [mm]', C3: 'w max / L',
+    D1: '=MAX(B6:B14)', D2: '=MAX(C6:C14)*1000', D3: '=TEXT(D2/1000/B1,"0.0000")',
+    A5: 'x [m]', B5: 'M [kN·m]', C5: 'w [m]', D5: 'V [kN]',
+  };
+  for (let i = 0; i <= 8; i++) {
+    const r = 6 + i;
+    cells[`A${r}`] = i === 0 ? '0' : `=A${r - 1}+$B$1/8`;
+    cells[`B${r}`] = `=$B$2*A${r}*($B$1-A${r})/2`;
+    cells[`C${r}`] = `=$B$2*A${r}*($B$1^3-2*$B$1*A${r}^2+A${r}^3)/(24*$B$3)`;
+    cells[`D${r}`] = `=$B$2*($B$1/2-A${r})`;
+  }
+  const styles: Record<string, { fmt?: string; b?: boolean }> = Object.fromEntries(['A5', 'B5', 'C5', 'D5', 'C1', 'C2', 'C3'].map((k) => [k, { b: true }]));
+  for (let i = 6; i <= 14; i++) {
+    styles[`B${i}`] = { fmt: '0.00' };
+    styles[`C${i}`] = { fmt: '0.000E+00' };
+  }
+  styles.D1 = { fmt: '0.00', b: true };
+  styles.D2 = { fmt: '0.00', b: true };
+  return build('Excel: spreadsheet component and tables', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Spreadsheets and Excel files\nA **spreadsheet region** (toolbar → Sheet) is Mathcad\'s Excel component: cells with Excel formulas, worksheet values written into cells in the unit you choose, and cells read back out as variables with units. Click it to edit: type in cells (`=` starts a formula), F2 edits, Ctrl+D fills down, paste ranges from Excel. **Import**, **Link…** (read again when the file changes) and **Export** work with .xlsx files.' }],
+    ['math', L, mm(52), { source: 'L := 6 m' }],
+    ['math', mm(50), mm(52), { source: 'q := 1.35 * 8 kN/m + 1.5 * 5 kN/m =' }],
+    ['math', mm(140), mm(52), { source: 's := section("IPE 300")' }],
+    ['math', L, mm(64), { source: 'E := 210 GPa' }],
+    ['math', mm(50), mm(64), { source: 'EI := E * s.I_y = kN*m^2' }],
+    ['spreadsheet', L, mm(76), {
+      width: mm(170), height: 312, sheets: [{ name: 'Beam', cells, styles, widths: { 0: 84, 1: 84, 2: 96, 3: 84 } }], rows: 15, cols: 6,
+      inputs: [{ expr: 'L', ref: 'B1', unit: 'm' }, { expr: 'q', ref: 'B2', unit: 'kN/m' }, { expr: 'EI', ref: 'B3', unit: 'kN*m^2' }],
+      outputs: [{ name: 'M_max', ref: 'D1', unit: 'kN*m' }, { name: 'w_max', ref: 'D2', unit: 'mm' }, { name: 'x_t', ref: 'A6:A14', unit: 'm' }, { name: 'M_t', ref: 'B6:B14', unit: 'kN*m' }],
+    }],
+    ['text', L, mm(214), { width: mm(170), markdown: '**Back in the worksheet** the outputs are ordinary variables with units: the design checks and the plot use them.' }],
+    ['math', L, mm(226), { source: 'σ := M_max / s.W_el_y = MPa' }],
+    ['math', L, mm(242), { source: 'σ ≤ 355 MPa' }],
+    ['math', L, mm(256), { source: 'w_max ≤ L / 250' }],
+    ['math', mm(110), mm(226), { source: 'M_max / (q * L^2 / 8) =' }],
+    ['plot', L, mm(305), { xExpr: 'x_t', traces: [{ y: 'M_t', style: 'both' }], xUnit: 'm', yUnit: 'kN*m', title: 'M from the spreadsheet', width: mm(170), height: mm(55) }],
+    ['text', L, mm(370), { width: mm(170), markdown: '## Tables from Excel\nA **table** reads a sheet or a range of an .xlsx (table → *Import Excel…*, or drop the file on the page); a header row such as `F [kN]` gives each column its name and unit, and *Export Excel* writes it back with the units. File menu ▾ → **Export to Excel** writes every variable of the worksheet to a *Results* sheet, with vectors, matrices, tables and spreadsheets on sheets of their own.' }],
+    ['table', L, mm(402), { name: 'loads', headers: ['case', 'F', 'a'], units: ['', 'kN', 'm'], cells: [['G', '20', '1.5'], ['Q', '35', '3'], ['wind', '12', '4.5']], columnVars: true }],
+    ['math', mm(90), mm(408), { source: 'sum(F) =' }],
+    ['math', mm(90), mm(420), { source: 'F * a / L =' }],
+  ]);
+}
+
+EXAMPLES.push({ name: 'Excel: spreadsheet component and tables', make: excelExample });
+
+// ---------------------------------------------------------------- partial differential equations (Pdesolve)
+
+export function pdeExample(): Worksheet {
+  return build('Heat flow in a slab (Pdesolve)', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Heat flow into a concrete slab\nA 200 mm slab at 20 °C has its top face brought to 100 °C and held there; its underside is insulated. The solve block takes the heat equation in Mathcad\'s notation — `T_t` is ∂T/∂t, `T_xx` is ∂²T/∂x² — with the initial temperature and a condition at each face; `Pdesolve` returns T(x, t) with units (method of lines: central differences in x, Radau IIA in t).' }],
+    ['math', L, mm(54), { source: 'L := 200 mm' }],
+    ['math', mm(56), mm(54), { source: 'α := 7e-7 m^2/s' }],
+    ['math', mm(110), mm(54), { source: 'T_0 := 293.15 K' }],
+    ['math', mm(150), mm(54), { source: 'T_s := 373.15 K' }],
+    ['solve', L, mm(68), { guesses: '', constraints: 'T_t(x, t) = α * T_xx(x, t)\nT(x, 0 s) = T_0\nT(0 m, t) = T_s\nT_x(L, t) = 0 K/m', solver: 'T := Pdesolve(T, x, [0 m, L], t, [0 s, 4 hr])' }],
+    ['math', mm(110), mm(72), { source: 'T(50 mm, 1 hr) = degC' }],
+    ['math', mm(110), mm(84), { source: 'T(L, 4 hr) = degC' }],
+    ['text', L, mm(122), { width: mm(170), markdown: '**Check**: until the heat reaches the underside the slab behaves as a half-space, T = T_s + (T₀ − T_s) erf(x / (2√(α t))).' }],
+    ['math', L, mm(134), { source: 'T_e(x, t) := T_s + (T_0 - T_s) * erf(x / (2 sqrt(α t)))' }],
+    ['math', L, mm(146), { source: 'T(50 mm, 1 hr) - T_e(50 mm, 1 hr) = K' }],
+    ['math', mm(110), mm(146), { source: 'T(20 mm, 15 min) - T_e(20 mm, 15 min) = K' }],
+    ['plot', L, mm(162), {
+      xExpr: 'x', traces: [{ y: 'T(x, 15 min)', style: 'line' }, { y: 'T(x, 1 hr)', style: 'line' }, { y: 'T(x, 2 hr)', style: 'line' }, { y: 'T(x, 4 hr)', style: 'line' }],
+      xmin: '0 m', xmax: 'L', xUnit: 'mm', yUnit: 'degC', title: 'T(x) after 15 min, 1 h, 2 h and 4 h', width: mm(100), height: mm(65),
+    }],
+    ['plot', mm(122), mm(162), {
+      plotType: 'contour', z: '(T(x * 1 m, y * 1 s) - 273.15 K) / (1 K)', traces: [], xmin: '0', xmax: '0.2', ymin: '0', ymax: '14400',
+      title: 'T in °C: depth x in m (across), time t in s (up)', width: mm(68), height: mm(65),
+    }],
+  ]);
+}
+
+EXAMPLES.push({ name: 'Heat flow in a slab (Pdesolve)', make: pdeExample });

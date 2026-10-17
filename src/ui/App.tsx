@@ -6,10 +6,11 @@ import {
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown, Code2,
   Pencil, Scissors, Copy, ClipboardPaste, CopyPlus, Trash2, Ban, BringToFront, SendToBack, AlignStartVertical, AlignStartHorizontal,
   Ruler, WandSparkles, Paintbrush, SlidersHorizontal, SquareDashedMousePointer, Calculator, EyeOff, Eye, Plus,
+  Lock, LockOpen, Group, Ungroup, ShieldCheck, ShieldOff, ChevronsDownUp, ChevronsUpDown, SquarePen, FileSpreadsheet,
 } from 'lucide-react';
-import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
+import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type AreaRegion, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
 import { EXAMPLES, welcomeWorksheet } from '../model/examples';
-import { useWorksheetStore } from './store';
+import { moveResult, useWorksheetStore } from './store';
 import { useEvaluation } from './useEvaluation';
 import { Worksheet, snap, type Cursor } from './Worksheet';
 import { SidePanel, type SideTab } from './SidePanel';
@@ -22,6 +23,10 @@ import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs,
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
+import { ExportReportDialog, type ExportReport } from './ExportReportDialog';
+import { moveSteps, separateKeepingOrder } from './separateOrdered';
+import { regionPictures } from './regionPicture';
+import { exportName, formatLabel, FORMAT_MIME, type Format } from '../exporters';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
 import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
@@ -37,6 +42,13 @@ import { VersionsDialog } from './VersionsDialog';
 import { isName, replaceInRegion } from '../model/search';
 import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
+import { AREA_BAR, AREA_X, areasOf, evaluationOrder, hiddenIds, isArea, withContents } from '../model/areas';
+import { canAddAt, canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
+import { regionOwnsKey } from './sheetKeys';
+import { ProtectDialog } from './ProtectDialog';
+import { askXlsxTable } from './sheet/XlsxTableDialog';
+import { XLSX_MIME } from '../sheet/xlsx';
+import { exportFile } from '../platform/files';
 
 type ThemePref = 'system' | 'light' | 'dark';
 
@@ -173,7 +185,8 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
-  const separateRef = useRef<(quiet?: boolean, coalesce?: string) => void>(() => {});
+  const [exportReport, setExportReport] = useState<ExportReport | null>(null);
+  const separateRef = useRef<(quiet?: boolean, coalesce?: string, keepOrder?: boolean) => void>(() => {});
   const separateTimer = useRef<number | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
   const editorRef = useRef<EditorHandle | null>(null);
@@ -282,15 +295,19 @@ export function App() {
     }
   }, [ws.regions, dispatch]);
 
-  const addRegion = useCallback((kind: RegionKind, init: Partial<Region> = {}, at?: Cursor) => {
+  const addRegion = useCallback((kind: RegionKind, init: Partial<Region> = {}, at?: Cursor): Region | null => {
     const pos = at ?? cursor ?? { x: PAGE_MARGIN, y: snap((scrollerRef.current?.scrollTop ?? 0) / zoom + 80) };
+    if (!canAddAt(ws, pos.y)) {
+      setToast(isProtected(ws) ? 'The worksheet is protected: nothing can be added' : 'That area is locked: nothing can be added to it');
+      return null;
+    }
     const r = createRegion(kind, pos.x, pos.y, init);
     // keep wide regions on the page
     const w = 'width' in r ? r.width : 0;
     if (w && r.x + w > PAGE_WIDTH - PAGE_MARGIN / 2) r.x = snap(Math.max(PAGE_MARGIN / 2, PAGE_WIDTH - PAGE_MARGIN / 2 - w));
     dispatch({ type: 'add', regions: [r] });
     setSelected(new Set([r.id]));
-    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python' || kind === 'frame3d' || kind === 'plate') setEditingId(r.id);
+    if (kind === 'math' || kind === 'text' || kind === 'solve' || kind === 'table' || kind === 'sketch' || kind === 'cad' || kind === 'beam' || kind === 'python' || kind === 'frame3d' || kind === 'plate' || kind === 'spreadsheet') setEditingId(r.id);
     else {
       setEditingId(null);
       setTab('properties');
@@ -315,7 +332,7 @@ export function App() {
     }
     setCursor(null);
     return r;
-  }, [cursor, dispatch, zoom]);
+  }, [cursor, dispatch, zoom, ws]);
 
   const insertText = useCallback((text: string) => {
     if (editorRef.current) {
@@ -328,6 +345,33 @@ export function App() {
 
   // ------------------------------------------------------------ files
   const confirmDiscard = () => !dirty || window.confirm('Discard unsaved changes?');
+
+  /** The worksheet's values as an Excel workbook (made by the calculation worker). */
+  const exportXlsx = async () => {
+    setToast('Writing .xlsx…');
+    try {
+      const bytes = await evaluation.exportXlsx(ws);
+      await exportFile(`${(ws.title || 'worksheet').replace(/[\\/:*?"<>|]+/g, '_')}.xlsx`, bytes, XLSX_MIME);
+      setToast(null);
+    } catch (e) {
+      setToast(`Export failed: ${(e as Error).message}`);
+    }
+  };
+
+  /** The worksheet as a Mathcad or SMath file: pictures from the page, the file from the calculation worker. */
+  const exportTo = async (format: Format) => {
+    setToast(`Writing ${formatLabel(format)}…`);
+    try {
+      const pictures = await regionPictures(ws.regions);
+      const { bytes, warnings } = await evaluation.exportWorksheet(ws, format, pictures);
+      const name = exportName(ws.title, format);
+      await exportFile(name, bytes, FORMAT_MIME[format]);
+      setToast(null);
+      setExportReport({ name, format: formatLabel(format), warnings });
+    } catch (e) {
+      setToast(`Export failed: ${(e as Error).message}`);
+    }
+  };
 
   const newDoc = () => {
     if (!confirmDiscard()) return;
@@ -386,6 +430,13 @@ export function App() {
         addRegion('table', { name, cells: data.cells, units: data.units, headers: data.headers });
         return;
       }
+      // a workbook: a sheet or range of it becomes a table
+      if (/\.xls[xm]$/i.test(f.name)) {
+        const at = cursor;
+        const t = await askXlsxTable(new Uint8Array(await f.arrayBuffer()), f.name);
+        if (t) addRegion('table', { name: t.name, cells: t.cells, units: t.units, headers: t.headers }, at ?? undefined);
+        return;
+      }
       if (!confirmDiscard()) return;
       const bytes = new Uint8Array(await f.arrayBuffer());
       if (foreignFormat(f.name)) await importForeignFile(bytes, f.name);
@@ -406,8 +457,9 @@ export function App() {
       : (await import('../importers/mathcad')).importMathcad(bytes, name);
     loadDoc(res.ws, null);
     setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
-    // the source program lays out math at different sizes: push overlaps apart once rendered
-    window.setTimeout(() => separateRef.current(true), 400);
+    // the source program lays out math at different sizes: push overlaps apart once rendered,
+    // keeping the order in which the regions calculate
+    window.setTimeout(() => separateRef.current(true, 'separate', true), 400);
   };
 
   /**
@@ -468,14 +520,25 @@ export function App() {
   };
 
   /** @param coalesce merge the moves into this undo step (e.g. the resize that caused them) */
-  const separateRegions = (quiet = false, coalesce = 'separate') => {
-    // push overlapping regions down, in reading order
+  const separateRegions = (quiet = false, coalesce = 'separate', keepOrder = false) => {
+    // push overlapping regions down, in reading order (what collapsed areas hide is not on the page)
+    const hidden = hiddenIds(ws.regions);
     const boxes = ws.regions
+      .filter((r) => !hidden.has(r.id))
       .map((r) => {
         const el = document.querySelector<HTMLElement>(`[data-region-id="${r.id}"]`);
         return { r, w: el?.offsetWidth ?? 40, h: el?.offsetHeight ?? 24, y: r.y };
       })
       .sort((a, b) => a.y - b.y || a.r.x - b.r.x);
+    if (keepOrder) {
+      const moves = separateKeepingOrder(boxes.map((b) => ({ id: b.r.id, x: b.r.x, y: b.y, w: b.w, h: b.h })), GRID, snap);
+      const steps = moveSteps(ws.regions, moves);
+      for (const f of steps.fits) dispatch({ type: 'areaFit', id: f.id, height: f.height });
+      for (const a of steps.areas) dispatch({ type: 'move', ids: [a.id], dx: 0, dy: a.dy, coalesce });
+      for (const [dy, ids] of steps.others) dispatch({ type: 'move', ids, dx: 0, dy, coalesce });
+      if (moves.size || !quiet) setToast(moves.size ? `Moved ${moves.size} region${moves.size > 1 ? 's' : ''}` : 'No overlapping regions');
+      return;
+    }
     const placed: typeof boxes = [];
     let moved = 0;
     for (const b of boxes) {
@@ -512,8 +575,28 @@ export function App() {
   // ------------------------------------------------------------ clipboard
   const copySelection = useCallback((cut: boolean) => copySelectionOf([...selected], cut), [selected]);
 
+  /** The regions, with everything inside the areas among them. */
+  const blockOf = (ids: Iterable<string>) => {
+    const all = withContents(ws.regions, ids);
+    return ws.regions.filter((r) => all.has(r.id));
+  };
+
+  /** Tell why some regions were left alone (locked, protected). */
+  const lockedNote = (left: number, what: string) => {
+    if (left) setToast(isProtected(ws) ? `The worksheet is protected: nothing ${what}` : `${left} locked region${left > 1 ? 's' : ''} not ${what}`);
+  };
+
+  /** Delete these regions (an area with what is in it), except locked ones. */
+  const deleteRegions = (ids: string[]) => {
+    const go = movableIds(ws, ids);
+    lockedNote(withContents(ws.regions, ids).size - go.size, 'deleted');
+    if (!go.size) return;
+    dispatch({ type: 'delete', ids: ids.filter((id) => go.has(id)) });
+    setSelected(new Set());
+  };
+
   async function copySelectionOf(ids: string[], cut: boolean) {
-    const regs = ws.regions.filter((r) => ids.includes(r.id));
+    const regs = blockOf(ids);
     if (!regs.length) return;
     clipboard.current = regs;
     try {
@@ -521,22 +604,35 @@ export function App() {
     } catch {
       /* clipboard permission denied: in-app clipboard still works */
     }
-    if (cut) {
-      dispatch({ type: 'delete', ids: regs.map((r) => r.id) });
-      setSelected(new Set());
-    }
+    if (cut) deleteRegions(ids);
   }
 
   const pasteRegions = useCallback((regs: Region[], at?: Cursor) => {
     if (!regs.length) return;
     const minX = Math.min(...regs.map((r) => r.x));
     const minY = Math.min(...regs.map((r) => r.y));
-    const base = at ?? cursor ?? { x: minX + GRID * 2, y: minY + GRID * 2 };
-    const copies = regs.map((r) => ({ ...r, id: createRegion('math', 0, 0).id, x: base.x + (r.x - minX), y: base.y + (r.y - minY) })) as Region[];
-    dispatch({ type: 'add', regions: copies });
+    // an area pastes into room made for it (below the original when duplicating), never on top of other bands
+    const withArea = regs.some(isArea);
+    const hiddenInBlock = hiddenIds(regs);
+    const extent = (r: Region) => (isArea(r) ? (r.collapsed ? AREA_BAR : r.height) : document.querySelector<HTMLElement>(`[data-region-id="${r.id}"]`)?.offsetHeight ?? 24);
+    const blockH = Math.max(...regs.filter((r) => !hiddenInBlock.has(r.id)).map((r) => r.y - minY + extent(r)));
+    const base = at ?? cursor ?? (withArea ? { x: minX, y: snap(minY + blockH + GRID * 2) } : { x: minX + GRID * 2, y: minY + GRID * 2 });
+    if (!canAddAt(ws, base.y)) {
+      setToast(isProtected(ws) ? 'The worksheet is protected: nothing can be pasted' : 'That area is locked: nothing can be pasted into it');
+      return;
+    }
+    // new ids, also in the lists of what collapsed areas hide; copies are not locked
+    const ids = new Map(regs.map((r) => [r.id, createRegion('math', 0, 0).id]));
+    const copies = regs.map((r) => {
+      const c = { ...r, id: ids.get(r.id)!, x: base.x + (r.x - minX), y: base.y + (r.y - minY) } as Region;
+      delete c.locked;
+      if (isArea(c) && c.hidden) c.hidden = c.hidden.filter((h) => ids.has(h)).map((h) => ids.get(h)!);
+      return c;
+    });
+    dispatch({ type: 'add', regions: copies, ...(withArea ? { room: { at: base.y, height: blockH + GRID * 2 } } : {}) });
     setSelected(new Set(copies.map((r) => r.id)));
     setCursor(null);
-  }, [cursor, dispatch]);
+  }, [cursor, dispatch, ws]);
 
   useEffect(() => {
     const onPaste = async (e: ClipboardEvent) => {
@@ -575,8 +671,7 @@ export function App() {
   const checks = useMemo(() => {
     const failing: string[] = [];
     let total = 0, maxUtil: number | undefined, worst: string | undefined;
-    const ordered = [...ws.regions].sort((a, b) => a.y - b.y || a.x - b.x);
-    for (const r of ordered) {
+    for (const r of evaluationOrder(ws)) {
       const res = evaluation.results.get(r.id);
       if (res?.kind !== 'math' || !res.check || r.disabled) continue;
       total++;
@@ -587,7 +682,7 @@ export function App() {
       }
     }
     return { total, failing, maxUtil, worst };
-  }, [ws.regions, evaluation.results]);
+  }, [ws, evaluation.results]);
 
   // ------------------------------------------------------------ right-click menus
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -604,14 +699,19 @@ export function App() {
     const to = window.prompt(`Rename “${from}” everywhere to:`, from)?.trim();
     if (!to || to === from) return;
     if (!isName(to)) return setToast(`“${to}” is not a valid name`);
-    let n = 0;
+    let n = 0, skipped = 0;
+    const locked = lockedIds(ws);
     for (const r of ws.regions) {
       const res = replaceInRegion(r, from, to, { caseSensitive: true, wholeName: true });
       if (!res) continue;
+      if (!canEdit(ws, r, locked)) {
+        skipped++;
+        continue;
+      }
       dispatch({ type: 'update', id: r.id, patch: res.region, coalesce: `rename:${from}` });
       n += res.count;
     }
-    setToast(`Renamed ${from} → ${to} in ${n} place${n === 1 ? '' : 's'}`);
+    setToast(`Renamed ${from} → ${to} in ${n} place${n === 1 ? '' : 's'}${skipped ? ` — ${skipped} locked region${skipped > 1 ? 's' : ''} left as ${skipped > 1 ? 'they are' : 'it is'}` : ''}`);
   };
   const closeMenu = useCallback(() => setMenu(null), []);
 
@@ -623,13 +723,17 @@ export function App() {
     const single = regs.length === 1;
     const res = evaluation.results.get(r.id);
     const items: MenuItem[] = [];
-    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python', 'frame3d', 'plate'].includes(r.kind);
-    if (single && editable && !r.disabled) {
+    const editable = ['math', 'text', 'solve', 'table', 'sketch', 'cad', 'beam', 'python', 'frame3d', 'plate', 'spreadsheet'].includes(r.kind);
+    const locked = lockedIds(ws);
+    const prot = isProtected(ws);
+    const canChange = regs.every((q) => canEdit(ws, q, locked));
+    const canShift = movableIds(ws, ids).size === withContents(ws.regions, ids).size;
+    if (single && editable && !r.disabled && canChange) {
       items.push({ label: 'Edit', icon: <Pencil size={14} />, shortcut: 'Enter', onClick: () => { setSelected(new Set([r.id])); setEditingId(r.id); } });
     }
     if (single && r.kind === 'math' && res?.kind === 'math') {
       const m = res as MathResult;
-      if (m.fix) {
+      if (m.fix && canChange) {
         const { from, to } = m.fix;
         items.push({
           label: `Change “${from}” to “${to}”`, icon: <WandSparkles size={14} />,
@@ -637,7 +741,7 @@ export function App() {
         });
       }
       const eq = r.source.includes('\n') ? -1 : findEvalEquals(r.source);
-      if (m.units && eq >= 0) {
+      if (m.units && eq >= 0 && canChange) {
         const current = r.source.slice(eq + 1).trim();
         const set = (u: string | null) => dispatch({ type: 'update', id: r.id, patch: { source: `${r.source.slice(0, eq + 1)}${u ? ' ' + u : ''}` } });
         items.push({
@@ -653,7 +757,7 @@ export function App() {
         });
       }
       const def = /^\s*([\p{L}_][\p{L}\p{N}_']*)\s*(?:\([^)]*\))?\s*(?::=|≡)/u.exec(r.source);
-      if (def) items.push({ label: `Rename “${def[1]}” everywhere…`, icon: <Type size={14} />, onClick: () => renameVariable(def[1]) });
+      if (def && !prot) items.push({ label: `Rename “${def[1]}” everywhere…`, icon: <Type size={14} />, onClick: () => renameVariable(def[1]) });
       if (m.text) items.push({ label: 'Copy value', icon: <Copy size={14} />, onClick: () => { void navigator.clipboard?.writeText(m.text!); setToast('Value copied'); } });
       if (m.grid) {
         const g = m.grid;
@@ -669,26 +773,27 @@ export function App() {
     }
     if (items.length) items.push({ separator: true });
     items.push(
-      { label: 'Cut', icon: <Scissors size={14} />, shortcut: 'Ctrl+X', onClick: () => void copySelectionOf(ids, true) },
+      { label: 'Cut', icon: <Scissors size={14} />, shortcut: 'Ctrl+X', disabled: !canShift, onClick: () => void copySelectionOf(ids, true) },
       { label: 'Copy', icon: <Copy size={14} />, shortcut: 'Ctrl+C', onClick: () => void copySelectionOf(ids, false) },
-      { label: 'Paste', icon: <ClipboardPaste size={14} />, shortcut: 'Ctrl+V', disabled: !clipboard.current.length, onClick: () => pasteRegions(clipboard.current, { x: r.x + GRID * 2, y: r.y + GRID * 2 }) },
-      { label: 'Duplicate', icon: <CopyPlus size={14} />, shortcut: 'Ctrl+D', onClick: () => pasteRegions(regs) },
-      { label: single ? 'Delete' : `Delete ${regs.length} regions`, icon: <Trash2 size={14} />, shortcut: 'Del', danger: true, onClick: () => { dispatch({ type: 'delete', ids }); setSelected(new Set()); } },
+      { label: 'Paste', icon: <ClipboardPaste size={14} />, shortcut: 'Ctrl+V', disabled: !clipboard.current.length || !canAddAt(ws, r.y + GRID * 2), onClick: () => pasteRegions(clipboard.current, { x: r.x + GRID * 2, y: r.y + GRID * 2 }) },
+      { label: 'Duplicate', icon: <CopyPlus size={14} />, shortcut: 'Ctrl+D', disabled: prot, onClick: () => pasteRegions(blockOf(ids)) },
+      { label: single ? 'Delete' : `Delete ${regs.length} regions`, icon: <Trash2 size={14} />, shortcut: 'Del', danger: true, disabled: !canShift, onClick: () => deleteRegions(ids) },
       { separator: true },
     );
+    items.push(...protectionItems(r, regs, ids, single));
     const allDisabled = regs.every((q) => q.disabled);
     items.push({
-      label: allDisabled ? 'Enable evaluation' : 'Disable evaluation', icon: <Ban size={14} />,
+      label: allDisabled ? 'Enable evaluation' : 'Disable evaluation', icon: <Ban size={14} />, disabled: !canChange,
       onClick: () => regs.forEach((q) => dispatch({ type: 'update', id: q.id, patch: { disabled: !allDisabled }, coalesce: 'disable' })),
     });
     if (single && r.kind === 'python') {
-      items.push({ label: r.collapsed ? 'Show code' : 'Hide code', icon: r.collapsed ? <Eye size={14} /> : <EyeOff size={14} />, onClick: () => dispatch({ type: 'update', id: r.id, patch: { collapsed: !r.collapsed } }) });
+      items.push({ label: r.collapsed ? 'Show code' : 'Hide code', icon: r.collapsed ? <Eye size={14} /> : <EyeOff size={14} />, disabled: !canChange, onClick: () => dispatch({ type: 'update', id: r.id, patch: { collapsed: !r.collapsed } }) });
     }
     items.push(
       { label: 'Bring to front', icon: <BringToFront size={14} />, onClick: () => dispatch({ type: 'reorder', ids, to: 'front' }) },
       { label: 'Send to back', icon: <SendToBack size={14} />, onClick: () => dispatch({ type: 'reorder', ids, to: 'back' }) },
     );
-    if (!single) {
+    if (!single && canShift) {
       const left = Math.min(...regs.map((q) => q.x)), top = Math.min(...regs.map((q) => q.y));
       items.push(
         { label: 'Align left edges', icon: <AlignStartVertical size={14} />, onClick: () => regs.forEach((q) => q.x !== left && dispatch({ type: 'move', ids: [q.id], dx: left - q.x, dy: 0, coalesce: 'align' })) },
@@ -697,7 +802,7 @@ export function App() {
     }
     items.push(
       { separator: true },
-      { label: 'Format…', icon: <Paintbrush size={14} />, onClick: () => { setTab('format'); setPanelOpen(true); } },
+      { label: 'Format…', icon: <Paintbrush size={14} />, disabled: !canChange, onClick: () => { setTab('format'); setPanelOpen(true); } },
     );
     if (single && r.kind === 'cad') {
       items.push({
@@ -744,20 +849,103 @@ export function App() {
             { label: 'Python', icon: <Code2 size={14} />, shortcut: '`', onClick: ins('python') },
             { label: 'Solve block', icon: <ListChecks size={14} />, onClick: ins('solve') },
             { label: 'Table', icon: <Table2 size={14} />, onClick: ins('table') },
+            { label: 'Spreadsheet', icon: <FileSpreadsheet size={14} />, onClick: ins('spreadsheet') },
             { label: 'Image…', icon: <ImageIcon size={14} />, onClick: () => void insertImage(at) },
+            { separator: true },
+            { label: 'Area', icon: <ChevronsDownUp size={14} />, onClick: () => insertArea(at) },
           ],
         },
-        { label: 'Paste here', icon: <ClipboardPaste size={14} />, shortcut: 'Ctrl+V', disabled: !clipboard.current.length, onClick: () => pasteRegions(clipboard.current, at) },
+        { label: 'Paste here', icon: <ClipboardPaste size={14} />, shortcut: 'Ctrl+V', disabled: !clipboard.current.length || !canAddAt(ws, at.y), onClick: () => pasteRegions(clipboard.current, at) },
         { separator: true },
-        { label: 'Select all', icon: <SquareDashedMousePointer size={14} />, shortcut: 'Ctrl+A', disabled: !ws.regions.length, onClick: () => { setSelected(new Set(ws.regions.map((q) => q.id))); setCursor(null); } },
+        { label: 'Select all', icon: <SquareDashedMousePointer size={14} />, shortcut: 'Ctrl+A', disabled: !ws.regions.length, onClick: () => { selectAll(); setCursor(null); } },
         { label: 'Separate overlapping regions', icon: <AlignVerticalSpaceAround size={14} />, onClick: () => separateRegions() },
         { label: 'Calculate now', icon: <Calculator size={14} />, shortcut: 'F9', onClick: () => evaluation.calculate() },
         { label: 'Show grid', icon: <Grid3x3 size={14} />, checked: showGrid, onClick: () => setShowGrid(!showGrid) },
         { separator: true },
-        { label: 'Format worksheet…', icon: <Paintbrush size={14} />, onClick: () => { setTab('format'); setPanelOpen(true); } },
+        { label: 'Format worksheet…', icon: <Paintbrush size={14} />, disabled: isProtected(ws), onClick: () => { setTab('format'); setPanelOpen(true); } },
+        { label: isProtected(ws) ? 'Unprotect worksheet…' : 'Protect worksheet…', icon: isProtected(ws) ? <ShieldOff size={14} /> : <ShieldCheck size={14} />, onClick: () => setProtectDlg(true) },
       ],
     });
   };
+
+  // ------------------------------------------------------------ areas and protection
+  const [protectDlg, setProtectDlg] = useState(false);
+  const selectAll = () => {
+    const hidden = hiddenIds(ws.regions);
+    setSelected(new Set(ws.regions.filter((q) => !hidden.has(q.id)).map((q) => q.id)));
+  };
+  /** Expand the areas that hide a region, outermost first. */
+  const reveal = useCallback((id: string) => {
+    for (const a of areasOf(ws.regions, id)) if (a.collapsed) dispatch({ type: 'expand', id: a.id });
+  }, [ws.regions, dispatch]);
+  const insertArea = (at: Cursor) => {
+    if (!canAddAt(ws, at.y)) return setToast(isProtected(ws) ? 'The worksheet is protected: nothing can be added' : 'That area is locked');
+    const area = createRegion('area', AREA_X, at.y, { title: 'Area', height: 96 }) as AreaRegion;
+    dispatch({ type: 'insertArea', area });
+    setSelected(new Set([area.id]));
+    setEditingId(area.id);
+  };
+  const groupRegions = (ids: string[]) => {
+    // rendered heights decide how far the band reaches
+    const heights: Record<string, number> = {};
+    for (const q of ws.regions) {
+      const el = document.querySelector<HTMLElement>(`[data-region-id="${q.id}"]`);
+      if (el) heights[q.id] = el.offsetHeight;
+    }
+    const area = createRegion('area', AREA_X, 0, { title: 'Area' }) as AreaRegion;
+    dispatch({ type: 'group', ids, heights, area });
+    setSelected(new Set([area.id]));
+    // name it right away
+    setEditingId(area.id);
+  };
+  /** Right-click items for areas, locks and inputs. */
+  const protectionItems = (r: Region, regs: Region[], ids: string[], single: boolean): MenuItem[] => {
+    const prot = isProtected(ws);
+    const locked = lockedIds(ws);
+    const out: MenuItem[] = [];
+    if (single && isArea(r)) {
+      out.push(
+        { label: r.collapsed ? 'Expand area' : 'Collapse area', icon: r.collapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />, onClick: () => dispatch({ type: r.collapsed ? 'expand' : 'collapse', id: r.id }) },
+        { label: 'Rename area…', icon: <SquarePen size={14} />, disabled: !canEdit(ws, r, locked), onClick: () => { setSelected(new Set([r.id])); setEditingId(r.id); } },
+        { label: 'Ungroup', icon: <Ungroup size={14} />, disabled: prot || locked.has(r.id), onClick: () => dispatch({ type: 'ungroup', id: r.id }) },
+        {
+          label: 'Print', icon: <Printer size={14} />,
+          submenu: ([['As on screen', undefined], ['Expanded', 'expanded'], ['Collapsed', 'collapsed']] as const).map(([label, v]): MenuItem => ({
+            label, checked: r.print === v, onClick: () => dispatch({ type: 'update', id: r.id, patch: { print: v } }),
+          })),
+        },
+      );
+    }
+    if (!(single && isArea(r))) out.push({ label: 'Group into area', icon: <Group size={14} />, disabled: prot, onClick: () => groupRegions(ids) });
+    const allLocked = regs.every((q) => q.locked);
+    out.push({
+      label: allLocked ? (single && isArea(r) ? 'Unlock area' : 'Unlock') : (single && isArea(r) ? 'Lock area' : 'Lock'),
+      icon: allLocked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: prot,
+      onClick: () => {
+        dispatch({ type: 'lock', ids, locked: !allLocked });
+        if (!allLocked && editingId && withContents(ws.regions, ids).has(editingId)) setEditingId(null);
+      },
+    });
+    const plain = regs.filter((q) => !isArea(q));
+    if (plain.length) {
+      const allInputs = plain.every((q) => q.input);
+      out.push({
+        label: 'Input (editable when protected)', icon: <SquarePen size={14} />, checked: allInputs, disabled: prot,
+        onClick: () => dispatch({ type: 'input', ids: plain.map((q) => q.id), input: !allInputs }),
+      });
+    }
+    if (prot) out.push({ label: 'Unprotect worksheet…', icon: <ShieldOff size={14} />, onClick: () => setProtectDlg(true) });
+    out.push({ separator: true });
+    return out;
+  };
+  // what collapses or gets locked stops being selected or edited
+  useEffect(() => {
+    const hidden = hiddenIds(ws.regions);
+    const er = editingId ? ws.regions.find((q) => q.id === editingId) : undefined;
+    if (er && (hidden.has(er.id) || !canEdit(ws, er))) setEditingId(null);
+    if ([...selected].some((id) => hidden.has(id))) setSelected(new Set([...selected].filter((id) => !hidden.has(id))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws]);
 
   const onSheetContextMenu = (e: React.MouseEvent, r: Region | null, at: Cursor) => {
     if (editingId && editingId !== r?.id) finishEditing(editingId, false);
@@ -784,6 +972,8 @@ export function App() {
       if (mod && (k === '=' || k === '+')) { e.preventDefault(); zoomStep(1); return; }
       if (mod && k === '-') { e.preventDefault(); zoomStep(-1); return; }
       if (mod && k === '0') { e.preventDefault(); zoomTo(1); return; }
+      // a key a region editor used (Delete on a picked member …) is not a worksheet shortcut
+      if (regionOwnsKey(e, editingId)) return;
       if (typing) {
         // undo/redo inside a region editor operates on the worksheet history
         if (mod && k === 'z' && editingId) { e.preventDefault(); dispatch({ type: e.shiftKey ? 'redo' : 'undo' }); }
@@ -792,20 +982,22 @@ export function App() {
       }
       if (mod && k === 'z') { e.preventDefault(); dispatch({ type: e.shiftKey ? 'redo' : 'undo' }); return; }
       if (mod && k === 'y') { e.preventDefault(); dispatch({ type: 'redo' }); return; }
-      if (mod && k === 'a') { e.preventDefault(); setSelected(new Set(ws.regions.map((r) => r.id))); setCursor(null); return; }
+      if (mod && k === 'a') { e.preventDefault(); selectAll(); setCursor(null); return; }
       if (mod && (k === 'c' || k === 'x')) { if (selected.size) { e.preventDefault(); void copySelection(k === 'x'); } return; }
-      if (mod && k === 'd' && selected.size) { e.preventDefault(); pasteRegions(ws.regions.filter((r) => selected.has(r.id))); return; }
+      if (mod && k === 'd' && selected.size) { e.preventDefault(); pasteRegions(blockOf(selected)); return; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size) {
         e.preventDefault();
-        dispatch({ type: 'delete', ids: [...selected] });
-        setSelected(new Set());
+        deleteRegions([...selected]);
         return;
       }
       if (e.key === 'Escape') { setSelected(new Set()); return; }
       if (e.key === 'Enter' && selected.size === 1) {
         e.preventDefault();
         const r = ws.regions.find((q) => selected.has(q.id));
-        if (r && ['math', 'text', 'solve', 'table', 'python'].includes(r.kind)) setEditingId(r.id);
+        if (r && ['math', 'text', 'solve', 'table', 'python', 'spreadsheet'].includes(r.kind)) {
+          if (canEdit(ws, r)) setEditingId(r.id);
+          else setToast(isProtected(ws) ? 'The worksheet is protected: only inputs can be edited' : 'This region is locked');
+        }
         return;
       }
       if (e.key.startsWith('Arrow')) {
@@ -813,14 +1005,16 @@ export function App() {
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
         e.preventDefault();
-        if (selected.size) dispatch({ type: 'move', ids: [...selected], dx, dy, coalesce: 'nudge' });
+        if (selected.size && !movableIds(ws, selected).size) lockedNote(selected.size, 'moved');
+        else if (selected.size && moveResult(ws, [...selected], dx, dy) === ws) setToast('A locked area takes nothing in: unlock it first');
+        else if (selected.size) dispatch({ type: 'move', ids: [...selected], dx, dy, coalesce: 'nudge' });
         else setCursor((c) => ({ x: Math.max(0, (c?.x ?? PAGE_MARGIN) + dx), y: Math.max(0, (c?.y ?? GRID * 6) + dy) }));
         return;
       }
       if (!mod && !e.altKey && e.key.length === 1 && cursor) {
         e.preventDefault();
         // render synchronously and focus now, so fast typing never loses the next keys
-        let r: Region | undefined;
+        let r: Region | null = null;
         flushSync(() => {
           if (e.key === '"') r = addRegion('text', {}, cursor);
           else if (e.key === '@') r = addRegion('plot', {}, cursor);
@@ -829,7 +1023,8 @@ export function App() {
           else if (e.key === '`') r = addRegion('python', {}, cursor);
           else r = addRegion('math', { source: e.key }, cursor);
         });
-        const ta = r && document.querySelector<HTMLTextAreaElement>(`[data-region-id="${r.id}"] textarea`);
+        const made = r as Region | null;
+        const ta = made && document.querySelector<HTMLTextAreaElement>(`[data-region-id="${made.id}"] textarea`);
         if (ta) {
           ta.focus({ preventScroll: true });
           ta.setSelectionRange(ta.value.length, ta.value.length);
@@ -922,6 +1117,11 @@ export function App() {
                 <button role="menuitem" onClick={() => { setFileMenu(false); void openDoc(); }}>Open file… <kbd>Ctrl+O</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void saveDoc(true); }}>{canLinkFiles ? 'Save as…' : 'Download a copy'} <kbd>Ctrl+Shift+S</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setShowVersions(true); }}>Version history…</button>
+                <button role="menuitem" onClick={() => { setFileMenu(false); void exportXlsx(); }} title="Every variable with its value, unit and expression; vectors, matrices, tables and spreadsheets on sheets of their own">Export to Excel (.xlsx)…</button>
+                {(['mcdx', 'xmcd', 'sm'] as Format[]).map((f) => (
+                  <button key={f} role="menuitem" onClick={() => { setFileMenu(false); void exportTo(f); }} title="Math, text, solve blocks and units as the program writes them; beams, plates, CAD … as a labelled picture with their values">Export to {formatLabel(f)}…</button>
+                ))}
+                <button role="menuitem" onClick={() => { setFileMenu(false); setProtectDlg(true); }}>{isProtected(ws) ? 'Unprotect worksheet…' : 'Protect worksheet…'}</button>
                 <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
                 <div className="menu-head">Recent documents</div>
                 {!recent.length && <div className="menu-empty">Nothing yet</div>}
@@ -978,6 +1178,7 @@ export function App() {
           <button className="text-btn" onClick={() => addRegion('python')} title="Python code: uses the worksheet variables above it and exports what it assigns, units included (type ` at the cursor)"><Code2 size={16} /> Python</button>
           <button className="text-btn" onClick={() => addRegion('solve')} title="Solve block"><ListChecks size={16} /> Solve</button>
           <button className="text-btn" onClick={() => addRegion('table')} title="Data table"><Table2 size={16} /> Table</button>
+          <button className="text-btn" onClick={() => addRegion('spreadsheet')} title="Spreadsheet (Excel component): cells and formulas, worksheet values in, results out as variables; import, link or export .xlsx"><FileSpreadsheet size={16} /> Sheet</button>
           <button className="text-btn" onClick={() => void insertImage()} title="Image (or paste one)"><ImageIcon size={16} /> Image</button>
         </div>
         <div className="tb-group" aria-label="Calculation">
@@ -1043,10 +1244,10 @@ export function App() {
         {find && (
           <FindBar
             key={find.key} ws={ws} dispatch={dispatch} replace={find.replace} initial={find.initial}
-            onClose={() => setFind(null)} onHits={onHits} toast={setToast}
+            onClose={() => setFind(null)} onHits={onHits} toast={setToast} reveal={reveal}
           />
         )}
-        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz), a CSV / TSV data file or an image</div>}
+        {dropping && <div className="drop-hint">Drop a worksheet (.mstd, Mathcad .mcdx / .xmcd, SMath .sm / .smz), a CSV / TSV / Excel data file or an image</div>}
         <div className="sheet-scroller" ref={scrollerRef}>
           <Worksheet
             ws={ws}
@@ -1065,6 +1266,7 @@ export function App() {
             onContextMenu={onSheetContextMenu}
             hits={hits.ids}
             currentHit={hits.current}
+            notify={setToast}
           />
         </div>
         {panelOpen && (
@@ -1088,11 +1290,13 @@ export function App() {
             title={checks.failing.length ? 'Show the first failing check' : 'All design checks pass'}
             onClick={() => {
               const id = checks.failing[0] ?? checks.worst;
-              const el = id && document.querySelector<HTMLElement>(`[data-region-id="${id}"]`);
-              if (el) {
-                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                setSelected(new Set([id!]));
-              }
+              if (!id) return;
+              reveal(id);
+              // after the areas holding it have opened
+              window.setTimeout(() => {
+                document.querySelector<HTMLElement>(`[data-region-id="${id}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                setSelected(new Set([id]));
+              }, 50);
             }}
           >
             {checks.failing.length
@@ -1101,6 +1305,9 @@ export function App() {
           </button>
         )}
         <span className="spacer" />
+        {isProtected(ws) && (
+          <button className="status-item status-btn" title="Only inputs can be edited — click to unprotect" onClick={() => setProtectDlg(true)}><Lock size={13} /> Protected</button>
+        )}
         {!s.autoCalc && <span className="status-item">Auto calculation off</span>}
         {cursorMm && <span className="status-item">{cursorMm}</span>}
         <span className="status-item">{ws.regions.length} regions</span>
@@ -1145,6 +1352,19 @@ export function App() {
         </div>
       )}
       {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
+      {exportReport && <ExportReportDialog report={exportReport} onClose={() => setExportReport(null)} />}
+      {protectDlg && (
+        <ProtectDialog
+          current={ws.settings.protect ?? null}
+          inputs={ws.regions.filter((q) => q.input && !isArea(q)).length}
+          onClose={() => setProtectDlg(false)}
+          onDone={(p) => {
+            setProtectDlg(false);
+            dispatch({ type: 'protect', protect: p });
+            setToast(p ? 'Protected — only inputs can be edited' : 'Protection removed');
+          }}
+        />
+      )}
       {toast && <div className="toast" role="status">{toast}</div>}
       {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
     </div>

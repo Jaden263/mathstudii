@@ -7,7 +7,10 @@ import { escapeText } from './format';
 import { specialFunctionTex } from './specialTex';
 
 /** Names defined in the worksheet; these render as variables rather than units. */
-export const texCtx = { defined: new Set<string>(), symbolic: false };
+export const texCtx = { defined: new Set<string>(), symbolic: false, symbolicUnits: new Set<string>() };
+
+/** In symbolic math only the names read as units there are units. */
+const unitHere = (name: string) => !texCtx.symbolic || texCtx.symbolicUnits.has(name);
 
 const GREEK = [
   'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'varepsilon', 'zeta', 'eta', 'theta', 'vartheta', 'iota', 'kappa',
@@ -57,7 +60,7 @@ export function nameTex(name: string): string {
 }
 
 function symbolTex(name: string): string {
-  if (!texCtx.symbolic && !texCtx.defined.has(name) && isUnitName(name) && !/^(pi|e|i|Infinity)$/.test(name)) {
+  if (unitHere(name) && !texCtx.defined.has(name) && isUnitName(name) && !/^(pi|e|i|Infinity)$/.test(name)) {
     if (UNIT_SPECIAL[name]) return UNIT_SPECIAL[name];
     return `\\mathrm{${name.replace(/_/g, '\\_')}}`;
   }
@@ -135,7 +138,7 @@ function innerHandler(node: MathNode): string | undefined {
       if (n.fn === 'ctranspose' || n.fn === 'transpose') return `{${t(args[0])}}^{\\mathrm{T}}`;
       if (n.fn === 'multiply' && n.implicit) {
         const [a, b] = args as AnyNode[];
-        if (!texCtx.symbolic && b.type === 'SymbolNode' && !texCtx.defined.has(b.name as string) && isUnitName(b.name as string)) {
+        if (b.type === 'SymbolNode' && unitHere(b.name as string) && !texCtx.defined.has(b.name as string) && isUnitName(b.name as string)) {
           return `${t(a)}\\,${t(b)}`;
         }
       }

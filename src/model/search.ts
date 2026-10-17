@@ -3,6 +3,7 @@
 // With "whole name" a match must not be part of a longer name, which makes Replace all a
 // rename: L → L_span changes L and L^2 but not L_cr or Load.
 import type { Region, Worksheet } from './types';
+import { evaluationOrder } from './areas';
 
 export interface SearchOptions {
   /** Match case (default true for names). */
@@ -16,6 +17,9 @@ const SKIP = new Set([
   'id', 'kind', 'type', 'src', 'color', 'background', 'lengthUnit', 'forceUnit', 'unit', 'mode', 'layout', 'show', 'panels',
   'plotType', 'textFont', 'style', 'op', 'dir', 'family', 'logo', 'component', 'occ', 'sketch', 'member', 'node', 'refs', 'targets',
   'profiles', 'points', 'a', 'b', 'p1', 'p2', 'cad', 'center', 'axis', 'axis2', 'plane', 'feature', 'tools', 'target', 'entities', 'ref',
+  'hidden', 'print',
+  // a spreadsheet's cells, names and file are its own: a rename changes its inputs and outputs only
+  'sheets', 'names', 'link', 'report',
 ]);
 
 /** Fields that hold an id or a list entry when they are text (a beam member's own `section` is an object of expressions). */
@@ -59,13 +63,12 @@ function mapStrings(v: unknown, fn: (s: string) => string, key = ''): unknown {
   return v;
 }
 
-/** Number of matches in each region that has some, in reading order. */
+/** Number of matches in each region that has some, in reading order (regions in collapsed areas too). */
 export function findInWorksheet(ws: Worksheet, query: string, o: SearchOptions): { id: string; count: number }[] {
   const re = searchRegex(query, o);
   if (!re) return [];
   const out: { id: string; count: number }[] = [];
-  const ordered = [...ws.regions].sort((a, b) => (Math.abs(a.y - b.y) < 4 ? a.x - b.x : a.y - b.y));
-  for (const r of ordered) {
+  for (const r of evaluationOrder(ws)) {
     let count = 0;
     mapStrings(r, (s) => {
       count += s.match(re)?.length ?? 0;

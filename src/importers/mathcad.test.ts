@@ -205,3 +205,32 @@ describe('Mathcad 15 import', () => {
     expect((out.results.get(solve.id) as SolveResult).solver.tex).toMatch(/= 3$/);
   });
 });
+
+describe('Mathcad import: what writing files for Mathcad showed', () => {
+  const prime = (...maths: string[]) => {
+    top = 0;
+    const ws = `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>${maths.join('')}</regions></worksheet>`;
+    return importMathcad(zipSync({ 'mathcad/worksheet.xml': strToU8(ws) }), 'x.mcdx').ws;
+  };
+  it("prime notation in odesolve: y′′(t) and y′(0) are derivatives, f′c is a name", () => {
+    const ws = prime(
+      math(define(id('fʹc'), unit(30, 'MPa'))),
+      `<region region-id="sb" left="40" top="200"><solveblock><regions>
+        <region solve-block-category="constraint"><math>${ap('<ml:equal/>', ap('<ml:plus/>', ap(id('y′′'), id('t')), ap(id('y'), id('t'))), real(0))}</math></region>
+        <region solve-block-category="constraint"><math>${ap('<ml:equal/>', ap(id('y'), real(0)), real(1))}</math></region>
+        <region solve-block-category="constraint"><math>${ap('<ml:equal/>', ap(id('y′'), real(0)), real(0))}</math></region>
+        <region solve-block-category="solver"><math>${define(id('y'), ap(id('odesolve', 'FUNCTION'), `<ml:sequence>${id('t')}${real(3)}</ml:sequence>`))}</math></region>
+      </regions></solveblock></region>`,
+      math(evalOf(ap(id('y'), real(1)))),
+    );
+    const solve = ws.regions.find((r) => r.kind === 'solve') as Extract<Region, { kind: 'solve' }>;
+    expect(solve.constraints.split('\n')).toEqual(["y''(t) + y(t) = 0", 'y(0) = 1', "y'(0) = 0"]);
+    const out = evaluateWorksheet(ws);
+    const y1 = ws.regions.find((r) => r.kind === 'math' && r.source === 'y(1) =')!;
+    expect((out.results.get(y1.id) as MathResult).tex).toMatch(/= 0\.5403/); // cos 1
+  });
+  it('a display unit stays a unit when a variable has its name', () => {
+    const ws = prime(math(define(id('m'), real(3))), math(define(id('q'), evalOf(unit(12, 'N'), ap('<ml:div/>', id('N', 'UNIT'), id('m', 'UNIT'))))));
+    expect(ws.regions.map((r) => (r as { source: string }).source)).toContain('q := 12 N = N/m');
+  });
+});

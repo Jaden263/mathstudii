@@ -39,8 +39,8 @@ interrupt it (Esc / Stop), like Mathcad's interrupt.
 - Enter finishes a region and moves the cursor below it. Drag a region to move it.
 - Press **F1** for all keyboard shortcuts. **Examples** in the top bar has worked worksheets.
 - **Right-click** a region for Edit, Cut/Copy/Paste, Duplicate, Delete, *Show result in…*,
-  *Copy value*, a typo fix, Disable evaluation, front/back, align (several selected),
-  Format and Properties. Right-click empty paper to insert any region there, paste,
+  *Copy value*, a typo fix, Group into area, Lock, Input, Disable evaluation, front/back,
+  align (several selected), Format and Properties. Right-click empty paper to insert any region there, paste,
   select all or recalculate.
 - **Suggestions while typing:** functions and your own variables from the first letter
   (with the signature shown inside the brackets), units after a number (`10 k` → kN,
@@ -104,6 +104,46 @@ right-click menu changes it. `kNm`, `Nm` and `Nmm` are accepted as moment units.
 exotic SI prefixes ronto, quecto, ronna and quetta are switched off, so a typo like
 `kN/rm` is an error instead of a silent 10⁻²⁷ m. (`kn` no longer means knot: use `knot`.)
 
+### Units in symbolic results
+
+`→` keeps units. A number with a unit comes out the way `=` would show it (practical
+metric unit, the worksheet's decimals), so the choice between 1.1 m and 110 cm follows
+the table above:
+
+| You type | Result |
+|---|---|
+| `2 m + 3 m →` | 5 m |
+| `1 m + 10 cm →` | 1.1 m |
+| `F·L →` with `F := 10 kN`, `L := 2 m` | 20 kN·m |
+| `sqrt(4 m^2) →` | 2 m |
+| `x·m/s →`, `x·kN + 2 kN →` | x m/s, (x + 2) kN |
+| `x^2 = 4 m^2 → solve, x` | [−2 m, 2 m] |
+| `2 m + 3 s →` | error: *Cannot add a length and a time* |
+
+Variables defined with a unit bring their value, as numeric ones always did; an angle given
+in degrees stays exact (`α := 30 deg`, `sin(α) →` gives 1/2). A symbolic coefficient keeps a
+unit it was written in when that fits (`x·ft →` x ft, `∫ x·kN dx →` x²/2 kN), otherwise it
+gets the practical unit that leaves it simplest (`F·x →` 10·x kN with `F := 10 kN`, not
+`10000·x·N`). `simplify`, `expand` and `factor` shape the coefficient of each unit:
+`x²·kN − 4 kN → factor` gives (x + 2)(x − 2) kN.
+
+Which names are units is the delicate part, because in symbolic math most single letters
+are variables (`q·L²/8` must not become litres, `F/A` not farad per ampere, `s² + 3 s + 2`
+not seconds). The rules:
+
+- Units of several letters (`kN`, `mm`, `MPa`, `kNm`, `Hz`, `ft` …) are units anywhere.
+- `m`, `s` and `N` are units when written as a quantity, a number then the unit (`2 m`,
+  `9.81 m/s^2`) with no variable in the same product, next to a longer unit (`x·kN/m`), or
+  as `m/s`, `m/s²`, `N/m`, `N/m²`. So `2 m·a →` and `1/2 m v^2 →` keep the mass `m`.
+- Every other single letter (`L`, `A`, `F`, `t`, `h` …) is a variable in `→`, even where
+  the numeric worksheet would read a unit. Define it with a unit (`P := 5 kN`) instead.
+- The variables of `laplace` and `invlaplace` (t and s unless you name others) are never
+  units, so `1/(2 s + 1) → invlaplace` is about the Laplace variable, not seconds.
+
+Units inside functions that the CAS cannot separate (`exp(−t/τ)` with `τ := 2 s`) are shown
+in place. `y'(t)` and `y''(t)` work in `→` for a function `y` defined above (they become
+`diff(y(t), t, n)`); for an undefined one you get a message saying so.
+
 ### Tables and data
 
 - **Paste from Excel** (or any tab-separated text) onto the page, or into a table cell.
@@ -116,6 +156,95 @@ exotic SI prefixes ronto, quecto, ronna and quetta are switched off, so a typo l
   plots and sums.
 - Right-click a vector or matrix result → **Copy as table**, then paste it into Excel
   with its unit.
+- **Import Excel… / Export Excel** in a table, or drop an `.xlsx` on the page: see below.
+
+### Spreadsheets and Excel files
+
+A **spreadsheet region** (toolbar → **Sheet**) is Mathcad's Excel component, without Excel:
+cells with Excel formulas, worksheet values written into cells, and cells read back out as
+variables with units.
+
+- **Editing.** Click it, then click a cell and type; `=` starts a formula. Enter, Tab and the
+  arrows move, F2 edits a cell in place, Delete clears, Ctrl+D / Ctrl+R fill down / right
+  (relative references move, `$` ones stay), Ctrl+C / Ctrl+V copy and paste as Excel does
+  (tab separated text; decimal commas from a German Excel are understood; cells copied here
+  keep their formulas). The name box goes to a reference you type, or names the selection.
+  Drag a column header's edge or the region's corner to resize; tabs hold several sheets
+  (renaming one rewrites the formulas, names, inputs and outputs that point at it, as Excel does).
+- **Inputs** (worksheet → cells): an expression, a cell or range, and the unit the numbers
+  are written in (`kN·m` and `kN*m` both work; `%` writes 0.035 as 3.5). `q` → `B2` in `kN/m`
+  writes 18.3 for 18.3 kN/m; with no unit a quantity
+  goes in SI base units, as in Mathcad, and the region says which. A vector or matrix fills
+  a block from the cell (or a range of the same size; a vector across a one-row range).
+- **Outputs** (cells → worksheet): a name, a cell or range and the unit of its numbers.
+  `M_max` := `D1` in `kN*m` is a moment; a column becomes a vector, a block a matrix, text
+  stays text. They are defined where the region stands in reading order, so math below it
+  (checks, plots) uses them. An error in an output cell, an empty one, or a circular reference
+  is reported on that output.
+- **The formula engine** has 211 functions, with Excel's rules for what counts: `SUM` of a
+  range skips text and logicals but `SUM("2", TRUE)` counts them, `COUNT` ignores errors,
+  criteria like `">5"`, `"<>"` and `"a*"` in `SUMIFS`/`COUNTIFS`/`AVERAGEIFS`/`MAXIFS`, `ROUND(1.005, 2)`
+  is 1.01, `-2^2` is 4. Lookup (`VLOOKUP`/`HLOOKUP` exact and approximate, `INDEX`/`MATCH`,
+  `XLOOKUP`, `LOOKUP`, `OFFSET`, `INDIRECT`), logic (`IF`, `IFS`, `IFERROR`, `SWITCH`, `XOR` …),
+  text (`TEXT` with number, date, time and fraction formats, `TEXTJOIN`, `SUBSTITUTE` …), dates
+  (both the 1900 system, with Excel's 29 February 1900, and 1904), statistics (`STDEV.S`,
+  `MEDIAN`, `RANK`, `PERCENTILE`, `CORREL`, `NORM.DIST` …) and matrices (`MMULT`, `MINVERSE`,
+  `MDETERM`, `TRANSPOSE`, `LINEST` with its statistics). Absolute and relative references,
+  ranges, whole columns, other sheets (`'Load cases'!B2`), 3-D references (`Sheet1:Sheet3!A1`)
+  and named ranges work. Formulas that give arrays spill into the cells beside them, as in
+  Excel 365 (`#SPILL!` when something is in the way). A dependency graph orders the
+  calculation, and a circular reference is an error (`#CIRC!`, with the loop named:
+  *A1 → B1 → A1*) rather than Excel's warning and 0; there is no iterative calculation.
+- **Import** reads an `.xlsx` into the region: formulas are kept and recalculated here, and the
+  region reports how many agree with the values the file was saved with (and lists those
+  that do not, or functions that are missing). **Export** writes it back with formulas,
+  results, number formats, bold cells, column widths, merged cells and names.
+  Formulas that work element by element (`=SUM(A1:A3*B1:B3)`, `=MAX(IF(…))`) are written as
+  array formulas (`{=…}` in Excel), because Excel before 365 and LibreOffice would otherwise
+  intersect the ranges with the formula's row and give another result. The other way round,
+  a plain formula in an old file that relied on that intersection is calculated here as
+  Excel 365 calculates it; the import report lists such cells as differing. `@` and `A1#`
+  from Excel 365 files (stored as `SINGLE`/`ANCHORARRAY`) are read.
+- **Link…** keeps the region tied to the file. In the desktop app the file's modification
+  time is checked every 2 s and the file read again when it changes. In Chrome and Edge the
+  browser's file handle is kept (in this browser's storage, so the link survives saving and
+  reloading): the file is checked every 2 s while the page is shown, **Reload** reads it on
+  demand, and after a reload the browser wants one click on **Reconnect**. Firefox and Safari
+  cannot keep a link to a file, so there the workbook is imported and imported again by hand.
+  A link made in one browser or on one computer cannot be followed on another: link it again.
+
+Tables read Excel too: **Import Excel…** in a table (or dropping an `.xlsx` on the page) asks
+for the sheet, the range and whether the first row holds names and units (`F [kN]` gives
+column `F` the unit kN); formulas come in as their results (calculated here when the file was
+saved without them), dates as ISO text. **Export Excel** writes the table with the units in
+the header row.
+
+File menu ▾ → **Export to Excel (.xlsx)** writes the whole calculation: a *Results* sheet with
+every variable (name, value in the unit the worksheet shows it in, unit, the expression that
+defined it; the fields of section and beam results one level down), vectors as columns of a
+*Vectors* sheet, and each matrix, table and spreadsheet region on a sheet of its own.
+
+What is not there: charts, pivot tables, conditional formatting, comments, data validation,
+fonts, colours and borders are left out on import (number formats, bold, widths and merged
+cells are kept); structured table references (`Table1[Load]`), links to other workbooks,
+R1C1 notation, `FILTER`/`SORT`/`UNIQUE`, `LET`/`LAMBDA`, financial and most statistical
+distribution functions are missing (such formulas show `#NAME?` and the import says so). Old
+binary `.xls` files are not read: save them as `.xlsx` first.
+
+How it was tested: Microsoft's documented examples (the VLOOKUP density table, SUMIFS,
+RANK, LINEST, SEARCH …), a write → read round trip, and 13 files saved by Excel, Excel for
+Mac and LibreOffice (from the calamine and Apache POI projects, licences in
+`src/sheet/fixtures/README.md`) whose saved results all agree with ours, among them 45
+`TEXT` date and time formats and shared, array and 3-D formulas. A workbook of 316
+formulas recalculated by LibreOffice 24.2 agrees except where LibreOffice differs from
+Excel (it counts TRUE in ranges, has real odd roots, has no 29 February 1900) or lacks
+`XLOOKUP` and `SEQUENCE`; a second one checks that the array formulas written here give
+LibreOffice the same results as this engine. Written files open in LibreOffice and in
+openpyxl; **they have not been opened in Microsoft Excel itself here**. The desktop app's
+file watching is built but was not run in this environment (no desktop runtime). The
+browser link was checked with a real file handle (from the browser's private file system,
+handed to the page in place of the file picker, which a test cannot click), kept in the
+browser's storage across a page reload; the permission prompt for a file on disk was not.
 
 ### Find, replace, rename
 
@@ -136,6 +265,45 @@ their size and region count.
 - **Restore** brings one back. The state just before is kept as a snapshot, so a restore
   can itself be undone.
 - **Open as copy** starts a new document from that snapshot.
+
+### Areas
+
+Select regions, right-click → **Group into area** (or right-click empty paper → Insert →
+**Area**). An area is a title bar over a band of the page, Mathcad style: whatever starts in
+the band belongs to it, so regions beside the selection come along.
+
+- Click ▾ / ▸ on the bar to collapse or expand. Collapsed, the bar says what it holds
+  ("Loads · 12 regions") and everything below moves up by the space the contents took;
+  expanding moves it back down by the same amount, so the layout returns exactly.
+- Collapsing never changes the results: evaluation follows the reading order of the
+  expanded worksheet.
+- Double-click the title to rename. Drag the bar to move the area with its contents; Delete
+  removes it with its contents; **Ungroup** removes only the bar. Areas nest, and a band
+  grows (pushing what is below down) when its contents get taller.
+- Bands never cross: grouping regions that start inside an area and end below it, or dragging
+  an area there, stretches the outer area down round the new one. A region dropped on a
+  collapsed bar goes just below it, so it stays out of the area when that opens.
+- Right-click → **Print**: as on screen, always expanded or always collapsed.
+- Find and replace look inside collapsed areas: a match lights up the bar, and stepping to
+  it (Enter) opens the area.
+
+### Locking and protection
+
+- Right-click → **Lock** a region, or an area with everything in it. A locked region shows a
+  small lock and cannot be edited, moved, deleted, cut, replaced by find and replace or
+  renamed by *Rename everywhere*; nothing can be pasted, typed or dragged into a locked area. Undo and
+  redo never change or remove a locked region (its place still follows areas collapsing above
+  it). Locking is not an undo step: unlock with the same menu.
+- Right-click → **Input (editable when protected)** marks the regions a user of the
+  calculation should fill in.
+- File menu ▾ or right-click on paper → **Protect worksheet**. Then only the inputs can be
+  edited (shown dashed); nothing can be moved, deleted, pasted or added, the formats and the
+  title are fixed, and undo only reaches the inputs. Areas still collapse and expand. An
+  optional password is stored as a salted SHA-256 hash (WebCrypto, or a script version of
+  SHA-256 where the page is not served over https); the status bar shows *Protected*,
+  click it to unprotect.
+- Honestly: this prevents accidental edits, not determined ones. A worksheet is readable
+  JSON, and anyone with a text editor can change it or delete the protection.
 
 ### Printing a calculation sheet
 
@@ -263,8 +431,37 @@ stiffness switching, Dormand–Prince, Radau). The lower-case forms
 
 The prime notation also differentiates ordinary functions: with `f(x) := x^3`, `f'(2) = 12`
 (numerically, up to the fifth derivative). On a matrix `A'(x)` keeps its old meaning,
-transpose times x. Not covered: partial differential equations (`Pdesolve`), delay equations,
-differential-algebraic systems (an equation without a highest derivative is reported).
+transpose times x. Not covered: delay equations and differential-algebraic systems (an
+equation without a highest derivative is reported).
+
+### Partial differential equations (Pdesolve)
+
+A solve block with `Pdesolve` as the solver solves PDEs in u(x, t) on an interval, Mathcad-style.
+Partial derivatives are subscripts that spell the variables — `u_t(x, t)` is ∂u/∂t, `u_xx(x, t)`
+is ∂²u/∂x², `u_tt` the second time derivative (`diff(u(x, t), x, 2)` works too) — and the block
+holds the equation, the initial condition and a condition at each end:
+
+```
+Constraints:  T_t(x, t) = α * T_xx(x, t)
+              T(x, 0 s) = T_0              initial temperature
+              T(0 m, t) = T_s              Dirichlet: a value
+              T_x(L, t) = 0 K/m            Neumann: a slope (insulated)
+Solver:       T := Pdesolve(T, x, [0 m, L], t, [0 s, 4 hr])
+```
+
+`T` is then a function T(x, t) with units, for `=`, other formulas and plots (a family of
+curves `T(x, 1 hr)`, or a contour or surface of T over x and t). Any equation in u and u_x at an
+end is a Robin condition (`k * u_x(0, t) = h * (u(0, t) - T_a)`); `u_tt` needs `u_t(x, 0) = g(x)`
+as well; `[u; v] := Pdesolve([u; v], x, …)` solves coupled equations. The method of lines:
+second-order central differences on `xpts` nodes (201 by default; `Pdesolve(…, xpts, tpts)` or
+`[xpts, tpts]` choose), ghost nodes at slope conditions so an insulated rod keeps its heat, and
+the stiff Radau IIA solver in t on a banded Jacobian; between nodes the solution is a cubic
+spline in x and the solver's continuous extension in t. Checked against separation of variables
+(the decaying sine of the heat equation to a relative error below 10⁻⁴ on the default grid,
+second-order convergence in x), a standing wave, an insulated rod conserving ∫u dx and the
+half-space erf solution (*Heat flow in a slab* example). `numol(x_range, xpts, t_range, tpts,
+num_pde, num_pae, pde_func, pinit, bc_func)` gives Mathcad's matrix of nodal values (no partial
+algebraic equations). Not covered: PDEs in two space variables, mixed derivatives (u_xt).
 
 ### Special functions
 
@@ -1185,10 +1382,16 @@ The importer converts:
 - text, images, collapsible areas and X-Y plots
 
 It shows a report of anything it could not convert. Results are recalculated rather than
-copied, so compare them with the original. The format knowledge comes from
+copied, so compare them with the original. Regions the other program drew smaller than they
+come out here are pushed apart once shown, without changing the order they calculate in. The format knowledge comes from
 [mcad2py](https://github.com/ChristianCruger/mcad2py) (MIT), which documents real Prime files.
-The tests use hand-built files in that structure. **It has not been run on files saved by
-Mathcad itself yet**, so real-world files may hit gaps.
+
+**How it was tested:** on about 110 public worksheets (38 saved by Prime 11/12, 34 by Mathcad
+14/15, 36 by SMath), comparing the recalculated results with the ones each program saved in the
+file: 500 of 702 Prime values, 159 of 203 Mathcad 15 and 325 of 454 SMath ones agree; most of the
+rest use functions not implemented here, other worksheets (Mathcad references) or unseeded random
+numbers. Thirteen of them with permissive licences are in the tests (`src/importers/real.test.ts`,
+sources in `src/importers/fixtures/README.md`).
 
 ### Importing SMath Studio files
 
@@ -1223,6 +1426,42 @@ example, Beam gives support reactions of −12.4533 kN and −28.6467 kN, and it
 The examples built on symbolic vectors do not. The automated tests (`src/importers/smath.test.ts`)
 use hand-written files in the same format.
 
+### Exporting to Mathcad and SMath
+
+File menu ▾ → **Export to Mathcad Prime (.mcdx)**, **Mathcad 15 (.xmcd)** or **SMath Studio
+(.sm)** writes the worksheet in that program's own form, which recalculates it on opening:
+- definitions, functions, ranges, element definitions, matrices, units and display units,
+  evaluations, global definitions, programs, integrals, sums, derivatives, symbolic `→`
+- solve blocks: Prime's solve block, Mathcad 15's *Given … Find* (Minerr …) as separate regions,
+  odesolve / Pdesolve (prime notation `y′′(t)` in the equations and conditions)
+- text with headings, bold and italic (SMath: per paragraph), pictures, tables as matrices
+- X-Y plots as Prime plots; other plots, and every plot in Mathcad 15 and SMath, as a picture
+- beams, frames, plates, CAD parts, sketches, drawings, Python and spreadsheet regions as a
+  labelled note, a picture of the region and the values the worksheet reads from them
+  (`b.M_max` becomes `b_M_max := 12.3 kN·m` above its first use), so the math below still
+  calculates; `section("IPE 300")` and other tables of values become their values
+
+A report lists everything written differently. What the formats cannot hold: SMath has no solve
+blocks (what Find found is written as values; an odesolve or Pdesolve solution is not exported),
+no global definitions and no column assignments in programs, defines one name at a time
+(`[a; b] := …` becomes the values of a and b) and counts from 1 (indices, and the index
+arguments of `submatrix`, `csort` and `rsort`, are shifted; functions that return an index, such
+as `match`, are not); Mathcad 15 matrices hold one unit (a table in several units becomes one
+vector per column), its plots are a binary format (written as pictures), and it tells a unit
+from a variable by name only: where the worksheet has a variable named like a unit (m for a
+mass), a use of that unit is written in another unit of its kind, `(1000 mm)`, and a display
+unit made with it is left out; symbolic keywords do not go to SMath. A unit used above a
+variable of its name (`L := 6 m` above `m := 2 kg`) stays the unit, as it calculates here.
+Programs, the solve block, plot elements, physical constants (Prime's names, `k` for
+Boltzmann's) and the way SMath writes numbers and `atan` follow files Prime, Mathcad 14/15 and
+SMath saved, and every file is checked by reading it back with the importers above and
+recalculating (the round-trip tests compare every value of a representative worksheet, of four
+examples and of 11 real files; run on all 106 real files, 22 of 4812 values differ: 17 in SMath
+exports, for the reasons above, the others an `ORIGIN` variable, which is a setting here, and a
+NaN that never equals itself). **They have not been opened in Mathcad or SMath
+themselves**; Prime's prime notation and Mathcad 15's `nth` derivative and `on error` elements
+are the least certain.
+
 Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values:
 `{{expr | unit}}`.
 
@@ -1255,20 +1494,24 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Undo/redo, copy/paste regions, disable evaluation, separate regions, dark mode | ✅ |
 | Page zoom: Ctrl+wheel / trackpad / pinch around the pointer, browser-style steps, Ctrl+0 | ✅ |
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
-| `Pdesolve`, `Find` with matrix-valued unknowns | ❌ |
-| Units in symbolic results | ❌ (symbolics are unit-free) |
+| PDEs: `Pdesolve` solve blocks in u(x, t) (Dirichlet, Neumann, Robin ends, systems, units), `numol` | ✅ (one space variable; method of lines) |
+| `Find` with matrix-valued unknowns | ❌ |
+| Units in symbolic results | ✅ (which single letters are units follows the rules in *Units in symbolic results*) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
-| Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
+| Report header/footer with page numbers, find & replace / rename, version history, Excel paste, CSV and .xlsx import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
-| Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
-| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
+| Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Run on 72 real files: 500 of 702 Prime and 159 of 203 Mathcad 15 saved results reproduced. Script controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
+| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Run on 36 real files and SMath's bundled examples: 325 of 454 saved results reproduced. SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert |
+| Export to Mathcad Prime `.mcdx`, Mathcad 15 `.xmcd`, SMath `.sm` | ⚠️ Read back and recalculated here with the same values; not yet opened in Mathcad or SMath. Regions they lack become a picture with their values |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
-| Excel/MATLAB components, READPRN/WRITEPRN file I/O | ⚠️ Excel ranges paste into tables and CSV files import/export; no live Excel link or .xlsx files |
+| Excel component: spreadsheet region with 211 Excel functions, inputs and outputs with units, .xlsx import/export, live link to a file; tables and the whole worksheet to .xlsx | ✅ (no charts, pivot tables or Excel macros; written files checked in LibreOffice, not yet in Excel) |
+| MATLAB component, READPRN/WRITEPRN file I/O | ❌ |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
-| Collapsible areas, headers/footers, protected regions, track changes | ❌ |
+| Collapsible areas (nested, printed collapsed or expanded), locked regions, protected worksheets with inputs | ✅ (protection stops accidents, not someone editing the JSON) |
+| Track changes | ❌ |
 | Hypergeometric functions (`fhyper`, `mhyper`), Kelvin functions, wavelets | ❌ |
 | Native iOS build signed for the App Store | ❌: needs an Apple developer account (the PWA works today) |
 
@@ -1296,6 +1539,7 @@ src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS brid
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
+src/exporters/ Mathcad .mcdx / .xmcd and SMath .sm export (plan, math tree, one writer per format)
 src/beam/     Beam and frame analysis (no UI): model, stiffness solver, worksheet evaluation
 src/ui/beam/  Beam region: editor, diagrams, properties panel
 src/frame3d/  3-D frame analysis (no UI): model, substructured stiffness solver, buckling, evaluation
@@ -1306,6 +1550,9 @@ src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (com
 src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
               window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
+src/sheet/    spreadsheets (no UI): formula engine, Excel functions, .xlsx read/write, the spreadsheet
+              region's evaluation with units, worksheet and table export
+src/ui/sheet/ spreadsheet region (grid, inputs and outputs) and the Excel import dialog for tables
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system
 ```

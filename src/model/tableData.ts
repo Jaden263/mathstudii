@@ -48,6 +48,15 @@ function cleanNumber(c: string, decimalComma: boolean): string {
 
 const isNumeric = (c: string) => c === '' || (NUMBER.test(c) && /\d/.test(c));
 
+/** A column header "F [kN]" or "x (m)" as name and unit ("m²" → "m^2", "kN·m" → "kN m"). */
+export function splitHeader(h: string): { name: string; unit: string } {
+  const m = /^(.*?)\s*[[(]\s*([^\])]*)\s*[\])]\s*$/.exec(h);
+  if (m && m[2] && !/^-$/.test(m[2])) {
+    return { name: m[1].trim(), unit: m[2].trim().replace(/²/g, '^2').replace(/³/g, '^3').replace(/⁴/g, '^4').replace(/·/g, ' ') };
+  }
+  return { name: h.trim(), unit: '' };
+}
+
 /** Header row detection, units from "name [unit]", decimal commas fixed. */
 export function toTableData(grid: string[][]): TableData {
   if (!grid.length) return { headers: [], units: [], cells: [['']] };
@@ -63,14 +72,9 @@ export function toTableData(grid: string[][]): TableData {
   const units: string[] = [];
   if (hasHeader) {
     for (const h of grid[0]) {
-      const m = /^(.*?)\s*[[(]\s*([^\])]*)\s*[\])]\s*$/.exec(h);
-      if (m && m[2] && !/^-$/.test(m[2])) {
-        headers.push(m[1].trim());
-        units.push(m[2].trim().replace(/²/g, '^2').replace(/³/g, '^3').replace(/⁴/g, '^4').replace(/·/g, ' '));
-      } else {
-        headers.push(h.trim());
-        units.push('');
-      }
+      const { name, unit } = splitHeader(h);
+      headers.push(name);
+      units.push(unit);
     }
   } else {
     const w = cells[0]?.length ?? 1;

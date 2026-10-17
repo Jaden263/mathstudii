@@ -22,6 +22,11 @@ export interface OdeOptions {
   /** rk4: the number of steps; adaptive methods: at least this many steps (h ≤ span/steps). */
   steps?: number;
   jac?: Jacobian;
+  /**
+   * ∂fᵢ/∂yⱼ = 0 for |i − j| > band (a method-of-lines system): Radau then factors band
+   * matrices and differences the Jacobian with 2·band + 1 evaluations instead of n.
+   */
+  band?: number;
   /** Replay these mesh points (t0 … t1) without error control, e.g. for finite-difference sensitivities. */
   mesh?: number[];
   /** The method of each replayed step (a solution's kinds); default the method (Dormand–Prince for auto). */
@@ -413,6 +418,92 @@ function luSolve(LU: number[][], piv: number[], b: number[]): number[] {
   return x;
 }
 
+/**
+ * A band matrix with kl sub- and ku super-diagonals, stored by rows with room for the
+ * kl extra super-diagonals that partial pivoting fills in (as LAPACK's dgbtrf).
+ */
+class Band {
+  readonly w: number;
+  readonly d: Float64Array;
+  constructor(readonly n: number, readonly kl: number, readonly ku: number) {
+    this.w = 2 * kl + ku + 1;
+    this.d = new Float64Array(n * this.w);
+  }
+  /** Position of (r, c), for c in r − kl … r + kl + ku. */
+  ix(r: number, c: number): number {
+    return r * this.w + c - r + this.kl;
+  }
+}
+
+/** LU of a band matrix with partial pivoting (in place); piv[c] is the row swapped into c. */
+function bandFactor(B: Band): Int32Array {
+  const { n, kl, ku, d } = B;
+  const piv = new Int32Array(n);
+  for (let c = 0; c < n; c++) {
+    const last = Math.min(n - 1, c + kl);
+    const right = Math.min(n - 1, c + kl + ku);
+    let p = c;
+    for (let r = c + 1; r <= last; r++) if (Math.abs(d[B.ix(r, c)]) > Math.abs(d[B.ix(p, c)])) p = r;
+    piv[c] = p;
+    const pivot = d[B.ix(p, c)];
+    if (pivot === 0) throw new Error('singular');
+    if (p !== c) {
+      for (let k = c; k <= right; k++) {
+        const a = B.ix(c, k), b = B.ix(p, k);
+        const tmp = d[a]; d[a] = d[b]; d[b] = tmp;
+      }
+    }
+    for (let r = c + 1; r <= last; r++) {
+      const rc = B.ix(r, c);
+      const f = (d[rc] /= pivot);
+      if (f === 0) continue;
+      const rowR = B.ix(r, 0), rowC = B.ix(c, 0);
+      for (let k = c + 1; k <= right; k++) d[rowR + k] -= f * d[rowC + k];
+    }
+  }
+  return piv;
+}
+
+function bandSolve(B: Band, piv: Int32Array, b: number[]): number[] {
+  const { n, kl, ku, d } = B;
+  const x = b.slice();
+  for (let c = 0; c < n; c++) {
+    const p = piv[c];
+    if (p !== c) { const tmp = x[c]; x[c] = x[p]; x[p] = tmp; }
+    const last = Math.min(n - 1, c + kl);
+    for (let r = c + 1; r <= last; r++) x[r] -= d[B.ix(r, c)] * x[c];
+  }
+  for (let i = n - 1; i >= 0; i--) {
+    const right = Math.min(n - 1, i + kl + ku);
+    const row = B.ix(i, 0);
+    let s = x[i];
+    for (let k = i + 1; k <= right; k++) s -= d[row + k] * x[k];
+    x[i] = s / d[row + i];
+  }
+  return x;
+}
+
+/** Forward-difference Jacobian of a banded system: columns 2·band + 1 apart share an evaluation. */
+function bandedJacobian(f: Rhs, t: number, y: number[], fy: number[], typical: number[], band: number): number[][] {
+  const n = y.length;
+  const J: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
+  const period = 2 * band + 1;
+  const steps = y.map((v, j) => {
+    const scale = Math.max(Math.abs(v), typical[j]);
+    return Math.sqrt(EPS) * (scale > 0 ? scale : 1);
+  });
+  for (let c = 0; c < period && c < n; c++) {
+    const yp = y.slice();
+    for (let j = c; j < n; j += period) yp[j] += steps[j];
+    const fp = f(t, yp);
+    for (let j = c; j < n; j += period) {
+      const step = yp[j] - y[j];
+      for (let i = Math.max(0, j - band); i <= Math.min(n - 1, j + band); i++) J[i][j] = (fp[i] - fy[i]) / step;
+    }
+  }
+  return J;
+}
+
 /** Forward-difference Jacobian. */
 export function numericJacobian(f: Rhs, t: number, y: number[], fy: number[], typical: number[]): number[][] {
   const n = y.length;
@@ -467,9 +558,51 @@ function radau(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
   let first = true, reject = false;
   let faccon = 1;
   let patient = false;
+  const band = run.opts.band !== undefined && run.opts.band < n - 1 ? Math.max(0, Math.floor(run.opts.band)) : -1;
   const jac = () => {
-    J = run.opts.jac ? run.opts.jac(t, y) : numericJacobian(run.f, t, y, fy, scale.peak);
+    J = run.opts.jac ? run.opts.jac(t, y)
+      : band >= 0 ? bandedJacobian(run.f, t, y, fy, scale.peak, band) : numericJacobian(run.f, t, y, fy, scale.peak);
     jacFresh = true;
+  };
+  // banded: stage increments interleaved by component, so M keeps a band of 3·band + 2
+  const ix = band >= 0 ? (i: number, p: number) => 3 * p + i : (i: number, p: number) => i * n + p;
+  type Factored = { solve(b: number[]): number[] };
+  const factorM = (hs: number, Jm: number[][]): Factored => {
+    const N3 = 3 * n;
+    if (band >= 0) {
+      const w = 3 * band + 2;
+      const B = new Band(N3, w, w);
+      for (let p = 0; p < n; p++) for (let q = Math.max(0, p - band); q <= Math.min(n - 1, p + band); q++) {
+        const jpq = Jm[p][q];
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+          B.d[B.ix(ix(i, p), ix(j, q))] = (i === j && p === q ? 1 : 0) - hs * RA[i][j] * jpq;
+        }
+      }
+      const piv = bandFactor(B);
+      return { solve: (b) => bandSolve(B, piv, b) };
+    }
+    // M = I − h (A ⊗ J) on the stacked stage increments
+    const M: number[][] = Array.from({ length: N3 }, () => new Array(N3).fill(0));
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      const ha = hs * RA[i][j];
+      for (let p = 0; p < n; p++) for (let q = 0; q < n; q++) M[i * n + p][j * n + q] = (i === j && p === q ? 1 : 0) - ha * Jm[p][q];
+    }
+    const piv = luFactor(M);
+    return { solve: (b) => luSolve(M, piv, b) };
+  };
+  // E = I − h γ₀ J for the error estimate
+  const factorE = (hs: number, Jm: number[][]): Factored => {
+    if (band >= 0) {
+      const B = new Band(n, band, band);
+      for (let p = 0; p < n; p++) for (let q = Math.max(0, p - band); q <= Math.min(n - 1, p + band); q++) {
+        B.d[B.ix(p, q)] = (p === q ? 1 : 0) - hs * G0 * Jm[p][q];
+      }
+      const piv = bandFactor(B);
+      return { solve: (b) => bandSolve(B, piv, b) };
+    }
+    const E = Jm.map((row, p) => row.map((v, q) => (p === q ? 1 : 0) - hs * G0 * v));
+    const piv = luFactor(E);
+    return { solve: (b) => luSolve(E, piv, b) };
   };
   while (run.dir * (run.t1 - t) > 0) {
     let hs: number;
@@ -486,16 +619,10 @@ function radau(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
     if (!J) jac();
     const Jm = J!;
     const sc = scale.weights(y);
-    // M = I − h (A ⊗ J) on the stacked stage increments
     const N3 = 3 * n;
-    const M: number[][] = Array.from({ length: N3 }, () => new Array(N3).fill(0));
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
-      const ha = hs * RA[i][j];
-      for (let p = 0; p < n; p++) for (let q = 0; q < n; q++) M[i * n + p][j * n + q] = (i === j && p === q ? 1 : 0) - ha * Jm[p][q];
-    }
-    let piv: number[];
+    let M: Factored;
     try {
-      piv = luFactor(M);
+      M = factorM(hs, Jm);
     } catch {
       if (mesh) throw new Error('Radau: singular iteration matrix');
       h = Math.abs(hs) * 0.5;
@@ -525,11 +652,11 @@ function radau(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
       for (let i = 0; i < 3; i++) for (let p = 0; p < n; p++) {
         let acc = 0;
         for (let j = 0; j < 3; j++) acc += RA[i][j] * F[j][p];
-        rhs[i * n + p] = -z[i][p] + hs * acc;
+        rhs[ix(i, p)] = -z[i][p] + hs * acc;
       }
-      const dz = luSolve(M, piv!, rhs);
+      const dz = M.solve(rhs);
       let dyno = 0;
-      for (let i = 0; i < 3; i++) for (let p = 0; p < n; p++) dyno += (dz[i * n + p] / sc[p]) ** 2;
+      for (let i = 0; i < 3; i++) for (let p = 0; p < n; p++) dyno += (dz[ix(i, p)] / sc[p]) ** 2;
       dyno = Math.sqrt(dyno / N3);
       if (newt > 1) {
         theta = dyno / dynold;
@@ -538,7 +665,7 @@ function radau(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
         // predicted not to converge within the iteration limit
         if ((Math.pow(theta, maxNewt - newt) / (1 - theta)) * dyno > fnewt) break;
       }
-      for (let i = 0; i < 3; i++) for (let p = 0; p < n; p++) z[i][p] += dz[i * n + p];
+      for (let i = 0; i < 3; i++) for (let p = 0; p < n; p++) z[i][p] += dz[ix(i, p)];
       dynold = Math.max(dyno, EPS);
       if (faccon * dyno <= fnewt) { converged = true; break; }
     }
@@ -559,15 +686,14 @@ function radau(run: Run, t: number, y: number[], o: StepperOptions = {}): Leg {
     // error estimate with Hairer's stiff filter
     let err: number;
     try {
-      const E = Jm.map((row, p) => row.map((v, q) => (p === q ? 1 : 0) - hs * G0 * v));
-      const Epiv = luFactor(E);
+      const E = factorE(hs, Jm);
       const ez = y.map((_, p) => RE[0] * z[0][p] + RE[1] * z[1][p] + RE[2] * z[2][p]);
-      let ev = luSolve(E, Epiv, ez.map((v, p) => v + G0 * hs * fy[p]));
+      let ev = E.solve(ez.map((v, p) => v + G0 * hs * fy[p]));
       const scn = scale.weights(y, yn);
       err = rms(ev, scn);
       if (err >= 1 && (first || reject)) {
         const f2 = run.f(t, y.map((v, p) => v + ev[p]));
-        ev = luSolve(E, Epiv, ez.map((v, p) => v + G0 * hs * f2[p]));
+        ev = E.solve(ez.map((v, p) => v + G0 * hs * f2[p]));
         err = rms(ev, scn);
       }
     } catch {

@@ -481,20 +481,55 @@ function radix2(re: number[], im: number[], inverse: boolean): { re: number[]; i
 
 // ---------------------------------------------------------------- interpolation
 
-/** Natural cubic spline second derivatives. */
-export function splineSecondDerivs(xs: number[], ys: number[]): number[] {
+/**
+ * Cubic spline second derivatives M_i, with Mathcad's end conditions: "natural" (lspline,
+ * M = 0 at the ends: the curve runs out straight), "parabolic" (pspline, M_0 = M_1: a parabola
+ * at the ends) or "cubic" (cspline, M linear over the first and last two intervals: a cubic).
+ */
+export function splineSecondDerivs(xs: number[], ys: number[], end: 'natural' | 'parabolic' | 'cubic' = 'natural'): number[] {
   const n = xs.length;
-  const y2 = new Array(n).fill(0);
-  const u = new Array(n).fill(0);
-  for (let i = 1; i < n - 1; i++) {
-    const sig = (xs[i] - xs[i - 1]) / (xs[i + 1] - xs[i - 1]);
-    const p = sig * y2[i - 1] + 2;
-    y2[i] = (sig - 1) / p;
-    u[i] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) - (ys[i] - ys[i - 1]) / (xs[i] - xs[i - 1]);
-    u[i] = (6 * u[i] / (xs[i + 1] - xs[i - 1]) - sig * u[i - 1]) / p;
+  const M = new Array(n).fill(0);
+  if (n < 3) return M;
+  if (end === 'cubic' && n < 4) end = 'parabolic';
+  const h = xs.slice(1).map((x, i) => x - xs[i]);
+  // h_{i-1} M_{i-1} + 2 (h_{i-1} + h_i) M_i + h_i M_{i+1} = 6 (Δy_i/h_i − Δy_{i-1}/h_{i-1}), i = 1 … n−2
+  const m = n - 2;
+  const lo = new Array(m).fill(0), di = new Array(m).fill(0), up = new Array(m).fill(0), r = new Array(m).fill(0);
+  for (let k = 0; k < m; k++) {
+    const i = k + 1;
+    lo[k] = h[i - 1];
+    di[k] = 2 * (h[i - 1] + h[i]);
+    up[k] = h[i];
+    r[k] = 6 * ((ys[i + 1] - ys[i]) / h[i] - (ys[i] - ys[i - 1]) / h[i - 1]);
   }
-  for (let k = n - 2; k >= 0; k--) y2[k] = y2[k] * y2[k + 1] + u[k];
-  return y2;
+  // the end conditions eliminate M_0 and M_{n−1} from the first and last equations
+  if (end === 'parabolic') {
+    di[0] += h[0];
+    di[m - 1] += h[n - 2];
+  } else if (end === 'cubic') {
+    // M_0 = ((h0 + h1) M_1 − h0 M_2)/h1
+    di[0] += (h[0] * (h[0] + h[1])) / h[1];
+    up[0] -= (h[0] * h[0]) / h[1];
+    const a = h[n - 2], b = h[n - 3];
+    di[m - 1] += (a * (a + b)) / b;
+    lo[m - 1] -= (a * a) / b;
+  }
+  // Thomas algorithm
+  for (let k = 1; k < m; k++) {
+    const w = lo[k] / di[k - 1];
+    di[k] -= w * up[k - 1];
+    r[k] -= w * r[k - 1];
+  }
+  M[m] = r[m - 1] / di[m - 1];
+  for (let k = m - 2; k >= 0; k--) M[k + 1] = (r[k] - up[k] * M[k + 2]) / di[k];
+  if (end === 'parabolic') {
+    M[0] = M[1];
+    M[n - 1] = M[n - 2];
+  } else if (end === 'cubic') {
+    M[0] = ((h[0] + h[1]) * M[1] - h[0] * M[2]) / h[1];
+    M[n - 1] = ((h[n - 2] + h[n - 3]) * M[n - 2] - h[n - 2] * M[n - 3]) / h[n - 3];
+  }
+  return M;
 }
 
 export function splineEval(xs: number[], ys: number[], y2: number[], x: number): number {
