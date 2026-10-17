@@ -12,6 +12,7 @@ import { LazyInput } from '../sketch/SketchProps';
 import { fitKind, fitDeviations, parseFit } from '../../cad/fits';
 import { GDT_CHARS, GDT_INFO, MM, devDecimals, fmtDev, type Annotation, type DimAnnotation, type GdtAnnotation, type Lay, type SurfaceAnnotation, type Tolerance } from '../../cad/annotations';
 import { annotationName } from '../../cad/annotationTools';
+import { pictorialView } from '../../cad/drawingAnnotate';
 import { focused, selectAnnotation, useDrawingState, wantsFocus } from './drawingState';
 
 const LAYS: Lay[] = ['=', '⊥', 'X', 'M', 'C', 'R', 'P'];
@@ -110,7 +111,7 @@ function Editor({ a, region, unit, reads, update, remove }: {
     <div className="dw-ann-edit">
       {reads?.lost && <p className="dw-ann-note warn"><TriangleAlert size={12} /> Lost: {reads.lost}. It is drawn where it was, in orange; delete it or place it again.</p>}
       {reads?.error && <p className="dw-ann-note err">{reads.error}</p>}
-      {a.kind === 'dim' && <DimEditor d={a} unit={unit} reads={reads} update={update} />}
+      {a.kind === 'dim' && <DimEditor d={a} unit={unit} reads={reads} update={update} pictorial={pictorialView(region, a.view)} />}
       {a.kind === 'note' && (
         <label className="field"><span>Text</span>
           <textarea ref={noteRef} defaultValue={a.text} aria-label="Note text" onBlur={(e) => e.target.value !== a.text && update({ text: e.target.value || ' ' })} />
@@ -142,7 +143,7 @@ function Editor({ a, region, unit, reads, update, remove }: {
 
 const TOL_KINDS: [string, string][] = [['', 'None'], ['sym', '± symmetric'], ['dev', 'Deviations'], ['limits', 'Limits'], ['fit', 'ISO 286 fit']];
 
-function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string; reads?: { value?: number; text?: string }; update: (patch: Partial<DimAnnotation>) => void }) {
+function DimEditor({ d, unit, reads, update, pictorial }: { d: DimAnnotation; unit: string; reads?: { value?: number; text?: string }; update: (patch: Partial<DimAnnotation>) => void; pictorial: boolean }) {
   const round = d.a.shape.k === 'circle';
   const tol = d.tol;
   const setTol = (kind: string) => {
@@ -158,7 +159,10 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
       const f = parseFit(tol.code);
       if (f?.hole && f.shaft) {
         const k = fitKind(fitDeviations(`${f.hole.letter}${f.hole.grade}`, size), fitDeviations(`${f.shaft.letter}${f.shaft.grade}`, size));
-        fitInfo = `${k.kind} fit: clearance ${k.min} … ${k.max} µm`;
+        // ISO 286-1 3.3: clearances positive, interferences negative
+        fitInfo = k.kind === 'clearance' ? `clearance fit: clearance ${k.min} … ${k.max} µm`
+          : k.kind === 'interference' ? `interference fit: interference ${-k.max} … ${-k.min} µm`
+          : `transition fit: up to ${k.max} µm clearance or ${-k.min} µm interference`;
       } else if (f) {
         const dv = fitDeviations(tol.code, size), dd = devDecimals([dv.upper, dv.lower], 'mm');
         fitInfo = `${tol.code.trim()} at ${+size.toFixed(3)} mm: ${fmtDev(dv.upper, dd)} / ${fmtDev(dv.lower, dd)} µm (ISO 286-2)`;
@@ -180,7 +184,8 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
             {round && <option value="radius">Radius R</option>}
             {round && d.a.shape.k === 'circle' && d.a.shape.a1 - d.a.shape.a0 < 2 * Math.PI - 1e-9 && <option value="arc">Arc length</option>}
             {d.type === 'diameter' && !round && <option value="diameter">Diameter Ø</option>}
-            {d.type === 'linear' && (d.orient !== undefined || d.b?.shape.k === 'point' || d.a.shape.k === 'point' || (d.a.shape.k === 'line' && !d.b)) ? (
+            {d.type === 'linear' && pictorial ? <option value={`linear:${d.orient ?? ''}`}>Aligned (true length)</option>
+            : d.type === 'linear' && (d.orient !== undefined || d.b?.shape.k === 'point' || d.a.shape.k === 'point' || (d.a.shape.k === 'line' && !d.b)) ? (
               <>
                 <option value="linear:h">Horizontal</option>
                 <option value="linear:v">Vertical</option>
@@ -205,7 +210,7 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
       <label className="field"><span>Text instead of the value</span><LazyInput label="Override text" mono={false} value={d.override ?? ''} placeholder="<> stands for the value" onCommit={(v) => update({ override: v.trim() || undefined })} /></label>
       <label className="field"><span>Tolerance</span>
         <select aria-label="Tolerance kind" value={tol?.kind ?? ''} onChange={(e) => setTol(e.target.value)}>
-          {TOL_KINDS.filter(([k]) => d.type !== 'angle' || k !== 'fit').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          {TOL_KINDS.filter(([k]) => k !== 'fit' || d.type === 'diameter' || d.type === 'linear' || tol?.kind === 'fit').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </label>
       {tol?.kind === 'sym' && <label className="field"><span>± ({d.type === 'angle' ? '°' : unit})</span><Num label="Symmetric tolerance" value={tol.t} onCommit={(v) => v !== undefined && update({ tol: { kind: 'sym', t: Math.abs(v) } })} /></label>}

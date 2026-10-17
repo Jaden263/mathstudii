@@ -480,7 +480,8 @@ export function resolvePick(pick: DrawPick, parts: DrawnPart[], f: ViewFrame, sn
   const shape = g && snapShape(g.shape, pick.snap);
   if (!g || !shape) return { ok: false, why: cut !== undefined ? 'its edge no longer goes through the cutting plane' : `the view no longer shows its ${pick.ref.kind} that way` };
   const e: ViewEntity = { occ: part.occ, body: body.id, kind: pick.ref.kind, index: r.index, ...g };
-  const p3 = pick.snap === 'vertex' || pick.snap === 'line' || cut !== undefined ? g.p3 : pick.snap === 'centre' || pick.snap === 'end0' ? g.p3.slice(0, 1) : pick.snap === 'end1' ? g.p3.slice(1, 2) : undefined;
+  const p3 = pick.snap === 'vertex' || pick.snap === 'line' || cut !== undefined ? g.p3 : pick.snap === 'centre' || pick.snap === 'end0' ? g.p3.slice(0, 1) : pick.snap === 'end1' ? g.p3.slice(1, 2)
+    : pick.snap === 'mid' && g.shape.k === 'line' && g.p3.length === 2 ? [scale3(add3(g.p3[0], g.p3[1]), 0.5)] : undefined;
   return { ok: true, shape, e, ...(p3 ? { p3 } : {}) };
 }
 
@@ -518,10 +519,10 @@ function measured(s: Shape2): Shape2 {
 /**
  * A linear dimension between what two picks are (a point and a point, a line alone, a
  * point and a line, two parallel lines; a circle counts as its centre and a cylinder as
- * its axis) or across a cylinder seen side-on: horizontal, vertical or aligned. True
- * lengths: points with 3-D places (`p3`, the isometric view) are measured in space when aligned.
+ * its axis) or across a cylinder seen side-on: horizontal, vertical or aligned, as the
+ * paper has it (a pictorial view's true lengths: measureTrue).
  */
-export function measureLinear(a0: Shape2, b0: Shape2 | undefined, orient: DimAnnotation['orient'], text: XY, p3?: [Vec3 | undefined, Vec3 | undefined]): LinearMeasure | null {
+export function measureLinear(a0: Shape2, b0: Shape2 | undefined, orient: DimAnnotation['orient'], text: XY): LinearMeasure | null {
   if (a0.k === 'cyl' && !b0) {
     // across the outlines, square to the axis, where the text is along it (within the face)
     const a = a0;
@@ -547,7 +548,7 @@ export function measureLinear(a0: Shape2, b0: Shape2 | undefined, orient: DimAnn
     return { p1, p2, u: unit(p2[0] - p1[0], p2[1] - p1[1]), value };
   }
   if (a.k === 'line' && b?.k === 'point') {
-    const m = measureLinear(b, a, orient, text, p3 && [p3[1], p3[0]]);
+    const m = measureLinear(b, a, orient, text);
     return m && { ...m, p1: m.p2, p2: m.p1, u: [-m.u[0], -m.u[1]] };
   }
   if (a.k === 'point' && b?.k === 'line') {
@@ -557,7 +558,6 @@ export function measureLinear(a0: Shape2, b0: Shape2 | undefined, orient: DimAnn
     return { p1, p2, u: unit(p2[0] - p1[0], p2[1] - p1[1]), value: d };
   }
   let p1: XY | null, p2: XY | null;
-  let q1 = p3?.[0], q2 = p3?.[1];
   if (a.k === 'line' && !b) {
     p1 = [a.x1, a.y1];
     p2 = [a.x2, a.y2];
@@ -566,13 +566,72 @@ export function measureLinear(a0: Shape2, b0: Shape2 | undefined, orient: DimAnn
     p2 = b ? pointOf(b) : null;
   }
   if (!p1 || !p2) return null;
-  if (a.k === 'line' && !b) [q1, q2] = [p3?.[0], p3?.[1]];
   const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
   if (orient === 'h') return abs(dx) > 1e-12 ? { p1, p2, u: [1, 0], value: abs(dx) } : null;
   if (orient === 'v') return abs(dy) > 1e-12 ? { p1, p2, u: [0, 1], value: abs(dy) } : null;
-  const value = q1 && q2 ? len3(sub3(q2, q1)) : hypot(dx, dy);
-  if (!(hypot(dx, dy) > 0)) return null;
+  const value = hypot(dx, dy);
+  if (!(value > 0)) return null;
   return { p1, p2, u: unit(dx, dy), value };
+}
+
+/** A pick with its places in space where it has them (resolvePick). */
+type Placed = { shape: Shape2; p3?: Vec3[] };
+
+/**
+ * A linear dimension measured in space, for a pictorial view (it foreshortens every
+ * direction, so nothing on its paper is true length): between two model points, along an
+ * edge, from a point square to an edge, or between two parallel edges, drawn between
+ * where those places are on the paper (the projection is affine: a point a fraction along
+ * an edge in space is that fraction along it on the paper). Null when a pick has no place
+ * in space (line work that is no model entity, a circle seen at an angle).
+ */
+export function measureTrue(a: Placed, b: Placed | undefined, text: XY): LinearMeasure | null {
+  const point = (q: Placed) => (q.shape.k === 'point' && q.p3?.length === 1 ? q.p3[0] : null);
+  const edge = (q: Placed) => (q.shape.k === 'line' && q.p3?.length === 2 ? q.p3 : null);
+  const done = (p1: XY, p2: XY, value: number): LinearMeasure | null =>
+    value > 1e-12 && hypot(p2[0] - p1[0], p2[1] - p1[1]) > 1e-12 ? { p1, p2, u: unit(p2[0] - p1[0], p2[1] - p1[1]), value } : null;
+  // the foot of a point on an edge's line, in space and on the paper
+  const footOn = (P: Vec3, s: Extract<Shape2, { k: 'line' }>, L: Vec3[]): { F: Vec3; f: XY } => {
+    const d = sub3(L[1], L[0]), t = dot3(sub3(P, L[0]), d) / (dot3(d, d) || 1);
+    return { F: add3(L[0], scale3(d, t)), f: [s.x1 + t * (s.x2 - s.x1), s.y1 + t * (s.y2 - s.y1)] };
+  };
+  const at = (q: Placed): XY => (q.shape.k === 'point' ? [q.shape.x, q.shape.y] : [0, 0]);
+  const Pa = point(a), La = edge(a);
+  if (!b) return La && a.shape.k === 'line' ? done([a.shape.x1, a.shape.y1], [a.shape.x2, a.shape.y2], len3(sub3(La[1], La[0]))) : null;
+  const Pb = point(b), Lb = edge(b);
+  if (Pa && Pb) return done(at(a), at(b), len3(sub3(Pb, Pa)));
+  if (La && Pb) {
+    const m = measureTrue(b, a, text);
+    return m && { ...m, p1: m.p2, p2: m.p1, u: [-m.u[0], -m.u[1]] };
+  }
+  if (Pa && Lb && b.shape.k === 'line') {
+    const { F, f } = footOn(Pa, b.shape, Lb);
+    return done(at(a), f, len3(sub3(F, Pa)));
+  }
+  if (La && Lb && a.shape.k === 'line' && b.shape.k === 'line') {
+    if (len3(cross3(norm3(sub3(La[1], La[0])), norm3(sub3(Lb[1], Lb[0])))) > 1e-6) return null;
+    // where the paper's measure stands along the first edge, the same fraction along it in space
+    const m = measureLinear(a.shape, b.shape, 'aligned', text);
+    if (!m) return null;
+    const s = a.shape, l2 = (s.x2 - s.x1) ** 2 + (s.y2 - s.y1) ** 2 || 1;
+    const t = ((m.p1[0] - s.x1) * (s.x2 - s.x1) + (m.p1[1] - s.y1) * (s.y2 - s.y1)) / l2;
+    const P = add3(La[0], scale3(sub3(La[1], La[0]), t));
+    const { F, f } = footOn(P, b.shape, Lb);
+    return done(m.p1, f, len3(sub3(F, P)));
+  }
+  return null;
+}
+
+/**
+ * The angle in space between two edges (a pictorial view), on the sides of their crossing
+ * the angle on the paper (`m`, measureAngle) takes: each edge's direction turned to point
+ * the way its ray on the paper does.
+ */
+function trueAngle(a: Placed, b: Placed, m: { r1: XY; r2: XY }): number | null {
+  if (a.shape.k !== 'line' || b.shape.k !== 'line' || a.p3?.length !== 2 || b.p3?.length !== 2) return null;
+  const way = (s: Extract<Shape2, { k: 'line' }>, r: XY) => Math.sign((s.x2 - s.x1) * r[0] + (s.y2 - s.y1) * r[1]) || 1;
+  const u1 = scale3(norm3(sub3(a.p3[1], a.p3[0])), way(a.shape, m.r1)), u2 = scale3(norm3(sub3(b.p3[1], b.p3[0])), way(b.shape, m.r2));
+  return acos(max(-1, min(1, dot3(u1, u2))));
 }
 
 /**
@@ -619,8 +678,12 @@ export function measureAngle(a: Shape2, b: Shape2, text: XY): { V: XY; r1: XY; r
 /** The centre of a pick that is round or a point: a circle's centre, the point itself. */
 export const centreOf = (s: Shape2): XY | null => (s.k === 'point' ? [s.x, s.y] : s.k === 'circle' ? [s.cx, s.cy] : null);
 
-/** The measured value of a dimension from its picks' shapes (model units; angles in radians), or null when they do not make one. */
-export function dimensionValue(d: DimAnnotation, a: { shape: Shape2; p3?: Vec3[] }, b: { shape: Shape2; p3?: Vec3[] } | undefined, trueLength = false): number | null {
+/**
+ * The measured value of a dimension from its picks' shapes (model units; angles in
+ * radians), or null when they do not make one. `trueLength` (a pictorial view): lengths
+ * and angles measured in space from the picks' places there.
+ */
+export function dimensionValue(d: DimAnnotation, a: Placed, b: Placed | undefined, trueLength = false): number | null {
   const s = a.shape;
   switch (d.type) {
     case 'radius':
@@ -629,16 +692,16 @@ export function dimensionValue(d: DimAnnotation, a: { shape: Shape2; p3?: Vec3[]
       return s.k === 'circle' || s.k === 'cyl' ? 2 * s.r : null;
     case 'arc':
       return s.k === 'circle' && s.a1 - s.a0 < TAU - 1e-9 ? s.r * (s.a1 - s.a0) : null;
-    case 'angle':
-      return b ? measureAngle(s, b.shape, d.text)?.value ?? null : null;
+    case 'angle': {
+      const m = b && measureAngle(s, b.shape, d.text);
+      return !m ? null : trueLength ? trueAngle(a, b!, m) : m.value;
+    }
     case 'pitch': {
       const p = centreOf(s), c = b && centreOf(b.shape);
       return p && c && hypot(p[0] - c[0], p[1] - c[1]) > 0 ? 2 * hypot(p[0] - c[0], p[1] - c[1]) : null;
     }
-    case 'linear': {
-      const q = trueLength ? [a.p3?.[0], b ? b.p3?.[0] : a.p3?.[1]] as [Vec3 | undefined, Vec3 | undefined] : undefined;
-      return measureLinear(s, b?.shape, d.orient, d.text, q)?.value ?? null;
-    }
+    case 'linear':
+      return (trueLength ? measureTrue(a, b, d.text) : measureLinear(s, b?.shape, d.orient, d.text))?.value ?? null;
   }
 }
 

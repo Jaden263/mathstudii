@@ -4,7 +4,7 @@
 // sheet sets its text by, parts list quantities (ISO 7573), and the dimensions the tools
 // make from picks.
 import { describe, expect, it } from 'vitest';
-import { bomRows, devDecimals, dimText, fmtMass, fmtSize, gdtLayout, textWidth, type DrawPick } from './annotations';
+import { bomMass, bomRows, devDecimals, dimText, fmtMass, fmtSize, gdtLayout, textWidth, type DrawPick } from './annotations';
 import { continueDimension, movedAnnotation, newDimension, nextDatumLetter } from './annotationTools';
 import { followText } from './drawingRefs';
 import type { CadDesign } from './design';
@@ -24,6 +24,15 @@ describe('dimension text', () => {
     // an auxiliary dimension in parentheses
     expect(dimText(35, 'mm', { reference: true })).toEqual({ main: '(35', tail: ')' });
     expect(dimText(35, 'mm', { override: '<> TYP.' })).toEqual({ main: '35 TYP.' });
+    // limits entered the wrong way round still put the upper one above
+    expect(dimText(20, 'mm', { tol: { kind: 'limits', upper: -0.02, lower: 0.01 } })).toEqual({ main: '', stack: ['20.01', '19.98'] });
+  });
+
+  it('angles: the degree sign on the value and on each deviation or limit (ISO 129-1: 30° ±0.5°)', () => {
+    expect(dimText(30, 'deg', { sign: '°' })).toEqual({ main: '30°' });
+    expect(dimText(30, 'deg', { sign: '°', tol: { kind: 'sym', t: 0.5 } })).toEqual({ main: '30° ±0.5°' });
+    expect(dimText(30, 'deg', { sign: '°', tol: { kind: 'dev', upper: 0.5, lower: -0.25 } })).toEqual({ main: '30°', stack: ['+0.50°', '−0.25°'] });
+    expect(dimText(30, 'deg', { sign: '°', tol: { kind: 'limits', upper: 0.5, lower: 0 } })).toEqual({ main: '', stack: ['30.5°', '30.0°'] });
   });
 
   it('ISO 286 fits: "Ø20 H7", with the deviations or limits from ISO 286-2 in parentheses', () => {
@@ -95,6 +104,9 @@ describe('parts list', () => {
     expect(rows.map((r) => [r.item, r.name, r.qty, r.material])).toEqual([[1, 'Plate', 1, 'Cast iron'], [2, 'Bolt M8×30', 4, 'Steel'], [3, 'Washer 8.4', 1, 'Aluminium']]);
     expect(rows[1].mass).toBe(0.0118);
     expect(rows[2].mass).toBeUndefined();
+    // the mass of what is listed: each item's times its quantity, and only when every item has one
+    expect(bomMass(rows)).toBeUndefined();
+    expect(bomMass(rows.slice(0, 2))).toBeCloseTo(1.2 + 4 * 0.0118, 12);
   });
 });
 

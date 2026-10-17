@@ -12,24 +12,25 @@ const { hypot, sign } = Math;
  * A dimension from the picks and the place of its text, or null when they make none (a
  * lone point). Two parallel lines, or a line and a point, are measured square to the
  * line; two points (a circle counts as its centre) horizontally, vertically or aligned
- * as the text's place says.
+ * as the text's place says; in a pictorial view (`pictorial`) always aligned, its true length.
  */
-export function newDimension(id: string, view: string, picks: DrawPick[], text: XY): DimAnnotation | null {
+export function newDimension(id: string, view: string, picks: DrawPick[], text: XY, pictorial = false): DimAnnotation | null {
   const [a, b] = picks;
   if (!a) return null;
   const base = { id, kind: 'dim' as const, view, text, a };
+  const orient = (p: XY, q: XY) => (pictorial ? 'aligned' : inferOrient(p, q, text));
   if (!b) {
     const s = a.shape;
     if (s.k === 'circle') return { ...base, type: s.a1 - s.a0 >= 2 * Math.PI - 1e-9 ? 'diameter' : 'radius' };
     if (s.k === 'cyl') return { ...base, type: 'diameter' };
-    if (s.k === 'line') return { ...base, type: 'linear', orient: inferOrient([s.x1, s.y1], [s.x2, s.y2], text) };
+    if (s.k === 'line') return { ...base, type: 'linear', orient: orient([s.x1, s.y1], [s.x2, s.y2]) };
     return null;
   }
   if (a.shape.k === 'line' && b.shape.k === 'line' && measureAngle(a.shape, b.shape, text)) return { ...base, b, type: 'angle' };
   const pa = centreOf(a.shape), pb = centreOf(b.shape);
   if (pa && pb) {
     if (hypot(pb[0] - pa[0], pb[1] - pa[1]) < 1e-12) return null;
-    return { ...base, b, type: 'linear', orient: inferOrient(pa, pb, text) };
+    return { ...base, b, type: 'linear', orient: orient(pa, pb) };
   }
   return measureLinear(a.shape, b.shape, undefined, text) ? { ...base, b, type: 'linear' } : null;
 }

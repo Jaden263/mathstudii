@@ -10,11 +10,11 @@
 import type { DrawingRegion } from '../model/types';
 import {
   dimText, fmtSize, gdtLayout, holeCallout, holeCount, holeData, holeOfKey, threadCallout, threadOn, GDT_INFO,
-  type Annotation, type BomRow, type DimAnnotation, type DimText, type DrawPick, type Shape2, type XY,
+  type Annotation, type BomRow, type DimAnnotation, type DimText, type DrawPick, type PickSnap, type Shape2, type XY,
 } from './annotations';
 import type { CadDesign, HoleFeature } from './design';
 import {
-  anchorOn, centreOf, curveDistance, dimensionValue, drawnEntities, drawnParts, followPoint, followText, measureAngle, measureLinear,
+  anchorOn, centreOf, curveDistance, dimensionValue, drawnEntities, drawnParts, followPoint, followText, measureAngle, measureLinear, measureTrue,
   pickOf, resolvePick, viewEntities, viewFrame, viewSnapPoints, type DrawnPart, type LinearMeasure, type Resolved, type ViewEntity, type ViewFrame,
 } from './drawingRefs';
 import { baseSpec, sectionRequest, toPaper, type BaseKey, type Layer, type PlacedView, type Sheet } from './drawingSheet';
@@ -70,6 +70,15 @@ export function frameOfView(r: DrawingRegion, key: string): ViewFrame | null {
     return s ? viewFrame(sectionRequest(r, s)) : null;
   }
   return viewFrame(baseSpec(key as BaseKey, r.projection));
+}
+
+/** Whether a placed view is pictorial (the isometric view, or a detail of it): nothing on its paper is true length. */
+export function pictorialView(r: DrawingRegion, key: string): boolean {
+  if (key.startsWith('det:')) {
+    const d = r.details?.find((q) => `det:${q.id}` === key);
+    return !!d && !d.view.startsWith('det:') && pictorialView(r, d.view);
+  }
+  return key === 'iso';
 }
 
 /** What a placed view offers to pick: the model entities it draws, and the points of its line work. */
@@ -426,30 +435,37 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
     const exact = (v: number) => String(+v.toFixed(6)).replace('-', '−');
     switch (a.kind) {
       case 'dim': {
+        // a pictorial view foreshortens every direction: its lengths and angles are measured
+        // in space, a length along the line between its two places (aligned)
+        const iso = pictorialView(r, pv.key);
+        const dm: DimAnnotation = iso && a.type === 'linear' && a.orient !== 'aligned' ? { ...a, orient: 'aligned' } : a;
         const pk = resolve(a.a, a.b);
         const was = { a: a.a.shape, ...(a.b ? { b: a.b.shape } : {}) }, now = { a: pk.a.shape, ...(pk.b ? { b: pk.b.shape } : {}) };
-        const T = followText(a, was, pk.lost ? was : now, ratio);
-        const d: DimAnnotation = { ...a, text: T };
-        const iso = pv.key === 'iso';
+        const T = followText(dm, was, pk.lost ? was : now, ratio);
+        const d: DimAnnotation = { ...dm, text: T };
         let value = dimensionValue(d, pk.a, pk.b, iso);
         let lost = pk.lost;
         if (value === null && !lost) {
-          lost = 'what it measured no longer makes this dimension';
-          value = dimensionValue(a, { shape: a.a.shape }, a.b && { shape: a.b.shape });
+          lost = iso && a.type !== 'diameter' && a.type !== 'radius' ? 'in a pictorial view it needs model corners or edges (true lengths and angles)' : 'what it measured no longer makes this dimension';
+          value = dimensionValue(dm, { shape: a.a.shape }, a.b && { shape: a.b.shape }, iso);
         }
         const pen = new Pen(sheet, a.id, !!lost, h);
         const shown = value ?? NaN;
         const sym = a.type === 'diameter' || a.type === 'pitch' ? 'Ø' : a.type === 'radius' ? 'R' : a.type === 'arc' ? '⌒' : '';
         const prefix = [a.prefix?.trim(), sym].filter(Boolean).join(a.prefix?.trim() && sym ? ' ' : '');
+        // ISO 286 tolerances are for sizes: a diameter or a width, not a radius, an arc or an angle
+        const sized = a.type === 'diameter' || a.type === 'linear';
+        const fitElsewhere = a.tol?.kind === 'fit' && !sized;
         const t = a.type === 'angle'
-          ? dimText(deg(shown), 'deg', { prefix, suffix: `°${a.suffix ?? ''}`, decimals: a.decimals, tol: a.tol?.kind === 'fit' ? undefined : a.tol, override: a.override, reference: a.reference })
-          : dimText(shown, ctx.unit, { prefix, suffix: a.suffix, decimals: a.decimals ?? r.decimals, tol: a.tol, override: a.override, reference: a.reference });
-        Object.assign(placed, { ...(lost ? { lost } : {}), ...(value !== null ? { value } : {}), text: [t.main, ...(t.stack ? [t.stack.join(' / ')] : []), t.tail ?? ''].join(' ').trim(), ...(t.error ? { error: t.error } : {}) });
+          ? dimText(deg(shown), 'deg', { prefix, suffix: a.suffix, sign: '°', decimals: a.decimals, tol: fitElsewhere ? undefined : a.tol, override: a.override, reference: a.reference })
+          : dimText(shown, ctx.unit, { prefix, suffix: a.suffix, decimals: a.decimals ?? r.decimals, tol: fitElsewhere ? undefined : a.tol, override: a.override, reference: a.reference });
+        const error = t.error ?? (fitElsewhere ? 'an ISO 286 class is for a size (a diameter or a width), not a radius, an arc or an angle' : undefined);
+        Object.assign(placed, { ...(lost ? { lost } : {}), ...(value !== null ? { value } : {}), text: [t.main, ...(t.stack ? [t.stack.join(' / ')] : []), t.tail ?? ''].join(' ').trim(), ...(error ? { error } : {}) });
         const g = lost ? was : now;
         let box: TextBox | null = null;
         let D: { end: V2; u: V2 } | undefined;
         if (a.type === 'linear' || (a.type === 'diameter' && g.a.k === 'cyl')) {
-          const m = measureLinear(g.a, g.b, a.type === 'diameter' ? undefined : a.orient, T);
+          const m = iso && a.type === 'linear' && !lost ? measureTrue(pk.a, pk.b, T) : measureLinear(g.a, g.b, a.type === 'diameter' ? undefined : dm.orient, T);
           if (m) {
             box = drawLinear(pen, pv, m, T, t, !!a.basic);
             // the end of the dimension line at the second pick, and the way out past it
@@ -534,7 +550,8 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       }
       case 'datum': {
         const host = a.dim ? boxes.get(a.dim) : undefined;
-        const pk = !host ? resolve(a.leader) : null;
+        // on the end of a linear dimension's line, else on its feature (a round one's circle)
+        const pk = !host?.D ? resolve(a.leader) : null;
         const at = pk ? followPoint(a.leader.shape, pk.lost ? a.leader.shape : pk.a.shape, a.at, ratio) : a.at;
         const lost = pk?.lost ?? (a.dim && !host ? 'the dimension it belongs to is gone' : undefined);
         const pen = new Pen(sheet, a.id, !!lost, h);
@@ -737,8 +754,9 @@ export function annotationAt(sheet: Sheet, x: number, y: number, tol = 1.5): str
 /**
  * Balloons for every item of the parts list drawn in a view that has none there yet
  * (ISO 6433): each on the middle of an edge of its part's first occurrence, the edge
- * farthest out from the view's middle, the balloons in a column either side of the view
- * at least a balloon and a gap apart.
+ * farthest out from the view's middle (a part the view shows only as circles, a pin seen
+ * end-on: on the quadrant of a circle facing out), the balloons in a column either side
+ * of the view at least a balloon and a gap apart.
  */
 export function autoBalloons(r: DrawingRegion, sheet: Sheet, parts: DrawnPart[], bom: BomRow[], viewKey: string, newId: () => string): Annotation[] {
   const pv = sheet.views.find((v) => v.key === viewKey);
@@ -747,15 +765,25 @@ export function autoBalloons(r: DrawingRegion, sheet: Sheet, parts: DrawnPart[],
   const have = new Set((r.annotations ?? []).flatMap((a) => (a.kind === 'balloon' && a.view === viewKey ? [parts.find((p) => p.occ === a.occ)?.component] : [])));
   const box = pv.view.box, mid: XY = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
   const rb = (0.9 * sheet.group.label + 0.5) / pv.k, gap = 2 / pv.k, off = 12 / pv.k;
-  const items: { row: BomRow; occ: string; e: ViewEntity; p: XY }[] = [];
+  const items: { row: BomRow; occ: string; e: ViewEntity; snap: PickSnap; p: XY }[] = [];
+  // where a balloon's leader ends on an edge: a line's middle, a circle's quadrant facing away from the view's middle
+  const end = (e: ViewEntity): { snap: PickSnap; p: XY } => {
+    const s = e.shape;
+    if (s.k === 'line') return { snap: 'mid', p: [(s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2] };
+    if (s.k !== 'circle') return { snap: 'mid', p: [0, 0] };
+    const dx = s.cx - mid[0], dy = s.cy - mid[1], q = abs(dx) >= abs(dy) ? (dx >= 0 ? 0 : 2) : dy >= 0 ? 1 : 3;
+    return { snap: `q${q}` as PickSnap, p: [s.cx + s.r * cos((q * PI) / 2), s.cy + s.r * sin((q * PI) / 2)] };
+  };
   for (const row of bom) {
     if (have.has(row.component)) continue;
     const occ = parts.find((p) => p.component === row.component)?.occ;
-    const lines = vp.ents.filter((e) => e.occ === occ && e.shape.k === 'line');
-    if (!occ || !lines.length) continue;
-    const at = (e: ViewEntity): XY => (e.shape.k === 'line' ? [(e.shape.x1 + e.shape.x2) / 2, (e.shape.y1 + e.shape.y2) / 2] : [0, 0]);
-    const e = lines.reduce((b, q) => (hypot(at(q)[0] - mid[0], at(q)[1] - mid[1]) - 1e-9 * q.depth > hypot(at(b)[0] - mid[0], at(b)[1] - mid[1]) - 1e-9 * b.depth ? q : b));
-    items.push({ row, occ, e, p: at(e) });
+    const mine = vp.ents.filter((e) => e.occ === occ);
+    const lines = mine.filter((e) => e.shape.k === 'line');
+    const cands = lines.length ? lines : mine.filter((e) => e.shape.k === 'circle' && e.shape.a1 - e.shape.a0 >= 2 * PI - 1e-9);
+    if (!occ || !cands.length) continue;
+    const far = (e: ViewEntity) => hypot(end(e).p[0] - mid[0], end(e).p[1] - mid[1]) - 1e-9 * e.depth;
+    const e = cands.reduce((b, q) => (far(q) > far(b) ? q : b));
+    items.push({ row, occ, e, ...end(e) });
   }
   const out: Annotation[] = [];
   for (const side of [-1, 1]) {
@@ -764,10 +792,8 @@ export function autoBalloons(r: DrawingRegion, sheet: Sheet, parts: DrawnPart[],
     for (const it of col) {
       y = min(y - 2 * rb - gap, it.p[1] + off / 2);
       const x = side > 0 ? box.x1 + off : box.x0 - off;
-      out.push({ id: newId(), kind: 'balloon', view: viewKey, occ: it.occ, a: pickOfMid(it.e, parts), at: [x, y] });
+      out.push({ id: newId(), kind: 'balloon', view: viewKey, occ: it.occ, a: pickOf({ e: it.e, snap: it.snap, x: 0, y: 0 }, parts), at: [x, y] });
     }
   }
   return out;
 }
-
-const pickOfMid = (e: ViewEntity, parts: DrawnPart[]): DrawPick => pickOf({ e, snap: 'mid', x: 0, y: 0 }, parts);

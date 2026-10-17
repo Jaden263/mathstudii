@@ -21,8 +21,8 @@ import {
   type Layer, type PlacedView, type Sheet, type SheetInfo,
 } from '../../cad/drawingSheet';
 import { sheetDxf } from '../../cad/drawingDxf';
-import { bomRows, materialOf, MM, threadOn, type Annotation, type DrawPick, type XY } from '../../cad/annotations';
-import { annotateSheet, annotationAt, annotationParts, autoBalloons, viewPicks, type PlacedAnnotation, type ViewPicks } from '../../cad/drawingAnnotate';
+import { bomMass, bomRows, materialOf, MM, threadOn, type Annotation, type DrawPick, type XY } from '../../cad/annotations';
+import { annotateSheet, annotationAt, annotationParts, autoBalloons, pictorialView, viewPicks, type PlacedAnnotation, type ViewPicks } from '../../cad/drawingAnnotate';
 import { autoDimensions } from '../../cad/autoDims';
 import { continueDimension, movedAnnotation, newDimension, nextDatumLetter } from '../../cad/annotationTools';
 import { anchorOn, cylOutlines, freePick, pickAt, pickOf, type DrawnPart, type PickHit, type ViewEntity } from '../../cad/drawingRefs';
@@ -133,10 +133,11 @@ function Overlay({ sheet, owner, className }: { sheet: Sheet; owner: string; cla
 
 /**
  * The drawing's views from the kernel worker (hidden lines take a while on a big part):
- * the last ones stay on the sheet while new ones are on their way.
+ * the last ones stay on the sheet while new ones are on their way. `key`: the build of the
+ * part they were drawn from.
  */
-function useDrawing(region: DrawingRegion, cad: CadRegion | undefined, cadResult: CadResult | undefined): { views: Record<string, DrawView> | null; busy: boolean; failed?: string } {
-  const [state, setState] = useState<{ views: Record<string, DrawView> | null; busy: boolean; failed?: string }>({ views: null, busy: true });
+function useDrawing(region: DrawingRegion, cad: CadRegion | undefined, cadResult: CadResult | undefined): { views: Record<string, DrawView> | null; busy: boolean; failed?: string; key?: string } {
+  const [state, setState] = useState<{ views: Record<string, DrawView> | null; busy: boolean; failed?: string; key?: string }>({ views: null, busy: true });
   const dr = cadResult?.design;
   const requests = useMemo(() => drawingRequests(region), [region]);
   const reqKey = JSON.stringify(requests);
@@ -146,7 +147,7 @@ function useDrawing(region: DrawingRegion, cad: CadRegion | undefined, cadResult
     let live = true;
     setState((s) => ({ ...s, busy: true }));
     kernelRequest({ op: 'drawing', design: designOf(cad), numbers: designNumbers(dr), views: requests }, `drawing:${region.id}`).then(
-      (views) => live && setState({ views, busy: false }),
+      (views) => live && setState({ views, busy: false, key }),
       (e) => live && !isSuperseded(e) && setState((s) => ({ ...s, busy: false, failed: (e as Error).message })),
     );
     return () => {
@@ -245,11 +246,20 @@ interface Chain {
 const EMPTY: CadDesign = { version: 2, components: [], occurrences: [], joints: [] };
 
 export function DrawingView({ region, cad, cadResult, selected, dispatch }: Props) {
-  const { views: all, busy, failed } = useDrawing(region, cad, cadResult);
+  const { views: all, busy, failed, key: viewsKey } = useDrawing(region, cad, cadResult);
   const design = useMemo(() => (cad ? designOf(cad) : EMPTY), [cad]);
   const shownBuild = useBuildResult(region.id, design, cadResult);
   // the mesh kernel's faces and edges have no names nor exact circles: annotations need OpenCascade's
-  const parts = useMemo<DrawnPart[] | null>(() => (shownBuild.build?.kernel === 'brep' ? annotationParts(shownBuild.build, cad ? design : undefined) : null), [shownBuild.build, design, cad]);
+  const latest = useMemo<DrawnPart[] | null>(() => (shownBuild.build?.kernel === 'brep' ? annotationParts(shownBuild.build, cad ? design : undefined) : null), [shownBuild.build, design, cad]);
+  // the edges of the build the views on the sheet were drawn from: a new build usually comes
+  // before its views (hidden lines take longer), and its edges on the old views disagree
+  const byBuild = useRef(new Map<string, DrawnPart[]>());
+  const display = cadResult?.design?.display;
+  if (latest && display && shownBuild.state === 'ready' && byBuild.current.get(display) !== latest) {
+    byBuild.current.set(display, latest);
+    for (const k of [...byBuild.current.keys()].slice(0, -3)) byBuild.current.delete(k);
+  }
+  const parts = latest && ((viewsKey && byBuild.current.get(viewsKey)) || latest);
   const { selected: picked } = useDrawingState(region.id);
   const svgRef = useRef<SVGSVGElement>(null);
   const [tool, setTool] = useState<Tool | null>(null);
@@ -293,7 +303,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     const name = cad?.design?.components[0]?.name || cad?.name || 'Part';
     const comps = design.components.filter((c) => design.occurrences.some((o) => o.component === c.id && !o.hidden));
     const material = comps.length === 1 ? materialOf(comps[0].density?.trim() ? comps[0].density : cad?.density) : '';
-    return { unit, name, date: new Date().toISOString().slice(0, 10), mass: cadResult?.mass?.m, material, bom, assembly, overall: !parts };
+    // the mass of what is drawn: the parts list's (hidden occurrences are in the worksheet's total)
+    return { unit, name, date: new Date().toISOString().slice(0, 10), mass: bomMass(bom) ?? cadResult?.mass?.m, material, bom, assembly, overall: !parts };
   }, [cad?.design, cad?.name, cad?.density, design, unit, cadResult?.mass?.m, bom, assembly, parts]);
 
   // the annotation being made, drawn as it would be (a preview, not in the files)
@@ -393,8 +404,9 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
       const curves = t === 'hole' || t === 'centre' || t === 'datum' || t === 'surface';
       const threaded = (e: ViewEntity) => !!threadOn(design.components.find((c) => c.id === parts?.find((q) => q.occ === e.occ)?.component), e.faces);
       hit = pickAt(vp.ents, at[0], at[1], 2 / pv.k, 1.2 / pv.k, { accept: (e) => accepts(t, e, threaded), points: !curves });
-      // a point of the line work that is no model entity (a dimension only): flagged should it move
-      if (!hit && t === 'dim') {
+      // a point of the line work that is no model entity (a dimension only): flagged should it
+      // move; not in a pictorial view, whose lengths are measured in space between model places
+      if (!hit && t === 'dim' && !pictorialView(region, pv.key)) {
         let bd = 1.6 / pv.k;
         for (const s of vp.snaps) {
           const d = Math.hypot(s[0] - at[0], s[1] - at[1]);
@@ -520,7 +532,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
         setADraft({ ...adraft, picks: [...adraft.picks, pick] });
         return;
       }
-      const d = newDimension(newId(), adraft.view, adraft.picks, at);
+      const d = newDimension(newId(), adraft.view, adraft.picks, at, pictorialView(region, adraft.view));
       setADraft(null);
       if (!d) return;
       addAnnotation(d);
@@ -742,7 +754,7 @@ function draftAnnotation(tool: AnnotTool, d: ADraft | null, hover: { view: strin
   const tol = 0.05 / (MM[unit] ?? 1);
   switch (tool) {
     case 'dim':
-      return d && d.picks.length ? newDimension(id, view, d.picks, at) : null;
+      return d && d.picks.length ? newDimension(id, view, d.picks, at, pictorialView(r, view)) : null;
     case 'note':
       return d ? { id, kind: 'note', view, text: 'Note', at, ...(p ? { leader: p } : {}) } : null;
     case 'hole':

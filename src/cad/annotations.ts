@@ -281,24 +281,28 @@ export interface DimText {
 /**
  * The text of a size with its tolerance (ISO 129-1, ISO 286-1, ISO 14405-1): "Ø20 H7",
  * "20 ±0.1", "20" with +0.1 / −0.05 stacked, the limits 20.021 / 20.000 stacked, a fit
- * with its deviations in parentheses. `prefix` holds the symbol and count ("4× Ø").
+ * with its deviations in parentheses. `prefix` holds the symbol and count ("4× Ø"); `sign`
+ * follows the value and each deviation or limit (an angle's °: "30° ±0.5°").
  */
-export function dimText(value: number, unit: string, o: { prefix?: string; suffix?: string; decimals?: number; tol?: Tolerance; override?: string; reference?: boolean }): DimText {
-  const v = fmtSize(value, unit, o.decimals);
+export function dimText(value: number, unit: string, o: { prefix?: string; suffix?: string; sign?: string; decimals?: number; tol?: Tolerance; override?: string; reference?: boolean }): DimText {
+  const sg = o.sign ?? '';
+  const v = fmtSize(value, unit, o.decimals) + sg;
   const pre = o.prefix ?? '';
   const suf = o.suffix ?? '';
   const wrap = (t: DimText): DimText => (o.reference ? { ...t, main: `(${t.main}`, tail: `${t.tail ?? ''})` } : t);
   if (o.override?.trim()) return wrap({ main: o.override.replace(/<>/g, v) });
   const tol = o.tol;
   if (!tol) return wrap({ main: `${pre}${v}${suf}` });
-  if (tol.kind === 'sym') return wrap({ main: `${pre}${v} ±${fmtSize(Math.abs(tol.t), unit, devDecimals([tol.t], unit))}${suf}` });
-  const stacked = (up: number, lo: number, limits: boolean): [string, string] => {
+  if (tol.kind === 'sym') return wrap({ main: `${pre}${v} ±${fmtSize(Math.abs(tol.t), unit, devDecimals([tol.t], unit))}${sg}${suf}` });
+  const stacked = (a: number, b: number, limits: boolean): [string, string] => {
+    // the upper one above, whichever way round they were entered
+    const [up, lo] = a >= b ? [a, b] : [b, a];
     if (limits) {
       const d = Math.max(o.decimals ?? 0, devDecimals([value + up, value + lo], unit));
-      return [fmtSize(value + up, unit, d), fmtSize(value + lo, unit, d)];
+      return [fmtSize(value + up, unit, d) + sg, fmtSize(value + lo, unit, d) + sg];
     }
     const d = devDecimals([up, lo], unit);
-    return [fmtDev(up, d), fmtDev(lo, d)];
+    return [fmtDev(up, d) + sg, fmtDev(lo, d) + sg];
   };
   if (tol.kind === 'dev') return wrap({ main: `${pre}${v}`, stack: stacked(tol.upper, tol.lower, false), ...(suf ? { tail: suf } : {}) });
   if (tol.kind === 'limits') return wrap({ main: pre, stack: stacked(tol.upper, tol.lower, true), ...(suf ? { tail: suf } : {}) });
@@ -453,6 +457,15 @@ export function bomRows(design: CadDesign, o: { masses?: Record<string, number |
     });
   }
   return out;
+}
+
+/**
+ * The mass of what the parts list holds (kg): each item's mass times its quantity, so a
+ * hidden occurrence (drawn nowhere, listed nowhere) counts nowhere. Undefined unless every
+ * item has a mass.
+ */
+export function bomMass(rows: BomRow[]): number | undefined {
+  return rows.length && rows.every((r) => r.mass !== undefined) ? rows.reduce((s, r) => s + r.qty * r.mass!, 0) : undefined;
 }
 
 /** A mass as a parts list writes it (kg, three figures). */

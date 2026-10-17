@@ -15,9 +15,9 @@ import { answer, displayFor } from '../kernel/service';
 import type { DrawView } from '../drawing2d';
 import { drawingRequests, layoutSheet, type Sheet, type SheetInfo } from '../drawingSheet';
 import { sheetDxf } from '../drawingDxf';
-import { annotateSheet, annotationParts, autoBalloons, frameOfView, viewPicks } from '../drawingAnnotate';
+import { annotateSheet, annotationParts, autoBalloons, frameOfView, pictorialView, viewPicks } from '../drawingAnnotate';
 import { autoDimensions } from '../autoDims';
-import { bomRows, type Annotation, type DimAnnotation, type DrawPick } from '../annotations';
+import { bomMass, bomRows, type Annotation, type DimAnnotation, type DrawPick } from '../annotations';
 import { newDimension } from '../annotationTools';
 import { pickAt, pickOf, type DrawnPart } from '../drawingRefs';
 import { circles, points, poly, rect, roundedRect, single, solve, withCircles } from './fixtures';
@@ -161,6 +161,70 @@ describe('angles, radii and arc lengths', () => {
     expect(annotateSheet(b.sheet, { ...r, annotations: [rad, len] }, { unit: 'mm', parts: b.parts }).map((p) => [p.text, p.value])).toEqual([
       ['R10', expect.closeTo(10, 9)], ['⌒15.71', expect.closeTo((PI / 2) * 10, 9)],
     ]);
+  });
+});
+
+describe('the isometric view: true lengths and angles', () => {
+  it('a plate 100 × 60 × 10 seen isometrically: 100 between corners however the text is put, from an edge middle, from a corner square to an edge; 60 between parallel edges; 90° at a corner', async () => {
+    const r = drawing({ views: { front: false, top: false, side: false, iso: true } });
+    const a = await sheetOf(plate(100), r);
+    const f = frameOfView(r, 'iso')!;
+    const P = (x: number, y: number, z: number): [number, number] => [x * f.right[0] + y * f.right[1] + z * f.right[2], x * f.up[0] + y * f.up[1] + z * f.up[2]];
+    const c0 = pick(r, a.sheet, a.parts, 'iso', ...P(0, 0, 10)), c1 = pick(r, a.sheet, a.parts, 'iso', ...P(100, 0, 10));
+    const m0 = pick(r, a.sheet, a.parts, 'iso', ...P(0, 30, 10)), m1 = pick(r, a.sheet, a.parts, 'iso', ...P(100, 30, 10));
+    expect([m0.snap, m1.snap]).toEqual(['mid', 'mid']);
+    const front = pick(r, a.sheet, a.parts, 'iso', ...P(50, 0, 10), { points: false }), back = pick(r, a.sheet, a.parts, 'iso', ...P(50, 60, 10), { points: false });
+    const right = pick(r, a.sheet, a.parts, 'iso', ...P(100, 40, 10), { points: false }), left = pick(r, a.sheet, a.parts, 'iso', ...P(0, 40, 10), { points: false });
+    // the tool makes them aligned there; one stored horizontal (as an older one may be) is measured the same
+    const placedAt = newDimension('c', 'iso', [c0, c1], P(50, -20, 10), true)!;
+    expect(placedAt.orient).toBe('aligned');
+    const anns: Annotation[] = [
+      placedAt,
+      { ...placedAt, id: 'h', orient: 'h' },
+      { id: 'm', kind: 'dim', view: 'iso', type: 'linear', orient: 'aligned', a: m0, b: m1, text: P(50, 30, 30) },
+      { id: 'pl', kind: 'dim', view: 'iso', type: 'linear', a: c0, b: right, text: P(50, -30, 10) },
+      { id: 'll', kind: 'dim', view: 'iso', type: 'linear', a: front, b: back, text: P(110, 30, 10) },
+      { id: 'e', kind: 'dim', view: 'iso', type: 'linear', orient: 'aligned', a: left, text: P(-15, 30, 10) },
+      { ...newDimension('ang', 'iso', [front, left], P(8, 8, 10), true)!, id: 'ang' },
+    ];
+    const placed = annotateSheet(a.sheet, { ...r, annotations: anns }, { unit: 'mm', parts: a.parts });
+    // on this paper the 100 edge is 100 cos 45° = 70.71 across and the corner 120° (or 60°): the values are the part's
+    expect(placed.map((p) => [p.id, p.text, p.lost ?? null])).toEqual([
+      ['c', '100', null], ['h', '100', null], ['m', '100', null], ['pl', '100', null], ['ll', '60', null], ['e', '60', null], ['ang', '90°', null],
+    ]);
+    expect(placed.find((p) => p.id === 'ang')!.value).toBeCloseTo(PI / 2, 12);
+    // a detail of the isometric view is pictorial too
+    expect(pictorialView({ ...r, details: [{ id: 'd', letter: 'B', view: 'iso', c: { x: 0, y: 0 }, r: 10, scale: 2 }] }, 'det:d')).toBe(true);
+    expect(pictorialView(r, 'front')).toBe(false);
+  });
+});
+
+describe('symbols on a round dimension, tolerances that do not apply', () => {
+  const holeAt = (x: number) => single([
+    { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: withCircles(rect('a', 0, 0, 100, 60), 'h', [[x, 30, 10]]) },
+    { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+  ]);
+  it('a datum on a hole’s Ø follows the hole 20 mm left; an ISO 286 class on a radius is refused', async () => {
+    const r = drawing({ views: { front: false, top: true, side: false, iso: false } });
+    const a = await sheetOf(holeAt(50), r);
+    const c = pick(r, a.sheet, a.parts, 'top', 60, 30, { points: false });
+    const anns: Annotation[] = [
+      newDimension('d', 'top', [c], [70, 45])!,
+      { id: 'da', kind: 'datum', view: 'top', letter: 'A', at: [75, 52], leader: c, dim: 'd' },
+      { id: 'r', kind: 'dim', view: 'top', type: 'radius', a: c, text: [30, 45], tol: { kind: 'fit', code: 'H7' } },
+    ];
+    const triangle = (s: Sheet) => {
+      const t = s.fills.find((q) => q.owner === 'da')!, top = s.views.find((v) => v.key === 'top')!;
+      return [t.pts[0] - top.ox, t.pts[1] - top.oy];
+    };
+    const pa = annotateSheet(a.sheet, { ...r, annotations: anns }, { unit: 'mm', parts: a.parts });
+    const b = await sheetOf(holeAt(30), r);
+    const pb = annotateSheet(b.sheet, { ...r, annotations: anns }, { unit: 'mm', parts: b.parts });
+    expect(pb.map((p) => [p.id, p.text, p.lost ?? null])).toEqual([['d', 'Ø20', null], ['r', 'R10', null], ['da', 'A', null]]);
+    // at 1:1 the triangle on the circle moves with it
+    expect(triangle(b.sheet)[0]).toBeCloseTo(triangle(a.sheet)[0] - 20, 9);
+    expect(triangle(b.sheet)[1]).toBeCloseTo(triangle(a.sheet)[1], 9);
+    expect(pa.find((p) => p.id === 'r')!.error).toMatch(/for a size/);
   });
 });
 
@@ -315,6 +379,15 @@ describe('parts list and balloons of an assembly', () => {
     const placed = annotateSheet(sheet, { ...r, annotations: balloons }, { unit: 'mm', parts, design, bom });
     expect(placed.map((p) => [p.text, p.lost])).toEqual([['Item 1: Plate', undefined], ['Item 2: Pin Ø8×30', undefined]]);
     expect(ownLabels(sheet, 'b1').map((l) => l.text)).toEqual(['1']);
+    // the top view shows the pins only as circles: the pin's balloon goes on a circle
+    const onTop = autoBalloons(r, sheet, parts, bom, 'top', () => `t${++n}`);
+    expect(onTop.map((b) => b.kind === 'balloon' && b.occ).sort()).toEqual(['op', 'pin0']);
+    expect(annotateSheet(sheet, { ...r, annotations: onTop }, { unit: 'mm', parts, design, bom }).every((p) => !p.lost)).toBe(true);
+    // a pin hidden in the assembly is drawn and listed nowhere, and weighs nothing in the title block
+    const hidden = { ...design, occurrences: design.occurrences.map((o) => (o.id === 'pin3' ? { ...o, hidden: true } : o)) };
+    const bomH = bomRows(hidden, { masses, density: cad.density });
+    expect(bomH[1].qty).toBe(3);
+    expect(bomMass(bomH)).toBeCloseTo(bom[0].mass! + 3 * bom[1].mass!, 12);
   });
 });
 
