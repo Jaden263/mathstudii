@@ -259,7 +259,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const [hover, setHover] = useState<{ view: string; hit: PickHit | null; free?: XY; ann?: string; at: XY } | null>(null);
   const [mode, setMode] = useState<'single' | 'chain' | 'baseline'>('single');
   const [chain, setChain] = useState<Chain | null>(null);
-  const [adrag, setADrag] = useState<{ id: string; d: XY; k: number } | null>(null);
+  // an annotation being dragged: by how much, from where it was drawn when the drag began
+  const [adrag, setADrag] = useState<{ id: string; d: XY; k: number; from?: PlacedAnnotation } | null>(null);
   // views that drew nothing (no bodies) leave the sheet empty
   const views = useMemo(() => (all && Object.values(all).some((x) => x.visible.length) ? all : null), [all]);
   const annotations = useMemo(() => region.annotations ?? [], [region.annotations]);
@@ -273,7 +274,6 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const assembly = design.occurrences.filter((o) => !o.hidden).length > 1;
 
   // a view or an annotation being dragged sits where the pointer has it until it is dropped
-  const placedRef = useRef<PlacedAnnotation[]>([]);
   const shown = useMemo<DrawingRegion>(() => {
     let r = region;
     if (drag) {
@@ -283,9 +283,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
         : { ...r, details: r.details?.map((d) => (d.id === id ? { ...d, at: drag.at } : d)) };
     }
     if (adrag) {
-      const p = placedRef.current.find((q) => q.id === adrag.id);
-      const k = adrag.k;
-      r = { ...r, annotations: annotations.map((a) => (a.id === adrag.id ? movedAnnotation(a, adrag.d, p?.pos, p?.now, k) : a)) };
+      const p = adrag.from;
+      r = { ...r, annotations: annotations.map((a) => (a.id === adrag.id ? movedAnnotation(a, adrag.d, p?.pos, p?.now, adrag.k) : a)) };
     }
     return r;
   }, [region, drag, adrag, annotations]);
@@ -312,7 +311,6 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     return { sheet, placed, auto };
   }, [shown, views, info, parts, unit, design, cadResult?.design?.params, bom, preview]);
   const sheet = result?.sheet ?? null;
-  if (result) placedRef.current = result.placed;
   const meshes = views ? Object.values(views).map((v) => v.mesh).filter(Boolean) : [];
   const mesh = meshes.includes('all') ? 'all' : meshes.length ? 'some' : null;
   const lost = result?.placed.filter((p) => p.lost && p.id !== 'draft' && !p.auto) ?? [];
@@ -380,12 +378,14 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   /** What the pointer is over for an annotation tool: a model entity (or a point of the line work), or a dimension. */
   const hoverAt = (x: number, y: number, t: AnnotTool) => {
     if (!sheet) return null;
+    // a frame or datum may go on a dimension (wherever its text stands)
+    const ann = (t === 'gdt' || t === 'datum') && !adraft ? annotationAt(sheet, x, y, 1.2) : null;
+    const onDim = ann ? annotations.find((a) => a.id === ann && a.kind === 'dim') : undefined;
+    const dim = onDim?.id;
     // annotations may stand well off their view (notes, frames): the nearest view within 20 mm
-    const pv = adraft ? sheet.views.find((v) => v.key === adraft.view) : viewAt(sheet, x, y, 20);
+    const pv = adraft ? sheet.views.find((v) => v.key === adraft.view) : onDim ? sheet.views.find((v) => v.key === onDim.view) : viewAt(sheet, x, y, 20);
     if (!pv) return null;
     const at = toView(pv, x, y) as XY;
-    const ann = (t === 'gdt' || t === 'datum') && !adraft ? annotationAt(sheet, x, y, 1.2) : null;
-    const dim = ann && annotations.find((a) => a.id === ann && a.kind === 'dim') ? ann : undefined;
     const vp: ViewPicks | null = viewPicks(region, pv, parts);
     let hit: PickHit | null = null, free: XY | undefined;
     if (vp && !dim) {
@@ -458,7 +458,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
       const move = (ev: PointerEvent) => {
         const [mx, my] = sheetPoint(svg, H, ev);
         d = [(mx - start[0]) / pvA.k, (my - start[1]) / pvA.k];
-        setADrag({ id: ann, d, k: pvA.k });
+        setADrag({ id: ann, d, k: pvA.k, from: p });
       };
       const up = () => {
         window.removeEventListener('pointermove', move);

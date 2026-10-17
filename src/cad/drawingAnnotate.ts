@@ -181,6 +181,8 @@ interface TextBox {
   rot: number;
   w: number;
   h: number;
+  /** A linear dimension: the side of its dimension line away from what it measures. */
+  out?: V2;
 }
 
 /**
@@ -247,7 +249,8 @@ function drawLinear(pen: Pen, pv: PlacedView, m: LinearMeasure, T: V2, t: DimTex
   }
   const base = add(add(D1, U, along), up, standOff(t, pen.h));
   dimLabel(pen, t, base, rot, basic);
-  return { c: base, rot, w: W, h: pen.h };
+  const g = Math.sign(abs(s1) >= abs(s2) ? s1 : s2);
+  return { c: base, rot, w: W, h: pen.h, ...(g ? { out: [N[0] * g, N[1] * g] as V2 } : {}) };
 }
 
 const dimWidth = (t: DimText, h: number) => {
@@ -449,8 +452,10 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
           const m = measureLinear(g.a, g.b, a.type === 'diameter' ? undefined : a.orient, T);
           if (m) {
             box = drawLinear(pen, pv, m, T, t, !!a.basic);
-            const P2 = toPaper(pv, ...m.p2), N = perp(m.u), s = dotp(sub(toPaper(pv, ...T), P2), N);
-            D = { end: add(P2, N, s), u: m.u };
+            // the end of the dimension line at the second pick, and the way out past it
+            const P1 = toPaper(pv, ...m.p1), P2 = toPaper(pv, ...m.p2), N = perp(m.u), s = dotp(sub(toPaper(pv, ...T), P2), N);
+            const out: V2 = dotp(sub(P2, P1), m.u) >= 0 ? m.u : [-m.u[0], -m.u[1]];
+            D = { end: add(P2, N, s), u: out };
           }
         } else if ((a.type === 'radius' || a.type === 'diameter') && g.a.k === 'circle') box = drawRound(pen, pv, g.a, a.type, T, t, !!a.basic);
         else if (a.type === 'arc' && g.a.k === 'circle') box = drawArcLength(pen, pv, g.a, T, t, !!a.basic);
@@ -508,7 +513,12 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
         // under its dimension's figures, or where it was put
         let x0: number, y: number;
         if (host) {
-          const c = add(host.c, perp([cos(host.rot), sin(host.rot)]), -(GAP + L.H / 2 + 0.5));
+          // away from what the dimension measures: past its figures when they stand on that
+          // side of the dimension line, else just past the line (under the figures)
+          const up = perp([cos(host.rot), sin(host.rot)]);
+          const so = (host.out ?? [-up[0], -up[1]]) as V2, line = add(host.c, up, -GAP);
+          const reach = abs(so[0]) * (W / 2) + abs(so[1]) * (L.H / 2) + 0.5;
+          const c = add(line, so, dotp(up, so) > 0.5 ? GAP + h + GAP + reach : GAP + reach);
           [x0, y] = [c[0] - W / 2, c[1]];
         } else [x0, y] = toPaper(pv, ...at);
         drawFrame(pen, a, L, x0, y);

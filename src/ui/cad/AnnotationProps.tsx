@@ -55,7 +55,7 @@ export function AnnotationProps({ region, dispatch }: { region: DrawingRegion; d
       <div className="row2">
         <label className="field"><span>Decimals</span>
           <select aria-label="Decimals of dimensions" value={region.decimals ?? ''} onChange={(e) => set({ decimals: e.target.value === '' ? undefined : Number(e.target.value) })}>
-            <option value="">As needed (up to {live?.unit === 'mm' || !live ? 2 : 3})</option>
+            <option value="">As needed</option>
             {[0, 1, 2, 3, 4].map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </label>
@@ -75,7 +75,7 @@ export function AnnotationProps({ region, dispatch }: { region: DrawingRegion; d
             return (
               <li key={a.id} className={a.id === selected ? 'on' : ''}>
                 <span className="dw-item" role="button" tabIndex={0} title={p?.lost ? `Lost: ${p.lost}` : 'Select it on the sheet'} onClick={() => selectAnnotation(region.id, a.id)} onKeyDown={(e) => e.key === 'Enter' && selectAnnotation(region.id, a.id)}>
-                  {p?.lost && <TriangleAlert size={12} className="dw-lost-mark" />} {annotationName(a, p?.text)} <small>{p?.view ?? a.view}</small>
+                  {p?.lost && <TriangleAlert size={12} className="dw-lost-mark" />} {annotationName(a, p?.text)} <small>{live?.views.find((v) => v.key === a.view)?.name ?? a.view}</small>
                 </span>
                 <span>
                   <button className="icon-btn" title="Delete" aria-label="Delete annotation" onClick={() => remove(a.id)}><Trash2 size={13} /></button>

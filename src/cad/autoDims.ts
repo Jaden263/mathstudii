@@ -143,7 +143,8 @@ export function autoDimensions(r: DrawingRegion, sheet: Sheet, parts: DrawnPart[
       break;
     }
   }
-  return out;
+  // placed at the views' scales: kept as the drawing's own, they keep their distances on the paper
+  return out.map((a) => ({ ...a, k: sheet.views.find((v) => v.key === a.view)!.k }));
 }
 
 /**
