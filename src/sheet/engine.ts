@@ -277,6 +277,11 @@ export class Workbook {
       name: (n, sheet) => this.nameValue(n, sheet === undefined ? s : this.sheetIndex(sheet), r, c),
       unknown: (n) => this.unknownFunctions.add(n),
       arrays: this.arrays,
+      spillArea: (i, rr, cc) => {
+        if (!this.sheets[i]) return null;
+        this.get(i, rr, cc);
+        return this.sheets[i].spills.get(key(rr, cc)) ?? null;
+      },
     };
   }
 

@@ -10,6 +10,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { DOMParser, type Element as XElement } from '@xmldom/xmldom';
 import { dateSerial } from './dates';
 import type { DefinedName, SheetModel, WorkbookModel, Workbook } from './engine';
+import { needsArrayFormula } from './arrayFormula';
 import { fromFileFormula, toFileFormula, translateFormula } from './formula';
 import { BUILTIN_FORMATS, isDateFormat } from './numfmt';
 import { areaName, cellName, colName, parseCell, parseRange, type Area } from './refs';
@@ -155,9 +156,12 @@ export function readXlsx(bytes: Uint8Array): XlsxBook {
   const date1904 = !!pr && /^(1|true)$/.test(attr(pr, 'date1904') ?? '');
 
   const sheets: XlsxSheet[] = [];
-  for (const s of kids(kid(wbRoot, 'sheets'), 'sheet')) {
+  // a local name's localSheetId counts every sheet of the workbook, chart sheets too
+  const sheetAt = new Map<number, number>();
+  for (const [wi, s] of kids(kid(wbRoot, 'sheets'), 'sheet').entries()) {
     const rel = wbRels.find((r) => r.id === attr(s, 'id'));
     if (!rel || !/\/worksheet$/.test(rel.type) || !files[rel.target]) continue; // chart sheets and the like
+    sheetAt.set(wi, sheets.length);
     const sheet = readSheet(parseXml(files[rel.target], `sheet ${attr(s, 'name')}`), shared, styles, date1904);
     sheet.name = attr(s, 'name') ?? `Sheet${sheets.length + 1}`;
     if (/hidden/i.test(attr(s, 'state') ?? '')) sheet.hidden = true;
@@ -169,7 +173,9 @@ export function readXlsx(bytes: Uint8Array): XlsxBook {
     // print areas, filter ranges and other built-in names are not for formulas
     if (!name || name.startsWith('_xlnm.')) continue;
     const ls = attr(d, 'localSheetId');
-    names.push({ name, ref: fromFileFormula(text(d)).slice(1), ...(ls !== null ? { sheet: Number(ls) } : {}) });
+    const sheet = ls === null ? undefined : sheetAt.get(Number(ls));
+    if (ls !== null && sheet === undefined) continue; // a name of a chart sheet
+    names.push({ name, ref: fromFileFormula(text(d)).slice(1), ...(sheet !== undefined ? { sheet } : {}) });
   }
   return { sheets, names, date1904 };
 }
@@ -280,8 +286,8 @@ export interface Mismatch {
  * Formulas recalculated here against the values the file was saved with. Numbers agree to
  * 1e-9 relative (Excel keeps 15 digits); formulas the engine cannot do are listed apart.
  */
-export function compareCached(book: XlsxBook, wb: Workbook): { formulas: number; mismatches: Mismatch[]; unsupported: string[] } {
-  let formulas = 0;
+export function compareCached(book: XlsxBook, wb: Workbook): { formulas: number; compared: number; mismatches: Mismatch[]; unsupported: string[] } {
+  let formulas = 0, compared = 0;
   const mismatches: Mismatch[] = [];
   const unsupported = new Set(wb.unknownFunctions);
   book.sheets.forEach((s, si) => {
@@ -290,11 +296,12 @@ export function compareCached(book: XlsxBook, wb: Workbook): { formulas: number;
       formulas++;
       // a file saved without results (written by a program, not Excel) has nothing to compare
       if (c.v === null) continue;
+      compared++;
       const ours = wb.value(si, c.r, c.c);
       if (!sameValue(c.v, ours)) mismatches.push({ cell: wb.label(si, c.r, c.c), excel: c.v, ours });
     }
   });
-  return { formulas, mismatches, unsupported: [...unsupported].sort() };
+  return { formulas, compared, mismatches, unsupported: [...unsupported].sort() };
 }
 
 function sameValue(a: Scalar, b: Scalar): boolean {
@@ -402,6 +409,11 @@ export function writeXlsx(book: WriteBook): Uint8Array {
     return i;
   };
 
+  // defined names that may stand for more than one cell (a constant or a one-cell reference does not)
+  const multiNames = new Set((book.names ?? []).filter((d) => {
+    const a = parseRange(d.ref);
+    return a ? a.r1 !== a.r2 || a.c1 !== a.c2 : !/^\s*([-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?|"[^"]*"|TRUE|FALSE)\s*$/i.test(d.ref);
+  }).map((d) => d.name.toUpperCase()));
   const sheetXml = book.sheets.map((s, si) => {
     const entries = (s.cells instanceof Map ? [...s.cells.entries()] : Object.entries(s.cells))
       .map(([ref, cell]) => ({ p: parseCell(ref)!, cell }))
@@ -424,7 +436,9 @@ export function writeXlsx(book: WriteBook): Uint8Array {
       const v = cell.v;
       if (cell.f) {
         const f = toFileFormula(cell.f);
-        const fEl = cell.array ? `<f t="array" ref="${areaName(cell.array)}">${esc(f)}</f>` : `<f>${esc(f)}</f>`;
+        // a formula that spills, or that needs element-by-element evaluation, is an array formula
+        const arrayRef = cell.array ? areaName(cell.array) : needsArrayFormula(cell.f, (nm) => multiNames.has(nm.toUpperCase())) ? r : null;
+        const fEl = arrayRef ? `<f t="array" ref="${arrayRef}">${esc(f)}</f>` : `<f>${esc(f)}</f>`;
         // the cached result, so viewers that do not calculate still show it
         if (typeof v === 'number' && Number.isFinite(v)) line += `<c r="${r}"${sAttr}>${fEl}<v>${numText(v)}</v></c>`;
         else if (typeof v === 'string') line += `<c r="${r}"${sAttr} t="str">${fEl}<v>${escText(v)}</v></c>`;

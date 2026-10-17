@@ -2,6 +2,7 @@
 // and formulas, worksheet expressions written into cells (inputs, in a chosen unit), and
 // cells or ranges read back out as worksheet variables (outputs, with a unit).
 import type { WorkbookModel } from './engine';
+import { renameSheets } from './formula';
 
 /** A worksheet expression written into a cell or range before the sheet calculates. */
 export interface SheetInput {
@@ -40,6 +41,8 @@ export interface SheetReport {
   /** When it was read (ms). */
   at: number;
   formulas: number;
+  /** Formulas the file holds a saved result for (files written by programs often have none). */
+  compared?: number;
   /** Cells whose recalculated value differs ("C5: Excel 12.5, here 12.4"), the first few. */
   mismatches: string[];
   mismatchCount: number;
@@ -69,3 +72,19 @@ export function newSpreadsheet(): SpreadsheetData {
 export const ROW_H = 20;
 export const COL_W = 72;
 export const HEAD_W = 36;
+
+/**
+ * A sheet renamed as Excel renames one: formulas, defined names and the inputs and outputs
+ * that point at it follow ("=Beam!D1" becomes "=Calc!D1").
+ */
+export function withSheetRenamed(data: Pick<SpreadsheetData, 'sheets' | 'names' | 'inputs' | 'outputs'>, index: number, name: string): Pick<SpreadsheetData, 'sheets' | 'names' | 'inputs' | 'outputs'> {
+  const map = new Map([[data.sheets[index].name.toUpperCase(), name]]);
+  const formula = (src: string) => (src.startsWith('=') ? renameSheets(src, map) : src);
+  const ref = (r: string) => (r.includes('!') ? renameSheets(`=${r}`, map).slice(1) : r);
+  return {
+    sheets: data.sheets.map((s, k) => ({ ...s, ...(k === index ? { name } : {}), cells: Object.fromEntries(Object.entries(s.cells).map(([c, src]) => [c, formula(src)])) })),
+    ...(data.names ? { names: data.names.map((n) => ({ ...n, ref: ref(n.ref) })) } : {}),
+    inputs: data.inputs.map((b) => ({ ...b, ref: ref(b.ref) })),
+    outputs: data.outputs.map((b) => ({ ...b, ref: ref(b.ref) })),
+  };
+}

@@ -18,6 +18,7 @@ the reader and the formula engine against the values those programs stored.
 | `poi-WithVariousData.xlsx` | Microsoft Excel | apache/poi `test-data/spreadsheet/WithVariousData.xlsx` | Apache-2.0 |
 | `poi-50755_workday_formula_example.xlsx` | Microsoft Excel | apache/poi `test-data/spreadsheet/50755_workday_formula_example.xlsx` | Apache-2.0 |
 | `libreoffice-crosscheck.xlsx` | LibreOffice 24.2 | written by this project's `writeXlsx` without results, recalculated and saved by LibreOffice | this project |
+| `libreoffice-arrays.xlsx` | LibreOffice 24.2 | the same, for formulas that need array evaluation (`SUM(A1:A3*B1:B3)`) | this project |
 
 calamine is Copyright (c) 2016 Johann Tuffe, under the MIT licence:
 

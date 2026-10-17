@@ -244,6 +244,54 @@ describe('files saved by Excel and LibreOffice', () => {
   });
 });
 
+describe('array formulas in written files', () => {
+  // the cells of libreoffice-arrays.xlsx
+  const cells: Record<string, string> = {
+    A1: '1', A2: '2', A3: '3', B1: '4', B2: '5', B3: '6',
+    C1: '=SUM(A1:A3*B1:B3)', C2: '=SUMPRODUCT(A1:A3,B1:B3)', C3: '=MAX(IF(A1:A3>1,B1:B3))', C4: '=A1:A3*2', D4: '=TRANSPOSE(A1:B1)',
+    C8: '=AVERAGE(IF(B1:B3>4,A1:A3))', C9: '=COUNT(1/(A1:A3-2))', C10: '=SUMPRODUCT((A1:A3>1)*B1:B3)', C11: '=TEXT(45000,"yyyy-mm-dd")',
+    C12: '=CONCAT(A1:A3)', C13: '=ROUND(1.005,2)', C14: '=IFERROR(1/0,"x")', C15: '=SUM(--(A1:A3>1))', C16: '=INDEX(A1:B3,2,2)',
+    C17: '=MMULT(TRANSPOSE(A1:A3),B1:B3)', C18: '=MATCH(3,A1:A3,0)', C19: '=MATCH(1,(A1:A3=2)*(B1:B3=5),0)',
+    C21: '=SUM(IF(MOD(A1:B3,2)=0,A1:B3))', C22: '=SUM(A1:A3)*2', C23: '=AND(A1:A3>0)', C24: '=MAX(ABS(A1:A3-5))',
+    C25: '=SUM(LEN(A1:A3&"ab"))', C26: '=VLOOKUP(2,A1:B3,2,FALSE)', E10: '="x"&A1:A3',
+  };
+  it('a formula that takes a range where one value is expected is written as an array formula', () => {
+    const model: WorkbookModel = { sheets: [{ name: 'Sheet1', cells: { ...cells, F1: '=SUM(xs*k)', F2: '=SUM(xs)*k' } }], names: [{ name: 'xs', ref: 'Sheet1!$A$1:$A$3' }, { name: 'k', ref: '2' }] };
+    const xml = strFromU8(unzipSync(writeXlsx(modelToWriteBook(model, calculate(model))))['xl/worksheets/sheet1.xml']);
+    const fOf = (ref: string) => new RegExp(`<c r="${ref}"[^>]*>(<f[^>]*>)`).exec(xml)?.[1];
+    for (const ref of ['C1', 'C3', 'C8', 'C9', 'C10', 'C15', 'C19', 'C21', 'C23', 'C24', 'C25', 'F1']) expect([ref, fOf(ref)]).toEqual([ref, `<f t="array" ref="${ref}">`]);
+    for (const ref of ['C2', 'C11', 'C12', 'C13', 'C14', 'C16', 'C17', 'C18', 'C22', 'C26', 'F2']) expect([ref, fOf(ref)]).toEqual([ref, '<f>']);
+    // spilled results are array formulas over the cells they fill
+    expect(fOf('C4')).toBe('<f t="array" ref="C4:C6">');
+    expect(fOf('E10')).toBe('<f t="array" ref="E10:E12">');
+  });
+  it('LibreOffice calculates such a file as this engine does', () => {
+    // libreoffice-arrays.xlsx: the cells above written by writeXlsx without results, then
+    // recalculated and saved by LibreOffice 24.2. Written as plain formulas, LibreOffice (like
+    // Excel before 365) intersected the ranges instead: SUM(A1:A3*B1:B3) gave 4, not 32, and
+    // AVERAGE(IF(B1:B3>4,A1:A3)) gave #VALUE!
+    const { book, formulas, compared, mismatches } = recalculated('libreoffice-arrays.xlsx');
+    expect(formulas).toBe(Object.values(cells).filter((c) => c.startsWith('=')).length);
+    expect(compared).toBe(formulas);
+    expect(mismatches).toEqual([]);
+    expect(cell(book, 0, 'C1')?.v).toBe(32);
+    expect(cell(book, 0, 'C8')?.v).toBe(2.5);
+  });
+});
+
+describe('the import report', () => {
+  it('says so when a file holds formulas without saved results, rather than that they agree', async () => {
+    const { importWorkbook, reportText } = await import('./importBook');
+    // written as openpyxl and other programs write files: formulas, no results
+    const bytes = writeXlsx({ sheets: [{ name: 'S', cells: { A1: { v: 5 }, A2: { v: null, f: '=A1*7' } } }] });
+    const { report } = importWorkbook(bytes, 'prog.xlsx');
+    expect(report).toMatchObject({ formulas: 1, compared: 0, mismatchCount: 0 });
+    expect(reportText(report!)).toMatch(/1 formula recalculated here; the file holds no saved results to compare them with\.$/);
+    const saved = importWorkbook(writeXlsx({ sheets: [{ name: 'S', cells: { A1: { v: 5 }, A2: { v: 35, f: '=A1*7' }, A3: { v: 1, f: '=A1-1' } } }] }), 'x.xlsx');
+    expect(reportText(saved.report!)).toMatch(/2 formulas recalculated here; 1 agree with the saved values, 1 differ\.$/);
+  });
+});
+
 describe('tables from sheets', () => {
   it('a range with a header row gives names, units and values; dates and odd text are kept readable', async () => {
     const { sheetToTable, looksLikeHeader, withResults, usedArea } = await import('./tableXlsx');

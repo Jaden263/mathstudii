@@ -36,6 +36,7 @@ describe('operators and coercion (Excel rules)', () => {
     expect(f('=A1=0', {})).toBe(true); // a blank cell is 0 …
     expect(f('=A1=""', {})).toBe(true); // … and ""
     expect(f('=A1', {})).toBe(0);
+    expect(Object.is(f('=-A1', {}), 0)).toBe(true); // not −0
   });
   it('compares numbers to 15 digits and zeroes sums within rounding', () => {
     expect(f('=0.1+0.2=0.3')).toBe(true);
@@ -54,6 +55,12 @@ describe('operators and coercion (Excel rules)', () => {
 describe('aggregates', () => {
   // A1 number, A2 text "2", A3 TRUE, A4 blank, A5 5
   const cells = { A1: '1', A2: "'2", A3: 'TRUE', A5: '5' };
+  it('MAX, MIN and MAXIFS of a 200 000-row column (no spread of arguments that overflows the stack)', () => {
+    const cells: Record<string, string> = { B1: '=MAX(A:A)', B2: '=MIN(A1:A200000)', B3: '=MAXIFS(A:A,A:A,"<500")' };
+    for (let r = 1; r <= 200000; r++) cells[`A${r}`] = String(r % 1000);
+    const wb = book(cells);
+    expect([val(wb, 'B1'), val(wb, 'B2'), val(wb, 'B3')]).toEqual([999, 0, 499]);
+  });
   it('SUM skips text and logicals in ranges but counts typed ones', () => {
     expect(f('=SUM(A1:A5)', cells)).toBe(6);
     expect(f('=SUM(1,"2",TRUE)')).toBe(4);
@@ -296,6 +303,12 @@ describe('dates', () => {
     expect(f('=DATEVALUE("2023-03-15")')).toBe(45000);
     expect(f('=NETWORKDAYS(DATE(2023,3,13),DATE(2023,3,19))')).toBe(5);
   });
+  it('DATEDIF in every unit (Microsoft example: 1 June 2001 to 15 August 2002)', () => {
+    const d = (u: string) => f(`=DATEDIF(DATE(2001,6,1),DATE(2002,8,15),"${u}")`);
+    expect([d('Y'), d('M'), d('D'), d('YM'), d('MD'), d('YD')]).toEqual([1, 14, 440, 2, 14, 75]);
+    // across New Year the day of the year is counted from the year before
+    expect(f('=DATEDIF(DATE(2001,9,1),DATE(2002,8,15),"YD")')).toBe(348);
+  });
   it('TODAY and NOW follow the calculation time', () => {
     const wb = calculate({ sheets: [{ name: 'S', cells: { A1: '=TODAY()', A2: '=NOW()-TODAY()' } }] }, { now: new Date(2023, 2, 15, 6, 0, 0).getTime() });
     expect(val(wb, 'A1')).toBe(45000);
@@ -313,6 +326,10 @@ describe('statistics', () => {
     expect(f('=VAR.P(A1:A8)', d)).toBe(4);
     expect(f('=MEDIAN(A1:A8)', d)).toBe(4.5);
     expect(f('=MODE.SNGL(A1:A8)', d)).toBe(4);
+    // Microsoft's MODE.MULT example: 1, 2 and 3 each occur three times and MODE.MULT lists
+    // them as {1;2;3}, in the order they first occur; MODE.SNGL is the first of them
+    expect(f('=MODE.SNGL(1,2,3,4,3,2,1,2,3,5,6,1)')).toBe(1);
+    expect(f('=MODE(3,1,1,3)')).toBe(3);
   });
   it('LARGE, SMALL, RANK (Microsoft RANK example), PERCENTILE, QUARTILE', () => {
     expect(f('=LARGE({3,5,3,5,4},3)')).toBe(4);
@@ -404,6 +421,15 @@ describe('references, names, sheets', () => {
     expect(f('=SUM(OFFSET(A1,1,0,2,1))', c)).toBe(5);
     expect(f('=INDIRECT(B1)*10', c)).toBe(20);
     expect(f('=ROW(A3)+COLUMN(C1)+ROWS(A1:A3)+COLUMNS(A1:D1)', c)).toBe(3 + 3 + 3 + 4);
+  });
+  it('@ and A1# as Excel 365 stores them in files (_xlfn.SINGLE, _xlfn.ANCHORARRAY)', () => {
+    const wb = book({ A1: '1', A2: '2', A3: '3', B2: '=SINGLE(A1:A3)*10', B5: '=SINGLE(A1:A3)', C1: '=SEQUENCE(4)', D1: '=SUM(ANCHORARRAY(C1))', D2: '=ANCHORARRAY(A1)' });
+    expect(val(wb, 'B2')).toBe(20); // the cell of A1:A3 in the formula's row
+    expect(val(wb, 'B5')).toBe(ERR.value); // no cell of A1:A3 in row 5
+    expect(val(wb, 'D1')).toBe(1 + 2 + 3 + 4);
+    expect(val(wb, 'D2')).toBe(ERR.ref); // A1 does not spill
+    expect(fromFileFormula('SUM(_xlfn.ANCHORARRAY(C1))')).toBe('=SUM(ANCHORARRAY(C1))');
+    expect(toFileFormula('=SINGLE(A1:A3)*10')).toBe('_xlfn.SINGLE(A1:A3)*10');
   });
 });
 

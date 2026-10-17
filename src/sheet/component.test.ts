@@ -3,7 +3,8 @@ import { math } from '../engine/math';
 import { evaluateWorksheet, type MathResult } from '../engine/evaluator';
 import { createRegion, emptyWorksheet, type Region, type SpreadsheetRegion } from '../model/types';
 import { solveSpreadsheet } from './component';
-import { newSpreadsheet, type SpreadsheetData } from './model';
+import { newSpreadsheet, withSheetRenamed, type SpreadsheetData } from './model';
+import { calculate } from './engine';
 
 const fmt = { precision: 4, expThreshold: 6, metric: true };
 const ev = (src: string) => math.evaluate(src);
@@ -24,6 +25,19 @@ describe('inputs: worksheet values into cells', () => {
     expect(cell(result, 'A2')).toBe('2000');
     expect(result.inputs[0].si).toBe('m');
     expect(result.inputs[1].si).toBe('kg / m s^2');
+  });
+  it('reads units written with a middle dot, and % for plain numbers', () => {
+    const { result } = solveSpreadsheet(sheet({ B1: '=A1/2', B2: '=A2*2' }, {
+      inputs: [{ expr: '54 kN*m', ref: 'A1', unit: 'kN·m' }, { expr: '0.035', ref: 'A2', unit: '%' }, { expr: '2 m', ref: 'A3', unit: '%' }],
+      outputs: [{ name: 'M', ref: 'B1', unit: 'kN·m' }, { name: 'r', ref: 'B2', unit: '%' }],
+    }), ev, fmt);
+    expect(result.inputs[0].error).toBeUndefined();
+    expect(cell(result, 'A1')).toBe('54');
+    expect(cell(result, 'A2')).toBe('3.5');
+    expect(result.inputs[2].error).toMatch(/cannot be written in %/);
+    expect(result.cells[0].A3).toBeUndefined(); // nothing written by an input that failed
+    expect(result.outputs[0].tex).toContain('27');
+    expect(result.outputs[1].tex).toContain('7\\,\\%');
   });
   it('refuses mismatched units and plain numbers given a unit', () => {
     const { result } = solveSpreadsheet(sheet({}, { inputs: [{ expr: '3 m', ref: 'A1', unit: 'kN' }, { expr: '5', ref: 'A2', unit: 'mm' }, { expr: '1', ref: 'Q', unit: '' }] }), ev, fmt);
@@ -116,5 +130,25 @@ describe('in a worksheet', () => {
     ws.regions = [math_(20, 'L := 6 m'), math_(40, 'q := 12 kN/m'), math_(60, 'E := 210 GPa'), math_(80, 'I := 8356 cm^4'), math_(100, 'M_max ='), beamSheet()];
     const out = evaluateWorksheet(ws);
     expect((out.results.get(ws.regions[4].id) as MathResult).error).toMatch(/not defined/);
+  });
+});
+
+describe('renaming a sheet', () => {
+  it('formulas, names, inputs and outputs follow the new name, as in Excel', () => {
+    const data: SpreadsheetData = {
+      ...newSpreadsheet(),
+      sheets: [{ name: 'Beam', cells: { A1: '2', B1: '=A1*3' } }, { name: 'Other', cells: { A1: '=Beam!B1+1', A2: "='Beam'!A1:B1", A3: '=SUM(Beam:Other!A1)', A4: 'Beam!A1 is text' } }],
+      names: [{ name: 'span', ref: 'Beam!$A$1' }],
+      inputs: [{ expr: 'L', ref: 'Beam!A1', unit: 'm' }],
+      outputs: [{ name: 'x', ref: 'Other!A1' }, { name: 'y', ref: 'span' }],
+    };
+    const r = withSheetRenamed(data, 0, 'Load cases');
+    expect(r.sheets.map((s) => s.name)).toEqual(['Load cases', 'Other']);
+    expect(r.sheets[1].cells).toEqual({ A1: "='Load cases'!B1+1", A2: "='Load cases'!A1:B1", A3: "=SUM('Load cases:Other'!A1)", A4: 'Beam!A1 is text' });
+    expect(r.names).toEqual([{ name: 'span', ref: "'Load cases'!$A$1" }]);
+    expect(r.inputs[0].ref).toBe("'Load cases'!A1");
+    expect(r.outputs.map((o) => o.ref)).toEqual(['Other!A1', 'span']);
+    const wb = calculate({ ...data, ...r });
+    expect(wb.value(1, 0, 0)).toBe(7);
   });
 });

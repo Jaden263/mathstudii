@@ -24,6 +24,8 @@ export interface Ctx {
   unknown(name: string): void;
   /** Ranges already read as arrays during this calculation. */
   arrays?: Map<string, Arr>;
+  /** The area a formula's array result fills (its own value calculated first); null when it gave one value. */
+  spillArea?(sheet: number, r: number, c: number): Area | null;
 }
 
 export type Fn = (args: Value[], ctx: Ctx) => Value;
@@ -170,8 +172,12 @@ export function lift(args: Value[], ctx: Ctx, f: (xs: Scalar[]) => Value): Value
   return new Arr(rows);
 }
 
+/** Functions that take single values and work element by element when given a range. */
+export const LIFTED = new Set<string>();
+
 /** A function of scalars that works element by element on ranges. */
 export function scalarFn(name: string, min: number, max: number, f: (xs: Scalar[], ctx: Ctx) => Scalar): void {
+  LIFTED.add(name);
   register(name, min, max, (args, ctx) => lift(args, ctx, (xs) => f(xs, ctx)));
 }
 
@@ -236,7 +242,8 @@ export function evalNode(n: Node, ctx: Ctx): Value {
     }
     case 'un': {
       const a = evalNode(n.a, ctx);
-      return lift([a], ctx, ([x]) => (x instanceof XlError ? x : n.op === '-' ? -N(x) : x === null ? 0 : x));
+      // 0 − x, so −blank is 0 and not −0
+      return lift([a], ctx, ([x]) => (x instanceof XlError ? x : n.op === '-' ? 0 - N(x) : x === null ? 0 : x));
     }
     case 'pct': return lift([evalNode(n.a, ctx)], ctx, ([x]) => (x instanceof XlError ? x : N(x) / 100));
     case 'bin': {

@@ -6,7 +6,7 @@ import type { SpreadsheetResult } from '../../sheet/component';
 import type { Action } from '../store';
 import { Tex } from '../Tex';
 import { areaName, cellName, colName, parseCell, parseRange, quoteSheet, type Area } from '../../sheet/refs';
-import { COL_W, HEAD_W, ROW_H } from '../../sheet/model';
+import { COL_W, HEAD_W, ROW_H, withSheetRenamed } from '../../sheet/model';
 import { Workbook, type SheetModel } from '../../sheet/engine';
 import { tidyFormula, translateFormula } from '../../sheet/formula';
 import { importWorkbook, reportText } from '../../sheet/importBook';
@@ -160,7 +160,10 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
     requestAnimationFrame(() => scrollTo(nr, nc));
   };
 
+  /** Escape was pressed: the blur that follows must not commit what was typed. */
+  const cancelled = useRef(false);
   const startEdit = (r: number, c: number, text: string, caret: boolean) => {
+    cancelled.current = false;
     setSel({ r, c, r2: r, c2: c });
     setEdit({ r, c, text, caret });
   };
@@ -410,8 +413,8 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
   const renameSheet = (i: number, name: string) => {
     const n = name.trim().replace(/[[\]:*?/\\]/g, '_').slice(0, 31);
     setRenaming(null);
-    if (!n || region.sheets.some((s, k) => k !== i && s.name.toUpperCase() === n.toUpperCase())) return;
-    set({ sheets: region.sheets.map((s, k) => (k === i ? { ...s, name: n } : s)) });
+    if (!n || n === region.sheets[i].name || region.sheets.some((s, k) => k !== i && s.name.toUpperCase() === n.toUpperCase())) return;
+    set(withSheetRenamed(region, i, n));
   };
 
   // ------------------------------------------------------------ render
@@ -428,7 +431,7 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
     if (!edit) return;
     if (e.key === 'Enter') { e.preventDefault(); commit(e.shiftKey ? -1 : 1, 0); }
     else if (e.key === 'Tab') { e.preventDefault(); commit(0, e.shiftKey ? -1 : 1); }
-    else if (e.key === 'Escape') { e.preventDefault(); setEdit(null); focusKeys(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelled.current = true; setEdit(null); focusKeys(); }
     else if (!edit.caret && !bar && e.key.startsWith('Arrow')) {
       // typed into a cell: arrows finish it and move on, as in Excel
       e.preventDefault();
@@ -439,6 +442,10 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
   const onEditBlur = (e: React.FocusEvent) => {
     const to = e.relatedTarget as HTMLElement | null;
     if (to?.classList.contains('ss-edit') || to?.classList.contains('ss-fx-input')) return;
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
     commit(0, 0, false);
   };
   const status = res?.error;
@@ -495,7 +502,7 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
             value={edit ? edit.text : inputOf(sel.r, sel.c)}
             spellCheck={false}
             aria-label={`Contents of ${cellName(edit?.r ?? sel.r, edit?.c ?? sel.c)}`}
-            onFocus={() => { if (!edit) setEdit({ r: sel.r, c: sel.c, text: inputOf(sel.r, sel.c), caret: true, bar: true }); }}
+            onFocus={() => { if (!edit) { cancelled.current = false; setEdit({ r: sel.r, c: sel.c, text: inputOf(sel.r, sel.c), caret: true, bar: true }); } }}
             onChange={(e) => setEdit(edit ? { ...edit, text: e.target.value } : { r: sel.r, c: sel.c, text: e.target.value, caret: true, bar: true })}
             onKeyDown={editKeys(true)}
             onBlur={onEditBlur}

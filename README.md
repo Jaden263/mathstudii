@@ -169,9 +169,11 @@ variables with units.
   (relative references move, `$` ones stay), Ctrl+C / Ctrl+V copy and paste as Excel does
   (tab separated text; decimal commas from a German Excel are understood; cells copied here
   keep their formulas). The name box goes to a reference you type, or names the selection.
-  Drag a column header's edge or the region's corner to resize; tabs hold several sheets.
+  Drag a column header's edge or the region's corner to resize; tabs hold several sheets
+  (renaming one rewrites the formulas, names, inputs and outputs that point at it, as Excel does).
 - **Inputs** (worksheet → cells): an expression, a cell or range, and the unit the numbers
-  are written in. `q` → `B2` in `kN/m` writes 18.3 for 18.3 kN/m; with no unit a quantity
+  are written in (`kN·m` and `kN*m` both work; `%` writes 0.035 as 3.5). `q` → `B2` in `kN/m`
+  writes 18.3 for 18.3 kN/m; with no unit a quantity
   goes in SI base units, as in Mathcad, and the region says which. A vector or matrix fills
   a block from the cell (or a range of the same size; a vector across a one-row range).
 - **Outputs** (cells → worksheet): a name, a cell or range and the unit of its numbers.
@@ -197,6 +199,12 @@ variables with units.
   region reports how many agree with the values the file was saved with (and lists those
   that do not, or functions that are missing). **Export** writes it back with formulas,
   results, number formats, bold cells, column widths, merged cells and names.
+  Formulas that work element by element (`=SUM(A1:A3*B1:B3)`, `=MAX(IF(…))`) are written as
+  array formulas (`{=…}` in Excel), because Excel before 365 and LibreOffice would otherwise
+  intersect the ranges with the formula's row and give another result. The other way round,
+  a plain formula in an old file that relied on that intersection is calculated here as
+  Excel 365 calculates it; the import report lists such cells as differing. `@` and `A1#`
+  from Excel 365 files (stored as `SINGLE`/`ANCHORARRAY`) are read.
 - **Link…** keeps the region tied to the file. In the desktop app the file's modification
   time is checked every 2 s and the file read again when it changes. In Chrome and Edge the
   browser's file handle is kept (in this browser's storage, so the link survives saving and
@@ -230,10 +238,13 @@ Mac and LibreOffice (from the calamine and Apache POI projects, licences in
 `TEXT` date and time formats and shared, array and 3-D formulas. A workbook of 316
 formulas recalculated by LibreOffice 24.2 agrees except where LibreOffice differs from
 Excel (it counts TRUE in ranges, has real odd roots, has no 29 February 1900) or lacks
-`XLOOKUP` and `SEQUENCE`. Written files open in LibreOffice and in openpyxl; **they have
-not been opened in Microsoft Excel itself here**. The desktop app's file watching is built
-but was not run in this environment (no desktop runtime); the browser link was checked with
-a stand-in for the browser's file picker.
+`XLOOKUP` and `SEQUENCE`; a second one checks that the array formulas written here give
+LibreOffice the same results as this engine. Written files open in LibreOffice and in
+openpyxl; **they have not been opened in Microsoft Excel itself here**. The desktop app's
+file watching is built but was not run in this environment (no desktop runtime). The
+browser link was checked with a real file handle (from the browser's private file system,
+handed to the page in place of the file picker, which a test cannot click), kept in the
+browser's storage across a page reload; the permission prompt for a file on disk was not.
 
 ### Find, replace, rename
 

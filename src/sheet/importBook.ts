@@ -16,7 +16,7 @@ export function importWorkbook(bytes: Uint8Array, file: string): Partial<Spreads
   const wb = calculate(model);
   const cmp = compareCached(book, wb);
   const report: SheetReport = {
-    file, at: Date.now(), formulas: cmp.formulas,
+    file, at: Date.now(), formulas: cmp.formulas, compared: cmp.compared,
     mismatches: cmp.mismatches.slice(0, 8).map((m) => `${m.cell}: ${show(m.excel)} in the file, ${show(m.ours)} here`),
     mismatchCount: cmp.mismatches.length,
     unsupported: cmp.unsupported,
@@ -28,9 +28,12 @@ export function importWorkbook(bytes: Uint8Array, file: string): Partial<Spreads
 export function reportText(r: SheetReport): string {
   const when = new Date(r.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (!r.formulas) return `Read ${r.file} at ${when}: values only, no formulas.`;
-  const agree = r.formulas - r.mismatchCount;
+  const compared = r.compared ?? r.formulas;
+  const agree = compared - r.mismatchCount;
   const head = `Read ${r.file} at ${when}: ${r.formulas} formula${r.formulas === 1 ? '' : 's'} recalculated here`;
-  if (!r.mismatchCount) return `${head}, all agree with the values the file was saved with.`;
-  return `${head}; ${agree} agree with the saved values, ${r.mismatchCount} differ${r.unsupported.length ? ` (not available here: ${r.unsupported.join(', ')})` : ''}.`;
+  const missing = r.unsupported.length ? ` (not available here: ${r.unsupported.join(', ')})` : '';
+  if (!compared) return `${head}; the file holds no saved results to compare them with${missing}.`;
+  if (!r.mismatchCount) return `${head}, ${compared < r.formulas ? `the ${compared} with saved results` : 'all'} agree with the values the file was saved with${missing}.`;
+  return `${head}; ${agree} agree with the saved values, ${r.mismatchCount} differ${missing}.`;
 }
 

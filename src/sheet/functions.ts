@@ -3,7 +3,7 @@
 // #DIV/0!, criteria such as ">5" and "a*" in the …IF functions. Results were checked
 // against LibreOffice recalculating the same workbook (see functions.test.ts).
 import { dateSerial, parseDateText, serialOfTime, serialParts } from './dates';
-import { B, clip, each, E, eq15, FUNCTIONS, lift, N, power, register, registerLazy, scalar, scalarFn, T, toArr, type Ctx } from './evaluate';
+import { B, clip, each, E, eq15, FUNCTIONS, LIFTED, lift, N, power, register, registerLazy, scalar, scalarFn, T, toArr, type Ctx } from './evaluate';
 import { formatNumber } from './numfmt';
 import { parseRange } from './refs';
 import { Arr, compare, ERR, parseNumberText, Ref, round15, XlError, type ErrCode, type Scalar, type Value } from './values';
@@ -116,6 +116,11 @@ export function criterion(c: Scalar): (v: Scalar) => boolean {
   if (/^#/.test(operand)) return (v) => (v instanceof XlError && v.code === u ? op === '=' : op === '<>');
   if (operand === '') return op === '<>' ? (v) => v !== null && v !== '' : (v) => v === null || v === '';
   if (op === '=' || op === '<>') {
+    if (!hasWild(operand) && !operand.includes('~')) {
+      // plain text: compared without regard to case (no pattern to match, which is much faster on long ranges)
+      const low = operand.toLowerCase();
+      return (v) => (typeof v === 'string' && v.length === low.length && v.toLowerCase() === low) === (op === '=');
+    }
     const re = wildcard(operand);
     return (v) => (typeof v === 'string' && re.test(v)) === (op === '=');
   }
@@ -135,18 +140,42 @@ function sameSize(vals: Value[], ctx: Ctx): Scalar[][][] {
   return out;
 }
 
-/** Indices (flattened) of the cells meeting every (range, criterion) pair. */
-function matching(pairs: Value[], ctx: Ctx, target?: Value): { cells: Scalar[][] | null; hits: [number, number][] } {
+/** The cells meeting every (range, criterion) pair: how many, and the values of `target` there. */
+function matching(pairs: Value[], ctx: Ctx, target?: Value): { count: number; values: Scalar[] } {
   if (pairs.length % 2) throw ERR.value;
   const ranges = pairs.filter((_, i) => i % 2 === 0);
   const grids = sameSize(target ? [target, ...ranges] : ranges, ctx);
   const tg = target ? grids.shift()! : null;
   const tests = pairs.filter((_, i) => i % 2 === 1).map((c) => criterion(scalar(c, ctx)));
-  const hits: [number, number][] = [];
+  const values: Scalar[] = [];
+  let count = 0;
   const g0 = grids[0];
-  for (let i = 0; i < g0.length; i++) for (let j = 0; j < g0[i].length; j++) if (tests.every((t, k) => t(grids[k][i][j]))) hits.push([i, j]);
-  return { cells: tg, hits };
+  // plain loops: a column of SUMIFs over a long range runs this millions of times
+  for (let i = 0; i < g0.length; i++) {
+    for (let j = 0; j < g0[i].length; j++) {
+      let ok = true;
+      for (let k = 0; k < tests.length && ok; k++) ok = tests[k](grids[k][i][j]);
+      if (!ok) continue;
+      count++;
+      if (tg) values.push(tg[i][j]);
+    }
+  }
+  return { count, values };
 }
+
+/** The numbers among values (an error among them is the result). */
+function numbersIn(values: Scalar[]): number[] {
+  const out: number[] = [];
+  for (const v of values) {
+    if (v instanceof XlError) throw v;
+    if (typeof v === 'number') out.push(v);
+  }
+  return out;
+}
+
+/** Largest and smallest without spreading into arguments (a long column overflows the stack). */
+const maxOf = (xs: number[]) => xs.reduce((m, x) => (x > m ? x : m), -Infinity);
+const minOf = (xs: number[]) => xs.reduce((m, x) => (x < m ? x : m), Infinity);
 
 /** SUMIF's and AVERAGEIF's value range: the size of the criteria range from its own top-left cell. */
 function alongside(range: Value, values: Value | undefined): Value {
@@ -162,10 +191,10 @@ register('PRODUCT', 1, 255, (a, ctx) => numbers(a, ctx).reduce((p, x) => p * x, 
 register('SUMSQ', 1, 255, (a, ctx) => sum(numbers(a, ctx).map((x) => x * x)));
 register('AVERAGE', 1, 255, (a, ctx) => mean(numbers(a, ctx)));
 register('AVERAGEA', 1, 255, (a, ctx) => mean(numbers(a, ctx, true)));
-register('MIN', 1, 255, (a, ctx) => { const xs = numbers(a, ctx); return xs.length ? Math.min(...xs) : 0; });
-register('MAX', 1, 255, (a, ctx) => { const xs = numbers(a, ctx); return xs.length ? Math.max(...xs) : 0; });
-register('MINA', 1, 255, (a, ctx) => { const xs = numbers(a, ctx, true); return xs.length ? Math.min(...xs) : 0; });
-register('MAXA', 1, 255, (a, ctx) => { const xs = numbers(a, ctx, true); return xs.length ? Math.max(...xs) : 0; });
+register('MIN', 1, 255, (a, ctx) => { const xs = numbers(a, ctx); return xs.length ? minOf(xs) : 0; });
+register('MAX', 1, 255, (a, ctx) => { const xs = numbers(a, ctx); return xs.length ? maxOf(xs) : 0; });
+register('MINA', 1, 255, (a, ctx) => { const xs = numbers(a, ctx, true); return xs.length ? minOf(xs) : 0; });
+register('MAXA', 1, 255, (a, ctx) => { const xs = numbers(a, ctx, true); return xs.length ? maxOf(xs) : 0; });
 register('COUNT', 1, 255, (a, ctx) => {
   let n = 0;
   for (const { v, fromRef } of each(a, ctx)) {
@@ -190,21 +219,14 @@ register('COUNTBLANK', 1, 1, (a, ctx) => {
   }
   return n;
 });
-register('SUMIF', 2, 3, (a, ctx) => {
-  const { cells, hits } = matching([a[0], a[1]], ctx, alongside(a[0], a[2]));
-  return sum(hits.map(([i, j]) => cells![i][j]).filter((v): v is number => { if (v instanceof XlError) throw v; return typeof v === 'number'; }));
-});
-register('SUMIFS', 3, 255, (a, ctx) => {
-  const { cells, hits } = matching(a.slice(1), ctx, a[0]);
-  return sum(hits.map(([i, j]) => cells![i][j]).filter((v): v is number => { if (v instanceof XlError) throw v; return typeof v === 'number'; }));
-});
-register('COUNTIF', 2, 2, (a, ctx) => matching(a, ctx).hits.length);
-register('COUNTIFS', 2, 255, (a, ctx) => matching(a, ctx).hits.length);
-const ifNumbers = (cells: Scalar[][], hits: [number, number][]) => hits.map(([i, j]) => cells[i][j]).filter((v): v is number => { if (v instanceof XlError) throw v; return typeof v === 'number'; });
-register('AVERAGEIF', 2, 3, (a, ctx) => { const m = matching([a[0], a[1]], ctx, alongside(a[0], a[2])); return mean(ifNumbers(m.cells!, m.hits)); });
-register('AVERAGEIFS', 3, 255, (a, ctx) => { const m = matching(a.slice(1), ctx, a[0]); return mean(ifNumbers(m.cells!, m.hits)); });
-register('MAXIFS', 3, 255, (a, ctx) => { const m = matching(a.slice(1), ctx, a[0]); const xs = ifNumbers(m.cells!, m.hits); return xs.length ? Math.max(...xs) : 0; });
-register('MINIFS', 3, 255, (a, ctx) => { const m = matching(a.slice(1), ctx, a[0]); const xs = ifNumbers(m.cells!, m.hits); return xs.length ? Math.min(...xs) : 0; });
+register('SUMIF', 2, 3, (a, ctx) => sum(numbersIn(matching([a[0], a[1]], ctx, alongside(a[0], a[2])).values)));
+register('SUMIFS', 3, 255, (a, ctx) => sum(numbersIn(matching(a.slice(1), ctx, a[0]).values)));
+register('COUNTIF', 2, 2, (a, ctx) => matching(a, ctx).count);
+register('COUNTIFS', 2, 255, (a, ctx) => matching(a, ctx).count);
+register('AVERAGEIF', 2, 3, (a, ctx) => mean(numbersIn(matching([a[0], a[1]], ctx, alongside(a[0], a[2])).values)));
+register('AVERAGEIFS', 3, 255, (a, ctx) => mean(numbersIn(matching(a.slice(1), ctx, a[0]).values)));
+register('MAXIFS', 3, 255, (a, ctx) => { const xs = numbersIn(matching(a.slice(1), ctx, a[0]).values); return xs.length ? maxOf(xs) : 0; });
+register('MINIFS', 3, 255, (a, ctx) => { const xs = numbersIn(matching(a.slice(1), ctx, a[0]).values); return xs.length ? minOf(xs) : 0; });
 register('SUMPRODUCT', 1, 255, (a, ctx) => {
   const gs = a.map((v) => grid(v, ctx));
   const h = gs[0].length, w = gs[0][0]?.length ?? 0;
@@ -565,6 +587,24 @@ register('INDIRECT', 1, 2, (a, ctx) => {
   return new Ref(s, p.r1, p.c1, p.r2, p.c2);
 });
 
+// Excel 365 writes @A1:A10 (implicit intersection) and A1# (a spill area) into files as these
+register('SINGLE', 1, 1, ([v], ctx) => {
+  if (v instanceof Ref && !v.single) {
+    // the cell of the range in the formula's own row or column
+    if (v.c1 === v.c2 && ctx.row >= v.r1 && ctx.row <= v.r2) return ctx.get(v.sheet, ctx.row, v.c1);
+    if (v.r1 === v.r2 && ctx.col >= v.c1 && ctx.col <= v.c2) return ctx.get(v.sheet, v.r1, ctx.col);
+    throw ERR.value;
+  }
+  if (v instanceof Arr) return v.rows[0]?.[0] ?? null;
+  return v;
+});
+register('ANCHORARRAY', 1, 1, ([v], ctx) => {
+  if (!(v instanceof Ref)) throw ERR.ref;
+  const a = ctx.spillArea?.(v.sheet, v.r1, v.c1);
+  if (!a) throw ERR.ref;
+  return new Ref(v.sheet, a.r1, a.c1, a.r2, a.c2);
+});
+
 // ---------------------------------------------------------------- text
 
 scalarFn('LEFT', 1, 2, ([t, n]) => { const k = n === undefined ? 1 : Math.trunc(N(n)); if (k < 0) throw ERR.value; return [...T(t)].slice(0, k).join(''); });
@@ -668,7 +708,10 @@ scalarFn('N', 1, 1, ([v]) => (typeof v === 'number' ? v : typeof v === 'boolean'
 
 // ---------------------------------------------------------------- information
 
-const info = (name: string, f: (v: Scalar) => boolean) => register(name, 1, 1, (a, ctx) => lift(a, ctx, ([v]) => f(v)));
+const info = (name: string, f: (v: Scalar) => boolean) => {
+  LIFTED.add(name);
+  register(name, 1, 1, (a, ctx) => lift(a, ctx, ([v]) => f(v)));
+};
 info('ISNUMBER', (v) => typeof v === 'number');
 info('ISTEXT', (v) => typeof v === 'string');
 info('ISNONTEXT', (v) => typeof v !== 'string');
@@ -755,6 +798,13 @@ scalarFn('DATEDIF', 3, 3, ([a, b, u], ctx) => {
     case 'M': return months;
     case 'Y': return Math.floor(months / 12);
     case 'YM': return months % 12;
+    // days apart as if in the same month (MD) or the same year (YD)
+    case 'MD': return q.d >= p.d ? q.d - p.d : new Date(Date.UTC(q.y, q.m - 1, 0)).getUTCDate() - p.d + q.d;
+    case 'YD': {
+      let from = dateSerial(q.y, p.m, p.d, ctx.date1904);
+      if (from > Math.floor(e)) from = dateSerial(q.y - 1, p.m, p.d, ctx.date1904);
+      return Math.floor(e) - from;
+    }
     default: throw ERR.num;
   }
 });
@@ -797,10 +847,11 @@ register('MEDIAN', 1, 255, (a, ctx) => {
 const mode = (a: Value[], ctx: Ctx) => {
   const xs = numbers(a, ctx);
   const counts = new Map<number, number>();
+  for (const x of xs) counts.set(x, (counts.get(x) ?? 0) + 1);
+  // of values that occur equally often, the one met first in the data
   let best: number | null = null, bestN = 1;
   for (const x of xs) {
-    const n = (counts.get(x) ?? 0) + 1;
-    counts.set(x, n);
+    const n = counts.get(x)!;
     if (n > bestN) { best = x; bestN = n; }
   }
   if (best === null) throw ERR.na;
@@ -927,7 +978,7 @@ function invert(A: number[][]): { inv: number[][] | null; det: number } {
   if (A.some((r) => r.length !== n)) throw ERR.value;
   const M = A.map((r, i) => [...r, ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))]);
   let det = 1;
-  const scale = Math.max(1e-300, ...A.flat().map(Math.abs));
+  const scale = Math.max(1e-300, maxOf(A.flat().map(Math.abs)));
   for (let c = 0; c < n; c++) {
     let p = c;
     for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;

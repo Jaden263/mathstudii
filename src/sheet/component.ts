@@ -45,10 +45,13 @@ export interface SpreadsheetResult {
 /** Most cells a component sends to the page (a larger imported sheet still calculates). */
 const SHOW_LIMIT = 50000;
 
+/** A binding's unit as typed: "kN·m" reads as "kN m" (mathjs has no middle dot). */
+const unitText = (u: string | undefined) => (u ?? '').trim().replace(/·/g, ' ').replace(/\s+/g, ' ');
+
 function unitOf(text: string): Unit {
   let u: unknown;
   try {
-    u = math.evaluate(text.replace(/·/g, ' '));
+    u = math.evaluate(text);
   } catch {
     throw new Error(`"${text}" is not a unit`);
   }
@@ -59,7 +62,9 @@ function unitOf(text: string): Unit {
 /** A worksheet value as rows of cell values in the given unit. */
 function toCells(v: unknown, unit: string, what: string): { rows: Scalar[][]; si?: string } {
   let si: string | undefined;
-  const target = unit ? unitOf(unit) : null;
+  // "%": plain numbers written as percent (0.05 → 5)
+  const pct = unit === '%';
+  const target = unit && !pct ? unitOf(unit) : null;
   const one = (x: unknown): Scalar => {
     if (typeof x === 'string' || typeof x === 'boolean') return x;
     if (isComplex(x)) {
@@ -68,9 +73,10 @@ function toCells(v: unknown, unit: string, what: string): { rows: Scalar[][]; si
     }
     if (typeof x === 'number') {
       if (target && target.dimensions.some((d) => d !== 0)) throw new Error(`${what} has no unit, so it cannot be written in ${unit}: leave the unit empty`);
-      return target ? x / ((target.value as number) ?? 1) : x;
+      return pct ? x * 100 : target ? x / ((target.value as number) ?? 1) : x;
     }
     if (isUnit(x)) {
+      if (pct) throw new Error(`${what} has a unit, so it cannot be written in %`);
       if (target) {
         if (!x.equalBase(target)) throw new Error(`${what} cannot be written in ${unit}: the units do not match`);
         return x.toNumber(target.formatUnits());
@@ -125,7 +131,8 @@ export function solveSpreadsheet(r: SpreadsheetData, evalExpr: (src: string) => 
       if (!where) throw new Error(`"${inp.ref}" is not a cell, range or name of this spreadsheet`);
       const v = evalExpr(inp.expr);
       const what = isIdentifier(inp.expr.trim()) ? inp.expr.trim() : 'The value';
-      const { rows, si } = toCells(v, inp.unit?.trim() ?? '', what);
+      const unit = unitText(inp.unit);
+      const { rows, si } = toCells(v, unit, what);
       const h = rows.length, w = rows[0]?.length ?? 0;
       let { area } = where;
       const single = area.r1 === area.r2 && area.c1 === area.c2;
@@ -135,6 +142,16 @@ export function solveSpreadsheet(r: SpreadsheetData, evalExpr: (src: string) => 
       else if (!across && (area.r2 - area.r1 + 1 !== h || area.c2 - area.c1 + 1 !== w)) {
         throw new Error(`The value is ${h} × ${w}, the range ${area.r2 - area.r1 + 1} × ${area.c2 - area.c1 + 1}`);
       }
+      // what the input shows first: a value it cannot show is not written half way
+      let lhs: string;
+      try {
+        lhs = exprTex(inp.expr.trim());
+      } catch {
+        lhs = `\\text{${escapeText(inp.expr.trim())}}`;
+      }
+      const inUnit = unit ? `\\ \\text{in}\\ ${unit === '%' ? '\\%' : unitStringTex(unitOf(unit).formatUnits())}` : '';
+      const shown = big(v) ? `\\text{${sizeText(v)}}${inUnit}` : valueTex(v, fmt, unit || undefined);
+      const note = !unit && si ? `\\ (\\text{in}\\ ${unitStringTex(si)})` : '';
       for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) {
         const rr = across ? area.r1 : area.r1 + i, cc = across ? area.c1 + i : area.c1 + j;
         const x = rows[i][j];
@@ -142,16 +159,7 @@ export function solveSpreadsheet(r: SpreadsheetData, evalExpr: (src: string) => 
         if (x !== null && !(x instanceof XlError)) result.written.push([where.sheet, cellName(rr, cc), x]);
       }
       inputAreas.push({ sheet: where.sheet, area });
-      let lhs: string;
-      try {
-        lhs = exprTex(inp.expr.trim());
-      } catch {
-        lhs = `\\text{${escapeText(inp.expr.trim())}}`;
-      }
-      const inUnit = inp.unit?.trim() ? `\\ \\text{in}\\ ${unitStringTex(unitOf(inp.unit.trim()).formatUnits())}` : '';
-      const shown = big(v) ? `\\text{${sizeText(v)}}${inUnit}` : valueTex(v, fmt, inp.unit?.trim() || undefined);
-      const note = !inp.unit?.trim() && si ? `\\ (\\text{in}\\ ${unitStringTex(si)})` : '';
-      result.inputs.push({ tex: `${lhs} = ${shown}\\ \\rightarrow\\ ${refTex(wb.areaLabel(where.sheet, area))}${note}`, ...(si && !inp.unit?.trim() ? { si } : {}) });
+      result.inputs.push({ tex: `${lhs} = ${shown}\\ \\rightarrow\\ ${refTex(wb.areaLabel(where.sheet, area))}${note}`, ...(si && !unit ? { si } : {}) });
     } catch (e) {
       result.inputs.push({ error: (e as Error).message });
     }
@@ -166,7 +174,9 @@ export function solveSpreadsheet(r: SpreadsheetData, evalExpr: (src: string) => 
       const where = wb.resolve(out.ref);
       if (!where) throw new Error(`"${out.ref}" is not a cell, range or name of this spreadsheet`);
       outputAreas.push(where);
-      const u = out.unit?.trim() ? unitOf(out.unit.trim()) : null;
+      const unit = unitText(out.unit);
+      const pct = unit === '%';
+      const u = unit && !pct ? unitOf(unit) : null;
       const label = wb.areaLabel(where.sheet, where.area);
       const cells = wb.areaValues(where.sheet, where.area);
       const single = cells.length === 1 && cells[0].length === 1;
@@ -179,7 +189,7 @@ export function solveSpreadsheet(r: SpreadsheetData, evalExpr: (src: string) => 
         }
         if (typeof x === 'boolean') x = x ? 1 : 0;
         if (typeof x === 'string') return x;
-        return u ? math.multiply(x, u) : x;
+        return pct ? x / 100 : u ? math.multiply(x, u) : x;
       };
       const vals = cells.map((row, i) => row.map((x, j) => conv(x, i, j)));
       let value: unknown;
@@ -187,7 +197,7 @@ export function solveSpreadsheet(r: SpreadsheetData, evalExpr: (src: string) => 
       else if (vals[0].length === 1) value = vec(vals.map((row) => row[0]));
       else value = math.matrix(vals as never);
       defined.push([name, value]);
-      const shown = big(value) ? `\\text{${sizeText(value)}}${u ? `\\ \\text{in}\\ ${unitStringTex(u.formatUnits())}` : ''}` : valueTex(value, fmt);
+      const shown = big(value) ? `\\text{${sizeText(value)}}${u ? `\\ \\text{in}\\ ${unitStringTex(u.formatUnits())}` : ''}` : valueTex(value, fmt, pct && typeof value === 'number' ? '%' : undefined);
       result.outputs.push({ tex: `${nameTex(name)} \\coloneqq ${refTex(label)} = ${shown}` });
     } catch (e) {
       result.outputs.push({ error: (e as Error).message });
