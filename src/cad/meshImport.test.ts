@@ -4,12 +4,14 @@
 // pyramids), and the closed-mesh check that refuses a volume to an open mesh.
 import { describe, expect, it } from 'vitest';
 import { strToU8, zipSync } from 'fflate';
-import { emptyDesign } from './design';
+import { emptyDesign, facePlane, type DesignItem } from './design';
+import { prunedFiles } from './imported';
+import { refTo } from './topology';
 import { insertImport, planImport } from './importDesign';
-import { checkMesh, meshBodyOf, meshMass, meshWords, weldMesh } from './meshBody';
+import { checkMesh, meshBodyOf, meshBodyTopology, meshMass, meshWords, weldMesh } from './meshBody';
 import { read3mf, readObj, readStl } from './meshFiles';
 import { meshToStl } from './stl';
-import { solve } from './occ/fixtures';
+import { circles, solve } from './occ/fixtures';
 import { m4Pose } from './solid';
 import { boxTriangles, uvSphere, uvSphereVolume } from './meshFixtures';
 import { createRegion, emptyWorksheet, type CadRegion } from '../model/types';
@@ -157,5 +159,45 @@ describe('OBJ and 3MF import', () => {
     const { res } = solve(d);
     expect(res.design!.bodies.c1[0].mass!.V).toBeCloseTo(25.4 ** 3, 6);
     expect(res.design!.total!.xg).toBeCloseTo(254 - 12.7, 6);
+  });
+});
+
+describe('what the features do with a mesh body', () => {
+  const cube = () => {
+    const bytes = stl(boxTriangles(20, 20, 20));
+    const d = insertImport(emptyDesign(), planImport('cube.stl', 'stl', bytes), { unit: 'mm', active: 'c1' }).design;
+    const f = d.components[0].items[0];
+    return { d, topo: meshBodyTopology(meshBodyOf(f.id, f.id, readStl(bytes, 'cube').parts[0].meshes[0], 1)) };
+  };
+
+  it('a sketch on one of its faces stays on it, without a warning, and a boss grows from it', () => {
+    const { d, topo } = cube();
+    const top = topo.faces.find((q) => q.frame && Math.abs(q.frame.n[2] - 1) < 1e-9)!;
+    const items: DesignItem[] = [
+      { kind: 'sketch', id: 'sk', name: 'On the cube', plane: facePlane(topo, top, 'top'), sketch: circles('h', [[10, 10, 5]]) },
+      { kind: 'extrude', id: 'ex', name: 'Boss', sketch: 'sk', extent: { type: 'one', d: '7' }, op: 'new' },
+    ];
+    const { res } = solve({ ...d, components: [{ ...d.components[0], items: [...d.components[0].items, ...items] }] });
+    expect(res.design!.errors).toEqual({});
+    expect(res.design!.warnings).toEqual({});
+    expect(res.design!.frames.sk.o[2]).toBeCloseTo(20, 12);
+    // the boss π r² h on the cube's top (its own body: features do not join mesh bodies)
+    expect(res.design!.bodies.c1.map((b) => b.mass!.V)).toEqual([expect.closeTo(PI * 25 * 7, 9), expect.closeTo(8000, 9)]);
+  });
+
+  it('a fillet on one of its edges says that a mesh body has none to round', () => {
+    const { d, topo } = cube();
+    const fillet: DesignItem = { kind: 'fillet', id: 'r', name: 'Round', sets: [{ edges: [refTo('edge', topo.id, topo.edges[0])], r: '2' }] };
+    const { res } = solve({ ...d, components: [{ ...d.components[0], items: [...d.components[0].items, fillet] }] });
+    expect(res.design!.errors.r).toMatch(/^Fillet cannot work on a mesh body .*convert it to a solid/);
+  });
+
+  it('the file goes from the document with the last import feature that used it', () => {
+    const { d } = cube();
+    expect(Object.keys(d.files!)).toHaveLength(1);
+    // the same object while the file is used
+    expect(prunedFiles(d)).toBe(d);
+    const gone = prunedFiles({ ...d, components: [{ ...d.components[0], items: [] }] });
+    expect(gone.files).toBeUndefined();
   });
 });

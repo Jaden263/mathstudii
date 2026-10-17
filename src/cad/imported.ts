@@ -81,5 +81,12 @@ export function withFiles(design: CadDesign, add: ImportedFile[] = []): CadDesig
   return out;
 }
 
+/** The design without the files no import feature uses any more (the same object when there are none). */
+export function prunedFiles(design: CadDesign): CadDesign {
+  if (!design.files) return design;
+  const used = new Set(design.components.flatMap((c) => c.items.flatMap((i) => (i.kind === 'import' ? [i.file] : []))));
+  return Object.keys(design.files).every((k) => used.has(k)) ? design : withFiles(design);
+}
+
 /** Bytes in a readable size: 340 kB, 5.2 MB. */
 export const sizeWords = (n: number) => (n >= 2 ** 20 ? `${(n / 2 ** 20).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} kB`);

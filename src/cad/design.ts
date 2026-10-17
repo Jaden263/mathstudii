@@ -1072,7 +1072,8 @@ export function itemName(design: CadDesign, id: string): string | undefined {
 function sketchOnFace<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignSketch, ref: TopoRef): TimelineState<S> {
   const captured = inp.numbers.frames[item.id];
   if (!captured || inp.numbers.errors[item.id]) return prev;
-  const bodies = prev.bodies.map((b) => ops.topology(b.solid, b.id));
+  // imported mesh bodies too: found by their geometry, which only a new file moves
+  const bodies = [...prev.bodies.map((b) => ops.topology(b.solid, b.id)), ...(prev.meshes ?? []).map(meshBodyTopology)];
   const r = resolveRef(ref, bodies);
   const face = resolvedEntity(bodies, 'face', r);
   // the origin goes with the vertex or circle centre it sits on; without one (or with it
@@ -1605,6 +1606,10 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   const p = P[item.id] ?? {};
   try {
     if (inp.numbers.errors[item.id]) throw new Error(inp.numbers.errors[item.id]);
+    // a mesh body has no exact faces or edges for the features that work on what is picked
+    if ((MODIFY_KINDS.has(item.kind) || item.kind === 'hole' || item.kind === 'thread') && meshes.some((m) => JSON.stringify(item).includes(`"${m.id}"`))) {
+      throw new Error(`${FEATURE_LABEL[item.kind]} cannot work on a mesh body (it has no exact faces or edges): convert it to a solid in its import`);
+    }
     switch (item.kind) {
       case 'extrude': {
         const f = frameOf(item.sketch);

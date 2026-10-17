@@ -1421,8 +1421,9 @@ features and the selection store these names:
 - **glTF 2.0 binary (.glb):** a node per occurrence, PBR base colours, metres and Y up as
   glTF has it (web viewers, AR).
 - **Face DXF:** pick one flat face and press **Face DXF**: its outer loop and holes as
-  LINE, true ARC and CIRCLE entities (other curves as fine polylines), seen from outside,
-  in the part's unit: a profile for laser, waterjet or plasma cutting.
+  LINE, true ARC and CIRCLE entities (a B-spline that is a circle to 10⁻⁶ of the face's
+  size, as some writers send holes, as its circle or arc; other curves as fine polylines),
+  seen from outside, in the part's unit: a profile for laser, waterjet or plasma cutting.
 
 File → **Export…** writes any of them for the assembly, one component or one body; STEP,
 STL and 3MF have buttons of their own, and STEP, STL, 3MF and glTF are in the part's
@@ -1435,14 +1436,21 @@ right-click menu. They download in the browser and open a save dialog in the des
   origin becomes an **Import** feature in the active component's timeline (a new, empty
   part takes its name and colour); an assembly becomes a component per part with a
   grounded occurrence for every instance where the file places it (nested assemblies are
-  flattened, their placements multiplied out). A 5 MB file (a plate with 576
-  counterbored holes) is read and measured in about 3.5 s, once: rebuilds reuse it.
+  flattened, their placements multiplied out; an assembly's own bodies beside its
+  sub-assemblies, as Fusion writes a root component's, become a component of their own).
+  Occurrences take the file's instance names where each is unique, else the part's name
+  and a count (Creo calls every instance "Next assembly relationship"). The CAx-IF AS1
+  assembly, as Creo (AP203, inches) and OpenCascade (AP214) write it, comes in as 5
+  components and 18 occurrences with the volume and centre OpenCascade's own reader gives.
+  A 5 MB file (a plate with 576 counterbored holes) is read and measured in about 3.5 s,
+  once: rebuilds reuse it.
 - Imported faces have no history, so they are named after their body and their surface: a
   plane by its normal and offset, a cylinder by its axis and radius, and so on. Sketches on
   them, fillets, holes, joints and drawing dimensions hold on through every rebuild.
 - **Replace file** (double-click the Import feature) reads a new version under it: each
   feature keeps its part by the product's id, the occurrences the import placed move to
-  the new placements, new parts are added. A face on the same surface keeps its name, so a
+  the new placements (unless you have moved one since: it stays where you put it), new
+  parts are added. A face on the same surface keeps its name, so a
   sketch on the top of a plate stays there when the new version has a hole in it; a face
   whose surface changed (the plate made thicker) is reported lost and the sketch stays where
   it was, never moved to another face.
@@ -1451,16 +1459,19 @@ right-click menu. They download in the browser and open a save dialog in the des
   closed (every edge between two triangles running along it opposite ways), their volume,
   centre and inertia by the divergence theorem over the triangles (exact for the polyhedron
   the mesh is). They are shown, measured, placed in assemblies, checked for interference,
-  cut by the section view and drawn from their facets, and exported with the rest; the
-  features do not work on them. An open mesh says so and has no volume. STL and OBJ have no
-  unit: the dialog asks (millimetres by default).
+  cut by the section view and drawn from their facets, and exported with the rest; a
+  sketch can sit on one of their flat faces, but the features do not work on them (a fillet
+  on a mesh edge says so). An open mesh says so and has no volume. STL and OBJ have no
+  unit: the dialog asks (millimetres by default). An OBJ's colours colour its component as
+  a whole (the first material's), not body by body.
 - **Convert to solid** sews a closed mesh of up to 20 000 triangles into a B-rep solid, its
   coplanar triangles merged into faces (a cube's twelve triangles become six faces), which
   the features can then round, cut and drill. It takes seconds (about 10 s at 20 000
   triangles); its volume is the mesh's to 10⁻⁸.
 - The file is kept in the worksheet (deflated, in base64, once however many components use
-  it), so the worksheet opens anywhere; above 5 MB the dialog warns that the file grows by
-  about as much and that saving in the browser's storage may then fail.
+  it, and dropped with the last Import feature that uses it), so the worksheet opens
+  anywhere; above 5 MB the dialog warns that the file grows by about as much and that
+  saving in the browser's storage may then fail.
 
 The **CAD part design** example covers three things:
 

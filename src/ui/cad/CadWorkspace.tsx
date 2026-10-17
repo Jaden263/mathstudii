@@ -41,6 +41,7 @@ import { STANDARD_VIEWS, type Display } from './Cad3DView';
 import { Scene3D, type PickHit, type SceneView } from './Scene3D';
 import { buildScene, editOccurrence, sketchRegions } from './useDesign';
 import { useImportExport } from './ImportExport';
+import { prunedFiles } from '../../cad/imported';
 import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
 import { Dialog, Expr, FeatureFields, JointFields, featureTitle } from './FeatureDialogs';
@@ -276,7 +277,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   // ------------------------------------------------------------ edits
 
-  const setDesign = useCallback((d: CadDesign, coalesce?: string, history = true) => {
+  const setDesign = useCallback((d0: CadDesign, coalesce?: string, history = true) => {
+    // an imported file goes with the last import feature that used it
+    const d = prunedFiles(d0);
     designRef.current = d;
     dispatch({ type: 'update', id: region.id, patch: { design: d }, coalesce, ...(history ? {} : { history: false as const }) });
   }, [dispatch, region.id]);

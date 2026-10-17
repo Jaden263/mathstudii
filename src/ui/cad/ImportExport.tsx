@@ -124,7 +124,7 @@ export function useImportExport(p: Props) {
       const plan = planImport(file.name, format, file.bytes, await materialsOf(files));
       const out = replaceImport(design(), f.file, plan, { unit: region.unit });
       setDesign(out.design);
-      setMsg(`Replaced by ${file.name}${out.added.length ? ` · new: ${out.added.join(', ')}` : ''}${out.missing.length ? ` · not in the new file: ${out.missing.join(', ')}` : ''}${plan.warnings.length ? ` · ${plan.warnings.join('; ')}` : ''}`);
+      setMsg(`Replaced by ${file.name}${out.added.length ? ` · new: ${out.added.join(', ')}` : ''}${out.missing.length ? ` · not in the new file: ${out.missing.join(', ')}` : ''}${out.kept.length ? ` · left where you moved them: ${out.kept.join(', ')}` : ''}${plan.warnings.length ? ` · ${plan.warnings.join('; ')}` : ''}`);
     } catch (e) {
       setMsg(`Could not read ${file.name}: ${(e as Error).message}`);
     } finally {

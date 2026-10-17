@@ -7,7 +7,7 @@
 import { cadId, type CadUnit } from './model';
 import type { CadComponent, CadDesign, CadOccurrence, ImportFeature, ImportedFile } from './design';
 import { nextName } from './design';
-import { packFile, withFiles, LARGE_IMPORT, sizeWords } from './imported';
+import { fileBytes, packFile, withFiles, LARGE_IMPORT, sizeWords } from './imported';
 import { readMeshFile } from './meshFiles';
 import { stepStructure } from './step21';
 import { MM_PER_UNIT } from './importFeature';
@@ -160,11 +160,33 @@ export function insertImport(design: CadDesign, plan: ImportPlan, o: ImportOptio
     const id = reused?.id ?? cadId('o');
     reused = undefined;
     occs.push({ id, component: compOf(inst.part), name: inst.name, grounded: true, ...place(pose) });
-    placed[inst.path || `#${occs.length}`] = id;
+    placed[placeKey(inst)] = id;
   }
   d = withFiles({ ...d, components: [...d.components.filter((c) => c !== reuse), ...comps], occurrences: occs }, [{ ...plan.file, placed }]);
   plan.warnings.push(...warnings);
   return { design: d, components: comps.map((c) => c.id), features };
+}
+
+/** What finds an instance again in another version of the file. */
+const placeKey = (inst: ImportPlan['instances'][number]) => inst.path || inst.name;
+
+/** Where a file placed its instances, by their keys (null when it cannot be read). */
+function placementsOf(f: ImportedFile): Map<string, M4> | null {
+  try {
+    const bytes = fileBytes(f);
+    const insts = f.format === 'step' ? stepStructure(strFromU8(bytes, true)).instances : readMeshFile(f.format, bytes, f.name).instances;
+    return new Map(insts.map((x) => [placeKey(x), x.M]));
+  } catch {
+    return null;
+  }
+}
+
+/** Whether an occurrence is still where a placement put it (the user has not moved it since). */
+function at(o: CadOccurrence, M: M4 | undefined, unit: CadUnit): boolean {
+  const pose = M && (poseOf(M, unit) ?? movedOnly(M, unit));
+  if (!pose) return false;
+  const same = (a: Vec3 | undefined, b: Vec3) => b.every((v, i) => Math.abs((a?.[i] ?? 0) - v) <= 1e-9 * Math.max(1, Math.abs(v)));
+  return same(o.pos, pose.pos) && same(o.rot, pose.rot);
 }
 
 /** The position of a placement alone (part units), for one that mirrors or scales. */
@@ -190,9 +212,12 @@ function uniqueName(d: CadDesign, more: CadComponent[], name: string): string {
  * parts and instances new to the file are added; parts gone are reported (their features
  * then say so).
  */
-export function replaceImport(design: CadDesign, old: string, plan: ImportPlan, o: ImportOptions): { design: CadDesign; added: string[]; missing: string[] } {
+export function replaceImport(design: CadDesign, old: string, plan: ImportPlan, o: ImportOptions): { design: CadDesign; added: string[]; missing: string[]; kept: string[] } {
   const prev = design.files?.[old];
   const placed: Record<string, string> = { ...prev?.placed };
+  // where the old file had them: an occurrence moved since stays where the user put it
+  const was = prev?.placed ? placementsOf(prev) : null;
+  const kept: string[] = [];
   const users = design.components.flatMap((c) => c.items.filter((i): i is ImportFeature => i.kind === 'import' && i.file === old).map((i) => ({ c, i })));
   const keys = new Set(plan.parts.map((p) => p.key));
   const missing = users.filter(({ i }) => i.part && plan.parts.length > 1 && !keys.has(i.part.key)).map(({ i }) => i.part!.key);
@@ -229,13 +254,17 @@ export function replaceImport(design: CadDesign, old: string, plan: ImportPlan, 
     const seen = new Set<string>();
     for (const inst of plan.instances) {
       const pose = poseOf(inst.M, o.unit) ?? movedOnly(inst.M, o.unit);
-      const path = inst.path || inst.name;
+      const path = placeKey(inst);
       seen.add(path);
-      const at = placed[path] ? occs.findIndex((q) => q.id === placed[path]) : -1;
-      if (at >= 0) {
-        // where the new file has it (a grounded occurrence the user has not moved off the file's placement)
-        const { pos: _, rot: __, ...rest } = occs[at];
-        occs[at] = { ...rest, ...place(pose) };
+      const k = placed[path] ? occs.findIndex((q) => q.id === placed[path]) : -1;
+      if (k >= 0) {
+        // where the new file has it, unless the user has moved it off the old file's placement
+        if (was && !at(occs[k], was.get(path), o.unit)) {
+          kept.push(occs[k].name ?? inst.name);
+          continue;
+        }
+        const { pos: _, rot: __, ...rest } = occs[k];
+        occs[k] = { ...rest, ...place(pose) };
       } else {
         const id = cadId('o');
         occs.push({ id, component: compOfPart.get(inst.part)!, name: inst.name, grounded: true, ...place(pose) });
@@ -246,5 +275,5 @@ export function replaceImport(design: CadDesign, old: string, plan: ImportPlan, 
   }
   d = withFiles(d, [plan.file]);
   if (d.files?.[plan.file.hash] && Object.keys(placed).length) d = { ...d, files: { ...d.files, [plan.file.hash]: { ...d.files[plan.file.hash], placed } } };
-  return { design: d, added, missing };
+  return { design: d, added, missing, kept };
 }

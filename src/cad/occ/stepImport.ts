@@ -134,6 +134,25 @@ function readFile(oc: OC, f: ImportedFile, unit: string): ReadFile {
   const arena = new Arena();
   const out: ReadFile = { oc, arena, structure, parts: new Map() };
   const path = `/import-${f.hash.replace(/\W/g, '_')}.step`;
+  try {
+    readParts(oc, f, unit, path, out);
+  } catch (e) {
+    arena.free();
+    throw e;
+  }
+  read.set(key, out);
+  // the oldest files go (the steps that use their solids hold handles of their own)
+  while (read.size > KEEP) {
+    const k = read.keys().next().value!;
+    read.get(k)!.arena.free();
+    read.delete(k);
+  }
+  return out;
+}
+
+/** Transfer every part of a file (the solids into `out`'s arena). */
+function readParts(oc: OC, f: ImportedFile, unit: string, path: string, out: ReadFile) {
+  const { arena, structure } = out;
   scratch((t) => {
     oc.FS.writeFile(path, fileBytes(f));
     try {
@@ -146,12 +165,17 @@ function readFile(oc: OC, f: ImportedFile, unit: string): ReadFile {
       for (const p of structure.parts) {
         const warnings: string[] = [];
         r.ClearShapes();
-        let shape: TopoDS_Shape | null = null;
-        if (p.pd) {
-          const n = model.NextNumberForLabel(`#${p.pd}`, 0, true);
-          if (n > 0 && guard(oc, `${p.name} could not be read`, () => r.TransferEntity(t.add(model.Entity(n)), t.add(new oc.Message_ProgressRange()))) && r.NbShapes()) shape = t.add(r.Shape(r.NbShapes()));
-        } else if (guard(oc, `${f.name} could not be read`, () => r.TransferRoots(t.add(new oc.Message_ProgressRange()))) > 0) shape = t.add(r.OneShape());
-        const solids = shape && !shape.IsNull() ? solidsOf(oc, arena, shape, warnings) : [];
+        const shapes: TopoDS_Shape[] = [];
+        /** The shape the kernel makes of one entity. */
+        const transfer = (id: number) => {
+          const n = model.NextNumberForLabel(`#${id}`, 0, true);
+          if (n > 0 && guard(oc, `${p.name} could not be read`, () => r.TransferEntity(t.add(model.Entity(n)), t.add(new oc.Message_ProgressRange()))) && r.NbShapes()) shapes.push(t.add(r.Shape(r.NbShapes())));
+        };
+        // an assembly's own solids by their representations (its definition would bring its sub-assemblies along)
+        if (p.reps?.length) p.reps.forEach(transfer);
+        else if (p.pd) transfer(p.pd);
+        else if (guard(oc, `${f.name} could not be read`, () => r.TransferRoots(t.add(new oc.Message_ProgressRange()))) > 0) shapes.push(t.add(r.OneShape()));
+        const solids = shapes.filter((s) => !s.IsNull()).flatMap((s) => solidsOf(oc, arena, s, warnings));
         if (!solids.length) warnings.push('it has no solid in the file');
         out.parts.set(p.pd, { solids, keys: solids.map((s, i) => faceKeys(oc, s, i, unit)), warnings });
       }
@@ -159,14 +183,6 @@ function readFile(oc: OC, f: ImportedFile, unit: string): ReadFile {
       oc.FS.unlink(path);
     }
   });
-  read.set(key, out);
-  // the oldest files go (the steps that use their solids hold handles of their own)
-  while (read.size > KEEP) {
-    const k = read.keys().next().value!;
-    read.get(k)!.arena.free();
-    read.delete(k);
-  }
-  return out;
 }
 
 /** The solids of one part of a STEP file for an import feature, tagged with their face names (handles in `arena`). */

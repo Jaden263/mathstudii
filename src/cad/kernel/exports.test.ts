@@ -217,3 +217,36 @@ describe('face DXF', () => {
     await expect(answer({ op: 'faceDxf', design, numbers, component: 'c1', body: shown.components.c1.bodies[0].id, face: wall.index, unit: 'mm' })).rejects.toThrow(/only a flat face/);
   });
 });
+
+describe('face DXF of a face seen from below', () => {
+  it('is the mirror image of the top, its arcs still counter-clockwise as seen from outside', async () => {
+    // 80 × 50 with corners rounded to R5 and a Ø10 hole at (15, 35), off the centre lines so that a mirror shows
+    const sk = withCircles(roundedRect('p', 80, 50, 5), 'h', [[15, 35, 5]]);
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: sk },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '6' }, op: 'new' },
+    ]);
+    const { numbers } = solve(design);
+    const body = displayFor(design, numbers)!.components.c1.bodies[0];
+    const faces = { top: body.faces.find((f) => f.frame && f.frame.n[2] > 0.999)!, bottom: body.faces.find((f) => f.frame && f.frame.n[2] < -0.999)! };
+    for (const [side, face] of Object.entries(faces)) {
+      const { sketch } = dxfToSketch(await ask({ op: 'faceDxf', design, numbers, component: 'c1', body: body.id, face: face.index, unit: 'mm' }));
+      const P = new Map(sketch.points.map((p) => [p.id, p]));
+      // seen from below, x stays and y turns round (u × v is the outward normal −z)
+      const hole = sketch.entities.find((e) => e.type === 'circle') as { c: string };
+      expect([P.get(hole.c)!.x, P.get(hole.c)!.y].map((v) => +v.toFixed(9))).toEqual(side === 'top' ? [15, 35] : [15, -35]);
+      const arcs = sketch.entities.filter((e) => e.type === 'arc') as { c: string; p1: string; p2: string }[];
+      expect(arcs).toHaveLength(4);
+      for (const a of arcs) {
+        const c = P.get(a.c)!, p1 = P.get(a.p1)!, p2 = P.get(a.p2)!;
+        const turn = Math.atan2(p2.y - c.y, p2.x - c.x) - Math.atan2(p1.y - c.y, p1.x - c.x);
+        expect((turn + 2 * PI) % (2 * PI)).toBeCloseTo(PI / 2, 9);
+        // the quarter bulges outwards: its middle further from the plate's centre than its ends' chord
+        const mid = Math.atan2(p1.y - c.y, p1.x - c.x) + PI / 4;
+        const centre = { x: 40, y: side === 'top' ? 25 : -25 };
+        const m = { x: c.x + 5 * Math.cos(mid), y: c.y + 5 * Math.sin(mid) };
+        expect(Math.hypot(m.x - centre.x, m.y - centre.y)).toBeGreaterThan(Math.hypot((p1.x + p2.x) / 2 - centre.x, (p1.y + p2.y) / 2 - centre.y));
+      }
+    }
+  });
+});

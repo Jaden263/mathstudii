@@ -1,10 +1,12 @@
 // A flat face as a DXF for laser, waterjet or plasma cutting: its outer loop and the loops of
 // its holes, straight edges as LINEs, circles as CIRCLEs and arcs as ARCs with their true
-// radii, other curves (ellipses, B-splines) as fine polylines. The face is seen from outside
+// radii, B-splines that are circles (as some writers send every hole) as their circles and
+// arcs, other curves (ellipses, free-form B-splines) as fine polylines. The face is seen from outside
 // (its normal towards the viewer), in the plane a sketch on it would have: the component
 // origin projected onto it, the x axis level (design.ts facePlane), part units.
 import type { CadEntity, CadPoint, CadSketch, CadUnit } from '../model';
 import { sketchToDxf } from '../dxf';
+import { recognise } from '../drawing2d';
 import { dot3, frameFromNormal, norm3, scale3, sub3, type Frame, type Vec3 } from '../solid';
 import type { OccBuiltDesign } from './build';
 import { scratch, subShapes, xyz, type OC } from './kernel';
@@ -70,11 +72,26 @@ export function faceSketch(oc: OC, built: OccBuiltDesign, component: string, bod
           return p.Mass();
         })();
         const m = Math.min(720, Math.max(16, Math.ceil(len / (span * 2e-3))));
-        let prev = point(at(u0));
-        for (let i = 1; i <= m; i++) {
-          const next = point(at(u0 + ((u1 - u0) * i) / m));
-          if (next !== prev) entities.push({ id: `e${k++}`, type: 'line', p1: prev, p2: next });
-          prev = next;
+        const samples = Array.from({ length: m + 1 }, (_, i) => at(u0 + ((u1 - u0) * i) / m));
+        // unless every point is on one circle (or line) to 10⁻⁶ of the face's size: then that
+        const g = ty === C.GeomAbs_Ellipse ? null : recognise(samples.flatMap((q) => [q.x, q.y]), span * 1e-6);
+        const [s0, s1] = [samples[0], samples[m]];
+        if (g?.k === 'arc' && g.a1 - g.a0 > 2 * Math.PI - 1e-6) {
+          entities.push({ id: `e${k++}`, type: 'circle', c: point({ x: g.cx, y: g.cy }), r: g.r });
+        } else if (g?.k === 'arc') {
+          // counter-clockwise from the start of the edge, or from its end when it runs the other way
+          const turn = Math.atan2(s0.y - g.cy, s0.x - g.cx) - g.a0;
+          const fromStart = Math.abs(Math.atan2(Math.sin(turn), Math.cos(turn))) < 1e-6;
+          entities.push({ id: `e${k++}`, type: 'arc', c: point({ x: g.cx, y: g.cy }), p1: point(fromStart ? s0 : s1), p2: point(fromStart ? s1 : s0) });
+        } else if (g?.k === 'line') {
+          entities.push({ id: `e${k++}`, type: 'line', p1: point(s0), p2: point(s1) });
+        } else {
+          let prev = point(s0);
+          for (let i = 1; i <= m; i++) {
+            const next = point(samples[i]);
+            if (next !== prev) entities.push({ id: `e${k++}`, type: 'line', p1: prev, p2: next });
+            prev = next;
+          }
         }
       }
     }

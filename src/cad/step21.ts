@@ -6,8 +6,9 @@
 // An AP203/AP214/AP242 assembly is a tree of PRODUCT_DEFINITIONs joined by
 // NEXT_ASSEMBLY_USAGE_OCCURRENCEs; each usage is placed by a CONTEXT_DEPENDENT_SHAPE_REPRESENTATION
 // whose relationship carries an ITEM_DEFINED_TRANSFORMATION from a placement in the child's
-// representation to one in the parent's. Leaf products are the parts; every path from the
-// top to a leaf is an instance.
+// representation to one in the parent's. Leaf products are the parts, and so are assemblies
+// with solids of their own beside their sub-assemblies; every path from the top to a part is
+// an instance.
 //
 // Entities are indexed in one pass over the text and parsed only when asked for, so a
 // file of a few megabytes (mostly points and curves nobody here reads) costs little.
@@ -295,6 +296,12 @@ export interface StepPart {
   name: string;
   /** Its PRODUCT_DEFINITION (the entity the kernel transfers); 0: the whole file as one part. */
   pd: number;
+  /**
+   * An assembly's own solids (beside its sub-assemblies, as Fusion writes a root component's
+   * bodies): the representations that hold them, which the kernel transfers instead of the
+   * definition (that would bring the sub-assemblies along).
+   */
+  reps?: number[];
   /** Names of its solids in the order of the file ('' when unnamed). */
   solids: string[];
   /** #rrggbb, from the style of its solid (else of most of its faces). */
@@ -426,8 +433,8 @@ export function stepStructure(text: string, fileName = 'Part'): StepStructure {
     }
     return [...seen];
   };
-  /** The solids of a definition's representations (mapped items followed into their representations). */
-  const solidsOf = (pd: number) => {
+  /** The solids of a definition's representations (mapped items followed into their representations, unless `direct`). */
+  const solidsOf = (pd: number, direct = false) => {
     const out: number[] = [];
     const seenRep = new Set<number>();
     const walkRep = (rep: number) => {
@@ -435,7 +442,7 @@ export function stepStructure(text: string, fileName = 'Part'): StepStructure {
       seenRep.add(rep);
       for (const it of refsOf(repArgs(rep)?.[1])) {
         if (SOLIDS.some((t) => f.isA(it, t))) out.push(it);
-        else if (f.isA(it, 'MAPPED_ITEM')) {
+        else if (!direct && f.isA(it, 'MAPPED_ITEM')) {
           const map = refOf(f.args(it, 'MAPPED_ITEM')?.[1]);
           const mapped = refOf(f.args(map, 'REPRESENTATION_MAP')?.[1]);
           if (mapped) walkRep(mapped);
@@ -493,23 +500,28 @@ export function stepStructure(text: string, fileName = 'Part'): StepStructure {
     if (Fc && Fp) usage.M = m4Mul(Fp, m4Inv(Fc));
   }
 
-  // parts: the definitions nothing is assembled into
+  // parts: the definitions nothing is assembled into, and assemblies with solids of their own
   const parents = new Set(usages.map((u) => u.parent));
   const children = new Set(usages.map((u) => u.child));
-  const leaves = pds.filter((pd) => !parents.has(pd));
   const parts: StepPart[] = [];
+  /** The solid entities of each part. */
+  const partSolids: number[][] = [];
   const partOf = new Map<number, number>();
   const keys = new Map<string, number>();
-  for (const pd of leaves) {
-    const solids = solidsOf(pd);
+  for (const pd of pds) {
+    const assembly = parents.has(pd);
+    // an assembly's own: written straight into its representations (mapped items there may be its instances)
+    const solids = solidsOf(pd, assembly);
     // a definition without a shape (a document, an empty product) is no part
-    if (!solids.length && !allReps(pd).some((r) => refsOf(repArgs(r)?.[1]).some((it) => !f.isA(it, 'AXIS2_PLACEMENT_3D')))) continue;
+    if (assembly ? !solids.length : !solids.length && !allReps(pd).some((r) => refsOf(repArgs(r)?.[1]).some((it) => !f.isA(it, 'AXIS2_PLACEMENT_3D')))) continue;
     const p = productOf(pd);
     const base = p.id || p.name || `Part${parts.length + 1}`;
     const k = (keys.get(base) ?? 0) + 1;
     keys.set(base, k);
     partOf.set(pd, parts.length);
-    parts.push({ key: k > 1 ? `${base}#${k}` : base, name: p.name || base, pd, solids: solids.map((s) => str(f.get(s)?.parts[f.get(s)!.types[0]][0]).trim()) });
+    partSolids.push(solids);
+    const reps = assembly ? allReps(pd).filter((r) => refsOf(repArgs(r)?.[1]).some((it) => solids.includes(it))) : [];
+    parts.push({ key: k > 1 ? `${base}#${k}` : base, name: p.name || base, pd, ...(reps.length ? { reps } : {}), solids: solids.map((s) => str(f.get(s)?.parts[f.get(s)!.types[0]][0]).trim()) });
   }
 
   // colours: styled items on a part's solids, or on its faces (the most used colour)
@@ -537,7 +549,7 @@ export function stepStructure(text: string, fileName = 'Part'): StepStructure {
     return undefined;
   };
   const solidPart = new Map<number, number>();
-  parts.forEach((p, i) => solidsOf(p.pd).forEach((s) => solidPart.set(s, i)));
+  partSolids.forEach((ss, i) => ss.forEach((s) => solidPart.set(s, i)));
   let facePart: Map<number, number> | null = null;
   const faceToPart = () => {
     if (facePart) return facePart;
@@ -579,28 +591,51 @@ export function stepStructure(text: string, fileName = 'Part'): StepStructure {
   });
 
   // instances: every path from a top definition down to a part
-  const instances: StepInstance[] = [];
+  const instances: (StepInstance & { own?: string })[] = [];
   const counts = new Map<number, number>();
   const down = new Map<number, Usage[]>();
   for (const u of usages) down.set(u.parent, [...(down.get(u.parent) ?? []), u]);
-  const visit = (pd: number, M: M4, path: string[], depth: number) => {
+  // a usage's step in the paths: its name, or where siblings share it (Creo calls every usage
+  // "Next assembly relationship") its product and count, BOLT#2, which another version of the
+  // file gives it again (the usages' ids are counters of the writer's session)
+  const step = new Map<Usage, string>();
+  for (const kids of down.values()) {
+    kids.forEach((u) => {
+      if (u.name && kids.filter((q) => q.name === u.name).length === 1) return step.set(u, u.name);
+      const p = productOf(u.child);
+      const same = kids.filter((q) => q.child === u.child);
+      step.set(u, `${p.id || p.name || 'part'}#${same.indexOf(u) + 1}`);
+    });
+  }
+  const visit = (pd: number, M: M4, path: string[], names: string[], depth: number) => {
     if (depth > 32) return;
     const pi = partOf.get(pd);
     if (pi !== undefined) {
       const k = (counts.get(pi) ?? 0) + 1;
       counts.set(pi, k);
-      const own = path[path.length - 1];
-      instances.push({ part: pi, path: path.join('/') || parts[pi].key, name: own || `${parts[pi].name}:${k}`, M });
-      return;
+      instances.push({ part: pi, path: path.join('/') || parts[pi].key, name: `${parts[pi].name}:${k}`, own: names[names.length - 1], M });
     }
     const kids = down.get(pd) ?? [];
-    kids.forEach((u, i) => {
+    kids.forEach((u) => {
       if (!u.M) warnings.push(`${u.name || 'an instance'} has no placement in the file: it is placed at its parent's origin`);
-      visit(u.child, m4Mul(M, u.M ?? IDENTITY), [...path, u.name || `${i + 1}`], depth + 1);
+      visit(u.child, m4Mul(M, u.M ?? IDENTITY), [...path, step.get(u)!], [...names, u.name], depth + 1);
     });
   };
   const tops = pds.filter((pd) => !children.has(pd));
-  for (const pd of tops) visit(pd, IDENTITY, [], 0);
+  for (const pd of tops) visit(pd, IDENTITY, [], [], 0);
+  // the usages' names where every instance of the part has one of its own, else Part:1, Part:2 …
+  const uses = new Map<string, number>();
+  for (const x of instances) if (x.own) uses.set(x.own, (uses.get(x.own) ?? 0) + 1);
+  const shared = new Set(instances.filter((x) => !x.own || uses.get(x.own)! > 1).map((x) => x.part));
+  const paths = new Map<string, number>();
+  for (const x of instances) {
+    if (x.own && !shared.has(x.part)) x.name = x.own;
+    delete x.own;
+    // (two products with one id under one parent)
+    const n = (paths.get(x.path) ?? 0) + 1;
+    paths.set(x.path, n);
+    if (n > 1) x.path = `${x.path}#${n}`;
+  }
   const top = tops.length === 1 ? productOf(tops[0]).name : '';
 
   // a file of shapes without products (or none the kernel could find): the whole file as one part
