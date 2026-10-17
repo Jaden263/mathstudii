@@ -237,34 +237,38 @@ export function listShapes(t: Arena, list: NCollection_List_TopoDS_Shape): TopoD
  * faces go through the adaptive Gauss–Kronrod integration: volume and centroid to 10⁻¹²,
  * and the moments of inertia (asked for separately: they cost the most) in a second pass
  * asked for 10⁻⁸ (it comes within 10⁻⁹), as at 10⁻¹² they can take seconds (a box with an
- * elliptical pocket: 4 s against 60 ms). Returns the properties to take the moments of
- * inertia from: p, or that second pass (in t). General B-spline faces (sweeps along
- * curves, lofts) keep the default: there the adaptive one takes minutes, and the default
- * is within about 10⁻⁵.
+ * elliptical pocket: 4 s against 60 ms). A revolved spline's faces take seconds for the
+ * centroid alone and many more for the inertia, so there the inertia is the default's
+ * (10⁻⁴ for a spline, a few 10⁻² for revolved text). Returns the properties to take the
+ * moments of inertia from: p, or that second pass (in t). General B-spline faces (sweeps
+ * along curves, lofts) keep the default: there the adaptive one takes minutes, and the
+ * default is within about 10⁻⁵.
  */
 export function volumeProperties(oc: OC, t: Arena, s: TopoDS_Shape, p: GProp_GProps): GProp_GProps {
   const S = oc.GeomAbs_SurfaceType;
   const analytic: GeomAbs_SurfaceType[] = [S.GeomAbs_Plane, S.GeomAbs_Cylinder, S.GeomAbs_Cone, S.GeomAbs_Sphere, S.GeomAbs_Torus];
-  const swept: GeomAbs_SurfaceType[] = [S.GeomAbs_SurfaceOfExtrusion, S.GeomAbs_SurfaceOfRevolution];
-  const adaptive = scratch((u) => {
-    let any = false;
+  // 'default': analytic faces only, or general ones; else the swept faces met
+  const kind = scratch((u) => {
+    let found: 'default' | 'extruded' | 'revolved' = 'default';
     const ex = u.add(new oc.TopExp_Explorer(s, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
     for (; ex.More(); ex.Next()) {
       const ty = u.add(new oc.BRepAdaptor_Surface(u.add(oc.TopoDS.Face(u.add(ex.Current()))), true)).GetType();
       if (analytic.includes(ty)) continue;
-      if (!swept.includes(ty)) return false;
-      any = true;
+      if (ty === S.GeomAbs_SurfaceOfRevolution) found = 'revolved';
+      else if (ty === S.GeomAbs_SurfaceOfExtrusion) found = found === 'revolved' ? found : 'extruded';
+      else return 'default';
     }
-    return any;
+    return found;
   });
-  if (!adaptive) {
+  if (kind === 'default') {
     oc.BRepGProp.VolumeProperties(s, p, false, false, false);
     return p;
   }
   // (Eps, OnlyClosed, IsUseSpan, CGFlag, IFlag, SkipShared): CGFlag alone leaves the inertia out
   oc.BRepGProp.VolumePropertiesGK(s, p, 1e-12, false, true, true, false, false);
   const pi = t.add(new oc.GProp_GProps());
-  oc.BRepGProp.VolumePropertiesGK(s, pi, 1e-8, false, true, false, true, false);
+  if (kind === 'revolved') oc.BRepGProp.VolumeProperties(s, pi, false, false, false);
+  else oc.BRepGProp.VolumePropertiesGK(s, pi, 1e-8, false, true, false, true, false);
   return pi;
 }
 

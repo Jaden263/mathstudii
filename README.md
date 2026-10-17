@@ -1208,7 +1208,10 @@ What it is not, honestly:
     most 25 points on them (32 when closed). The mesh kernel's projections and sections are polylines, with
     circles recognised.
   - Volumes of bodies with general B-spline faces (not extruded or revolved, such as
-    lofts or sweeps along splines) are accurate to about 1e-5.
+    lofts or sweeps along splines) are accurate to about 1e-5. A revolved spline's volume
+    is exact but takes seconds to integrate, and its moments of inertia come from OCCT's
+    quicker default integration (about 1e-3 off for a spline, a few per cent for revolved
+    text).
 - **References:**
   - Names come from history. An edit that rebuilds a face from another sketch line (a
     line deleted and drawn again) gives it a new name. A reference to it is then lost

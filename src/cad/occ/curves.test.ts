@@ -12,7 +12,7 @@ import type { CadSketch } from '../model';
 import { bsDomain, bsEval, bsPoint, interpolate } from '../curves';
 import { findProfiles, profileProperties, type Vec2 } from '../profile';
 import { capHeight } from '../text';
-import { extrudeProps } from '../features';
+import { extrudeProps, revolveProps } from '../features';
 
 const { PI, abs, hypot } = Math;
 const near = (v: number, want: number, rel = 1e-9) => expect(abs(v - want) / abs(want)).toBeLessThan(rel);
@@ -126,6 +126,11 @@ describe('splines on the B-rep kernel', () => {
     expect(res.design!.errors).toEqual({});
     const pr = profileProperties(findProfiles(sk).regions)!;
     near(volumes(res)[0], 2 * PI * pr.xc * pr.A, 1e-9);
+    // its inertia is OCCT's default integration (the adaptive one takes many seconds on
+    // revolved splines): close to the exact profile integrals, not exact
+    const want = revolveProps(findProfiles(sk).regions, { p: { x: 0, y: 0 }, d: { x: 0, y: 1 } }, 2 * PI)!;
+    const m = res.design!.bodies.c1[0].mass!;
+    for (const k of ['Ixx', 'Iyy', 'Izz'] as const) near(m[k], want[k], 2e-3);
   });
 
   it('the OCCT edge is the sketch curve: through the fit points (1e-9) and on the polyline', () => {
