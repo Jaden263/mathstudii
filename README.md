@@ -1410,12 +1410,55 @@ features and the selection store these names:
 
 - **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
   POLYLINE with bulges). Splines, ellipses and text are exported as fine polylines.
-- **STEP AP214:** exact solids with names, colours and the assembly structure.
+- **STEP AP214:** exact solids with names, colours (sRGB, as other programs read them) and
+  the assembly structure.
 - **STL:** binary, tessellated finely from the exact surfaces, always in millimetres (STL
   has no units, and slicers read millimetres), whatever the part's unit.
+- **3MF** (core specification 1.3, checked against its schema): millimetres, an object
+  per component with its colour, a build item per occurrence with its placement.
+- **OBJ + MTL:** every occurrence placed, millimetres, smooth normals, a material per
+  colour (two files: the .obj and its .mtl).
+- **glTF 2.0 binary (.glb):** a node per occurrence, PBR base colours, metres and Y up as
+  glTF has it (web viewers, AR).
+- **Face DXF:** pick one flat face and press **Face DXF**: its outer loop and holes as
+  LINE, true ARC and CIRCLE entities (other curves as fine polylines), seen from outside,
+  in the part's unit: a profile for laser, waterjet or plasma cutting.
 
-STEP and STL are on the CAD window's **File** tab and in the part's right-click menu.
-They download in the browser and open a save dialog in the desktop app.
+File → **Export…** writes any of them for the assembly, one component or one body; STEP,
+STL and 3MF have buttons of their own, and STEP, STL, 3MF and glTF are in the part's
+right-click menu. They download in the browser and open a save dialog in the desktop app.
+
+**Importing** (File or Solid → **Import**, or drop the file on the CAD window):
+
+- **STEP** (AP203, AP214, AP242 B-rep): the exact solids with the product names and
+  colours, converted from the file's unit to the part's. A file of one part placed at the
+  origin becomes an **Import** feature in the active component's timeline (a new, empty
+  part takes its name and colour); an assembly becomes a component per part with a
+  grounded occurrence for every instance where the file places it (nested assemblies are
+  flattened, their placements multiplied out).
+- Imported faces have no history, so they are named after their body and their surface: a
+  plane by its normal and offset, a cylinder by its axis and radius, and so on. Sketches on
+  them, fillets, holes, joints and drawing dimensions hold on through every rebuild.
+- **Replace file** (double-click the Import feature) reads a new version under it: each
+  feature keeps its part by the product's id, the occurrences the import placed move to
+  the new placements, new parts are added. A face on the same surface keeps its name, so a
+  sketch on the top of a plate stays there when the new version has a hole in it; a face
+  whose surface changed (the plate made thicker) is reported lost and the sketch stays where
+  it was, never moved to another face.
+- **STL** (binary and ASCII), **OBJ** (pick its .mtl with it for colours) and **3MF**
+  (unit, colours, objects placed by the build) become **mesh bodies**: welded, checked
+  closed (every edge between two triangles running along it opposite ways), their volume,
+  centre and inertia by the divergence theorem over the triangles (exact for the polyhedron
+  the mesh is). They are shown, measured, placed in assemblies, checked for interference,
+  cut by the section view and drawn from their facets, and exported with the rest; the
+  features do not work on them. An open mesh says so and has no volume. STL and OBJ have no
+  unit: the dialog asks (millimetres by default).
+- **Convert to solid** sews a closed mesh of up to 20 000 triangles into a B-rep solid, its
+  coplanar triangles merged into faces (a cube's twelve triangles become six faces), which
+  the features can then round, cut and drill.
+- The file is kept in the worksheet (deflated, in base64, once however many components use
+  it), so the worksheet opens anywhere; above 5 MB the dialog warns that the file grows by
+  about as much and that saving in the browser's storage may then fail.
 
 The **CAD part design** example covers three things:
 
@@ -1534,6 +1577,19 @@ What it is not, honestly:
     finds a referenced face or edge only where it has not moved, and the timeline says so.
     A sketch or joint picked while it draws the part gets no name either, so it follows
     its face only by place.
+- **Interchange, the limits:**
+  - This OpenCascade build has no XCAF reader: names, colours and the assembly are read
+    from the STEP text itself (products, styled items, usages and their placements), not
+    from layers, PMI, validation properties or per-face colours (a part takes its solid's
+    colour, else that of most of its faces). Mirrored or scaled placements are placed
+    without the mirror. There is no IGES.
+  - Imported faces are found again by their surface: a face whose surface moved is lost,
+    even when a human would call it the same face.
+  - Mesh bodies are not B-rep: no feature works on them, joints snap to their faces by
+    place only (they never move), STEP export leaves them out, and an open mesh takes no
+    part in the interference check. The mesh kernel cannot read STEP or sew meshes.
+  - The mesh formats are tessellations (the facets within 10⁻⁴ of the part's size of the
+    exact surfaces); glTF has no units of its own beyond metres, OBJ none at all.
 - **Joints:** no joint limits, motion studies or contact.
 - **Drawings:** no tolerance stack-up or GD&T analysis; one sheet per drawing (sheet n of m
   is written as entered).
@@ -1716,7 +1772,7 @@ src/frame3d/  3-D frame analysis (no UI): model, substructured stiffness solver,
 src/ui/frame3d/ 3-D frame region: orbit view (SVG), tables, properties panel
 src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
               joints), solid kernels (OpenCascade B-rep in occ/, Manifold mesh), mass
-              properties, DXF, STL, STEP
+              properties, DXF, STL, STEP, 3MF, OBJ, glTF; STEP and mesh import
 src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
               window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering

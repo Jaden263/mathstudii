@@ -9,7 +9,7 @@ import {
   SquareRoundCorner, Scissors, SquareSplitHorizontal, Construction, Trash2, Box, PenTool, FileUp, FileDown, Undo2, Redo2, X,
   ArrowUpFromLine, RotateCw, ChevronRight, ChevronDown, ListTree, PanelRight, CircleDot, Grid3x3, FlipHorizontal2, Combine,
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
-  Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash, FileBox,
+  Layers, Crosshair, Magnet, Waypoints, Cone, SquareSlash,
   Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate, TriangleRight,
   LineSquiggle, SplinePointer, Ellipse as EllipseIcon, CircleDotDashed, Type, VectorSquare, CornerRightDown, MoveHorizontal, ScissorsLineDashed,
   Grid2x2, Rotate3d, ScanLine, FileInput,
@@ -40,7 +40,7 @@ import { CadCanvas, type CadCanvasHandle, type CanvasStatus } from './CadCanvas'
 import { STANDARD_VIEWS, type Display } from './Cad3DView';
 import { Scene3D, type PickHit, type SceneView } from './Scene3D';
 import { buildScene, editOccurrence, sketchRegions } from './useDesign';
-import { exportPart, type PartFormat } from './exportPart';
+import { useImportExport } from './ImportExport';
 import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
 import { Dialog, Expr, FeatureFields, JointFields, featureTitle } from './FeatureDialogs';
@@ -373,7 +373,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ creating things
 
   const items = comp ? activeItems(comp) : [];
-  const bodiesNow = (comp && dr?.bodies[comp.id]) ?? [];
+  // the bodies the features work on (imported mesh bodies are none of them)
+  const bodiesNow = ((comp && dr?.bodies[comp.id]) ?? []).filter((b) => !b.mesh);
   const lastSketch = (pred: (s: DesignSketch) => boolean) => [...items].reverse().find((i): i is DesignSketch => isSketch(i) && pred(i));
   const selProfile = sel?.startsWith('p:') ? parseProfile(sel) : null;
   const selSketch = sel?.startsWith('item:') ? (items.find((i) => i.id === sel.slice(5) && isSketch(i)) as DesignSketch | undefined) : undefined;
@@ -977,16 +978,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ files
 
   const fileBase = (region.name.trim() || 'part').replace(/[^\w.-]+/g, '_');
-  const exportAs = async (format: PartFormat) => {
-    setBusy(`Writing ${format.toUpperCase()}…`);
-    try {
-      await exportPart(region, result, format);
-    } catch (e) {
-      setMsg(`Export failed: ${(e as Error).message}`);
-    } finally {
-      setBusy('');
-    }
-  };
+  // STEP, STL, OBJ and 3MF in (Insert → Import, or dropped on the workspace); every format out
+  const exchange = useImportExport({ region, result, build, design: cur, setDesign: (d) => setDesign(d), active: comp?.id, setActive, picks, setMsg, busy, setBusy });
   const importDxf = async () => {
     if (!ds) return;
     const file = await pickFile('.dxf');
@@ -1385,6 +1378,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         </Dialog>
       );
     }
+    if (dialog.kind === 'feature' && activeFeature?.kind === 'import') {
+      const c = design.components.find((q) => q.id === dialog.cid)!;
+      return exchange.featureDialog(activeFeature, {
+        error: dr?.errors[activeFeature.id], warning: dr?.warnings?.[activeFeature.id], onOk: () => closeDialog(true), onCancel: () => closeDialog(false),
+        onChange: (p) => patchItem(c.id, activeFeature.id, p as Partial<DesignItem>),
+      });
+    }
     if (dialog.kind === 'feature' && activeFeature) {
       const c = design.components.find((q) => q.id === dialog.cid)!;
       return (
@@ -1649,7 +1649,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const selOcc = sel?.startsWith('occ:') ? sel.slice(4) : sel?.startsWith('body:') ? parseBody(`b:${sel.slice(5)}`).occ : null;
 
   return (
-    <div className="cadw" onPointerDown={(e) => e.stopPropagation()}>
+    <div className="cadw" onPointerDown={(e) => e.stopPropagation()} {...exchange.dropProps}>
+      {exchange.dropOverlay}
       <header className="cadw-head">
         <div className="cadw-brand"><Box size={18} /> <b>mathstudii CAD</b></div>
         <input className="cadw-name" value={region.name} placeholder="Part name (variable)" aria-label="Part name"
@@ -1795,6 +1796,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             <Group label="Inspect">
               <RibbonButton icon={<SquareSlash size={20} />} label="Section" title="Cut the model with a plane to look inside" on={!!section} onClick={() => setSection(section ? null : { plane: 'XZ', at: 0.5, flip: false })} />
             </Group>
+            <Group label="Insert">{exchange.importButton}</Group>
             <Group label="View">
               <RibbonButton icon={<Crosshair size={20} />} label="Planes" title="Show the origin planes" on={showPlanes} onClick={() => setShowPlanes(!showPlanes)} />
               <div className="cadw-options">
@@ -1839,14 +1841,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             </Group>
           </>
         )}
-        {shownTab === 'file' && (
-          <Group label="Export">
-            <RibbonButton icon={<FileBox size={20} />} label="STEP"
-              title={shown.build?.kernel === 'mesh' ? 'STEP needs the exact B-rep kernel, which could not load' : 'Export the exact solids as STEP AP214 (other CAD programs), with names, colours and the assembly'}
-              disabled={!!busy || shown.build?.kernel === 'mesh'} onClick={() => void exportAs('step')} />
-            <RibbonButton icon={<Download size={20} />} label="STL" title="Export as STL (3-D printing), tessellated finely from the exact surfaces" disabled={!!busy} onClick={() => void exportAs('stl')} />
-          </Group>
-        )}
+        {shownTab === 'file' && exchange.ribbon}
       </div>
 
       <div className="cadw-main">
@@ -1962,9 +1957,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           )}
         </section>
 
-        {showProps && (
+        {(showProps || exchange.dialog) && (
           <aside className="cadw-props" aria-label="Properties">
-            {dialogPanel ?? (inSketch ? (
+            {exchange.dialog ?? dialogPanel ?? (inSketch ? (
               <>
                 <h3 className="sub">{ds!.name}</h3>
                 <SketchPanel sketch={ds!.sketch} result={sketchResult} unit={u} partName={region.name} selected={selIds}

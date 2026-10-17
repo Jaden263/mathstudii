@@ -31,7 +31,7 @@ import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
 import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
 import { CadWorkspace } from './cad/CadWorkspace';
-import { exportPart } from './cad/exportPart';
+import { FORMATS, exportPart, type PartFormat } from './cad/exportPart';
 import type { CadResult, Frame3DResult, MathResult } from '../engine/evaluator';
 import { frame3dMenuItems } from './frame3d/frame3dMenu';
 import { plateMenuItems } from './plate/plateMenu';
@@ -813,12 +813,12 @@ export function App() {
           setTimeout(() => separateRef.current(true), 300);
         },
       });
-      // the exact solids as STEP, or STL for printing (written by the kernel worker)
-      const save = (format: 'step' | 'stl') => () => {
-        setToast(`Writing ${format.toUpperCase()}…`);
+      // the exact solids as STEP, or meshes for printing and viewing (written by the kernel worker)
+      const save = (format: PartFormat) => () => {
+        setToast(`Writing ${FORMATS[format].label}…`);
         exportPart(r, evaluation.results.get(r.id) as CadResult | undefined, format).then(() => setToast(null), (e: Error) => setToast(`Export failed: ${e.message}`));
       };
-      items.push({ label: 'Export STEP…', icon: <Box size={14} />, onClick: save('step') }, { label: 'Export STL…', icon: <Box size={14} />, onClick: save('stl') });
+      items.push(...(['step', 'stl', '3mf', 'glb'] as PartFormat[]).map((f) => ({ label: `Export ${FORMATS[f].label}…`, icon: <Box size={14} />, onClick: save(f) })));
     }
     if (single && r.kind === 'frame3d') items.push(...frame3dMenuItems(r, evaluation.results.get(r.id) as Frame3DResult | undefined, dispatch, setToast));
     if (single && r.kind === 'plate') items.push(...plateMenuItems(r, evaluation.results.get(r.id) as PlateResult | undefined, dispatch, setToast));

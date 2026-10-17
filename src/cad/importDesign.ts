@@ -17,7 +17,8 @@ import type { M4, Vec3 } from './solid';
 /** What a file holds, read without a kernel: its parts and where it places them. */
 export interface ImportPlan {
   file: ImportedFile;
-  parts: { key: string; name: string; color?: string; bodies: string[] }[];
+  /** `bodies`: the names of its solids or meshes; `triangles`: a mesh part's count. */
+  parts: { key: string; name: string; color?: string; bodies: string[]; triangles?: number }[];
   /** Placements in millimetres. */
   instances: { part: number; path: string; name: string; M: M4 }[];
   /** Millimetres per unit of the file's numbers (null: the file has no unit). */
@@ -36,7 +37,10 @@ export function planImport(name: string, format: ImportedFile['format'], bytes: 
     return { file, parts: s.parts.map((p) => ({ key: p.key, name: p.name, ...(p.color ? { color: p.color } : {}), bodies: p.solids })), instances: s.instances, unit: s.unit, warnings: [...warnings, ...s.warnings] };
   }
   const m = readMeshFile(format, bytes, base, materials);
-  return { file, parts: m.parts.map((p) => ({ key: p.key, name: p.name, ...(p.color ? { color: p.color } : {}), bodies: p.meshes.map((x) => x.name) })), instances: m.instances, unit: m.unit, warnings: [...warnings, ...m.warnings] };
+  return {
+    file, parts: m.parts.map((p) => ({ key: p.key, name: p.name, ...(p.color ? { color: p.color } : {}), bodies: p.meshes.map((x) => x.name), triangles: p.meshes.reduce((n, x) => n + x.indices.length / 3, 0) })),
+    instances: m.instances, unit: m.unit, warnings: [...warnings, ...m.warnings],
+  };
 }
 
 const IDENT_EPS = 1e-12;
