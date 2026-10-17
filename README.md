@@ -1009,7 +1009,8 @@ visible lines disappear.
   geometry, and moves the geometry as little as possible.
 - **Constraint status:** the rank of the constraint Jacobian gives the degrees of freedom.
   Under-defined geometry is drawn blue and fully defined geometry black. Conflicting
-  constraints are red, and redundant ones are reported.
+  constraints are red, and redundant ones are reported (not one that only repeats what an
+  arc is already, such as a point on its own end: the arc takes the blame, silently).
 
 **Linked to the worksheet:**
 

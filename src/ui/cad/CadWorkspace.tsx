@@ -1009,12 +1009,12 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ project, include, intersect
 
   /** Picking edges and faces to project: the 3-D view, the timeline rolled back to the sketch (it can only see the bodies before it). */
-  const [projecting, setProjecting] = useState<{ cid: string; marker: number | undefined } | null>(null);
+  const [projecting, setProjecting] = useState<{ cid: string; sketch: string; marker: number | undefined } | null>(null);
   const startProject = () => {
     if (!ds || !sketchComp) return;
     const idx = sketchComp.items.indexOf(ds);
     if ((sketchComp.marker ?? sketchComp.items.length) > idx) setDesign(mapComp(cur(), sketchComp.id, (c) => ({ ...c, marker: idx })), undefined, false);
-    setProjecting({ cid: sketchComp.id, marker: sketchComp.marker });
+    setProjecting({ cid: sketchComp.id, sketch: ds.id, marker: sketchComp.marker });
   };
   const endProject = () => {
     if (!projecting) return;
@@ -1023,9 +1023,31 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     setProjecting(null);
     window.setTimeout(() => canvas.current?.focus(), 60);
   };
+  // leaving the sketch (Finish, another sketch) ends picking and rolls the timeline forward again;
+  // so does closing the window, else the part would stay rolled back
   useEffect(() => {
-    if (projecting && !ds) setProjecting(null);
+    if (projecting && ds?.id !== projecting.sketch) endProject();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projecting, ds]);
+  const projectingRef = useRef(projecting);
+  projectingRef.current = projecting;
+  const setDesignRef = useRef(setDesign);
+  setDesignRef.current = setDesign;
+  useEffect(() => {
+    const rollForward = () => {
+      const p = projectingRef.current;
+      if (p) setDesignRef.current(mapComp(designRef.current, p.cid, (c) => ({ ...c, marker: p.marker })), undefined, false);
+      projectingRef.current = null;
+    };
+    // a separate CAD window is unloaded, not unmounted
+    window.addEventListener('pagehide', rollForward);
+    window.addEventListener('beforeunload', rollForward);
+    return () => {
+      window.removeEventListener('pagehide', rollForward);
+      window.removeEventListener('beforeunload', rollForward);
+      rollForward();
+    };
+  }, []);
   const addSource = (src: SketchSource, what: string) => {
     if (!ds) return;
     const now = findSketch(cur(), ds.id)!.sketch;
