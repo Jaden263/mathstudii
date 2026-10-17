@@ -181,7 +181,7 @@ variables with units.
   stays text. They are defined where the region stands in reading order, so math below it
   (checks, plots) uses them. An error in an output cell, an empty one, or a circular reference
   is reported on that output.
-- **The formula engine** has 209 functions, with Excel's rules for what counts: `SUM` of a
+- **The formula engine** has 211 functions, with Excel's rules for what counts: `SUM` of a
   range skips text and logicals but `SUM("2", TRUE)` counts them, `COUNT` ignores errors,
   criteria like `">5"`, `"<>"` and `"a*"` in `SUMIFS`/`COUNTIFS`/`AVERAGEIFS`/`MAXIFS`, `ROUND(1.005, 2)`
   is 1.01, `-2^2` is 4. Lookup (`VLOOKUP`/`HLOOKUP` exact and approximate, `INDEX`/`MATCH`,
@@ -1434,7 +1434,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
-| Excel component: spreadsheet region with 209 Excel functions, inputs and outputs with units, .xlsx import/export, live link to a file; tables and the whole worksheet to .xlsx | ✅ (no charts, pivot tables or Excel macros; written files checked in LibreOffice, not yet in Excel) |
+| Excel component: spreadsheet region with 211 Excel functions, inputs and outputs with units, .xlsx import/export, live link to a file; tables and the whole worksheet to .xlsx | ✅ (no charts, pivot tables or Excel macros; written files checked in LibreOffice, not yet in Excel) |
 | MATLAB component, READPRN/WRITEPRN file I/O | ❌ |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas (nested, printed collapsed or expanded), locked regions, protected worksheets with inputs | ✅ (protection stops accidents, not someone editing the JSON) |

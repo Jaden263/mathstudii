@@ -5774,8 +5774,9 @@ div.pl-cutplot {
 
 .ss-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 3px 6px;
   padding: 2px 6px;
   min-height: 22px;
   font: 500 calc(11px * var(--fs, 1)) var(--font);
@@ -5813,7 +5814,9 @@ div.pl-cutplot {
 .ss-tools {
   display: inline-flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 3px;
+  max-width: 100%;
   margin-left: auto;
 }
 
