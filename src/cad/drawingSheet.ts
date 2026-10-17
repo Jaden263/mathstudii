@@ -76,7 +76,7 @@ export interface PlacedView {
   /** Standard view key, `sec:${id}` or `det:${id}`. */
   key: string;
   kind: 'base' | 'section' | 'detail';
-  /** On the paper: x = ox + k·X, y = oy + k·Y for view coordinates X, Y. */
+  /** On the paper: x = ox + k·X, y = oy + k·Y for view coordinates X, Y (model units; k is paper mm per unit). */
   ox: number;
   oy: number;
   k: number;
@@ -153,6 +153,9 @@ export const sectionSide = (r: DrawingRegion, s: DrawingSection) => sectionGeome
 /** Every view the drawing needs from the kernel. */
 export const drawingRequests = (r: DrawingRegion): DrawViewRequest[] => [...baseRequests(r), ...(r.sections ?? []).map((s) => sectionRequest(r, s))];
 
+/** Millimetres in a model unit (a drawing's scale is of true size, whatever the part is drawn in). */
+export const unitMm = (unit: string): number => ({ mm: 1, cm: 10, m: 1000, in: 25.4 } as Record<string, number>)[unit] ?? 1;
+
 /** The next free letter for a section or detail (I, O and Q are left out: they read as figures). */
 export function nextLetter(r: DrawingRegion): string {
   const used = new Set([...(r.sections ?? []).map((s) => s.letter), ...(r.details ?? []).map((d) => d.letter)]);
@@ -183,7 +186,7 @@ interface Extra {
   key: string;
   kind: 'section' | 'detail';
   view: DrawView;
-  /** Paper / model for this view (a detail's own, a section's the sheet's). */
+  /** Paper millimetres per model unit in this view (a detail's own scale, a section's the sheet's). */
   k: (s: number) => number;
   /** Its model box (a detail's: its circle). */
   box: DrawView['box'];
@@ -209,15 +212,19 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
   const base = (k: BaseKey | null) => (k && r.views[k] && hasLines(views[k]) ? views[k] : null);
   if (!grid.flat().some((k) => base(k))) return null;
 
+  // scales are of true size: a part in centimetres at 1:1 is drawn 10 paper millimetres to its unit
+  const mm = unitMm(info.unit);
   const extras: Extra[] = [];
+  // a view dragged where a smaller sheet no longer reaches is placed again (it could not be dragged back)
+  const onSheet = (at?: { x: number; y: number }) => (at && at.x > frame.x && at.x < frame.x + frame.w && at.y > frame.y && at.y < frame.y + frame.h ? at : undefined);
   for (const s of r.sections ?? []) {
     const v = views[`sec:${s.id}`];
-    if (hasLines(v)) extras.push({ key: `sec:${s.id}`, kind: 'section', view: v, k: (sc) => sc, box: v.box, at: s.at, label: `${s.letter}–${s.letter}`, def: s });
+    if (hasLines(v)) extras.push({ key: `sec:${s.id}`, kind: 'section', view: v, k: (sc) => sc * mm, box: v.box, at: onSheet(s.at), label: `${s.letter}–${s.letter}`, def: s });
   }
   for (const d of r.details ?? []) {
     const v = views[d.view];
     if (!v || !hasLines(v) || !(d.r > 0) || !(d.scale > 0)) continue;
-    extras.push({ key: `det:${d.id}`, kind: 'detail', view: v, k: () => d.scale, box: { x0: d.c.x - d.r, y0: d.c.y - d.r, x1: d.c.x + d.r, y1: d.c.y + d.r }, at: d.at, label: `${d.letter} (${scaleText(d.scale)})`, def: d });
+    extras.push({ key: `det:${d.id}`, kind: 'detail', view: v, k: () => d.scale * mm, box: { x0: d.c.x - d.r, y0: d.c.y - d.r, x1: d.c.x + d.r, y1: d.c.y + d.r }, at: onSheet(d.at), label: `${d.letter} (${scaleText(d.scale)})`, def: d });
   }
 
   const top = frame.y + frame.h, bottom = frame.y + title.h;
@@ -227,8 +234,8 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
    * no scale fits a large detail) the standard views alone, the rest placed as it comes.
    */
   const arrange = (s: number, fit: 'all' | 'base' | 'none') => {
-    const colW = [0, 1].map((c) => Math.max(...[0, 1].map((rw) => (base(grid[rw][c]) ? boxW(base(grid[rw][c])!) * s : 0))));
-    const rowH = [0, 1].map((rw) => Math.max(...[0, 1].map((c) => (base(grid[rw][c]) ? boxH(base(grid[rw][c])!) * s : 0))));
+    const colW = [0, 1].map((c) => Math.max(...[0, 1].map((rw) => (base(grid[rw][c]) ? boxW(base(grid[rw][c])!) * s * mm : 0))));
+    const rowH = [0, 1].map((rw) => Math.max(...[0, 1].map((c) => (base(grid[rw][c]) ? boxH(base(grid[rw][c])!) * s * mm : 0))));
     const cols = colW.filter((w) => w > 0).length, rows = rowH.filter((h) => h > 0).length;
     // extra views in columns, top down
     const columns: { w: number; h: number; items: { e: Extra; w: number; h: number }[] }[] = [];
@@ -297,7 +304,7 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
   };
   for (const k of BASE_KEYS) {
     const v = base(k), c = centres!.get(k);
-    if (v && c) place(k, 'base', v, scale, v.box, c);
+    if (v && c) place(k, 'base', v, scale * mm, v.box, c);
   }
   for (const e of extras) {
     const c = e.at ? [e.at.x, e.at.y] as [number, number] : centres!.get(e.key);

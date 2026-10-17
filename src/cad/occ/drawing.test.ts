@@ -5,11 +5,11 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateWorksheet, type CadResult } from '../../engine/evaluator';
 import { cadExample } from '../../model/examples';
-import { createRegion, type CadRegion, type DrawingRegion } from '../../model/types';
-import { designOf, type CadDesign } from '../design';
+import { createRegion, emptyWorksheet, type CadRegion, type DrawingRegion } from '../../model/types';
+import { designOf, type CadDesign, type DesignItem } from '../design';
 import { STANDARD_VIEWS } from '../drawing';
-import { loopsArea, primLength, type DrawView, type DrawViewRequest, type Prim } from '../drawing2d';
-import { baseRequests, layoutSheet, sectionRequest } from '../drawingSheet';
+import { loopsArea, primAt, primLength, type DrawView, type DrawViewRequest, type Prim } from '../drawing2d';
+import { baseRequests, layoutSheet, lineGroup, sectionRequest, type Sheet } from '../drawingSheet';
 import { sheetDxf } from '../drawingDxf';
 import { designKey, designNumbers } from '../keys';
 import { answer, drawViewFor } from '../kernel/service';
@@ -224,6 +224,53 @@ describe('exact drawing views', () => {
     for (const l of limits) expect(primLength(l)).toBeCloseTo(8, 9);
   });
 
+  it('cosmetic threads of tapped holes go with their body: moved, patterned, split', () => {
+    // the M10 tapped hole through a 40 × 40 × 20 block at (20, 20): a ¾ circle at D/2 = 5 from above
+    const block = (more: DesignItem[] = []) => single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 40, 40) },
+      { kind: 'extrude', id: 'f1', name: 'Block', sketch: 's1', extent: { type: 'one', d: '20' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'P', plane: { ref: 'XY', offset: '20' }, sketch: points('p', [[20, 20]]) },
+      { kind: 'hole', id: 'h1', name: 'Tapped', sketch: 's2', d: '', depth: '', through: true, style: 'simple', tap: { size: 'M10' } },
+      ...more,
+    ]);
+    const centres = (d: CadDesign) => arcs(view(d, req('top')).thin).map((a) => {
+      expect(a.r).toBeCloseTo(5, 9);
+      expect(a.a1 - a.a0).toBeCloseTo((3 * PI) / 2, 9);
+      return [+a.cx.toFixed(9), +a.cy.toFixed(9)];
+    }).sort((a, b) => a[0] - b[0]);
+    expect(centres(block())).toEqual([[20, 20]]);
+    // moved 50 along x, the thread with it (it used to stay behind, and vanish for want of its hole)
+    expect(centres(block([{ kind: 'move', id: 'm1', name: 'Move', bodies: ['f1'], dx: '50' }]))).toEqual([[70, 20]]);
+    // a copy 60 on carries one too
+    expect(centres(block([{ kind: 'pattern', id: 'p1', name: 'P', of: 'bodies', refs: ['f1'], type: 'rect', axis: 'X', count: '2', spacing: '60' }]))).toEqual([[20, 20], [80, 20]]);
+    // split through the hole's axis, the new piece moved 30 on: both halves keep their thread
+    expect(centres(block([
+      { kind: 'split', id: 'sp', name: 'Split', body: 'f1', plane: 'YZ', offset: '20' },
+      { kind: 'move', id: 'm1', name: 'Move', bodies: ['sp.1.f1'], dx: '30' },
+    ]))).toEqual([[20, 20], [50, 20]]);
+  });
+
+  it('centre lines only for holes that are drawn: a section or hidden lines off leave out the ones out of sight', () => {
+    // 100 × 60 × 10 plate, Ø10 holes at (25, 15) and (75, 45)
+    const d = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: withCircles(rect('a', 0, 0, 100, 60), 'h', [[25, 15, 5], [75, 45, 5]]) },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+    ]);
+    // the front view with hidden lines: both holes dashed, both centre lines; without: neither
+    expect(view(d, req('front')).axes.map((a) => a.kind === 'line' && +a.x1.toFixed(9))).toEqual([25, 75]);
+    expect(view(d, req('front', { hidden: false })).axes).toEqual([]);
+    // cut along y = 15 on the top view, looking to +y: the first hole is cut through its axis
+    // (its far half drawn), the second lies inside what is left, out of sight
+    const r = drawing({ sections: [{ id: 'A', letter: 'A', view: 'top', a: { x: -10, y: 15 }, b: { x: 110, y: 15 } }] });
+    const rq = sectionRequest(r, r.sections![0]);
+    expect(rq.dir).toEqual([expect.closeTo(0, 12), expect.closeTo(1, 12), expect.closeTo(0, 12)]);
+    const sec = view(d, rq);
+    expect(sec.axes).toEqual([{ kind: 'line', x1: expect.closeTo(25, 9), y1: expect.closeTo(10, 9), x2: expect.closeTo(25, 9), y2: expect.closeTo(0, 9) }]);
+    // the cut: (100 − 10) × 10, the hole's walls beyond at x = 25 ± 5
+    expect(loopsArea(sec.cuts![0].loops)).toBeCloseTo(90 * 10, 9);
+    for (const x of [20, 30]) expect(verticalAt(sec.visible, x)).toBeCloseTo(10, 9);
+  });
+
   it('views and sections leave no OCCT objects behind', () => {
     const oc = occ()!;
     const design = tube(40, 24, 50);
@@ -232,9 +279,23 @@ describe('exact drawing views', () => {
     const r = drawing({ sections: [{ id: 'A', letter: 'A', view: 'front', a: { x: 0, y: -10 }, b: { x: 0, y: 60 } }] });
     const reqs = [...baseRequests(r), sectionRequest(r, r.sections![0])];
     for (const q of reqs) drawViewOcc(oc, built, design, q);
+    // and a tapped hole and a countersink (threads, cones), cut through both
+    const holes = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 60, 40) },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '20' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'P', plane: { ref: 'XY', offset: '20' }, sketch: points('p', [[15, 20]]) },
+      { kind: 'hole', id: 'h1', name: 'T', sketch: 's2', d: '', depth: '15', style: 'simple', tap: { size: 'M10', depth: '10' } },
+      { kind: 'sketch', id: 's3', name: 'Q', plane: { ref: 'XY', offset: '20' }, sketch: points('q', [[45, 20]]) },
+      { kind: 'hole', id: 'h2', name: 'CS', sketch: 's3', d: '8', depth: '', through: true, style: 'countersink', csD: '16', csAngle: '90 deg' },
+    ]);
+    const builtHoles = buildDesignCached(oc, holes, solve(holes).numbers);
+    const rh = drawing({ sections: [{ id: 'A', letter: 'A', view: 'top', a: { x: -5, y: 20 }, b: { x: 65, y: 20 } }] });
+    const holeReqs = [...baseRequests(rh), sectionRequest(rh, rh.sections![0])];
+    for (const q of holeReqs) drawViewOcc(oc, builtHoles, holes, q);
     const watch = watchHandles(oc);
     try {
       for (const q of reqs) drawViewOcc(oc, built, design, q);
+      for (const q of holeReqs) drawViewOcc(oc, builtHoles, holes, q);
       expect(watch.undeleted()).toEqual([]);
     } finally {
       watch.stop();
@@ -307,6 +368,107 @@ describe('the sheet as DXF', () => {
     const big = sheetDxf(layoutSheet({ ...r, sheet: 'A0' }, views, { unit: 'mm', name: 'Plate', date: '' })!).split('\n');
     const vi = big.findIndex((c, k) => c === 'VISIBLE' && big[k - 1].trim() === '2');
     expect(big.slice(vi, vi + 10)).toContain('70');
+  });
+
+  it('arcs as ARC entities, ellipse parameters within 0 … 2π', () => {
+    // the M10 tapped hole's ¾ circle from above at 1:1: an ARC of r = D/2 = 5 from 100° round to 10°
+    const block = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: rect('a', 0, 0, 40, 40) },
+      { kind: 'extrude', id: 'f1', name: 'Block', sketch: 's1', extent: { type: 'one', d: '20' }, op: 'new' },
+      { kind: 'sketch', id: 's2', name: 'P', plane: { ref: 'XY', offset: '20' }, sketch: points('p', [[20, 20]]) },
+      { kind: 'hole', id: 'h1', name: 'Tapped', sketch: 's2', d: '', depth: '', through: true, style: 'simple', tap: { size: 'M10' } },
+    ]);
+    const r = drawing({ sheet: 'A4', scale: 1 });
+    const views = Object.fromEntries(baseRequests(r).map((q) => [q.key, view(block, q)]));
+    const codes = sheetDxf(layoutSheet(r, views, { unit: 'mm', name: 'Block', date: '' })!).split('\n');
+    const all = (type: string) => {
+      const out: Record<string, string>[] = [];
+      for (let i = codes.indexOf('ENTITIES'); i < codes.length - 1; i++) {
+        if (codes[i].trim() !== '0' || codes[i + 1] !== type) continue;
+        const e: Record<string, string> = {};
+        for (let k = i + 2; k < codes.length - 1 && codes[k].trim() !== '0'; k += 2) e[codes[k].trim()] ??= codes[k + 1];
+        out.push(e);
+      }
+      return out;
+    };
+    const arc = all('ARC').find((a) => a['8'] === 'THIN');
+    expect(arc).toBeDefined();
+    expect(+arc!['40']).toBeCloseTo(5, 9);
+    expect(+arc!['50']).toBeCloseTo(100, 9);
+    expect(+arc!['51']).toBeCloseTo(10, 9);
+  });
+
+  it('elliptical arcs: parameters within 0 … 2π (one running through 0 ends below its start), the same ends', () => {
+    // an arc across the major axis (t from 5 to 8 rad), and one taller than wide (its major axis turned a quarter)
+    const prims: Prim[] = [
+      { k: 'ellipse', cx: 100, cy: 100, rx: 10, ry: 4, rot: 0.3, t0: 5, t1: 8 },
+      { k: 'ellipse', cx: 150, cy: 100, rx: 5, ry: 10, rot: 0, t0: 1, t1: 2 },
+    ];
+    const sheet: Sheet = {
+      W: 297, H: 210, scale: 1, group: lineGroup('A4'), frame: { x: 20, y: 10, w: 267, h: 190 }, title: { x: 107, y: 10, w: 180, h: 33 },
+      inks: prims.map((p) => ({ layer: 'VISIBLE', p })), fills: [], labels: [], views: [],
+    };
+    const codes = sheetDxf(sheet).split('\n');
+    const ells: Record<string, number>[] = [];
+    for (let i = codes.indexOf('ENTITIES'); i < codes.length - 1; i++) {
+      if (codes[i].trim() !== '0' || codes[i + 1] !== 'ELLIPSE') continue;
+      const e: Record<string, number> = {};
+      for (let k = i + 2; k < codes.length - 1 && codes[k].trim() !== '0'; k += 2) e[codes[k].trim()] ??= +codes[k + 1];
+      ells.push(e);
+    }
+    expect(ells).toHaveLength(2);
+    ells.forEach((e, n) => {
+      for (const c of ['41', '42']) {
+        expect(e[c]).toBeGreaterThanOrEqual(0);
+        expect(e[c]).toBeLessThanOrEqual(2 * PI);
+      }
+      // DXF: c + cos u·major + sin u·minor, the minor axis a quarter turn on from the major, ratio × as long
+      const at = (u: number) => [e['10'] + Math.cos(u) * e['11'] - Math.sin(u) * e['21'] * e['40'], e['20'] + Math.cos(u) * e['21'] + Math.sin(u) * e['11'] * e['40']];
+      const p = prims[n] as Extract<Prim, { k: 'ellipse' }>;
+      // (the file keeps 10 significant digits)
+      for (const [u, s] of [[e['41'], 0], [e['42'], 1]]) {
+        const [x, y] = at(u), [px, py] = primAt(p, s);
+        expect(x).toBeCloseTo(px, 6);
+        expect(y).toBeCloseTo(py, 6);
+      }
+    });
+    // the first runs through 0: 5 → 8 − 2π
+    expect(ells[0]['41']).toBeCloseTo(5, 9);
+    expect(ells[0]['42']).toBeCloseTo(8 - 2 * PI, 9);
+  });
+
+  it('a part drawn in centimetres prints at true size: 1:1 is 10 paper millimetres to its unit', () => {
+    // the plate with a hole, 10 × 6 × 1 cm with a Ø2 cm hole
+    const design = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: withCircles(rect('a', 0, 0, 10, 6), 'h', [[5, 3, 1]]) },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '1' }, op: 'new' },
+    ]);
+    const ws = emptyWorksheet();
+    const cad = createRegion('cad', 20, 400, { name: 'part', design, unit: 'cm' }) as CadRegion;
+    ws.regions = [cad];
+    const numbers = designNumbers((evaluateWorksheet(ws).results.get(cad.id) as CadResult).design!);
+    expect(numbers.unit).toBe('cm');
+    const oc = occ()!;
+    const built = buildDesignCached(oc, design, numbers);
+    const r = drawing({ sheet: 'A4', views: { front: true, top: true, side: false, iso: false } });
+    const views = Object.fromEntries(baseRequests(r).map((q) => [q.key, drawViewOcc(oc, built, design, q)]));
+    const at = (scale?: number) => layoutSheet({ ...r, scale }, views, { unit: 'cm', name: 'Plate', date: '' })!;
+    const one = at(1), top = one.views.find((v) => v.key === 'top')!;
+    expect(top.box.x1 - top.box.x0).toBeCloseTo(100, 9);
+    expect(one.inks.some((i) => i.layer === 'VISIBLE' && i.p.k === 'arc' && Math.abs(i.p.r - 10) < 1e-9)).toBe(true);
+    // the largest standard scale at which 100 + 60 mm of views fit an A4 is 1:1, not 10:1
+    expect(at().scale).toBe(1);
+  });
+
+  it('a view dragged off a smaller sheet is placed on it again', () => {
+    const r = drawing({ sheet: 'A4', scale: 1, views: { front: true, top: false, side: false, iso: false }, details: [{ id: 'B', letter: 'B', view: 'front', c: { x: 40, y: 5 }, r: 4, scale: 5, at: { x: 380, y: 250 } }] });
+    const front = { front: view(plate(), req('front')) };
+    const det = (q: DrawingRegion) => layoutSheet(q, front, { unit: 'mm', name: 'Plate', date: '' })!.views.find((v) => v.key === 'det:B')!;
+    // on A3 it stays where it was put; on A4 (297 wide) it would be off the paper
+    const onA3 = det({ ...r, sheet: 'A3' });
+    expect((onA3.box.x0 + onA3.box.x1) / 2).toBeCloseTo(380, 9);
+    const onA4 = det(r);
+    expect(onA4.box.x1).toBeLessThan(297 - 10);
   });
 
   it('a detail view: the parent clipped at its circle, enlarged to its own scale', () => {

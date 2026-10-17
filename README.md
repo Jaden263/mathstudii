@@ -947,7 +947,8 @@ size.
 landscape or portrait, ISO 5457 frame) with:
 
 - front, top and side views in first-angle (ISO) or third-angle projection, plus an
-  isometric view, at the largest standard scale that fits (or one you pick);
+  isometric view, at the largest standard scale that fits (or one you pick), of true size
+  whatever unit the part is drawn in;
 - lines from OpenCascade's exact hidden-line removal on the solids: straight edges are
   lines, circles and arcs stay true circles and arcs, a circle seen at an angle is a true
   ellipse, only B-spline edges become fine polylines;
@@ -955,7 +956,8 @@ landscape or portrait, ISO 5457 frame) with:
   A0): visible edges and outlines wide, hidden lines narrow dashed, tangent edges narrow
   (can be switched off), centre lines narrow long-dash dotted, hatching narrow;
 - centre marks on holes and shafts seen end-on and centre lines along them seen side-on,
-  3 mm past the outline (switchable per view);
+  3 mm past the outline (switchable per view); a section, or a view without hidden lines,
+  leaves out those of holes it does not show;
 - cosmetic threads (the thread feature without geometry, tapped holes) per ISO 6410: a
   narrow line at the root (d3 of a bolt, D of a nut), a ¾ circle seen end-on, a wide
   line where the full thread ends, dashed where the material hides them;
@@ -1208,10 +1210,11 @@ What it is not, honestly:
 - **Drawings, the limits:**
   - Coils, sweeps along coils and modeled threads are drawn from their facets (the exact
     hidden-line removal takes minutes on helical faces: over two for an M12 thread seen
-    along its axis), with the other bodies still exact; the sheet says *partly from the
-    mesh*. A modeled thread is drawn as its geometry, not per ISO 6410.
-  - Cosmetic threads follow their body through patterns, mirrors, moves and joins; the
-    threads of a tool body that a Combine cuts or intersects with go with it.
+    along its axis), with the other bodies still exact; the drawing's tool row says
+    *partly mesh*. A modeled thread is drawn as its geometry, not per ISO 6410.
+  - Cosmetic threads (tapped holes too) follow their body through patterns, mirrors, moves,
+    splits and joins; the threads of a tool body that a Combine cuts or intersects with go
+    with it.
   - Section lines are straight (no stepped or aligned sections), only on the front, top
     and side views; one on the side view stays on the side view when the projection
     changes (left becomes right). Shafts and bolts cut lengthwise are hatched like everything else.

@@ -236,7 +236,7 @@ export interface DrawingSection {
   /** Ends of the cutting line in that view (model units, x right and y up on the paper). */
   a: { x: number; y: number };
   b: { x: number; y: number };
-  /** Look the other way (the default looks to the right of a → b). */
+  /** Look the other way (the default is the way that shows the part upright, else to the right of a → b). */
   flip?: boolean;
   /** Centre of the view on the sheet (mm from its lower left corner); missing = placed automatically. */
   at?: { x: number; y: number };
@@ -246,7 +246,7 @@ export interface DrawingSection {
 export interface DrawingDetail {
   id: string;
   letter: string;
-  /** The view it enlarges: a standard view's key or a section's id. */
+  /** The view it enlarges: a standard view's key or a section view's (`sec:${id}`). */
   view: string;
   /** Centre and radius of the circle in that view (model units). */
   c: { x: number; y: number };

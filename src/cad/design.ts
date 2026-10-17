@@ -976,7 +976,7 @@ export interface TimelineState<S> {
 export interface ThreadMark {
   /** Feature that made it (a pattern's copies carry its prefix, `${pattern}.${k}.${feature}`). */
   feature: string;
-  /** Body it is on, when known (a tapped hole cuts its targets). */
+  /** Body it is on, when known (a tapped hole has one for each body it drills). */
   body?: string;
   /** On the axis where the threaded face starts; `axis` points along it (unit). */
   o: Vec3;
@@ -1613,7 +1613,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         const ids = item.points?.length ? item.points : sk.sketch.entities.filter((e) => e.type === 'point').map((e) => e.id);
         const centres = ids.map((id) => sk.sketch.entities.find((e) => e.id === id)).filter((e) => e?.type === 'point').map((e) => sol.points[(e as { p: string }).p]).filter(Boolean);
         if (!centres.length) throw new Error('place sketch points at the hole centres');
-        const tgt = targetsOf(item.targets).map((b) => b.solid);
+        const drilled = targetsOf(item.targets), tgt = drilled.map((b) => b.solid);
         if (!tgt.length) throw new Error('there is no body to drill');
         const depth = item.through ? reach(ops, f, tgt) * 2 : p.depth;
         const dir = item.dir ?? 'auto';
@@ -1622,13 +1622,15 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         const sg = dir === '+' ? 1 : dir === '-' ? -1 : bestSide(ops, make, tgt);
         let tool = make(sg);
         if (item.tap && !item.tap.modeled) {
-          // a cosmetic thread at every hole, as deep as the thread (the whole hole when through)
+          // a cosmetic thread at every hole of every body drilled (the drawing keeps the ones
+          // on a hole), as deep as the thread (the whole hole when through); on its body, so
+          // that it moves and is copied with it
           const size = threadIn(parseThread(item.tap.size), inp.numbers.unit);
           const z1 = p.tdepth ?? (item.through ? undefined : depth);
-          threads = [...threads, ...centres.map(([x, y]): ThreadMark => ({
-            feature: item.id, o: framePoint(f, { x, y }), axis: scale3(f.n, sg), R: p.d / 2, z0: 0, z1,
+          threads = [...threads, ...drilled.flatMap((b) => centres.map(([x, y]): ThreadMark => ({
+            feature: item.id, body: b.id, o: framePoint(f, { x, y }), axis: scale3(f.n, sg), R: p.d / 2, z0: 0, z1,
             length: item.through ? undefined : depth, d: size.d, d1: size.d1, internal: true, name: size.name,
-          }))];
+          })))];
         }
         if (item.tap?.modeled) {
           // the thread's groove cut with the drill, from outside the hole's mouth
@@ -1787,6 +1789,9 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         // the piece behind the plane stays the body; the others are new bodies after it
         b.solid = pieces[0];
         pieces.slice(1).forEach((solid, k) => created(`${item.id}.${k + 1}.${b.id}`, item.id, solid));
+        // every piece takes the body's cosmetic threads (a drawing keeps them where their face is)
+        const marks = threads.filter((m) => m.body === b.id);
+        threads = [...threads, ...pieces.slice(1).flatMap((_, k) => marks.map((m) => ({ ...m, body: `${item.id}.${k + 1}.${b.id}` })))];
         break;
       }
       case 'move': {

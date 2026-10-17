@@ -15,7 +15,7 @@ import { designNumbers } from '../../cad/keys';
 import { scaleText } from '../../cad/drawing';
 import type { DrawView } from '../../cad/drawing2d';
 import {
-  detailScale, drawingRequests, layerStyle, layoutSheet, nextLetter, primPath, sheetSize, snapPoints, toPaper, toView, viewAt,
+  detailScale, drawingRequests, layerStyle, layoutSheet, nextLetter, primPath, sheetSize, snapPoints, toPaper, toView, unitMm, viewAt,
   type Layer, type PlacedView, type Sheet,
 } from '../../cad/drawingSheet';
 import { sheetDxf } from '../../cad/drawingDxf';
@@ -192,7 +192,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
         set({ sections: [...(region.sections ?? []), { id: newId(), letter, view: view.key as 'front' | 'top' | 'side', a: { x: A[0], y: A[1] }, b: { x: B[0], y: B[1] } }] });
       } else {
         const r = Math.hypot(B[0] - A[0], B[1] - A[1]);
-        set({ details: [...(region.details ?? []), { id: newId(), letter, view: view.key, c: { x: A[0], y: A[1] }, r, scale: detailScale(view.k) }] });
+        set({ details: [...(region.details ?? []), { id: newId(), letter, view: view.key, c: { x: A[0], y: A[1] }, r, scale: detailScale(view.k / unitMm(cad?.unit ?? 'mm')) }] });
       }
       setDraft(null);
       setTool(null);
@@ -227,11 +227,12 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     if (!tool || !draft || !sheet) return;
     const [x, y] = sheetPoint(e.currentTarget, sheet.H, e);
     let b = snapIn(draft.view, x, y);
-    if (tool === 'section' && b[0] === x && b[1] === y) {
-      // within 5° of the paper's axes: straight across or up
-      const dx = x - draft.a[0], dy = y - draft.a[1], t = Math.tan(Math.PI / 36);
-      if (Math.abs(dy) < t * Math.abs(dx)) b = [x, draft.a[1]];
-      else if (Math.abs(dx) < t * Math.abs(dy)) b = [draft.a[0], y];
+    if (tool === 'section') {
+      // within 5° of the paper's axes: straight across or up, a snapped end too (the plane
+      // follows the line's direction, and an end caught on a corner would tilt it)
+      const dx = b[0] - draft.a[0], dy = b[1] - draft.a[1], t = Math.tan(Math.PI / 36);
+      if (Math.abs(dy) < t * Math.abs(dx)) b = [b[0], draft.a[1]];
+      else if (Math.abs(dx) < t * Math.abs(dy)) b = [draft.a[0], b[1]];
     }
     setDraft({ ...draft, b });
   };

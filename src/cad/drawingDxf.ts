@@ -144,9 +144,11 @@ export function sheetDxf(sheet: Sheet): string {
         e(11, major * Math.cos(rot)); e(21, major * Math.sin(rot)); e(31, 0);
         e(210, 0); e(220, 0); e(230, 1);
         e(40, minor / major);
+        // parameters within 0 … 2π, as readers expect them (an end below the start runs on through 0)
         const whole = p.t1 - p.t0 >= 2 * Math.PI - 1e-9;
         const t0 = whole ? 0 : (((p.t0 - dt) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-        e(41, t0); e(42, whole ? 2 * Math.PI : t0 + (p.t1 - p.t0));
+        const t1 = t0 + (p.t1 - p.t0);
+        e(41, t0); e(42, whole ? 2 * Math.PI : t1 > 2 * Math.PI ? t1 - 2 * Math.PI : t1);
         return;
       }
       case 'poly': {

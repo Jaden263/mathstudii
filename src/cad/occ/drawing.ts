@@ -97,7 +97,6 @@ export function drawViewOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, re
 
     // cylinders and cones: centre marks and lines, and where cosmetic threads may run
     const cyls = cylinders(oc, t, exact.map((p) => p.shape));
-    view.axes = axesSeen(cyls, d, to2);
 
     // cosmetic threads as edges of their own, hidden by the bodies like any other
     const marks = threadMarks(built, design, exact, cyls);
@@ -174,6 +173,9 @@ export function drawViewOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, re
 
     [view.visible, view.tangent, view.hidden] = overlayPrims([visible, tangent, hidden], size);
     [view.thin] = overlayPrims([thin], size);
+    // without hidden lines (a section, or hidden lines off) a hole out of sight gets no centre line either
+    const drawn = [...view.visible, ...view.tangent];
+    view.axes = axesSeen(cyls, d, to2, req.hidden ? undefined : (c) => outlineSeen(c, d, to2, drawn, size * 1e-5));
     view.box = primsBox(view.visible, view.hidden, view.tangent, view.thin);
     if (!(view.box.x1 >= view.box.x0)) view.box = { x0: 0, y0: 0, x1: 0, y1: 0 };
     return view;
@@ -309,11 +311,15 @@ interface Cyl {
   p: Vec3;
   d: Vec3;
   r: number;
-  /** Extent along d from p. */
+  /** Extent along d from p, and the radius at each end (they differ on a cone). */
   t0: number;
   t1: number;
+  r0: number;
+  r1: number;
   /** The angle it goes round its axis. */
   span: number;
+  /** Which of the shapes it is on. */
+  shape: number;
 }
 
 /**
@@ -321,13 +327,13 @@ interface Cyl {
  * roundings. Faces of one cylinder count together: a boolean splits a cylinder at its seam.
  */
 function cylinders(oc: OC, t: Arena, shapes: TopoDS_Shape[]): Cyl[] {
-  const all = shapes.flatMap((s) => cylinderFaces(oc, t, s));
+  const all = shapes.flatMap((s, i) => cylinderFaces(oc, t, s, i));
   const tol = 1e-7 * all.reduce((m, c) => max(m, c.r, abs(c.t1 - c.t0)), 1e-9);
   const same = (a: Cyl, b: Cyl) => abs(abs(dot3(a.d, b.d)) - 1) < 1e-9 && abs(a.r - b.r) < tol && len3(sub3(sub3(b.p, a.p), scale3(a.d, dot3(sub3(b.p, a.p), a.d)))) < tol;
   return all.filter((c) => all.reduce((s, q) => s + (same(c, q) ? q.span : 0), 0) >= PI - 1e-3);
 }
 
-function cylinderFaces(oc: OC, t: Arena, shape: TopoDS_Shape): Cyl[] {
+function cylinderFaces(oc: OC, t: Arena, shape: TopoDS_Shape, index: number): Cyl[] {
   const S = oc.GeomAbs_SurfaceType;
   const out: Cyl[] = [];
   for (const f of subShapes(oc, t, shape, oc.TopAbs_ShapeEnum.TopAbs_FACE)) {
@@ -352,7 +358,8 @@ function cylinderFaces(oc: OC, t: Arena, shape: TopoDS_Shape): Cyl[] {
     const q0 = xyz(t.add(a.Value(UMin, VMin))), q1 = xyz(t.add(a.Value(UMin, VMax)));
     const s0 = dot3(sub3(q0, p), d), s1 = dot3(sub3(q1, p), d);
     const radial = (q: Vec3, s: number) => len3(sub3(sub3(q, p), scale3(d, s)));
-    out.push({ p, d, r: max(radial(q0, s0), radial(q1, s1)), t0: min(s0, s1), t1: max(s0, s1), span: UMax - UMin });
+    const [ra, rb] = [radial(q0, s0), radial(q1, s1)];
+    out.push({ p, d, r: max(ra, rb), t0: min(s0, s1), t1: max(s0, s1), r0: s0 <= s1 ? ra : rb, r1: s0 <= s1 ? rb : ra, span: UMax - UMin, shape: index });
   }
   return out;
 }
@@ -363,23 +370,29 @@ function coneCentre(t: Arena, a: InstanceType<OC['BRepAdaptor_Surface']>, u: num
   return scale3(add3(add3(A, B), C), 1 / 3);
 }
 
-/** Centre marks for axes seen end-on and centre lines for axes seen side-on (coaxial faces merged). */
-function axesSeen(cyls: Cyl[], d: Vec3, to2: (q: Vec3) => [number, number]): ViewAxis[] {
-  const groups: { p: Vec3; d: Vec3; r: number; t0: number; t1: number }[] = [];
+/**
+ * Centre marks for axes seen end-on and centre lines for axes seen side-on (coaxial faces
+ * merged); with `seen`, only for the axes of which some face is seen.
+ */
+function axesSeen(cyls: Cyl[], d: Vec3, to2: (q: Vec3) => [number, number], seen?: (c: Cyl) => boolean): ViewAxis[] {
+  const groups: { p: Vec3; d: Vec3; r: number; t0: number; t1: number; seen: boolean }[] = [];
   const size = cyls.reduce((s, c) => max(s, c.r, abs(c.t1 - c.t0)), 0) || 1;
   const tol = size * 1e-7;
   for (const c of cyls) {
     const g = groups.find((q) => abs(abs(dot3(q.d, c.d)) - 1) < 1e-9 && len3(sub3(sub3(c.p, q.p), scale3(q.d, dot3(sub3(c.p, q.p), q.d)))) < tol);
     const a = g ? dot3(sub3(c.p, g.p), g.d) : 0, s = g ? Math.sign(dot3(c.d, g.d)) : 1;
     const t0 = a + s * c.t0, t1 = a + s * c.t1;
+    const on = !seen || seen(c);
     if (g) {
       g.r = max(g.r, c.r);
       g.t0 = min(g.t0, t0, t1);
       g.t1 = max(g.t1, t0, t1);
-    } else groups.push({ p: c.p, d: c.d, r: c.r, t0: min(t0, t1), t1: max(t0, t1) });
+      g.seen ||= on;
+    } else groups.push({ p: c.p, d: c.d, r: c.r, t0: min(t0, t1), t1: max(t0, t1), seen: on });
   }
   const out: ViewAxis[] = [];
   for (const g of groups) {
+    if (!g.seen) continue;
     const c = abs(dot3(g.d, d));
     if (c > 1 - 1e-9) {
       const [x, y] = to2(g.p);
@@ -390,6 +403,45 @@ function axesSeen(cyls: Cyl[], d: Vec3, to2: (q: Vec3) => [number, number]): Vie
     }
   }
   return out;
+}
+
+/**
+ * Whether some of the drawn line work lies on the outline of a cylinder or cone: its
+ * circles seen end-on, its silhouettes seen side-on (not its ends: a hole's lie along the
+ * faces it opens into). A line counts where it runs along a silhouette for a while (merged
+ * lines may run on past it), an arc where it is on one of the circles.
+ */
+function outlineSeen(c: Cyl, d: Vec3, to2: (q: Vec3) => [number, number], drawn: Prim[], tol: number): boolean {
+  const circles: [number, number, number][] = [], segs: [number, number, number, number][] = [];
+  const cosine = abs(dot3(c.d, d));
+  if (cosine > 1 - 1e-9) {
+    const [cx, cy] = to2(c.p);
+    circles.push([cx, cy, c.r0], [cx, cy, c.r1]);
+  } else if (cosine < 1e-9) {
+    const s = norm3(cross3(c.d, d));
+    const at = (z: number, r: number) => to2(add3(add3(c.p, scale3(c.d, z)), scale3(s, r)));
+    const seg = (a: [number, number], b: [number, number]) => segs.push([...a, ...b]);
+    seg(at(c.t0, c.r0), at(c.t1, c.r1));
+    seg(at(c.t0, -c.r0), at(c.t1, -c.r1));
+  } else return false;
+  /** Does the segment p–q run along one of the segments for longer than tol? */
+  const along = (px: number, py: number, qx: number, qy: number) => segs.some(([ax, ay, bx, by]) => {
+    const l = Math.hypot(bx - ax, by - ay);
+    if (!(l > tol)) return false;
+    const ux = (bx - ax) / l, uy = (by - ay) / l;
+    const off = (x: number, y: number) => abs((x - ax) * uy - (y - ay) * ux);
+    if (off(px, py) > tol || off(qx, qy) > tol) return false;
+    const s0 = (px - ax) * ux + (py - ay) * uy, s1 = (qx - ax) * ux + (qy - ay) * uy;
+    return min(max(s0, s1), l) - max(min(s0, s1), 0) > tol;
+  });
+  const onCircle = (cx: number, cy: number, r: number) => circles.some(([x, y, rr]) => Math.hypot(cx - x, cy - y) <= tol && abs(r - rr) <= tol);
+  return drawn.some((p) => {
+    if (p.k === 'line') return along(p.x1, p.y1, p.x2, p.y2);
+    if (p.k === 'arc') return onCircle(p.cx, p.cy, p.r);
+    if (p.k === 'ellipse') return abs(p.rx - p.ry) <= tol && onCircle(p.cx, p.cy, p.rx);
+    for (let i = 2; i + 1 < p.pts.length; i += 2) if (along(p.pts[i - 2], p.pts[i - 1], p.pts[i], p.pts[i + 1])) return true;
+    return false;
+  });
 }
 
 interface PlacedMark extends ThreadMark {
@@ -414,11 +466,13 @@ function threadMarks(built: OccBuiltDesign, design: CadDesign, exact: Placed[], 
     const marks = (o && built.components.get(o.component)?.threads) ?? [];
     const M = ps[0].M;
     for (const m of marks) {
-      if (m.body && !ps.some((p) => p.body === m.body)) continue;
+      // the shapes it may be on: its body's (all the occurrence's when the body is not known)
+      const own = new Set(ps.filter((p) => !m.body || p.body === m.body).map((p) => exact.indexOf(p)));
+      if (!own.size) continue;
       const mo = m4Point(M, m.o), ax = norm3(m4Dir(M, m.axis));
       const tol = 1e-6 * max(m.R, m.d);
       // the faces it may run on: coaxial, of its radius
-      const on = cyls.filter((c) => abs(abs(dot3(c.d, ax)) - 1) < 1e-9 && abs(c.r - m.R) < tol + 1e-9 * m.R
+      const on = cyls.filter((c) => own.has(c.shape) && abs(abs(dot3(c.d, ax)) - 1) < 1e-9 && abs(c.r - m.R) < tol + 1e-9 * m.R
         && len3(sub3(sub3(c.p, mo), scale3(ax, dot3(sub3(c.p, mo), ax)))) < tol);
       if (!on.length) continue;
       let f0 = Infinity, f1 = -Infinity;
