@@ -187,6 +187,9 @@ export function compare(a: Scalar, b: Scalar): number {
   const ra = rank(a), rb = rank(b);
   if (ra !== rb) return ra < rb ? -1 : 1;
   if (typeof a === 'number' && typeof b === 'number') {
+    if (a === b) return 0;
+    // only values within rounding of each other need the (slow) 15-digit comparison
+    if (Math.abs(a - b) > 1e-13 * Math.max(Math.abs(a), Math.abs(b))) return a < b ? -1 : 1;
     const x = round15(a), y = round15(b);
     return x < y ? -1 : x > y ? 1 : 0;
   }

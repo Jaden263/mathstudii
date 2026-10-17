@@ -166,7 +166,8 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
   };
   const commit = (dr: number, dc: number, refocus = true) => {
     if (!edit) return;
-    const t = edit.text;
+    // +A1 and -A1 are formulas, as Excel (after Lotus) reads them
+    const t = /^[+-][A-Za-z$(]/.test(edit.text) ? `=${edit.text}` : edit.text;
     const value = t.startsWith('=') ? tidyFormula(t) : t;
     if (value !== inputOf(edit.r, edit.c)) writeCells([[cellName(edit.r, edit.c), value]]);
     setEdit(null);

@@ -22,6 +22,8 @@ export interface Ctx {
   name(name: string, sheet?: string): Value | undefined;
   /** Functions called that do not exist. */
   unknown(name: string): void;
+  /** Ranges already read as arrays during this calculation. */
+  arrays?: Map<string, Arr>;
 }
 
 export type Fn = (args: Value[], ctx: Ctx) => Value;
@@ -106,13 +108,18 @@ export function toArr(v: Value, ctx: Ctx): Arr {
     const u = ctx.used(v.sheet);
     const r2 = v.rows > 100000 ? Math.max(v.r1, Math.min(v.r2, u?.r2 ?? v.r1)) : v.r2;
     const c2 = v.cols > 1000 ? Math.max(v.c1, Math.min(v.c2, u?.c2 ?? v.c1)) : v.c2;
+    const id = `${v.sheet}:${v.r1}:${v.c1}:${r2}:${c2}`;
+    const known = ctx.arrays?.get(id);
+    if (known) return known;
     const rows: Scalar[][] = [];
     for (let r = v.r1; r <= r2; r++) {
       const row: Scalar[] = [];
       for (let c = v.c1; c <= c2; c++) row.push(ctx.get(v.sheet, r, c));
       rows.push(row);
     }
-    return new Arr(rows);
+    const arr = new Arr(rows);
+    if ((r2 - v.r1 + 1) * (c2 - v.c1 + 1) > 16) ctx.arrays?.set(id, arr);
+    return arr;
   }
   return new Arr([[v]]);
 }
@@ -258,4 +265,4 @@ export function evalNode(n: Node, ctx: Ctx): Value {
 }
 
 /** Numbers compare to 15 digits here too (MATCH, criteria). */
-export const eq15 = (a: number, b: number) => round15(a) === round15(b);
+export const eq15 = (a: number, b: number) => a === b || (Math.abs(a - b) <= 1e-13 * Math.max(Math.abs(a), Math.abs(b)) && round15(a) === round15(b));

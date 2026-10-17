@@ -140,7 +140,7 @@ export function readXlsx(bytes: Uint8Array): XlsxBook {
   try {
     files = unzipSync(bytes);
   } catch {
-    throw new Error('This is not an .xlsx file (it is not a zip package). Old .xls files are not supported: save as .xlsx first.');
+    throw new Error('This is not an .xlsx file (it is not a zip package): an old .xls file, or a workbook protected with a password. Save it from Excel as an unprotected .xlsx first.');
   }
   const top = relsOf(files, '');
   const wbPath = top.find((r) => /\/officeDocument$/.test(r.type))?.target ?? 'xl/workbook.xml';

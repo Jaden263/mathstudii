@@ -6,7 +6,7 @@ import { evalNode, toArr, type Ctx } from './evaluate';
 import { parseFormula, functionsIn, FormulaError, type Node } from './formula';
 import './functions';
 import { formatValue } from './numfmt';
-import { areaName, cellName, inArea, key, keyCol, keyRow, MAX_COLS, MAX_ROWS, parseCell, parseRange, quoteSheet, type Area } from './refs';
+import { areaName, cellName, key, keyCol, keyRow, MAX_COLS, MAX_ROWS, parseCell, parseRange, quoteSheet, type Area } from './refs';
 import { Arr, ERR, parseInput, Ref, XlError, type Scalar, type Value } from './values';
 
 export interface CellStyle {
@@ -84,6 +84,8 @@ export class Workbook {
   /** Formulas that could not be read: cell → message. */
   readonly parseErrors = new Map<string, string>();
   private nameDepth = 0;
+  /** Ranges read as arrays in this pass (their cells do not change within it). */
+  private arrays = new Map<string, Arr>();
 
   constructor(model: WorkbookModel, opts: { now?: number } = {}) {
     this.date1904 = !!model.date1904;
@@ -223,6 +225,7 @@ export class Workbook {
   }
 
   private pass(): void {
+    this.arrays = new Map();
     for (const sh of this.sheets) {
       sh.values = new Map();
       sh.state = new Map();
@@ -273,6 +276,7 @@ export class Workbook {
       sheetCount: () => this.sheets.length,
       name: (n, sheet) => this.nameValue(n, sheet === undefined ? s : this.sheetIndex(sheet), r, c),
       unknown: (n) => this.unknownFunctions.add(n),
+      arrays: this.arrays,
     };
   }
 
@@ -368,35 +372,76 @@ export class Workbook {
   private graph(): { order: [number, number][]; cycles: Cycle[] } {
     const nodes: [number, number][] = [];
     const index = this.sheets.map(() => new Map<number, number>());
+    // formula rows of each column, sorted, to find the formulas inside an area quickly
+    const byCol = this.sheets.map(() => new Map<number, number[]>());
     this.sheets.forEach((sh, s) => {
-      for (const [k, e] of sh.entries) if (e.node && !sh.overrides.has(k)) { index[s].set(k, nodes.length); nodes.push([s, k]); }
+      for (const [k, e] of sh.entries) {
+        if (!e.node || sh.overrides.has(k)) continue;
+        index[s].set(k, nodes.length);
+        nodes.push([s, k]);
+        const col = byCol[s].get(keyCol(k));
+        if (col) col.push(keyRow(k));
+        else byCol[s].set(keyCol(k), [keyRow(k)]);
+      }
+      for (const rows of byCol[s].values()) rows.sort((a, b) => a - b);
     });
-    const formulaKeys = index.map((m) => [...m.keys()]);
-    const adj: number[][] = nodes.map(([s, k]) => {
+    const inside = (sheet: number, a: Area): number[] => {
+      const out: number[] = [];
+      const cols = byCol[sheet];
+      const visit = (c: number, rows: number[]) => {
+        let lo = 0, hi = rows.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (rows[mid] < a.r1) lo = mid + 1;
+          else hi = mid;
+        }
+        for (let i = lo; i < rows.length && rows[i] <= a.r2; i++) out.push(index[sheet].get(key(rows[i], c))!);
+      };
+      if (a.c2 - a.c1 < cols.size) {
+        for (let c = a.c1; c <= a.c2; c++) {
+          const rows = cols.get(c);
+          if (rows) visit(c, rows);
+        }
+      } else for (const [c, rows] of cols) if (c >= a.c1 && c <= a.c2) visit(c, rows);
+      return out;
+    };
+    // a large area is one node that depends on the formulas in it, so a thousand VLOOKUPs over
+    // the same column add a thousand edges, not a million
+    const n = nodes.length;
+    const adj: number[][] = new Array(n);
+    const areaNodes = new Map<string, number>();
+    nodes.forEach(([s, k], i) => {
       const refs: { sheet: number; area: Area }[] = [];
       this.precedents(this.sheets[s].entries.get(k)!.node!, s, refs);
       const out = new Set<number>();
       for (const { sheet, area } of refs) {
-        const m = index[sheet];
-        if (!m.size) continue;
-        const cellsInArea = (area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1);
-        if (cellsInArea <= m.size) {
+        if (!index[sheet].size) continue;
+        if ((area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1) <= 16) {
           for (let r = area.r1; r <= area.r2; r++) for (let c = area.c1; c <= area.c2; c++) {
-            const j = m.get(key(r, c));
+            const j = index[sheet].get(key(r, c));
             if (j !== undefined) out.add(j);
           }
-        } else {
-          for (const fk of formulaKeys[sheet]) if (inArea(area, keyRow(fk), keyCol(fk))) out.add(m.get(fk)!);
+          continue;
         }
+        const id = `${sheet}:${area.r1}:${area.c1}:${area.r2}:${area.c2}`;
+        let node = areaNodes.get(id);
+        if (node === undefined) {
+          const within = inside(sheet, area);
+          if (!within.length) continue;
+          node = adj.length;
+          adj.push(within);
+          areaNodes.set(id, node);
+        }
+        out.add(node);
       }
-      return [...out];
+      adj[i] = [...out];
     });
     // Tarjan, without recursion: components come out precedents first
-    const n = nodes.length;
-    const idx = new Int32Array(n).fill(-1), low = new Int32Array(n), onStack = new Uint8Array(n);
+    const total = adj.length;
+    const idx = new Int32Array(total).fill(-1), low = new Int32Array(total), onStack = new Uint8Array(total);
     const stack: number[] = [], order: [number, number][] = [], cycles: Cycle[] = [];
     let counter = 0;
-    for (let v0 = 0; v0 < n; v0++) {
+    for (let v0 = 0; v0 < total; v0++) {
       if (idx[v0] >= 0) continue;
       const calls: [number, number][] = [[v0, 0]];
       idx[v0] = low[v0] = counter++;
@@ -426,7 +471,7 @@ export class Workbook {
           comp.push(w);
         } while (w !== u);
         if (comp.length > 1 || adj[u].includes(u)) cycles.push(this.cycleOf(comp, adj, nodes));
-        else order.push(nodes[u]);
+        else if (u < n) order.push(nodes[u]);
       }
     }
     return { order, cycles };
@@ -435,8 +480,9 @@ export class Workbook {
   /** One loop through a strongly connected component, for the message. */
   private cycleOf(comp: number[], adj: number[][], nodes: [number, number][]): Cycle {
     const inComp = new Set(comp);
+    const cellsOf = comp.filter((i) => i < nodes.length);
     // start at the first cell in reading order, then breadth-first back to it
-    const start = comp.reduce((a, b) => (nodes[b][0] < nodes[a][0] || (nodes[b][0] === nodes[a][0] && nodes[b][1] < nodes[a][1]) ? b : a));
+    const start = cellsOf.reduce((a, b) => (nodes[b][0] < nodes[a][0] || (nodes[b][0] === nodes[a][0] && nodes[b][1] < nodes[a][1]) ? b : a));
     const prev = new Map<number, number>();
     const queue = [start];
     let last = -1;
@@ -452,8 +498,9 @@ export class Workbook {
     const loop = [start];
     for (let u = last; u !== start && u >= 0; u = prev.get(u)!) loop.splice(1, 0, u);
     loop.push(start);
-    const cells = comp.map((i) => ({ sheet: nodes[i][0], r: keyRow(nodes[i][1]), c: keyCol(nodes[i][1]) }));
-    return { text: loop.map((i) => this.label(nodes[i][0], keyRow(nodes[i][1]), keyCol(nodes[i][1]))).join(' → '), cells };
+    const cells = cellsOf.map((i) => ({ sheet: nodes[i][0], r: keyRow(nodes[i][1]), c: keyCol(nodes[i][1]) }));
+    const named = loop.filter((i) => i < nodes.length);
+    return { text: named.map((i) => this.label(nodes[i][0], keyRow(nodes[i][1]), keyCol(nodes[i][1]))).join(' → '), cells };
   }
 
   /** Every function the formulas call that this engine does not have. */

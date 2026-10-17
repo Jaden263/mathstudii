@@ -425,6 +425,31 @@ describe('dependencies and cycles', () => {
     expect(val(wb, 'E1')).toBe(5);
     expect(wb.cycles.map((c) => c.text).sort()).toEqual(['A1 → B1 → C1 → A1', 'F1 → F1']);
   });
+  it('a range that holds its own formula is circular too', () => {
+    const cells: Record<string, string> = { A1: '=SUM(A2:A40)', B1: '=SUM(A1:A40)', C1: '=SUM(C1:C40)' };
+    for (let i = 2; i <= 40; i++) cells[`A${i}`] = '1';
+    const wb = book(cells);
+    expect(val(wb, 'A1')).toBe(39);
+    expect(val(wb, 'B1')).toBe(78);
+    expect(val(wb, 'C1')).toBe(ERR.circ);
+    expect(wb.cycles.map((c) => c.text)).toEqual(['C1 → C1']);
+  });
+  it('two thousand lookups over a column of formulas take well under a second or two', () => {
+    // a large range is one node of the dependency graph and is read once per calculation
+    const cells: Record<string, string> = {};
+    const n = 2000;
+    for (let i = 1; i <= n; i++) {
+      cells[`A${i}`] = String(i);
+      cells[`B${i}`] = `=A${i}^2`;
+      cells[`C${i}`] = `=VLOOKUP(A${i},$A$1:$B$${n},2,FALSE)`;
+    }
+    cells.D1 = `=SUM(C1:C${n})`;
+    const t0 = performance.now();
+    const wb = book(cells);
+    expect(performance.now() - t0).toBeLessThan(3000);
+    expect(val(wb, 'C1500')).toBe(1500 ** 2);
+    expect(val(wb, 'D1')).toBe((n * (n + 1) * (2 * n + 1)) / 6);
+  });
   it('recalculates after a change and after an input is written over a cell', () => {
     const wb = book({ A1: '2', B1: '=A1^2', C1: '=B1+A1' });
     expect(val(wb, 'C1')).toBe(6);
