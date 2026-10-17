@@ -5,11 +5,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { evaluateWorksheet, type CadResult, type MathResult } from '../engine/evaluator';
 import { createRegion, emptyWorksheet, type CadRegion } from '../model/types';
-import { EXAMPLES, fourBarDesign } from '../model/examples';
+import { EXAMPLES, fourBarDesign, fourBarExample } from '../model/examples';
 import { designOf, jointFrame, type CadDesign, type CadJoint, type DesignItem, type Placement } from './design';
 import { designNumbers } from './keys';
 import { bomCsv, bomTable, bomTsv } from './bom';
-import { autoExplode, explodeShifts, explodedPlacements } from './explode';
+import { autoExplode, explodeShifts, explodedPlacements, occurrenceBox } from './explode';
 import { motionMatrix } from './kinematics';
 import { initKernel, kernel, m4Inv, m4Mul, m4Point, m4Pose, type M4 } from './solid';
 import { rect, watchHandles } from './occ/fixtures';
@@ -101,6 +101,29 @@ describe('the four-bar example', () => {
   });
 });
 
+describe('the four-bar example worksheet', () => {
+  it('evaluates every region, Freudenstein’s residual vanishing and the stop’s clearance matching', () => {
+    const ws = fourBarExample();
+    const out = evaluateWorksheet(ws);
+    const tex = (src: string) => {
+      const r = ws.regions.find((q) => q.kind === 'math' && q.source.startsWith(src))!;
+      const m = out.results.get(r.id) as MathResult;
+      expect(m.error, src).toBeUndefined();
+      return m.tex;
+    };
+    for (const r of ws.regions) if (r.kind === 'math') expect((out.results.get(r.id) as MathResult).error, r.source).toBeUndefined();
+    const fb = out.results.get(ws.regions.find((r) => r.kind === 'cad')!.id) as CadResult;
+    expect(fb.error).toBeUndefined();
+    expect(fb.featureError).toBeUndefined();
+    // the residual: a few 1e-15
+    expect(tex('K_1 cos(fb.θ4)')).toMatch(/= -?\d(\.\d+)? ?\\cdot 10\^\{-1[2-7]\}$|= 0$/);
+    // the CAD part's rocker angle and the closed form agree (both to two decimals)
+    const angle = (t: string) => Number(/= (-?[\d.]+)/.exec(t)![1]);
+    expect(angle(tex('fb.θ4 = deg'))).toBeCloseTo(angle(tex('θ_4(θ_2) = deg')), 2);
+    expect(Number(/= ([\d.]+)/.exec(tex('fb.Sweep.c_min'))![1])).toBeCloseTo(Number(/= ([\d.]+)/.exec(tex('c_stop :='))![1]), 1);
+  });
+});
+
 describe('interference at a known configuration', () => {
   // a 10 mm cube slides along X on a rail towards a 10 mm wall standing at x = 30…40
   const design = (): CadDesign => ({
@@ -184,8 +207,9 @@ describe('explode', () => {
     // the coupler hangs on the crank: 10 of its own and the crank's 20
     expect(shifts.ok).toEqual([0, 0, 20]);
     expect(shifts.ob).toEqual([0, 0, 30]);
-    // the rocker hangs on the coupler (the loop's last joint is the closing one)
-    expect(shifts.or).toEqual([0, 0, 30]);
+    // the rocker hangs on the coupler (the loop's last joint is the closing one): its own 20 on top
+    expect(shifts.or).toEqual([0, 0, 50]);
+    expect(shifts.ost).toEqual([0, 0, 90]);
     expect(shifts.og).toEqual([0, 0, 0]);
     const ex = explodedPlacements(dr.placements, explodeShifts(design, dr.kin!.parent, dr.params, 0.5));
     expect(ex.ob.matrix[14] - dr.placements.ob.matrix[14]).toBeCloseTo(15, 12);
@@ -195,8 +219,10 @@ describe('explode', () => {
     expect(Object.keys(auto).sort()).toEqual(['ob', 'ok', 'or', 'ost']);
     expect(auto.ok.dir).toEqual([0, 0, 1]);
     // the crank (5 thick, 1 above the ground's 8): half sizes 2.5 + 4 = 6.5, centres 7.5 apart,
-    // so 1.2·6.5 − 7.5 = 0.3 would do; at least a fifth of 6.5
-    expect(Number(auto.ok.d)).toBeCloseTo(1.3, 9);
+    // already 1 apart: it moves a tenth of the assembly's diagonal D, at least (to two figures)
+    const boxes = design.occurrences.map((o) => occurrenceBox(build, design, o.id, build.placements[o.id].matrix)!);
+    const D = Math.hypot(...[0, 1, 2].map((i) => Math.max(...boxes.map((b) => b.max[i])) - Math.min(...boxes.map((b) => b.min[i]))));
+    expect(Number(auto.ok.d)).toBe(+Math.max(D / 10, 6.5 + D / 10 - 7.5).toPrecision(2));
   });
 });
 

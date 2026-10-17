@@ -1260,12 +1260,13 @@ export function fourBarDesign(): CadDesign {
         ],
       },
     ],
+    // exploded upwards, each link above the one it hangs on
     occurrences: [
       { id: 'og', component: 'g', grounded: true },
-      { id: 'ok', component: 'k', pos: [0, -80, 0] },
-      { id: 'ob', component: 'b', pos: [0, -110, 0] },
-      { id: 'or', component: 'r', pos: [0, -140, 0] },
-      { id: 'ost', component: 'st', pos: [150, 0, 0] },
+      { id: 'ok', component: 'k', pos: [0, -80, 0], explode: { dir: [0, 0, 1], d: '20 mm' } },
+      { id: 'ob', component: 'b', pos: [0, -110, 0], explode: { dir: [0, 0, 1], d: '20 mm' } },
+      { id: 'or', component: 'r', pos: [0, -140, 0], explode: { dir: [0, 0, 1], d: '20 mm' } },
+      { id: 'ost', component: 'st', pos: [150, 0, 0], explode: { dir: [0, 0, 1], d: '90 mm' } },
     ],
     joints: [
       { id: 'j1', name: 'θ2', type: 'revolute', a: pin('og', 'sg', 'go'), b: pin('ok', 'sk', 'ko'), angle: 'θ_2', offset: 't_g + s_g' },
@@ -1282,3 +1283,51 @@ export function fourBarDesign(): CadDesign {
     }],
   };
 }
+
+export function fourBarExample(): Worksheet {
+  const ws = build('CAD: four-bar linkage (motion)', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# A four-bar linkage in motion\nA crank-rocker after Norton (*Design of Machinery*, §4.5): the ground r_1, the crank r_2 turned by θ_2, the coupler r_3 and the rocker r_4. The coupler’s and the rocker’s pins are **Solved**: the assembly closes the loop. Double-click the part, then on the **Assemble** tab: **Drive** turns the crank by hand, **Motion study** plays a turn with the clearance tracked, **Explode** and **BOM**.' }],
+    ['math', L, mm(48), { source: 'r_1 := 100 mm' }],
+    ['math', mm(55), mm(48), { source: 'r_2 := 40 mm' }],
+    ['math', mm(90), mm(48), { source: 'r_3 := 120 mm' }],
+    ['math', mm(125), mm(48), { source: 'r_4 := 80 mm' }],
+    ['math', mm(160), mm(48), { source: 'θ_2 := 40 deg' }],
+    ['math', L, mm(59), { source: 'w_l := 12 mm' }],
+    ['math', mm(55), mm(59), { source: 't_l := 5 mm' }],
+    ['math', mm(90), mm(59), { source: 't_g := 8 mm' }],
+    ['math', mm(125), mm(59), { source: 's_g := 1 mm' }],
+    ['math', mm(160), mm(59), { source: 'd_p := 6 mm' }],
+    ['math', L, mm(70), { source: 'd_s := 10 mm' }],
+    ['math', mm(55), mm(70), { source: 'r_s := 60 mm' }],
+    ['math', mm(90), mm(70), { source: 'φ_s := 140 deg' }],
+    ['cad', L, mm(80), { name: 'fb', width: mm(170), height: mm(74), mode: '3d', view3d: { yaw: -10, pitch: 62 }, density: '7850 kg/m^3', design: fourBarDesign() }],
+    ['text', L, mm(158), { width: mm(170), markdown: '**Freudenstein’s equation** K₁·cos θ₄ − K₂·cos θ₂ + K₃ = cos(θ₂ − θ₄) holds for the rocker angle the part solved; θ₄ in closed form (open circuit, Norton eq. 4.10) beside it.' }],
+    ['math', L, mm(172), { source: 'K_1 := r_1 / r_2' }],
+    ['math', mm(55), mm(172), { source: 'K_2 := r_1 / r_4' }],
+    ['math', mm(95), mm(172), { source: 'K_3 := (r_2^2 - r_3^2 + r_4^2 + r_1^2) / (2 r_2 r_4)' }],
+    ['math', L, mm(186), { source: 'A(θ) := cos(θ) - K_1 - K_2 cos(θ) + K_3' }],
+    ['math', mm(100), mm(186), { source: 'C(θ) := K_1 - (K_2 + 1) cos(θ) + K_3' }],
+    ['math', L, mm(197), { source: 'θ_4(θ) := 2 atan((2 sin(θ) - sqrt(4 sin(θ)^2 - 4 A(θ) C(θ))) / (2 A(θ))) · 1 rad' }],
+    ['math', L, mm(213), { source: 'fb.θ4 = deg' }],
+    ['math', mm(55), mm(213), { source: 'θ_4(θ_2) = deg' }],
+    ['math', mm(95), mm(213), { source: 'K_1 cos(fb.θ4) - K_2 cos(θ_2) + K_3 - cos(θ_2 - fb.θ4) =' }],
+    ['text', L, mm(224), { width: mm(170), markdown: 'The study **Sweep** turns the crank once round in 4 s (181 frames). `fb.Sweep.of.θ4(φ)` is the rocker solved at a crank angle φ, against the closed form:' }],
+    ['plot', L, mm(235), { xExpr: 'φ', traces: [{ y: 'fb.Sweep.of.θ4(φ)', style: 'line' }, { y: 'θ_4(φ)', style: 'line' }], xmin: '0 deg', xmax: '360 deg', xUnit: 'deg', yUnit: 'deg', title: 'θ₄(θ₂): the part and Freudenstein', width: mm(110), height: mm(52) }],
+    ['text', L, mm(302), { width: mm(170), markdown: '**The stop.** The rocker swings out furthest where crank and coupler fold, |B − O₂| = r_3 − r_2 (Norton §4.4). The stop Ø d_s stands r_s from the rocker’s pivot at φ_s: its clearance from the rocker, against the study’s least clearance (every 2° of the crank; the parts a joint joins are left out). Make φ_s := 132 deg and the study finds the stop in the rocker’s way (red frames, V_int).' }],
+    ['math', L, mm(330), { source: 'θ_4max := (π - acos((r_1^2 + r_4^2 - (r_3 - r_2)^2) / (2 r_1 r_4))) * 1 rad = deg' }],
+    ['math', L, mm(344), { source: 'c_stop := r_s sin(φ_s - θ_4max) - d_s / 2 - w_l / 2 = mm' }],
+    ['math', L, mm(358), { source: 'fb.Sweep.c_min = mm' }],
+    ['math', mm(70), mm(358), { source: 'max(fb.Sweep.V_int) = mm^3' }],
+    ['text', L, mm(372), { width: mm(170), markdown: '## Exploded drawing\nThe drawing below shows the assembly exploded (each link 20 mm above the one it hangs on) with its parts list: select it and **Add balloons** on the isometric view.' }],
+  ]);
+  const fb = ws.regions.find((r) => r.kind === 'cad' && r.name === 'fb');
+  if (fb) {
+    ws.regions.push(createRegion('drawing', L, mm(394), {
+      cad: fb.id, title: 'Four-bar linkage', partNo: 'FB-001', sheet: 'A4', exploded: true, dims: false, hidden: false,
+      views: { front: false, top: true, side: false, iso: true }, bom: { show: true },
+    }));
+  }
+  return ws;
+}
+
+EXAMPLES.push({ name: 'CAD: four-bar linkage (motion)', make: fourBarExample });

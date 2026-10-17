@@ -16,7 +16,7 @@ export function jointGlyph(j: KinJoint, P: M4, values: DofValues, size: number, 
   const at = (x: number, y: number, z: number): Vec3 => m4Point(W, [x, y, z]);
   const axes: number[] = [], limits: number[] = [];
   const seg = (out: number[], a: Vec3, b: Vec3) => out.push(...a, ...b);
-  const L = size * 0.09, r = size * 0.045, h = size * 0.012;
+  const L = size * 0.14, r = size * 0.07, h = size * 0.015;
   // the frame: Z with an arrow head, X shorter
   seg(axes, at(0, 0, 0), at(0, 0, L));
   seg(axes, at(0, 0, L), at(h, 0, L - 2 * h));

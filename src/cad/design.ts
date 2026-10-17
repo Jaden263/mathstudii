@@ -565,6 +565,7 @@ export function nextName(design: CadDesign, base: string): string {
     for (const i of c.items) used.add(i.name);
   }
   for (const j of design.joints) used.add(j.name);
+  for (const x of [...(design.links ?? []), ...(design.groups ?? []), ...(design.motions ?? [])]) used.add(x.name);
   let k = 1;
   while (used.has(`${base}${k}`)) k++;
   return `${base}${k}`;

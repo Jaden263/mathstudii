@@ -182,8 +182,8 @@ export function MotionFields({ design, study: m, unit, onChange }: { design: Cad
       <div className="cadd-actions">
         {choices.length > 0 && <button className="btn" onClick={() => onChange({ tracks: [...m.tracks, { ...splitDof(choices[0][0]), keys: [{ t: 0, v: '0' }, { t: m.duration, v: '0' }] }] })}>Add track</button>}
       </div>
-      <label className="check"><input type="checkbox" checked={!!m.clearance} onChange={(e) => onChange({ clearance: e.target.checked || undefined })} /> Track clearance and interference (each frame, on the exact shapes)</label>
-      {m.clearance && <label className="check"><input type="checkbox" checked={m.skipJoined !== false} onChange={(e) => onChange({ skipJoined: e.target.checked ? undefined : false })} /> Leave out the pairs a joint joins (a pin touches its hole)</label>}
+      <label className="check" title="The least clearance between occurrences and any overlap, frame by frame, on the exact shapes"><input type="checkbox" checked={!!m.clearance} onChange={(e) => onChange({ clearance: e.target.checked || undefined })} /> Track clearance</label>
+      {m.clearance && <label className="check" title="A pin touches its hole by design"><input type="checkbox" checked={m.skipJoined !== false} onChange={(e) => onChange({ skipJoined: e.target.checked ? undefined : false })} /> Skip the pairs a joint joins</label>}
     </>
   );
 }
@@ -232,8 +232,8 @@ export function MotionTransport({ player, duration, steps }: { player: ReturnTyp
       <select value={speed} aria-label="Speed" onChange={(e) => setSpeed(Number(e.target.value))}>
         {[0.25, 0.5, 1, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}
       </select>
-      <input type="range" className="cadj-scrub" min={0} max={duration} step={duration / 1000 || 0.001} value={t} aria-label="Time" onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }} />
       <span className="cadw-inspect-val">{t.toFixed(2)} / {fmtNum(duration)} s</span>
+      <input type="range" className="cadj-scrub" min={0} max={duration} step={duration / 1000 || 0.001} value={t} aria-label="Time" onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }} />
     </div>
   );
 }

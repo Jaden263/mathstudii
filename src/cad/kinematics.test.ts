@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { JOINT_DOFS, type DofKey } from './assembly';
 import { linkRatio } from './assemblyParams';
 import { jointFrame, type CadDesign, type CadJoint, type DesignNumbers, type JointType, type Placement } from './design';
-import { kinModel, levenbergMarquardt, motionMatrix, motionValues, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
+import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, motionValues, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
 import { math } from '../engine/math';
 import { IDENTITY, m4Frame, m4Inv, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, type M4, type Vec3 } from './solid';
 
@@ -327,6 +327,33 @@ describe('planar, pin-slot and ball joints', () => {
     const end = m4Point(sol.placements.rod.matrix, [Math.hypot(80 - crank * Math.cos(40 * D), 20 - crank * Math.sin(40 * D), 50), 0, 0]);
     expect(Math.hypot(...end.map((v, i) => v - far[i]))).toBeLessThan(1e-8);
     expect(sol.mobility).toBe(1);
+  });
+});
+
+// ------------------------------------------------------------ as built
+
+describe('as-built joints', () => {
+  it('hold the parts where they stand: a revolute at 0 reproduces the placement, then turns about the picked axis', () => {
+    const A = m4Pose([10, 20, 5], [0, 0, 30]), B = m4Pose([60, -10, 15], [20, 10, 75]);
+    // picked on B: a point with Z along B's own X
+    const F = m4Frame([3, 4, 0], [0, 1, 0], [0, 0, 1], [1, 0, 0]);
+    const far = asBuiltOrigin(A, B, F);
+    const design: CadDesign = {
+      version: 2, components: [{ id: 'c', name: 'C', items: [] }],
+      occurrences: [{ id: 'a', component: 'c', grounded: true, pos: [10, 20, 5], rot: [0, 0, 30] }, { id: 'b', component: 'c' }],
+      joints: [{ id: 'j', name: 'J', type: 'revolute', a: { occ: 'a', origin: far }, b: { occ: 'b', origin: { kind: 'origin' } }, angle: '0', offset: '0' }],
+    };
+    const numbers: DesignNumbers = { sketches: {}, frames: {}, params: { j: { angle: 0, offset: 0 } }, errors: {} };
+    const frames = new Map([['j', { Fa: jointFrame(numbers, far), Fb: F }]]);
+    const at0 = solveKinematics(kinModel(design, numbers, frames)).placements.b.matrix;
+    at0.forEach((v, i) => expect(v).toBeCloseTo(B[i], 12));
+    // turned 90°: the picked point stays, B's X axis (the joint's Z) stays
+    numbers.params.j.angle = 90 * D;
+    const at90 = solveKinematics(kinModel(design, numbers, frames)).placements.b.matrix;
+    const p0 = m4Point(B, [3, 4, 0]), p1 = m4Point(at90, [3, 4, 0]);
+    p0.forEach((v, i) => expect(p1[i]).toBeCloseTo(v, 12));
+    const x0 = m4Point(B, [13, 4, 0]), x1 = m4Point(at90, [13, 4, 0]);
+    x0.forEach((v, i) => expect(x1[i]).toBeCloseTo(v, 12));
   });
 });
 

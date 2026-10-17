@@ -39,6 +39,12 @@ export function explodedPlacements(placements: Record<string, Placement>, shifts
   return out;
 }
 
+/** Where an exploded drawing puts the occurrences (id → matrix), from a design's results. */
+export function explodedMatrices(design: CadDesign, dr: { placements: Record<string, Placement>; params: DesignNumbers['params']; kin?: KinState }): Record<string, M4> {
+  const ex = explodedPlacements(dr.placements, explodeShifts(design, dr.kin?.parent, dr.params));
+  return Object.fromEntries(Object.entries(ex).map(([id, p]) => [id, p.matrix]));
+}
+
 /** The box of an occurrence's bodies in the assembly (the corners of each body's box placed). */
 export function occurrenceBox(build: BuildResult, design: CadDesign, occ: string, M: M4): { min: Vec3; max: Vec3 } | null {
   const o = design.occurrences.find((q) => q.id === occ);
@@ -66,10 +72,12 @@ const nice = (v: number) => +v.toPrecision(2);
 /**
  * Offsets that explode an assembly along its joints: every occurrence a joint placed moves
  * along the joint's Z axis, away from its parent, until the two stand apart with a gap of
- * a fifth of their sizes along it.
+ * a tenth of the assembly's size (or a fifth of theirs along the axis, if more).
  */
 export function autoExplode(design: CadDesign, build: BuildResult, kin: KinState): Record<string, ExplodeOffset> {
   const out: Record<string, ExplodeOffset> = {};
+  const all = design.occurrences.map((o) => build.placements[o.id] && occurrenceBox(build, design, o.id, build.placements[o.id].matrix)).filter((b): b is { min: Vec3; max: Vec3 } => !!b);
+  const D = all.length ? Math.hypot(...[0, 1, 2].map((i) => Math.max(...all.map((b) => b.max[i])) - Math.min(...all.map((b) => b.min[i])))) : 0;
   for (const o of design.occurrences) {
     const up = kin.parent[o.id];
     const j = up && kin.model.joints.find((q) => q.id === up.joint);
@@ -85,7 +93,8 @@ export function autoExplode(design: CadDesign, build: BuildResult, kin: KinState
     if (sep < 0) u = [-u[0], -u[1], -u[2]];
     const S = half(bc, u) + half(bp, u);
     if (!(S > 0)) continue;
-    out[o.id] = { dir: u.map((v) => +v.toFixed(9)) as Vec3, d: String(nice(Math.max(0.2 * S, 1.2 * S - Math.abs(sep)))) };
+    const gap = Math.max(0.2 * S, 0.1 * D);
+    out[o.id] = { dir: u.map((v) => +v.toFixed(9)) as Vec3, d: String(nice(Math.max(gap, S + gap - Math.abs(sep)))) };
   }
   return out;
 }

@@ -55,6 +55,7 @@ export function DrawingProps({ region, dispatch }: { region: DrawingRegion; disp
       </div>
       <label className="check"><input type="checkbox" checked={region.hidden} onChange={(e) => set({ hidden: e.target.checked })} /> Hidden lines (dashed)</label>
       <label className="check"><input type="checkbox" checked={region.tangent !== false} onChange={(e) => set({ tangent: e.target.checked ? undefined : false })} /> Tangent edges (narrow)</label>
+      <label className="check" title="Each occurrence out by its explode offset (set in the CAD window: Assemble → Explode → Auto, or per occurrence)"><input type="checkbox" checked={!!region.exploded} onChange={(e) => set({ exploded: e.target.checked || undefined })} /> Exploded assembly</label>
       <div className="row2">
         <label className="field"><span>Projection</span>
           <select value={region.projection} onChange={(e) => set({ projection: e.target.value as DrawingRegion['projection'] })}>

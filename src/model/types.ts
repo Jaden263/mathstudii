@@ -239,6 +239,8 @@ export interface DrawingRegion extends RegionBase {
   revisions?: Revision[];
   /** The parts list of an assembly. */
   bom?: BomSettings;
+  /** The assembly drawn exploded: each occurrence out by its explode offset (cad/explode.ts). */
+  exploded?: boolean;
 }
 
 /** A section view: the part cut along a straight line drawn on one of the standard views. */

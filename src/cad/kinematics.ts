@@ -114,6 +114,16 @@ export function motionValues(type: JointType, T: M4, flip?: boolean): DofValues 
   return Object.fromEntries(JOINT_DOFS[type].map((k) => [k, all[k]]));
 }
 
+/**
+ * An as-built joint's origin on the far occurrence: where the picked origin (frame F on the
+ * occurrence placed by Mpick) is now, in the far occurrence's coordinates (placed by Mfar).
+ * With every value 0 the joint then holds the two as they stand.
+ */
+export function asBuiltOrigin(Mfar: M4, Mpick: M4, F: M4): { kind: 'frame'; o: Vec3; z: Vec3; x: Vec3 } {
+  const L = m4Mul(m4Inv(Mfar), m4Mul(Mpick, F));
+  return { kind: 'frame', o: [L[12], L[13], L[14]], z: [L[8], L[9], L[10]], x: [L[0], L[1], L[2]] };
+}
+
 /** Angle of the rotation between two frames (radians). */
 function rotationGap(T: M4, W: M4): number {
   // trace of Wᵀ·T = 1 + 2 cos α
