@@ -1,9 +1,10 @@
-// A drawing sheet laid out on paper: ISO 5457 sizes A4–A0 and frame, an ISO 7200-style
-// title block, the standard views in first- or third-angle projection with section and
-// detail views beside them, and the line work in ISO 128 line types and widths. Everything
-// is in sheet millimetres from the lower left corner (y up), so the SVG on the page and the
-// DXF are drawn from the same entities.
+// A drawing sheet laid out on paper: ISO 5457 sizes A4–A0 and frame, an ISO 7200 title
+// block, the parts list above it (ISO 7573) and a revision table, the standard views in
+// first- or third-angle projection with section and detail views beside them, and the line
+// work in ISO 128 line types and widths. Everything is in sheet millimetres from the lower
+// left corner (y up), so the SVG on the page and the DXF are drawn from the same entities.
 import type { DrawingDetail, DrawingRegion, DrawingSection } from '../model/types';
+import { fmtMass, textWidth, type BomRow } from './annotations';
 import { scaleText, STANDARD_VIEWS, viewAxes, type ViewSpec } from './drawing';
 import { clipToCircle, hatch, hatchStyle, placePrim, primAt, type DrawView, type DrawViewRequest, type Prim } from './drawing2d';
 import { add3, dot3, norm3, scale3, type Vec3 } from './solid';
@@ -49,6 +50,9 @@ export function layerStyle(layer: Layer, g: LineGroup): { width: number; dash: n
 export interface Ink {
   layer: Layer;
   p: Prim;
+  /** The annotation it belongs to (annotations.ts), and whether that one lost its geometry. */
+  owner?: string;
+  warn?: boolean;
 }
 
 export interface Label {
@@ -64,12 +68,18 @@ export interface Label {
   bold?: boolean;
   /** Grey (the title block's field names). */
   faint?: boolean;
+  /** Set to this width (mm): text laid out in frames and stacks, whatever the font. */
+  w?: number;
+  owner?: string;
+  warn?: boolean;
 }
 
-/** A filled polygon (arrowheads). */
+/** A filled triangle or quadrilateral (arrowheads, datum triangles). */
 export interface Fill {
   layer: Layer;
   pts: number[];
+  owner?: string;
+  warn?: boolean;
 }
 
 export interface PlacedView {
@@ -176,7 +186,33 @@ export function detailScale(sheetScale: number, f = 2): number {
 
 const GAP = 20;
 const FRAME = { left: 20, other: 10 };
-const TITLE = { w: 180, h: 33 };
+const TITLE = { w: 180, h: 36 };
+/** Parts list rows (ISO 7573) and revision table rows, mm. */
+const BOM_ROW = 7;
+const REV_ROW = 6;
+const REV_W = 140;
+
+/** What the sheet says beyond the drawing's own fields. */
+export interface SheetInfo {
+  unit: string;
+  /** The part's name (the title when the drawing has none). */
+  name: string;
+  /** Today (the date when the drawing has none). */
+  date: string;
+  /** Mass of what is drawn (kg). */
+  mass?: number;
+  /** Material of a single part (from its density). */
+  material?: string;
+  /** The parts list (shown when the drawing asks for it). */
+  bom?: BomRow[];
+  /** More than one part is drawn. */
+  assembly?: boolean;
+  /** Overall sizes from the views' boxes (when the annotations cannot dimension from the model yet). */
+  overall?: boolean;
+}
+
+/** Where the revision table goes: beside the title block where the frame is wide enough, else above it. */
+const revBeside = (frame: { w: number }) => frame.w - TITLE.w >= REV_W + 5;
 
 const hasLines = (v?: DrawView) => !!v && (v.visible.length > 0 || v.hidden.length > 0 || (v.cuts?.length ?? 0) > 0);
 const boxW = (v: DrawView) => v.box.x1 - v.box.x0;
@@ -201,7 +237,7 @@ interface Extra {
  * the largest standard scale that fits unless the drawing has one, and every line, label
  * and arrow on it.
  */
-export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, info: { unit: string; name: string; date: string }): Sheet | null {
+export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, info: SheetInfo): Sheet | null {
   const [W, H] = sheetSize(r);
   const group = lineGroup(r.sheet);
   const frame = { x: FRAME.left, y: FRAME.other, w: W - FRAME.left - FRAME.other, h: H - 2 * FRAME.other };
@@ -227,7 +263,12 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     extras.push({ key: `det:${d.id}`, kind: 'detail', view: v, k: () => d.scale * mm, box: { x0: d.c.x - d.r, y0: d.c.y - d.r, x1: d.c.x + d.r, y1: d.c.y + d.r }, at: onSheet(d.at), label: `${d.letter} (${scaleText(d.scale)})`, def: d });
   }
 
-  const top = frame.y + frame.h, bottom = frame.y + title.h;
+  // the parts list and the revision table take the room above the title block
+  const bomH = r.bom?.show && info.bom?.length ? (info.bom.length + 1) * BOM_ROW : 0;
+  const revs = r.titleBlock?.revisions ? r.revisions ?? [] : null;
+  const revH = revs ? (revs.length + 1) * REV_ROW : 0;
+  const top = frame.y + frame.h;
+  const bottom = frame.y + Math.max(title.h + bomH + (revs && !revBeside(frame) ? revH : 0), revs && revBeside(frame) ? revH : 0);
   const labelRoom = group.label + 6;
   /**
    * Positions of everything at scale s, or null when it does not fit: everything, or (when
@@ -317,7 +358,7 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     else drawView(sheet, r, pv);
     if (e) sheet.labels.push({ layer: 'TEXT', x: (pv.box.x0 + pv.box.x1) / 2, y: pv.box.y1 + 5, h: group.label, text: e.label, anchor: 'middle' });
     // a cutting line's arrows and letters sit past the view's edges: its dimensions stand further off
-    if (pv.kind === 'base' && r.dims && pv.key !== 'iso') dimension(sheet, pv, (r.sections ?? []).some((s) => s.view === pv.key) ? 15 : 8);
+    if (pv.kind === 'base' && r.dims && info.overall !== false && pv.key !== 'iso') dimension(sheet, pv, (r.sections ?? []).some((s) => s.view === pv.key) ? 15 : 8);
   }
   // the cutting lines and detail circles on their parents
   for (const s of r.sections ?? []) {
@@ -332,6 +373,8 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     sheet.labels.push({ layer: 'TEXT', x: c[0] + (rr + 2) * Math.SQRT1_2, y: c[1] + (rr + 2) * Math.SQRT1_2, h: group.label, text: d.letter, anchor: 'start' });
   }
   frameAndTitle(sheet, r, info);
+  if (bomH) partsList(sheet, info.bom!, title.y + title.h);
+  if (revs) revisionTable(sheet, revs, revBeside(frame) ? title.x - REV_W : title.x + title.w - REV_W, revBeside(frame) ? frame.y + revH : title.y + title.h + bomH + revH);
   return sheet;
 }
 
@@ -382,7 +425,12 @@ function viewInks(r: DrawingRegion, key: string, v: DrawView, put: (layer: Layer
   for (const p of v.thin) put('THIN', p);
   if (r.noCentres?.includes(key)) return;
   const m = AXIS_PAST / k;
+  // centre marks taken away one by one (a centre annotation that hides one)
+  const size = Math.max(v.box.x1 - v.box.x0, v.box.y1 - v.box.y0, 1e-9);
+  const hidden = (r.annotations ?? []).flatMap((a) => (a.kind === 'centre' && a.hide && a.view === key ? [a.a.shape] : []))
+    .map((s) => (s.k === 'circle' ? [s.cx, s.cy] : s.k === 'point' ? [s.x, s.y] : null)).filter((c): c is number[] => !!c);
   for (const a of v.axes) {
+    if (a.kind === 'mark' && hidden.some(([x, y]) => Math.hypot(x - a.x, y - a.y) <= size * 1e-6)) continue;
     if (a.kind === 'mark') {
       put('CENTER', { k: 'line', x1: a.x - a.r - m, y1: a.y, x2: a.x + a.r + m, y2: a.y });
       put('CENTER', { k: 'line', x1: a.x, y1: a.y - a.r - m, x2: a.x, y2: a.y + a.r + m });
@@ -487,8 +535,17 @@ function dimension(sheet: Sheet, pv: PlacedView, off: number) {
 
 // ------------------------------------------------------------ frame and title block
 
-function frameAndTitle(sheet: Sheet, r: DrawingRegion, info: { unit: string; name: string; date: string }) {
+/**
+ * The ISO 7200 title block, 180 mm wide: the identification zone at the bottom (legal
+ * owner, document type, title, drawing number, revision, sheet n of m) and above it who
+ * made, checked and approved the drawing, when, the material, mass, scale, units, sheet
+ * size and the projection symbol. Field names in 1.8 mm, entries in 2.5 mm, the drawing
+ * number in 3.5 mm and the title in 5 mm (7 mm on A1 and A0), smaller only where it
+ * would not fit (ISO 3098).
+ */
+function frameAndTitle(sheet: Sheet, r: DrawingRegion, info: SheetInfo) {
   const { frame: f, title: t } = sheet;
+  const tb = r.titleBlock ?? {};
   const line = (layer: Layer, ax: number, ay: number, bx: number, by: number) => sheet.inks.push({ layer, p: { k: 'line', x1: ax, y1: ay, x2: bx, y2: by } });
   const rect = (layer: Layer, x: number, y: number, w: number, h: number) => {
     line(layer, x, y, x + w, y);
@@ -499,24 +556,98 @@ function frameAndTitle(sheet: Sheet, r: DrawingRegion, info: { unit: string; nam
   rect('BORDER', f.x, f.y, f.w, f.h);
   line('BORDER', t.x, t.y, t.x, t.y + t.h);
   line('BORDER', t.x, t.y + t.h, t.x + t.w, t.y + t.h);
-  // field name, value, x and row from the top, width
-  const cells: [string, string, number, number, number][] = [
-    ['Title', r.title?.trim() || info.name, 0, 0, 110],
-    ['Part no.', r.partNo ?? '', 110, 0, 70],
-    ['Material', r.material ?? '', 0, 1, 70],
-    ['Scale', scaleText(sheet.scale), 70, 1, 25],
-    ['Units', info.unit, 95, 1, 15],
-    ['Drawn', r.drawnBy ?? '', 0, 2, 70],
-    ['Date', r.date?.trim() || info.date, 70, 2, 40],
+  const lastRev = (r.revisions ?? []).at(-1)?.rev;
+  const mass = tb.mass?.trim() || (info.mass !== undefined ? `${fmtMass(info.mass)} kg` : '');
+  const material = r.material?.trim() || info.material || (info.assembly && r.bom?.show ? 'see parts list' : '');
+  // field name, value, x, row from the top, width, rows tall, value height
+  const cells: [string, string, number, number, number, number, number][] = [
+    ['Material', material, 0, 0, 50, 1, 2.5],
+    ['Mass', mass, 50, 0, 28, 1, 2.5],
+    ['Scale', scaleText(sheet.scale), 78, 0, 18, 1, 2.5],
+    ['Units', info.unit, 96, 0, 14, 1, 2.5],
+    ['Size', r.sheet, 110, 0, 15, 1, 2.5],
+    ['Created by', r.drawnBy ?? '', 0, 1, 32, 1, 2.5],
+    ['Checked by', tb.checkedBy ?? '', 32, 1, 32, 1, 2.5],
+    ['Approved by', tb.approvedBy ?? '', 64, 1, 32, 1, 2.5],
+    ['Date of issue', r.date?.trim() || info.date, 96, 1, 29, 1, 2.5],
+    ['Legal owner', tb.owner ?? '', 0, 2, 50, 1, 2.5],
+    ['Document type', tb.docType?.trim() || (info.assembly ? 'Assembly drawing' : 'Detail drawing'), 0, 3, 50, 1, 2.5],
+    ['Title', r.title?.trim() || info.name, 50, 2, 85, 2, sheet.group.label],
+    ['Drawing no.', r.partNo ?? '', 135, 2, 45, 1, 3.5],
+    ['Rev.', tb.revision?.trim() || lastRev || '', 135, 3, 17, 1, 2.5],
+    ['Sheet', `${tb.sheet ?? 1}/${tb.sheets ?? tb.sheet ?? 1}`, 152, 3, 28, 1, 2.5],
   ];
-  const rowH = t.h / 3;
-  for (const [label, value, x, row, w] of cells) {
-    const y = t.y + t.h - (row + 1) * rowH;
-    rect('THIN', t.x + x, y, w, rowH);
-    sheet.labels.push({ layer: 'TEXT', x: t.x + x + 1.5, y: y + rowH - 3.2, h: 1.6, text: label, anchor: 'start', faint: true });
-    if (value) sheet.labels.push({ layer: 'TEXT', x: t.x + x + 1.5, y: y + 2.2, h: label === 'Title' ? 3.5 : 2.5, text: value, anchor: 'start', bold: label === 'Title' });
+  const rowH = t.h / 4;
+  for (const [label, value, x, row, w, rows, h0] of cells) {
+    const y = t.y + t.h - (row + rows) * rowH;
+    rect('THIN', t.x + x, y, w, rows * rowH);
+    sheet.labels.push({ layer: 'TEXT', x: t.x + x + 1.2, y: y + rows * rowH - 2.6, h: 1.8, text: label, anchor: 'start', faint: true });
+    if (!value) continue;
+    // the value at its ISO height, or smaller where the field is too narrow
+    const room = w - 2.4, h = Math.max(1.8, Math.min(h0, (h0 * room) / Math.max(textWidth(value, h0), 1e-9)));
+    const big = label === 'Title';
+    sheet.labels.push({ layer: 'TEXT', x: t.x + x + 1.2, y: big ? y + (rows * rowH - 2.6 - h) / 2 : y + 1.6, h, text: value, anchor: 'start', bold: big || label === 'Drawing no.' });
   }
-  projectionSymbol(sheet, t.x + 110, t.y, 70, 2 * rowH, r.projection === 'first');
+  rect('THIN', t.x + 125, t.y + 2 * rowH, 55, 2 * rowH);
+  projectionSymbol(sheet, t.x + 125, t.y + 2 * rowH, 55, 2 * rowH, r.projection === 'first');
+}
+
+/**
+ * The parts list on the title block (ISO 7573): its heading next to the title block and
+ * the items above it, numbered from the bottom up; item, quantity, name, material and
+ * mass each, 3.5 mm entries in rows of 7 mm.
+ */
+function partsList(sheet: Sheet, rows: BomRow[], y0: number) {
+  const t = sheet.title;
+  const cols: [string, number, 'start' | 'middle' | 'end'][] = [['Item', 12, 'middle'], ['Qty', 12, 'middle'], ['Name', 70, 'start'], ['Material', 54, 'start'], ['Mass (kg)', 32, 'end']];
+  const line = (layer: Layer, ax: number, ay: number, bx: number, by: number) => sheet.inks.push({ layer, p: { k: 'line', x1: ax, y1: ay, x2: bx, y2: by } });
+  const H = (rows.length + 1) * BOM_ROW;
+  // the outline wide, the rules narrow
+  line('BORDER', t.x, y0, t.x, y0 + H);
+  line('BORDER', t.x, y0 + H, t.x + t.w, y0 + H);
+  for (let i = 1; i <= rows.length; i++) line(i === 1 ? 'BORDER' : 'THIN', t.x, y0 + i * BOM_ROW, t.x + t.w, y0 + i * BOM_ROW);
+  let x = t.x;
+  const cells = (texts: string[], y: number, h: number, bold: boolean) => {
+    let cx = t.x;
+    cols.forEach(([, w, anchor], i) => {
+      const room = w - 3, size = Math.max(1.8, Math.min(h, (h * room) / Math.max(textWidth(texts[i], h), 1e-9)));
+      const tx = anchor === 'middle' ? cx + w / 2 : anchor === 'end' ? cx + w - 1.5 : cx + 1.5;
+      if (texts[i]) sheet.labels.push({ layer: 'TEXT', x: tx, y: y + (BOM_ROW - size) / 2, h: size, text: texts[i], anchor, ...(bold ? { bold: true } : {}) });
+      cx += w;
+    });
+  };
+  for (const [, w] of cols.slice(0, -1)) {
+    x += w;
+    line('THIN', x, y0, x, y0 + H);
+  }
+  cells(cols.map((c) => c[0]), y0, 2.5, true);
+  rows.forEach((row, i) => cells([String(row.item), String(row.qty), row.name, row.material, fmtMass(row.mass)], y0 + (i + 1) * BOM_ROW, 3.5, false));
+}
+
+/** The revision table: its heading at the top, one row per revision under it (2.5 mm entries). */
+function revisionTable(sheet: Sheet, revs: NonNullable<DrawingRegion['revisions']>, x0: number, top: number) {
+  const cols: [string, number][] = [['Rev.', 12], ['Description', 80], ['Date', 25], ['By', 23]];
+  const line = (layer: Layer, ax: number, ay: number, bx: number, by: number) => sheet.inks.push({ layer, p: { k: 'line', x1: ax, y1: ay, x2: bx, y2: by } });
+  const H = (revs.length + 1) * REV_ROW;
+  line('BORDER', x0, top, x0 + REV_W, top);
+  line('BORDER', x0, top, x0, top - H);
+  line('BORDER', x0, top - H, x0 + REV_W, top - H);
+  for (let i = 1; i <= revs.length; i++) line('THIN', x0, top - i * REV_ROW, x0 + REV_W, top - i * REV_ROW);
+  let x = x0;
+  for (const [, w] of cols) {
+    x += w;
+    line(x >= x0 + REV_W - 1e-9 ? 'BORDER' : 'THIN', x, top, x, top - H);
+  }
+  const row = (texts: string[], i: number, bold: boolean) => {
+    let cx = x0;
+    cols.forEach(([, w], k) => {
+      const h = Math.max(1.8, Math.min(2.5, (2.5 * (w - 3)) / Math.max(textWidth(texts[k], 2.5), 1e-9)));
+      if (texts[k]) sheet.labels.push({ layer: 'TEXT', x: cx + 1.5, y: top - (i + 1) * REV_ROW + (REV_ROW - h) / 2, h, text: texts[k], anchor: 'start', ...(bold ? { bold: true } : {}) });
+      cx += w;
+    });
+  };
+  row(cols.map((c) => c[0]), 0, true);
+  revs.forEach((rv, i) => row([rv.rev, rv.text, rv.date, rv.by], i + 1, false));
 }
 
 /** ISO 5456-2 projection symbol: a truncated cone seen from the side and from its small end. */

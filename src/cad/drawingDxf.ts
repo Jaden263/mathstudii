@@ -1,7 +1,9 @@
 // A drawing sheet as DXF R2000 (AC1015), in sheet millimetres: true CIRCLE, ARC and
 // ELLIPSE entities (B-splines as LWPOLYLINEs), one layer per ISO 128 line (VISIBLE,
 // HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT, BORDER) with its line type and
-// lineweight, arrowheads as SOLIDs and text as TEXT. R2000 is the oldest version with
+// lineweight, arrowheads as SOLIDs and text as TEXT (annotations' text fitted to the width
+// it was laid out at; an annotation that lost its geometry in orange, colour 30, on its
+// layer). R2000 is the oldest version with
 // ellipses and lineweights; it needs handles, owners and subclass markers throughout, and
 // the tables, blocks and objects every reader expects.
 import { LAYERS, layerStyle, type Layer, type Sheet } from './drawingSheet';
@@ -116,21 +118,21 @@ export function sheetDxf(sheet: Sheet): string {
   // ---- entities
   const ents: string[] = [];
   const e = (code: number, value: string | number) => ents.push(String(code), typeof value === 'number' ? num(value) : value);
-  const entity = (type: string, layer: string, sub: string) => {
-    e(0, type); e(5, handle()); e(330, brecs.model); e(100, 'AcDbEntity'); e(8, layer); e(100, sub);
+  const entity = (type: string, layer: string, sub: string, warn?: boolean) => {
+    e(0, type); e(5, handle()); e(330, brecs.model); e(100, 'AcDbEntity'); e(8, layer); if (warn) e(62, 30); e(100, sub);
   };
-  const put = (layer: Layer, p: Prim) => {
+  const put = (layer: Layer, p: Prim, warn?: boolean) => {
     switch (p.k) {
       case 'line':
-        entity('LINE', layer, 'AcDbLine');
+        entity('LINE', layer, 'AcDbLine', warn);
         e(10, p.x1); e(20, p.y1); e(30, 0); e(11, p.x2); e(21, p.y2); e(31, 0);
         return;
       case 'arc':
         if (p.a1 - p.a0 >= 2 * Math.PI - 1e-9) {
-          entity('CIRCLE', layer, 'AcDbCircle');
+          entity('CIRCLE', layer, 'AcDbCircle', warn);
           e(10, p.cx); e(20, p.cy); e(30, 0); e(40, p.r);
         } else {
-          entity('ARC', layer, 'AcDbCircle');
+          entity('ARC', layer, 'AcDbCircle', warn);
           e(10, p.cx); e(20, p.cy); e(30, 0); e(40, p.r);
           e(100, 'AcDbArc'); e(50, deg(p.a0)); e(51, deg(p.a1));
         }
@@ -139,7 +141,7 @@ export function sheetDxf(sheet: Sheet): string {
         // the major axis first: a wider-than-long ellipse turns a quarter and its parameter with it
         const swap = p.ry > p.rx;
         const rot = swap ? p.rot + Math.PI / 2 : p.rot, major = swap ? p.ry : p.rx, minor = swap ? p.rx : p.ry, dt = swap ? Math.PI / 2 : 0;
-        entity('ELLIPSE', layer, 'AcDbEllipse');
+        entity('ELLIPSE', layer, 'AcDbEllipse', warn);
         e(10, p.cx); e(20, p.cy); e(30, 0);
         e(11, major * Math.cos(rot)); e(21, major * Math.sin(rot)); e(31, 0);
         e(210, 0); e(220, 0); e(230, 1);
@@ -152,7 +154,7 @@ export function sheetDxf(sheet: Sheet): string {
         return;
       }
       case 'poly': {
-        entity('LWPOLYLINE', layer, 'AcDbPolyline');
+        entity('LWPOLYLINE', layer, 'AcDbPolyline', warn);
         e(90, p.pts.length / 2); e(70, 0); e(43, 0);
         for (let i = 0; i + 1 < p.pts.length; i += 2) {
           e(10, p.pts[i]); e(20, p.pts[i + 1]);
@@ -160,9 +162,9 @@ export function sheetDxf(sheet: Sheet): string {
       }
     }
   };
-  for (const ink of sheet.inks) put(ink.layer, ink.p);
+  for (const ink of sheet.inks) put(ink.layer, ink.p, ink.warn);
   for (const f of sheet.fills) {
-    entity('SOLID', f.layer, 'AcDbTrace');
+    entity('SOLID', f.layer, 'AcDbTrace', f.warn);
     // a triangle repeats its last corner
     const last = f.pts.length / 2 - 1;
     for (let i = 0; i < 4; i++) {
@@ -171,11 +173,15 @@ export function sheetDxf(sheet: Sheet): string {
     }
   }
   for (const l of sheet.labels) {
-    entity('TEXT', l.layer, 'AcDbText');
+    entity('TEXT', l.layer, 'AcDbText', l.warn);
+    // text laid out at a width is fitted between its two ends (left-aligned on the sheet)
+    const fit = l.w !== undefined && l.w > 0 && l.anchor === 'start';
     e(10, l.x); e(20, l.y); e(30, 0); e(40, l.h); e(1, text(l.text)); e(50, l.rot ?? 0); e(7, 'Standard');
-    const hj = l.anchor === 'middle' ? 1 : l.anchor === 'end' ? 2 : 0;
+    const hj = fit ? 5 : l.anchor === 'middle' ? 1 : l.anchor === 'end' ? 2 : 0;
     if (hj) {
-      e(72, hj); e(11, l.x); e(21, l.y); e(31, 0);
+      const a = ((l.rot ?? 0) * Math.PI) / 180;
+      const [x2, y2] = fit ? [l.x + l.w! * Math.cos(a), l.y + l.w! * Math.sin(a)] : [l.x, l.y];
+      e(72, hj); e(11, x2); e(21, y2); e(31, 0);
     }
     e(100, 'AcDbText');
   }

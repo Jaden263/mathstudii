@@ -3,6 +3,7 @@
 import type { Shape, SketchAnimation, SketchUnit, SketchView } from './sketch';
 import type { CadFeature, CadSketch, CadUnit, CadView, CadView3D } from '../cad/model';
 import type { CadDesign } from '../cad/design';
+import type { Annotation, BomSettings, Revision, TitleFields } from '../cad/annotations';
 import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type BeamDiagram, type BeamLayout, type BeamPanel, type BeamForceUnit, type BeamLengthUnit, type BeamSection, type BeamView } from '../beam/model';
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
@@ -224,6 +225,15 @@ export interface DrawingRegion extends RegionBase {
   material?: string;
   drawnBy?: string;
   date?: string;
+  /** Dimensions, tolerances, notes, GD&T and symbols placed on the views (cad/annotations.ts). */
+  annotations?: Annotation[];
+  /** Decimals of dimension values; missing = as many as the value needs, up to 2 in mm. */
+  decimals?: number;
+  /** The rest of the ISO 7200 title block. */
+  titleBlock?: TitleFields;
+  revisions?: Revision[];
+  /** The parts list of an assembly. */
+  bom?: BomSettings;
 }
 
 /** A section view: the part cut along a straight line drawn on one of the standard views. */
