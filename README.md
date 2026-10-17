@@ -431,8 +431,37 @@ stiffness switching, Dormand–Prince, Radau). The lower-case forms
 
 The prime notation also differentiates ordinary functions: with `f(x) := x^3`, `f'(2) = 12`
 (numerically, up to the fifth derivative). On a matrix `A'(x)` keeps its old meaning,
-transpose times x. Not covered: partial differential equations (`Pdesolve`), delay equations,
-differential-algebraic systems (an equation without a highest derivative is reported).
+transpose times x. Not covered: delay equations and differential-algebraic systems (an
+equation without a highest derivative is reported).
+
+### Partial differential equations (Pdesolve)
+
+A solve block with `Pdesolve` as the solver solves PDEs in u(x, t) on an interval, Mathcad-style.
+Partial derivatives are subscripts that spell the variables — `u_t(x, t)` is ∂u/∂t, `u_xx(x, t)`
+is ∂²u/∂x², `u_tt` the second time derivative (`diff(u(x, t), x, 2)` works too) — and the block
+holds the equation, the initial condition and a condition at each end:
+
+```
+Constraints:  T_t(x, t) = α * T_xx(x, t)
+              T(x, 0 s) = T_0              initial temperature
+              T(0 m, t) = T_s              Dirichlet: a value
+              T_x(L, t) = 0 K/m            Neumann: a slope (insulated)
+Solver:       T := Pdesolve(T, x, [0 m, L], t, [0 s, 4 hr])
+```
+
+`T` is then a function T(x, t) with units, for `=`, other formulas and plots (a family of
+curves `T(x, 1 hr)`, or a contour or surface of T over x and t). Any equation in u and u_x at an
+end is a Robin condition (`k * u_x(0, t) = h * (u(0, t) - T_a)`); `u_tt` needs `u_t(x, 0) = g(x)`
+as well; `[u; v] := Pdesolve([u; v], x, …)` solves coupled equations. The method of lines:
+second-order central differences on `xpts` nodes (201 by default; `Pdesolve(…, xpts, tpts)` or
+`[xpts, tpts]` choose), ghost nodes at slope conditions so an insulated rod keeps its heat, and
+the stiff Radau IIA solver in t on a banded Jacobian; between nodes the solution is a cubic
+spline in x and the solver's continuous extension in t. Checked against separation of variables
+(the decaying sine of the heat equation to a relative error below 10⁻⁴ on the default grid,
+second-order convergence in x), a standing wave, an insulated rod conserving ∫u dx and the
+half-space erf solution (*Heat flow in a slab* example). `numol(x_range, xpts, t_range, tpts,
+num_pde, num_pae, pde_func, pinit, bc_func)` gives Mathcad's matrix of nodal values (no partial
+algebraic equations). Not covered: PDEs in two space variables, mixed derivatives (u_xt).
 
 ### Special functions
 
@@ -1355,8 +1384,13 @@ The importer converts:
 It shows a report of anything it could not convert. Results are recalculated rather than
 copied, so compare them with the original. The format knowledge comes from
 [mcad2py](https://github.com/ChristianCruger/mcad2py) (MIT), which documents real Prime files.
-The tests use hand-built files in that structure. **It has not been run on files saved by
-Mathcad itself yet**, so real-world files may hit gaps.
+
+**How it was tested:** on about 110 public worksheets (38 saved by Prime 11/12, 34 by Mathcad
+14/15, 36 by SMath), comparing the recalculated results with the ones each program saved in the
+file: 500 of 702 Prime values, 159 of 203 Mathcad 15 and 325 of 454 SMath ones agree; most of the
+rest use functions not implemented here, other worksheets (Mathcad references) or unseeded random
+numbers. Thirteen of them with permissive licences are in the tests (`src/importers/real.test.ts`,
+sources in `src/importers/fixtures/README.md`).
 
 ### Importing SMath Studio files
 
@@ -1391,6 +1425,33 @@ example, Beam gives support reactions of −12.4533 kN and −28.6467 kN, and it
 The examples built on symbolic vectors do not. The automated tests (`src/importers/smath.test.ts`)
 use hand-written files in the same format.
 
+### Exporting to Mathcad and SMath
+
+File menu ▾ → **Export to Mathcad Prime (.mcdx)**, **Mathcad 15 (.xmcd)** or **SMath Studio
+(.sm)** writes the worksheet in that program's own form, which recalculates it on opening:
+- definitions, functions, ranges, element definitions, matrices, units and display units,
+  evaluations, global definitions, programs, integrals, sums, derivatives, symbolic `→`
+- solve blocks: Prime's solve block, Mathcad 15's *Given … Find* (Minerr …) as separate regions,
+  odesolve / Pdesolve (prime notation `y′′(t)` in the equations and conditions)
+- text with headings, bold and italic (SMath: per paragraph), pictures, tables as matrices
+- X-Y plots as Prime plots; other plots, and every plot in Mathcad 15 and SMath, as a picture
+- beams, frames, plates, CAD parts, sketches, drawings, Python and spreadsheet regions as a
+  labelled note, a picture of the region and the values the worksheet reads from them
+  (`b.M_max` becomes `b_M_max := 12.3 kN·m` above its first use), so the math below still
+  calculates; `section("IPE 300")` and other tables of values become their values
+
+A report lists everything written differently. What the formats cannot hold: SMath has no solve
+blocks (what Find found is written as values; an odesolve or Pdesolve solution is not exported),
+no global definitions and no column assignments in programs, and counts from 1 (indices are
+shifted; functions that return an index, such as `match`, are not); Mathcad 15 matrices hold
+one unit (a table in several units becomes one vector per column) and its plots are a binary
+format (written as pictures); symbolic keywords do not go to SMath. Programs, the solve block
+and plot elements follow files Prime, Mathcad 14/15 and SMath saved, and every file is checked
+by reading it back with the importers above and recalculating (the round-trip tests compare
+every value of a representative worksheet, of four examples and of 11 real files). **They have
+not been opened in Mathcad or SMath themselves**; Prime's prime notation and Mathcad 15's `nth`
+derivative and `on error` elements are the least certain.
+
 Text regions are Markdown with `$inline TeX$`, `$$display TeX$$` and live values:
 `{{expr | unit}}`.
 
@@ -1423,7 +1484,8 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Undo/redo, copy/paste regions, disable evaluation, separate regions, dark mode | ✅ |
 | Page zoom: Ctrl+wheel / trackpad / pinch around the pointer, browser-style steps, Ctrl+0 | ✅ |
 | Save/open (`.mstd` JSON), autosave, print to A4 / PDF | ✅ |
-| `Pdesolve`, `Find` with matrix-valued unknowns | ❌ |
+| PDEs: `Pdesolve` solve blocks in u(x, t) (Dirichlet, Neumann, Robin ends, systems, units), `numol` | ✅ (one space variable; method of lines) |
+| `Find` with matrix-valued unknowns | ❌ |
 | Units in symbolic results | ✅ (which single letters are units follows the rules in *Units in symbolic results*) |
 | Drawings: vector sketches, kinematic symbols, parametric cross-sections with exact section properties, animation | ✅ |
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
@@ -1431,8 +1493,9 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste, CSV and .xlsx import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
-| Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
-| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
+| Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Run on 72 real files: 500 of 702 Prime and 159 of 203 Mathcad 15 saved results reproduced. Script controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
+| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Run on 36 real files and SMath's bundled examples: 325 of 454 saved results reproduced. SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert |
+| Export to Mathcad Prime `.mcdx`, Mathcad 15 `.xmcd`, SMath `.sm` | ⚠️ Read back and recalculated here with the same values; not yet opened in Mathcad or SMath. Regions they lack become a picture with their values |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
 | Excel component: spreadsheet region with 211 Excel functions, inputs and outputs with units, .xlsx import/export, live link to a file; tables and the whole worksheet to .xlsx | ✅ (no charts, pivot tables or Excel macros; written files checked in LibreOffice, not yet in Excel) |
 | MATLAB component, READPRN/WRITEPRN file I/O | ❌ |
@@ -1466,6 +1529,7 @@ src/engine/   math engine (no UI): syntax, evaluation, units, numerics, CAS brid
 src/model/    worksheet document model and examples
 src/ui/       React interface: worksheet canvas, regions, plots, side panel
 src/importers/ Mathcad .mcdx / .xmcd and SMath .sm / .smz import
+src/exporters/ Mathcad .mcdx / .xmcd and SMath .sm export (plan, math tree, one writer per format)
 src/beam/     Beam and frame analysis (no UI): model, stiffness solver, worksheet evaluation
 src/ui/beam/  Beam region: editor, diagrams, properties panel
 src/frame3d/  3-D frame analysis (no UI): model, substructured stiffness solver, buckling, evaluation

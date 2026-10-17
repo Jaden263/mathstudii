@@ -9,7 +9,7 @@ import { compareSaved } from '../importers/saved';
 import { evaluateWithScope } from '../engine/evaluator';
 import { loadCas } from '../engine/symbolic';
 import { toSINumber, isUnit, isMatrix } from '../engine/math';
-import { beamExample, odeExample, steelCheckExample, solvingExample } from '../model/examples';
+import { beamExample, odeExample, pdeExample, steelCheckExample, solvingExample } from '../model/examples';
 import { createRegion, emptyWorksheet, type Region, type Worksheet } from '../model/types';
 
 /** A worksheet with what a calculation usually has: units, functions, matrices, ranges, programs, solve blocks. */
@@ -149,12 +149,27 @@ describe('export to Mathcad Prime, Mathcad 15 and SMath, read back with our impo
     }
   });
 
-  it('the examples come back with the same values: solve blocks, odesolve, beams, sections', () => {
-    for (const make of [solvingExample, odeExample, beamExample, steelCheckExample]) {
+  it('the examples come back with the same values: solve blocks, odesolve, Pdesolve, beams, sections', () => {
+    for (const make of [solvingExample, odeExample, pdeExample, beamExample, steelCheckExample]) {
       for (const format of ['mcdx', 'xmcd'] as Format[]) {
         const r = roundTrip(make(), format);
         expect(r.differ, `${make.name} → ${format}`).toEqual([]);
         expect(r.errors, `${make.name} → ${format}`).toEqual([]);
+        // what the evaluations show (T(50 mm, 1 hr) = °C …) is the same too
+        const shown = (m: Map<string, unknown>) => [...m.values()].map(si).filter((v): v is number => typeof v === 'number').sort((a, b) => a - b);
+        if (make === pdeExample) {
+          const a = shown(r.before.shown), b = shown(r.after.shown);
+          expect(b.length).toBe(a.length);
+          a.forEach((v, i) => expect(b[i]).toBeCloseTo(v, 9));
+          // T(50 mm, 1 hr) against the half-space solution T_s + (T_0 − T_s) erf(x / 2√(αt));
+          // erf by Abramowitz & Stegun 7.1.26 (error below 1.5·10⁻⁷)
+          const erf = (z: number) => {
+            const t = 1 / (1 + 0.3275911 * z);
+            return 1 - t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429)))) * Math.exp(-z * z);
+          };
+          const halfSpace = 373.15 - 80 * erf(0.05 / (2 * Math.sqrt(7e-7 * 3600)));
+          expect(b.some((v) => Math.abs(v - halfSpace) < 1e-3)).toBe(true);
+        }
       }
     }
   });

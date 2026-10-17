@@ -23,9 +23,9 @@ export interface ExportOutcome {
 }
 
 export function exportWorksheet(ws: Worksheet, format: Format, pictures = new Map<string, Picture>()): ExportOutcome {
-  const { variables, shown } = evaluateWithScope(ws);
+  const { variables, shown, results } = evaluateWithScope(ws);
   const metric = (ws.settings.unitSystem ?? 'si') === 'si';
-  const plan = makePlan(ws, format, { pictures, variables, shown, metric });
+  const plan = makePlan(ws, format, { pictures, variables, shown, results, metric });
   const { precision, expThreshold } = ws.settings;
   const bytes = format === 'mcdx' ? writeMcdx(plan, { precision, expThreshold })
     : format === 'xmcd' ? writeXmcd(plan)

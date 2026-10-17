@@ -1010,3 +1010,32 @@ export function excelExample(): Worksheet {
 }
 
 EXAMPLES.push({ name: 'Excel: spreadsheet component and tables', make: excelExample });
+
+// ---------------------------------------------------------------- partial differential equations (Pdesolve)
+
+export function pdeExample(): Worksheet {
+  return build('Heat flow in a slab (Pdesolve)', [
+    ['text', L, mm(15), { width: mm(170), markdown: '# Heat flow into a concrete slab\nA 200 mm slab at 20 °C has its top face brought to 100 °C and held there; its underside is insulated. The solve block takes the heat equation in Mathcad\'s notation — `T_t` is ∂T/∂t, `T_xx` is ∂²T/∂x² — with the initial temperature and a condition at each face; `Pdesolve` returns T(x, t) with units (method of lines: central differences in x, Radau IIA in t).' }],
+    ['math', L, mm(54), { source: 'L := 200 mm' }],
+    ['math', mm(56), mm(54), { source: 'α := 7e-7 m^2/s' }],
+    ['math', mm(110), mm(54), { source: 'T_0 := 293.15 K' }],
+    ['math', mm(150), mm(54), { source: 'T_s := 373.15 K' }],
+    ['solve', L, mm(68), { guesses: '', constraints: 'T_t(x, t) = α * T_xx(x, t)\nT(x, 0 s) = T_0\nT(0 m, t) = T_s\nT_x(L, t) = 0 K/m', solver: 'T := Pdesolve(T, x, [0 m, L], t, [0 s, 4 hr])' }],
+    ['math', mm(110), mm(72), { source: 'T(50 mm, 1 hr) = degC' }],
+    ['math', mm(110), mm(84), { source: 'T(L, 4 hr) = degC' }],
+    ['text', L, mm(122), { width: mm(170), markdown: '**Check**: until the heat reaches the underside the slab behaves as a half-space, T = T_s + (T₀ − T_s) erf(x / (2√(α t))).' }],
+    ['math', L, mm(134), { source: 'T_e(x, t) := T_s + (T_0 - T_s) * erf(x / (2 sqrt(α t)))' }],
+    ['math', L, mm(146), { source: 'T(50 mm, 1 hr) - T_e(50 mm, 1 hr) = K' }],
+    ['math', mm(110), mm(146), { source: 'T(20 mm, 15 min) - T_e(20 mm, 15 min) = K' }],
+    ['plot', L, mm(162), {
+      xExpr: 'x', traces: [{ y: 'T(x, 15 min)', style: 'line' }, { y: 'T(x, 1 hr)', style: 'line' }, { y: 'T(x, 2 hr)', style: 'line' }, { y: 'T(x, 4 hr)', style: 'line' }],
+      xmin: '0 m', xmax: 'L', xUnit: 'mm', yUnit: 'degC', title: 'T(x) after 15 min, 1 h, 2 h and 4 h', width: mm(100), height: mm(65),
+    }],
+    ['plot', mm(122), mm(162), {
+      plotType: 'contour', z: '(T(x * 1 m, y * 1 s) - 273.15 K) / (1 K)', traces: [], xmin: '0', xmax: '0.2', ymin: '0', ymax: '14400',
+      title: 'T in °C: depth x in m (across), time t in s (up)', width: mm(68), height: mm(65),
+    }],
+  ]);
+}
+
+EXAMPLES.push({ name: 'Heat flow in a slab (Pdesolve)', make: pdeExample });

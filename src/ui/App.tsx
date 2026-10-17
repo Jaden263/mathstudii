@@ -23,6 +23,9 @@ import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs,
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
+import { ExportReportDialog, type ExportReport } from './ExportReportDialog';
+import { regionPictures } from './regionPicture';
+import { exportName, formatLabel, FORMAT_MIME, type Format } from '../exporters';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
 import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
@@ -181,6 +184,7 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const [exportReport, setExportReport] = useState<ExportReport | null>(null);
   const separateRef = useRef<(quiet?: boolean, coalesce?: string) => void>(() => {});
   const separateTimer = useRef<number | undefined>(undefined);
   const [dropping, setDropping] = useState(false);
@@ -348,6 +352,21 @@ export function App() {
       const bytes = await evaluation.exportXlsx(ws);
       await exportFile(`${(ws.title || 'worksheet').replace(/[\\/:*?"<>|]+/g, '_')}.xlsx`, bytes, XLSX_MIME);
       setToast(null);
+    } catch (e) {
+      setToast(`Export failed: ${(e as Error).message}`);
+    }
+  };
+
+  /** The worksheet as a Mathcad or SMath file: pictures from the page, the file from the calculation worker. */
+  const exportTo = async (format: Format) => {
+    setToast(`Writing ${formatLabel(format)}…`);
+    try {
+      const pictures = await regionPictures(ws.regions);
+      const { bytes, warnings } = await evaluation.exportWorksheet(ws, format, pictures);
+      const name = exportName(ws.title, format);
+      await exportFile(name, bytes, FORMAT_MIME[format]);
+      setToast(null);
+      setExportReport({ name, format: formatLabel(format), warnings });
     } catch (e) {
       setToast(`Export failed: ${(e as Error).message}`);
     }
@@ -1088,6 +1107,9 @@ export function App() {
                 <button role="menuitem" onClick={() => { setFileMenu(false); void saveDoc(true); }}>{canLinkFiles ? 'Save as…' : 'Download a copy'} <kbd>Ctrl+Shift+S</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setShowVersions(true); }}>Version history…</button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void exportXlsx(); }} title="Every variable with its value, unit and expression; vectors, matrices, tables and spreadsheets on sheets of their own">Export to Excel (.xlsx)…</button>
+                {(['mcdx', 'xmcd', 'sm'] as Format[]).map((f) => (
+                  <button key={f} role="menuitem" onClick={() => { setFileMenu(false); void exportTo(f); }} title="Math, text, solve blocks and units as the program writes them; beams, plates, CAD … as a labelled picture with their values">Export to {formatLabel(f)}…</button>
+                ))}
                 <button role="menuitem" onClick={() => { setFileMenu(false); setProtectDlg(true); }}>{isProtected(ws) ? 'Unprotect worksheet…' : 'Protect worksheet…'}</button>
                 <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
                 <div className="menu-head">Recent documents</div>
@@ -1319,6 +1341,7 @@ export function App() {
         </div>
       )}
       {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
+      {exportReport && <ExportReportDialog report={exportReport} onClose={() => setExportReport(null)} />}
       {protectDlg && (
         <ProtectDialog
           current={ws.settings.protect ?? null}

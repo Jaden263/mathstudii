@@ -7,6 +7,7 @@ import { expandedLayout } from '../model/areas';
 import { readingOrder, type PlotRegion, type Region, type SolveRegion, type TableRegion, type Worksheet } from '../model/types';
 import { math, isUnit, isMatrix, isComplex } from '../engine/math';
 import { unitParts } from '../engine/format';
+import type { RegionResult } from '../engine/evaluator';
 import { compileExpr, freeSymbols, parseExpr } from '../engine/compile';
 import { ChainScope } from '../engine/scope';
 import { splitComparison, parseStatement, splitTop, isIdentifier } from '../engine/syntax';
@@ -31,6 +32,8 @@ export interface ExportContext {
   /** The evaluated worksheet: its variables and what each region shows. */
   variables?: Map<string, unknown>;
   shown?: Map<string, unknown>;
+  /** What each region calculated (the names a Python region assigned). */
+  results?: Map<string, RegionResult>;
   metric?: boolean;
 }
 
@@ -360,12 +363,11 @@ export function makePlan(ws: Worksheet, format: Format, ctx: ExportContext = {})
           note(r, `## ${r.title || 'Area'}`, 300);
           break;
         case 'python': {
-          // what the code assigns, as the values it has now
-          const defs: { name: string; value: unknown }[] = [];
-          for (const line of r.code.split('\n')) {
-            const m = /^([A-Za-z_]\w*)\s*=(?!=)/.exec(line);
-            if (m && ctx.variables?.has(m[1]) && !defs.some((d) => d.name === m[1])) defs.push({ name: m[1], value: ctx.variables.get(m[1]) });
-          }
+          // what the code assigned, as the values it has now
+          const res = ctx.results?.get(r.id);
+          const assigned = (res?.kind === 'python' ? res.outputs.map((o) => o.name) : undefined)
+            ?? r.code.split('\n').flatMap((line) => /^([A-Za-z_]\w*)\s*=(?!=)/.exec(line)?.[1] ?? []);
+          const defs = [...new Set(assigned)].filter((n) => ctx.variables?.has(n)).map((n) => ({ name: n, value: ctx.variables!.get(n) }));
           standIn(r, '', 'Its code is not run there; what it assigns follows as values.', defs.filter((d) => valueX(d.value)));
           break;
         }
