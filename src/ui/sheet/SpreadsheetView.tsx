@@ -87,8 +87,8 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
     }
     return { r, c };
   }, [sheet.cells, shows]);
-  const rows = Math.max(region.rows ?? 20, used.r + 2, area.r2 + 2);
-  const cols = Math.min(16384, Math.max(region.cols ?? 8, used.c + 2, area.c2 + 2));
+  const rows = Math.max(region.rows ?? 20, used.r + 2, area.r2 + 1);
+  const cols = Math.min(16384, Math.max(region.cols ?? 8, used.c + 2, area.c2 + 1));
   const colW = (j: number) => sheet.widths?.[j] ?? COL_W;
   const colLeft = useMemo(() => {
     const out = [0];
@@ -107,7 +107,10 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
 
   // ------------------------------------------------------------ selection and keys
 
-  const focusKeys = () => keysRef.current?.focus({ preventScroll: true });
+  const focusKeys = () => {
+    keysRef.current?.focus({ preventScroll: true });
+    keysRef.current?.select();
+  };
   useEffect(() => {
     if (editing && !edit) focusKeys();
     if (!editing) {
@@ -122,7 +125,7 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
     const ta = keysRef.current;
     if (!ta || !editing || edit) return;
     ta.value = tsvOf(area);
-    ta.select();
+    if (document.activeElement === ta) ta.select();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel, shows, editing, edit]);
 
@@ -355,6 +358,8 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
   };
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
+  // a change that could not be applied (a locked region) is not read again every 2 s
+  const tried = useRef(0);
   // a watched link reads the file again when it changes (checked every 2 s while the page is shown)
   const link = region.link;
   useEffect(() => {
@@ -366,7 +371,10 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
       if (stopped) return;
       if (!st.ok) return setLinkIssue({ why: st.why, message: st.message });
       setLinkIssue(null);
-      if (st.modified > (link.modified ?? 0)) await reloadRef.current(false);
+      if (st.modified > (link.modified ?? 0) && st.modified !== tried.current) {
+        tried.current = st.modified;
+        await reloadRef.current(false);
+      }
     };
     void tick();
     const t = window.setInterval(() => void tick(), 2000);

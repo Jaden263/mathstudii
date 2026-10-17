@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRegion, emptyWorksheet, type BeamRegion, type Frame3DRegion, type MathRegion } from './types';
+import { createRegion, emptyWorksheet, type BeamRegion, type Frame3DRegion, type MathRegion, type SpreadsheetRegion } from './types';
 import { findInWorksheet, replaceInRegion } from './search';
 
 describe('find and replace', () => {
@@ -46,5 +46,21 @@ describe('find and replace', () => {
     expect(out.sections[0].id).toBe('G');
     expect(out.loads[0]).toMatchObject({ q1: '-g_k', case: 'G' });
     expect(out.name).toBe('g_k');
+  });
+});
+
+describe('rename in spreadsheet regions', () => {
+  it('changes the inputs and outputs, never the cells', () => {
+    const r = createRegion('spreadsheet', 0, 0, {
+      sheets: [{ name: 'S', cells: { A1: 'L [m]', B1: '=L*2' } }],
+      inputs: [{ expr: 'L / 2', ref: 'L', unit: 'm' }],
+      outputs: [{ name: 'L', ref: 'B1', unit: 'm' }],
+      names: [{ name: 'L', ref: 'S!$A$1' }],
+    });
+    const out = replaceInRegion(r, 'L', 'L_span', { caseSensitive: true, wholeName: true })!.region as SpreadsheetRegion;
+    expect(out.inputs).toEqual([{ expr: 'L_span / 2', ref: 'L', unit: 'm' }]);
+    expect(out.outputs[0].name).toBe('L_span');
+    expect(out.sheets[0].cells).toEqual({ A1: 'L [m]', B1: '=L*2' });
+    expect(out.names).toEqual([{ name: 'L', ref: 'S!$A$1' }]);
   });
 });

@@ -50,6 +50,8 @@ describe('worksheet to .xlsx', () => {
   });
   it('writes units as engineers do', () => {
     expect(['kN m', 'kN / m', 'kg / m s^2', 'm^4', ''].map(prettyUnit)).toEqual(['kN·m', 'kN/m', 'kg/(m·s^2)', 'm^4', '']);
+    // an output's own unit, as typed, is listed the same way
+    expect(rows(book).find((x) => x[0] === 'M2')?.[2]).toBe('kN·m');
   });
   it('puts vectors in columns, matrices and tables on sheets of their own', () => {
     const r = new Map(rows(book).map((x) => [x[0], x]));
@@ -59,7 +61,7 @@ describe('worksheet to .xlsx', () => {
     expect(r.get('K')?.slice(1, 5)).toEqual(['2 × 2', 'kN/m', '[2, -1; -1, 2] kN/m', 'sheet K']);
     expect(at(book, 'K', 'A1')).toBe('K [kN/m]');
     expect(at(book, 'K', 'B2')).toBe(-1);
-    expect(r.get('loads')?.[4]).toBe('sheet loads');
+    expect(r.get('loads')?.slice(2, 5)).toEqual([null, 'table', 'sheet loads']);
     expect([at(book, 'loads', 'A1'), at(book, 'loads', 'B1'), at(book, 'loads', 'B3')]).toEqual(['case', 'F [kN]', 15]);
   });
   it('spreadsheet components keep their formulas, calculated with the inputs they had', () => {

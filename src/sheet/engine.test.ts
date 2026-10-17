@@ -465,3 +465,15 @@ describe('formula text', () => {
     expect(toFileFormula('=SORT(A1:A3)')).toBe('_xlfn._xlws.SORT(A1:A3)');
   });
 });
+
+describe('what cells show', () => {
+  it('number formats, General to the column width, and dates from date functions', () => {
+    const wb = calculate({ sheets: [{ name: 'S', cells: { A1: '=DATE(2023,3,15)', A2: '=1/3', A3: '1234.5', A4: '=NOW()', A5: '=DATE(2023,3,15)' }, styles: { A3: { fmt: '#,##0.00' }, A5: { fmt: '0' } } }] });
+    expect(wb.display(0, 0, 0)).toBe('2023-03-15');
+    expect(wb.display(0, 1, 0)).toBe('0.333333333');
+    expect(wb.display(0, 1, 0, 6)).toBe('0.3333');
+    expect(wb.display(0, 2, 0)).toBe('1,234.50');
+    expect(wb.display(0, 3, 0)).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d$/);
+    expect(wb.display(0, 4, 0)).toBe('45000'); // a format of its own wins
+  });
+});

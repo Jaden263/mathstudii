@@ -93,7 +93,7 @@ function rowsOf(v: unknown): unknown[][] {
 
 /** The unit a vector or matrix is listed in: that of its first non-zero element. */
 function commonUnit(items: unknown[], metric: boolean, wanted?: string): string {
-  if (wanted) return wanted;
+  if (wanted) return prettyUnit(wanted.replace(/\*/g, ' ').replace(/\s*\/\s*/g, ' / ').replace(/\s+/g, ' ').trim());
   const u = items.find((x) => isUnit(x) && (x.value as number) !== 0) ?? items.find(isUnit);
   return u ? prettyUnit(displayParts(u, metric).unit) : '';
 }
@@ -135,7 +135,8 @@ export function worksheetBook(ws: Worksheet, variables: Map<string, unknown>, re
     if (isMatrix(value) || Array.isArray(value)) {
       const rows = rowsOf(value);
       const items = rows.flat();
-      const u = commonUnit(items, metric, unit);
+      // a table's columns have units of their own (on its sheet)
+      const u = tables.has(name) && depth === 0 ? '' : commonUnit(items, metric, unit);
       const isVector = rows.every((r) => r.length === 1) || rows.length === 1;
       results_.set(cellName(row, 0), { v: name });
       results_.set(cellName(row, 2), { v: u || null });

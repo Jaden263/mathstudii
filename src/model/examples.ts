@@ -1003,7 +1003,7 @@ export function excelExample(): Worksheet {
     ['math', L, mm(274), { source: 'M_max / (q * L^2 / 8) =' }],
     ['plot', mm(105), mm(212), { xExpr: 'x_t', traces: [{ y: 'M_t', style: 'both' }], xUnit: 'm', yUnit: 'kN*m', title: 'M from the spreadsheet', width: mm(85), height: mm(50) }],
     ['text', L, mm(305), { width: mm(170), markdown: '## Tables from Excel\nA **table** reads a sheet or a range of an .xlsx (table → *Import Excel…*, or drop the file on the page); a header row such as `F [kN]` gives each column its name and unit, and *Export Excel* writes it back with the units. File menu ▾ → **Export to Excel** writes every variable of the worksheet to a *Results* sheet, with vectors, matrices, tables and spreadsheets on sheets of their own.' }],
-    ['table', L, mm(334), { name: 'loads', headers: ['case', 'F', 'a'], units: ['', 'kN', 'm'], cells: [['G', '20', '1.5'], ['Q', '35', '3'], ['W', '12', '4.5']], columnVars: true }],
+    ['table', L, mm(334), { name: 'loads', headers: ['case', 'F', 'a'], units: ['', 'kN', 'm'], cells: [['G', '20', '1.5'], ['Q', '35', '3'], ['wind', '12', '4.5']], columnVars: true }],
     ['math', mm(90), mm(340), { source: 'sum(F) =' }],
     ['math', mm(90), mm(352), { source: 'F * a / L =' }],
   ]);

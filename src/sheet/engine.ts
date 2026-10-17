@@ -49,6 +49,12 @@ interface Entry {
 
 const VISITING = 1, DONE = 2;
 
+/** Formats of cells whose formula is one of these functions and that have none of their own. */
+const IMPLIED_FORMATS: Record<string, string> = {
+  DATE: 'yyyy-mm-dd', TODAY: 'yyyy-mm-dd', EDATE: 'yyyy-mm-dd', EOMONTH: 'yyyy-mm-dd', DATEVALUE: 'yyyy-mm-dd', WORKDAY: 'yyyy-mm-dd',
+  NOW: 'yyyy-mm-dd hh:mm', TIME: 'hh:mm:ss', TIMEVALUE: 'hh:mm:ss',
+};
+
 class SheetState {
   readonly entries = new Map<number, Entry>();
   readonly overrides = new Map<number, Scalar>();
@@ -161,7 +167,10 @@ export class Workbook {
   /** What the cell shows, in its number format (General numbers in `width` characters). */
   display(sheet: number, r: number, c: number, width?: number): string {
     const sh = this.sheets[sheet];
-    return formatValue(this.value(sheet, r, c), sh.styles[cellName(r, c)]?.fmt, this.date1904, width);
+    // a formula giving a date shows it as one, as Excel formats such a cell when it is entered
+    const node = sh.entries.get(key(r, c))?.node;
+    const fmt = sh.styles[cellName(r, c)]?.fmt ?? (node?.t === 'fn' ? IMPLIED_FORMATS[node.name] : undefined);
+    return formatValue(this.value(sheet, r, c), fmt, this.date1904, width);
   }
 
   input(sheet: number, r: number, c: number): string {

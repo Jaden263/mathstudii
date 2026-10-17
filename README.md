@@ -156,6 +156,84 @@ in place. `y'(t)` and `y''(t)` work in `→` for a function `y` defined above (t
   plots and sums.
 - Right-click a vector or matrix result → **Copy as table**, then paste it into Excel
   with its unit.
+- **Import Excel… / Export Excel** in a table, or drop an `.xlsx` on the page: see below.
+
+### Spreadsheets and Excel files
+
+A **spreadsheet region** (toolbar → **Sheet**) is Mathcad's Excel component, without Excel:
+cells with Excel formulas, worksheet values written into cells, and cells read back out as
+variables with units.
+
+- **Editing.** Click it, then click a cell and type; `=` starts a formula. Enter, Tab and the
+  arrows move, F2 edits a cell in place, Delete clears, Ctrl+D / Ctrl+R fill down / right
+  (relative references move, `$` ones stay), Ctrl+C / Ctrl+V copy and paste as Excel does
+  (tab separated text; decimal commas from a German Excel are understood; cells copied here
+  keep their formulas). The name box goes to a reference you type, or names the selection.
+  Drag a column header's edge or the region's corner to resize; tabs hold several sheets.
+- **Inputs** (worksheet → cells): an expression, a cell or range, and the unit the numbers
+  are written in. `q` → `B2` in `kN/m` writes 18.3 for 18.3 kN/m; with no unit a quantity
+  goes in SI base units, as in Mathcad, and the region says which. A vector or matrix fills
+  a block from the cell (or a range of the same size; a vector across a one-row range).
+- **Outputs** (cells → worksheet): a name, a cell or range and the unit of its numbers.
+  `M_max` := `D1` in `kN*m` is a moment; a column becomes a vector, a block a matrix, text
+  stays text. They are defined where the region stands in reading order, so math below it
+  (checks, plots) uses them. An error in an output cell, an empty one, or a circular reference
+  is reported on that output.
+- **The formula engine** has 209 functions, with Excel's rules for what counts: `SUM` of a
+  range skips text and logicals but `SUM("2", TRUE)` counts them, `COUNT` ignores errors,
+  criteria like `">5"`, `"<>"` and `"a*"` in `SUMIFS`/`COUNTIFS`/`AVERAGEIFS`/`MAXIFS`, `ROUND(1.005, 2)`
+  is 1.01, `-2^2` is 4. Lookup (`VLOOKUP`/`HLOOKUP` exact and approximate, `INDEX`/`MATCH`,
+  `XLOOKUP`, `LOOKUP`, `OFFSET`, `INDIRECT`), logic (`IF`, `IFS`, `IFERROR`, `SWITCH`, `XOR` …),
+  text (`TEXT` with number, date, time and fraction formats, `TEXTJOIN`, `SUBSTITUTE` …), dates
+  (both the 1900 system, with Excel's 29 February 1900, and 1904), statistics (`STDEV.S`,
+  `MEDIAN`, `RANK`, `PERCENTILE`, `CORREL`, `NORM.DIST` …) and matrices (`MMULT`, `MINVERSE`,
+  `MDETERM`, `TRANSPOSE`, `LINEST` with its statistics). Absolute and relative references,
+  ranges, whole columns, other sheets (`'Load cases'!B2`), 3-D references (`Sheet1:Sheet3!A1`)
+  and named ranges work. Formulas that give arrays spill into the cells beside them, as in
+  Excel 365 (`#SPILL!` when something is in the way). A dependency graph orders the
+  calculation, and a circular reference is an error (`#CIRC!`, with the loop named:
+  *A1 → B1 → A1*) rather than Excel's warning and 0; there is no iterative calculation.
+- **Import** reads an `.xlsx` into the region: formulas are kept and recalculated here, and the
+  region reports how many agree with the values the file was saved with (and lists those
+  that do not, or functions that are missing). **Export** writes it back with formulas,
+  results, number formats, bold cells, column widths, merged cells and names.
+- **Link…** keeps the region tied to the file. In the desktop app the file's modification
+  time is checked every 2 s and the file read again when it changes. In Chrome and Edge the
+  browser's file handle is kept (in this browser's storage, so the link survives saving and
+  reloading): the file is checked every 2 s while the page is shown, **Reload** reads it on
+  demand, and after a reload the browser wants one click on **Reconnect**. Firefox and Safari
+  cannot keep a link to a file, so there the workbook is imported and imported again by hand.
+  A link made in one browser or on one computer cannot be followed on another: link it again.
+
+Tables read Excel too: **Import Excel…** in a table (or dropping an `.xlsx` on the page) asks
+for the sheet, the range and whether the first row holds names and units (`F [kN]` gives
+column `F` the unit kN); formulas come in as their results (calculated here when the file was
+saved without them), dates as ISO text. **Export Excel** writes the table with the units in
+the header row.
+
+File menu ▾ → **Export to Excel (.xlsx)** writes the whole calculation: a *Results* sheet with
+every variable (name, value in the unit the worksheet shows it in, unit, the expression that
+defined it; the fields of section and beam results one level down), vectors as columns of a
+*Vectors* sheet, and each matrix, table and spreadsheet region on a sheet of its own.
+
+What is not there: charts, pivot tables, conditional formatting, comments, data validation,
+fonts, colours and borders are left out on import (number formats, bold, widths and merged
+cells are kept); structured table references (`Table1[Load]`), links to other workbooks,
+R1C1 notation, `FILTER`/`SORT`/`UNIQUE`, `LET`/`LAMBDA`, financial and most statistical
+distribution functions are missing (such formulas show `#NAME?` and the import says so). Old
+binary `.xls` files are not read: save them as `.xlsx` first.
+
+How it was tested: Microsoft's documented examples (the VLOOKUP density table, SUMIFS,
+RANK, LINEST, SEARCH …), a write → read round trip, and 13 files saved by Excel, Excel for
+Mac and LibreOffice (from the calamine and Apache POI projects, licences in
+`src/sheet/fixtures/README.md`) whose saved results all agree with ours, among them 45
+`TEXT` date and time formats and shared, array and 3-D formulas. A workbook of 316
+formulas recalculated by LibreOffice 24.2 agrees except where LibreOffice differs from
+Excel (it counts TRUE in ranges, has real odd roots, has no 29 February 1900) or lacks
+`XLOOKUP` and `SEQUENCE`. Written files open in LibreOffice and in openpyxl; **they have
+not been opened in Microsoft Excel itself here**. The desktop app's file watching is built
+but was not run in this environment (no desktop runtime); the browser link was checked with
+a stand-in for the browser's file picker.
 
 ### Find, replace, rename
 
@@ -1340,12 +1418,13 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Beams and plane frames: draw members, supports (pin, roller, fixed, inclined, springs, settlements), hinges, point/line/moment loads, load cases, ULS/SLS combinations and envelopes; reactions and N, V, M, deflection diagrams; influence lines and moving loads (LM1, cranes, axle trains); results and M(x), w(x) back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, linear buckling α_cr; moving loads first order) |
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
-| Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
+| Report header/footer with page numbers, find & replace / rename, version history, Excel paste, CSV and .xlsx import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
-| Excel/MATLAB components, READPRN/WRITEPRN file I/O | ⚠️ Excel ranges paste into tables and CSV files import/export; no live Excel link or .xlsx files |
+| Excel component: spreadsheet region with 209 Excel functions, inputs and outputs with units, .xlsx import/export, live link to a file; tables and the whole worksheet to .xlsx | ✅ (no charts, pivot tables or Excel macros; written files checked in LibreOffice, not yet in Excel) |
+| MATLAB component, READPRN/WRITEPRN file I/O | ❌ |
 | WYSIWYG 2-D equation editing (typing into the rendered formula) | ❌: you type a linear form with a live preview |
 | Collapsible areas (nested, printed collapsed or expanded), locked regions, protected worksheets with inputs | ✅ (protection stops accidents, not someone editing the JSON) |
 | Track changes | ❌ |
@@ -1386,6 +1465,9 @@ src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (com
 src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
               window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering
+src/sheet/    spreadsheets (no UI): formula engine, Excel functions, .xlsx read/write, the spreadsheet
+              region's evaluation with units, worksheet and table export
+src/ui/sheet/ spreadsheet region (grid, inputs and outputs) and the Excel import dialog for tables
 src/platform/ file access for Tauri, the File System Access API, and the download fallback
 src-tauri/    native shell (Rust): window, dialogs, file system
 ```

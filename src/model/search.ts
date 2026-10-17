@@ -18,6 +18,8 @@ const SKIP = new Set([
   'plotType', 'textFont', 'style', 'op', 'dir', 'family', 'logo', 'component', 'occ', 'sketch', 'member', 'node', 'refs', 'targets',
   'profiles', 'points', 'a', 'b', 'p1', 'p2', 'cad', 'center', 'axis', 'axis2', 'plane', 'feature', 'tools', 'target', 'entities', 'ref',
   'hidden', 'print',
+  // a spreadsheet's cells, names and file are its own: a rename changes its inputs and outputs only
+  'sheets', 'names', 'link', 'report',
 ]);
 
 /** Fields that hold an id or a list entry when they are text (a beam member's own `section` is an object of expressions). */

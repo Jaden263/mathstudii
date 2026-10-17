@@ -42,6 +42,9 @@ export function worksheetCompletions(regions: Region[]): Completion[] {
       r.guesses.split('\n').forEach(add);
       add(r.solver);
     } else if (r.kind === 'table' && r.name) out.set(r.name, { name: r.name, insert: r.name, detail: 'table', kind: 'variable' });
+    else if (r.kind === 'spreadsheet') {
+      for (const o of r.outputs) if (o.name.trim()) out.set(o.name.trim(), { name: o.name.trim(), insert: o.name.trim(), detail: `spreadsheet ${o.ref}`, kind: 'variable' });
+    }
     else if ((r.kind === 'sketch' || r.kind === 'cad' || r.kind === 'beam' || r.kind === 'frame3d' || r.kind === 'plate') && r.name) out.set(r.name, { name: r.name, insert: r.name, detail: `${r.kind === 'frame3d' ? '3-D frame' : r.kind} results`, kind: 'variable' });
   }
   return [...out.values()];
