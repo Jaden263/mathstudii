@@ -89,7 +89,7 @@ export function DrawingProps({ region, dispatch }: { region: DrawingRegion; disp
             </li>
           ))}
         </ul>
-      ) : null}
+      ) : <p className="hint">Select the drawing and press <b>Section</b>, then click the two ends of the cutting line on a view.</p>}
       <h3 className="sub">Details ({details.length})</h3>
       {details.length ? (
         <ul className="cad-clist">
@@ -105,7 +105,7 @@ export function DrawingProps({ region, dispatch }: { region: DrawingRegion; disp
             </li>
           ))}
         </ul>
-      ) : null}
+      ) : <p className="hint">Press <b>Detail</b>, click the centre on a view and then the size of the circle.</p>}
       <h3 className="sub">Title block</h3>
       <label className="field"><span>Title</span><LazyInput label="Title" mono={false} value={region.title ?? ''} placeholder="part name" onCommit={(v) => set({ title: v.trim() || undefined }, 'title')} /></label>
       <div className="row2">

@@ -305,9 +305,9 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
           <button className="btn" onClick={printSheet} title={`Print or save as PDF on ${region.sheet} ${orient}, true scale`}><Printer size={13} /> Print {region.sheet}</button>
           <button className="btn" onClick={() => download(svgText(), 'image/svg+xml', 'svg')} title="Vector drawing in millimetres (opens in Inkscape, Illustrator, browsers)"><Download size={13} /> SVG</button>
           <button className="btn" onClick={() => download(sheetDxf(sheet), 'application/dxf', 'dxf')} title="DXF R2000 in paper millimetres: true circles, arcs and ellipses on layers VISIBLE, HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT, BORDER with ISO lineweights"><FileCode2 size={13} /> DXF</button>
-          <span className="dw-scale">
-            {mesh && <span title={mesh === 'all' ? 'OpenCascade is not loaded: the lines come from the display mesh' : 'Coils and modeled threads are drawn from their mesh'}>{mesh === 'all' ? 'mesh lines' : 'partly from the mesh'} · </span>}
-            {region.sheet} {orient} {W} × {H} · Scale {scaleText(sheet.scale)}
+          <span className="dw-scale" title={`${region.sheet} ${orient}, ${W} × ${H} mm`}>
+            {mesh && <span title={mesh === 'all' ? 'OpenCascade is not loaded: the lines come from the display mesh' : 'Coils and modeled threads are drawn from their mesh'}>{mesh === 'all' ? 'mesh lines' : 'partly mesh'} · </span>}
+            {region.sheet}{region.portrait ? ' portrait' : ''} · {scaleText(sheet.scale)}
           </span>
         </div>
       )}

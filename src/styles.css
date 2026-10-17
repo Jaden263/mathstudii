@@ -5663,6 +5663,14 @@ div.pl-cutplot {
   pointer-events: none;
 }
 
+.dw-tools .btn {
+  white-space: nowrap;
+}
+
+.dw-tools .dw-scale {
+  white-space: nowrap;
+}
+
 .dw-tools .btn.on {
   border-color: var(--accent);
   background: var(--accent-soft);

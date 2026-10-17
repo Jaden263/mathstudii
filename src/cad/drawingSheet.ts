@@ -250,12 +250,14 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     if (fit === 'base' && !baseFits) return null;
     if (fit === 'all' && (!baseFits || spareW < GAP * (cols + columns.length + 1) || tallest > availH)) return null;
     const used = cols + columns.length;
-    const gx = Math.max(spareW / (used + 1), 4), gy = Math.max(spareH / (rows + 1), 4);
+    // the spare room between the views, up to 40 mm a gap; the block centred in what is left
+    const gx = Math.min(Math.max(spareW / (used + 1), 4), 40), gy = Math.min(Math.max(spareH / (rows + 1), 4), 40);
+    const y0 = top - Math.max(gy, (spareH - gy * (rows - 1)) / 2);
     const centres = new Map<string, [number, number]>();
-    let x = frame.x + gx;
+    let x = frame.x + Math.max(gx, (spareW - gx * (used - 1)) / 2);
     for (let c = 0; c < 2; c++) {
       if (!colW[c]) continue;
-      let y = top - gy;
+      let y = y0;
       for (let rw = 0; rw < 2; rw++) {
         if (!rowH[rw]) continue;
         const k = grid[rw][c];
@@ -265,7 +267,8 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
       x += colW[c] + gx;
     }
     for (const col of columns) {
-      let y = top - GAP;
+      // level with the standard views, as long as the column stays clear of the title block
+      let y = Math.max(Math.min(top - GAP, y0 + labelRoom), bottom + GAP + col.h);
       for (const it of col.items) {
         centres.set(it.e.key, [x + col.w / 2, y - labelRoom - (it.h - labelRoom) / 2]);
         y -= it.h + GAP;
