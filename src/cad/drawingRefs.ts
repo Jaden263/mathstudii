@@ -589,8 +589,12 @@ export function inferOrient(p1: XY, p2: XY, text: XY): 'h' | 'v' | 'aligned' {
   return 'aligned';
 }
 
-/** An angle between two lines: their crossing, the rays bounding the angle that holds `text`, and the angle (radians). */
-export function measureAngle(a: Shape2, b: Shape2, text: XY): { V: XY; r1: XY; r2: XY; value: number } | null {
+/**
+ * An angle between two lines: their crossing, the rays along each (r1 on a, r2 on b)
+ * bounding the angle that holds `text`, and the angle (radians), counter-clockwise from r1
+ * to r2 (or from r2 to r1 when `flip`).
+ */
+export function measureAngle(a: Shape2, b: Shape2, text: XY): { V: XY; r1: XY; r2: XY; value: number; flip?: boolean } | null {
   if (a.k !== 'line' || b.k !== 'line') return null;
   const d1 = unit(a.x2 - a.x1, a.y2 - a.y1), d2 = unit(b.x2 - b.x1, b.y2 - b.y1);
   const den = d1[0] * d2[1] - d1[1] * d2[0];
@@ -602,9 +606,10 @@ export function measureAngle(a: Shape2, b: Shape2, text: XY): { V: XY; r1: XY; r
   for (const g1 of [1, -1]) for (const g2 of [1, -1]) {
     const r1: XY = [g1 * d1[0], g1 * d1[1]], r2: XY = [g2 * d2[0], g2 * d2[1]];
     const a1 = atan2(r1[1], r1[0]), a2 = atan2(r2[1], r2[0]);
-    // the sector from r1 counter-clockwise to r2, under half a turn, holding the text
+    // the sector between the rays, under half a turn, holding the text
     const span = ccw(a1, a2);
     if (span < PI && ccw(a1, phi) <= span) return { V, r1, r2, value: span };
+    if (span > PI && ccw(a2, phi) <= TAU - span) return { V, r1, r2, value: TAU - span, flip: true };
   }
   return null;
 }
@@ -642,9 +647,10 @@ export function dimensionValue(d: DimAnnotation, a: { shape: Shape2; p3?: Vec3[]
  * measure before and after an edit): a linear one keeps its place along the dimension
  * (the fraction between the ends, or its distance past them) and its distance outside the
  * measured points; a round one its angle and its distance outside the circle; an angle its
- * offset from the vertex.
+ * offset from the vertex. Distances off the geometry are multiplied by `ratio` (the old
+ * scale of the view over the new one, so they stay the same on the paper).
  */
-export function followText(d: DimAnnotation, was: { a: Shape2; b?: Shape2 }, now: { a: Shape2; b?: Shape2 }): XY {
+export function followText(d: DimAnnotation, was: { a: Shape2; b?: Shape2 }, now: { a: Shape2; b?: Shape2 }, ratio = 1): XY {
   const T = d.text;
   if (d.type === 'linear') {
     const mo = measureLinear(was.a, was.b, d.orient, T), mn = measureLinear(now.a, now.b, d.orient, T);
@@ -657,15 +663,15 @@ export function followText(d: DimAnnotation, was: { a: Shape2; b?: Shape2 }, now
     const a0 = dot(mo.p1, mo.u), L0 = dot(mo.p2, mo.u) - a0, t = dot(T, mo.u) - a0;
     const a1 = dot(mn.p1, u1), L1 = dot(mn.p2, u1) - a1;
     const [lo0, hi0] = [min(0, L0), max(0, L0)], [lo1, hi1] = [min(0, L1), max(0, L1)];
-    const along = t < lo0 ? lo1 - (lo0 - t) : t > hi0 ? hi1 + (t - hi0) : abs(L0) > 1e-12 ? (t / L0) * L1 : t;
+    const along = t < lo0 ? lo1 - (lo0 - t) * ratio : t > hi0 ? hi1 + (t - hi0) * ratio : abs(L0) > 1e-12 ? (t / L0) * L1 : t;
     // across it: beyond the outermost measured point on the text's side
     const c = dot(T, n0), c0 = [dot(mo.p1, n0), dot(mo.p2, n0)], c1 = [dot(mn.p1, n1), dot(mn.p2, n1)];
-    const across = c >= max(...c0) ? max(...c1) + (c - max(...c0)) : c <= min(...c0) ? min(...c1) - (min(...c0) - c) : c - c0[0] + c1[0];
+    const across = c >= max(...c0) ? max(...c1) + (c - max(...c0)) * ratio : c <= min(...c0) ? min(...c1) - (min(...c0) - c) * ratio : c - c0[0] + c1[0];
     return [u1[0] * (a1 + along) + n1[0] * across, u1[1] * (a1 + along) + n1[1] * across];
   }
   if (d.type === 'angle') {
     const mo = was.b && measureAngle(was.a, was.b, T), mn = now.b && measureAngle(now.a, now.b, T);
-    return mo && mn ? [T[0] + mn.V[0] - mo.V[0], T[1] + mn.V[1] - mo.V[1]] : T;
+    return mo && mn ? [mn.V[0] + (T[0] - mo.V[0]) * ratio, mn.V[1] + (T[1] - mo.V[1]) * ratio] : T;
   }
   // round: about the circle's centre (a pitch circle's: the centre picked)
   const ring = (g: { a: Shape2; b?: Shape2 }): { c: XY; r: number } | null => {
@@ -679,12 +685,12 @@ export function followText(d: DimAnnotation, was: { a: Shape2; b?: Shape2 }, now
   const ro = ring(was), rn = ring(now);
   if (!ro || !rn) {
     // a cylinder's Ø: along with its axis
-    if (was.a.k === 'cyl' && now.a.k === 'cyl') return followPoint(was.a, now.a, T);
+    if (was.a.k === 'cyl' && now.a.k === 'cyl') return followPoint(was.a, now.a, T, ratio);
     return T;
   }
   const v: XY = [T[0] - ro.c[0], T[1] - ro.c[1]], l = hypot(v[0], v[1]);
   if (!(l > 0)) return [rn.c[0], rn.c[1]];
-  const k = max(0, l + rn.r - ro.r) / l;
+  const k = max(0, (l - ro.r) * ratio + rn.r) / l;
   return [rn.c[0] + v[0] * k, rn.c[1] + v[1] * k];
 }
 
@@ -735,9 +741,9 @@ export function anchorAgain(s: Shape2, a: { t: number; side?: number }): XY {
   }
 }
 
-/** A point placed by a pick (a leader's text, a symbol) moved with the place it points at. */
-export function followPoint(was: Shape2, now: Shape2, p: XY): XY {
+/** A point placed by a pick (a leader's text, a symbol) moved with the place it points at, its offset from there times `ratio`. */
+export function followPoint(was: Shape2, now: Shape2, p: XY, ratio = 1): XY {
   if (was.k !== now.k) return p;
   const a = anchorOn(was, p), b = anchorAgain(now, a);
-  return [p[0] + b[0] - a.at[0], p[1] + b[1] - a.at[1]];
+  return [b[0] + (p[0] - a.at[0]) * ratio, b[1] + (p[1] - a.at[1]) * ratio];
 }

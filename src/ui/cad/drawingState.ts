@@ -46,11 +46,11 @@ export function selectAnnotation(region: string, id: string | null, edit = false
   changed();
 }
 
-/** The annotation whose text the panel should focus once (and forget). */
-export function takeFocus(region: string, id: string): boolean {
-  if (focus.get(region) !== id) return false;
+/** Whether the panel should put the cursor in this annotation's text (once: `focused` forgets it). */
+export const wantsFocus = (region: string, id: string) => focus.get(region) === id;
+
+export function focused(region: string) {
   focus.delete(region);
-  return true;
 }
 
 export function publishDrawing(region: string, l: DrawingLive) {

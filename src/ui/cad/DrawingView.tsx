@@ -248,7 +248,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const { views: all, busy, failed } = useDrawing(region, cad, cadResult);
   const design = useMemo(() => (cad ? designOf(cad) : EMPTY), [cad]);
   const shownBuild = useBuildResult(region.id, design, cadResult);
-  const parts = useMemo<DrawnPart[] | null>(() => annotationParts(shownBuild.build, cad ? design : undefined), [shownBuild.build, design, cad]);
+  // the mesh kernel's faces and edges have no names nor exact circles: annotations need OpenCascade's
+  const parts = useMemo<DrawnPart[] | null>(() => (shownBuild.build?.kernel === 'brep' ? annotationParts(shownBuild.build, cad ? design : undefined) : null), [shownBuild.build, design, cad]);
   const { selected: picked } = useDrawingState(region.id);
   const svgRef = useRef<SVGSVGElement>(null);
   const [tool, setTool] = useState<Tool | null>(null);
@@ -258,7 +259,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const [hover, setHover] = useState<{ view: string; hit: PickHit | null; free?: XY; ann?: string; at: XY } | null>(null);
   const [mode, setMode] = useState<'single' | 'chain' | 'baseline'>('single');
   const [chain, setChain] = useState<Chain | null>(null);
-  const [adrag, setADrag] = useState<{ id: string; d: XY } | null>(null);
+  const [adrag, setADrag] = useState<{ id: string; d: XY; k: number } | null>(null);
   // views that drew nothing (no bodies) leave the sheet empty
   const views = useMemo(() => (all && Object.values(all).some((x) => x.visible.length) ? all : null), [all]);
   const annotations = useMemo(() => region.annotations ?? [], [region.annotations]);
@@ -283,7 +284,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     }
     if (adrag) {
       const p = placedRef.current.find((q) => q.id === adrag.id);
-      r = { ...r, annotations: annotations.map((a) => (a.id === adrag.id ? movedAnnotation(a, adrag.d, p?.pos, p?.now) : a)) };
+      const k = adrag.k;
+      r = { ...r, annotations: annotations.map((a) => (a.id === adrag.id ? movedAnnotation(a, adrag.d, p?.pos, p?.now, k) : a)) };
     }
     return r;
   }, [region, drag, adrag, annotations]);
@@ -335,7 +337,10 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   }, [selected]);
 
   const set = (patch: Partial<DrawingRegion>) => dispatch({ type: 'update', id: region.id, patch });
-  const addAnnotation = (a: Annotation, edit = false) => {
+  const addAnnotation = (a0: Annotation, edit = false) => {
+    // the paper scale it was placed at keeps its distances on the paper should the scale change
+    const pv = sheet?.views.find((v) => v.key === a0.view);
+    const a = pv && !a0.k ? { ...a0, k: pv.k } : a0;
     set({ annotations: [...annotations, a] });
     selectAnnotation(region.id, a.id, edit);
   };
@@ -375,7 +380,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   /** What the pointer is over for an annotation tool: a model entity (or a point of the line work), or a dimension. */
   const hoverAt = (x: number, y: number, t: AnnotTool) => {
     if (!sheet) return null;
-    const pv = adraft ? sheet.views.find((v) => v.key === adraft.view) : viewAt(sheet, x, y, 6);
+    // annotations may stand well off their view (notes, frames): the nearest view within 20 mm
+    const pv = adraft ? sheet.views.find((v) => v.key === adraft.view) : viewAt(sheet, x, y, 20);
     if (!pv) return null;
     const at = toView(pv, x, y) as XY;
     const ann = (t === 'gdt' || t === 'datum') && !adraft ? annotationAt(sheet, x, y, 1.2) : null;
@@ -383,7 +389,9 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     const vp: ViewPicks | null = viewPicks(region, pv, parts);
     let hit: PickHit | null = null, free: XY | undefined;
     if (vp && !dim) {
-      hit = pickAt(vp.ents, at[0], at[1], 2 / pv.k, 1.2 / pv.k, { accept: (e) => accepts(t, e) });
+      // tools that need a curve (a hole's circle, a surface's edge) take the curve, not a point on it
+      const curves = t === 'hole' || t === 'centre' || t === 'datum' || t === 'surface';
+      hit = pickAt(vp.ents, at[0], at[1], 2 / pv.k, 1.2 / pv.k, { accept: (e) => accepts(t, e), points: !curves });
       // a point of the line work that is no model entity (a dimension only): flagged should it move
       if (!hit && t === 'dim') {
         let bd = 1.6 / pv.k;
@@ -449,14 +457,14 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
       const move = (ev: PointerEvent) => {
         const [mx, my] = sheetPoint(svg, H, ev);
         d = [(mx - start[0]) / pvA.k, (my - start[1]) / pvA.k];
-        setADrag({ id: ann, d });
+        setADrag({ id: ann, d, k: pvA.k });
       };
       const up = () => {
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', up);
         setADrag(null);
         if (Math.hypot(d[0], d[1]) * pvA.k < 0.3) return;
-        set({ annotations: annotations.map((q) => (q.id === ann ? movedAnnotation(q, d, p.pos, p.now) : q)) });
+        set({ annotations: annotations.map((q) => (q.id === ann ? movedAnnotation(q, d, p.pos, p.now, pvA.k) : q)) });
       };
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
@@ -614,7 +622,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const orient = region.portrait ? 'portrait' : 'landscape';
   const hint = tool === 'section' ? (draft ? 'Click the other end of the cutting line (Esc cancels)' : 'Click on the front, top or side view where the cutting line starts')
     : tool === 'detail' ? (draft ? 'Click to set the size of the circle (Esc cancels)' : 'Click the centre of the detail on a view')
-    : isAnnot(tool) ? (!parts ? 'Waiting for the model’s edges…' : chain ? `Pick the next point of the ${mode} (Esc ends)` : HINTS[tool][adraft ? 1 : 0]) : null;
+    : isAnnot(tool) ? (!parts ? (shownBuild.build?.kernel === 'mesh' ? 'Annotations need OpenCascade: the mesh kernel drew this part' : 'Waiting for the model’s edges…') : chain ? `Pick the next point of the ${mode} (Esc ends)` : HINTS[tool][adraft ? 1 : 0]) : null;
   const hoverPv = hover && sheet?.views.find((v) => v.key === hover.view);
   return (
     <div className="drawing-region" style={{ width: region.width }}>
@@ -651,7 +659,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
             <button className={`btn${tool === 'detail' ? ' on' : ''}`} onClick={() => chooseTool(tool === 'detail' ? null : 'detail')} title="Detail view: draw a circle on a view to enlarge"><ZoomIn size={13} /> Detail</button>
             <button className="btn" onClick={printSheet} title={`Print or save as PDF on ${region.sheet} ${orient}, true scale`}><Printer size={13} /> Print {region.sheet}</button>
             <button className="btn" onClick={() => download(svgText(), 'image/svg+xml', 'svg')} title="Vector drawing in millimetres (opens in Inkscape, Illustrator, browsers)"><Download size={13} /> SVG</button>
-            <button className="btn" onClick={() => download(sheetDxf(sheet), 'application/dxf', 'dxf')} title="DXF R2000 in paper millimetres: true circles, arcs and ellipses on layers VISIBLE, HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT, BORDER with ISO lineweights"><FileCode2 size={13} /> DXF</button>
+            <button className="btn" onClick={() => download(sheetDxf(withoutDraft(sheet)), 'application/dxf', 'dxf')} title="DXF R2000 in paper millimetres: true circles, arcs and ellipses on layers VISIBLE, HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT, BORDER with ISO lineweights"><FileCode2 size={13} /> DXF</button>
             <span className="dw-scale" title={`${region.sheet} ${orient}, ${W} × ${H} mm`}>
               {mesh && <span title={mesh === 'all' ? 'OpenCascade is not loaded: the lines come from the display mesh' : 'Coils and modeled threads are drawn from their mesh'}>{mesh === 'all' ? 'mesh lines' : 'partly mesh'} · </span>}
               {region.sheet}{region.portrait ? ' portrait' : ''} · {scaleText(sheet.scale)}
@@ -681,6 +689,9 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
     </div>
   );
 }
+
+/** The sheet without the preview of an annotation being made (the files never carry it). */
+const withoutDraft = (s: Sheet): Sheet => ({ ...s, inks: s.inks.filter((i) => i.owner !== 'draft'), fills: s.fills.filter((f) => f.owner !== 'draft'), labels: s.labels.filter((l) => l.owner !== 'draft') });
 
 /** Whether two picks are the same entity and snap. */
 const samePick = (p: DrawPick, q: DrawPick) => p.snap === q.snap && p.occ === q.occ && p.ref?.key === q.ref?.key && p.ref?.body === q.ref?.body && JSON.stringify(p.shape) === JSON.stringify(q.shape);

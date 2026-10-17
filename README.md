@@ -961,7 +961,57 @@ landscape or portrait, ISO 5457 frame) with:
 - cosmetic threads (the thread feature without geometry, tapped holes) per ISO 6410: a
   narrow line at the root (d3 of a bolt, D of a nut), a ¾ circle seen end-on, a wide
   line where the full thread ends, dashed where the material hides them;
-- overall dimensions and an ISO 7200-style title block with the projection symbol.
+- automatic dimensions from the model (switchable): each overall size once (the width on
+  the front view, the height on the front or side, the depth on the top), a round outline
+  by its diameter, each hole feature's callout and other round holes by their diameter
+  with how many there are, and where the holes are: the diameter of their pitch circle, or
+  their distances from the view's left and bottom edges. **Make editable** keeps them as
+  the drawing's own;
+- an ISO 7200 title block (title, drawing number, revision, scale, sheet size, units,
+  projection symbol, created / checked / approved by, date of issue, legal owner, document
+  type, material and mass from the part, sheet n of m), an optional revision table, and for
+  assemblies an ISO 7573 parts list over the title block (item, quantity counting repeated
+  occurrences, name, material from the density, mass each), all edited in the side panel.
+
+**Annotating:** the tools under the selected drawing pick the model on the views: corners,
+edge middles, circle centres and quadrants, lines, circles and arcs, the outlines of a
+cylinder seen side-on, and in a section view the corners of the cut faces. The entity under
+the pointer is highlighted with a marker for the snap (square at a corner, circle at a
+centre, triangle at a middle, diamond at a quadrant), and the annotation being made follows
+the pointer until the click that places it.
+
+- **Dimension:** a circle gives its Ø, an arc its R (or its arc length), a line its length,
+  a cylinder's outline its Ø, two points, edges or circle centres their distance
+  (horizontal, vertical or aligned by where the text goes), two lines their angle.
+  **Chain** and **Baseline** dimension each further point from the last, or from the
+  first a row further out. Values are the model's own in the part's unit, whatever the
+  scale (in the isometric view, true 3-D lengths), with the drawing's or the dimension's
+  decimals; tolerances ±t, deviations, limits, or an ISO 286-1/-2 class or fit (hole H,
+  shafts c d e f g h js k m n p r s, IT5 to IT11, sizes up to 500 mm) written "Ø20 H7" with
+  its deviations or limits if wanted; reference (in parentheses) and theoretically exact
+  (framed) dimensions.
+- **Note** with a leader, **Hole** callouts made from the hole feature ("4× M8 – 6H ↧ 12"
+  with the drill on a second line when it goes deeper, "Ø8.5 ⌴ Ø14 ↧ 8", "2× Ø6.6 ⌵ Ø13 × 90°").
+- **GD&T:** ISO 1101 feature control frames with all fifteen characteristics, a Ø zone,
+  Ⓜ Ⓛ Ⓟ, up to three datums, on a leader to an edge or under a dimension; the side panel
+  says when a datum is missing or not allowed. **Datum** feature symbols (ISO 5459) on an
+  edge or on a dimension of a feature of size. **Surface** texture symbols (ISO 1302 /
+  ISO 21920-1): Ra or Rz, removal required, not permitted or any process, lay, method,
+  standing on the edge or on a leader.
+- **Centre:** add a centre mark to any circle or arc, or take an automatic one away.
+- **Balloon:** item numbers of the parts list on leaders ending in a dot; **Add balloons**
+  in the side panel puts one for every part of a view in columns beside it.
+- Click an annotation to select it, drag it to move it, Delete removes it, and the side
+  panel edits it (a fit's deviations at the size and the kind of fit are shown there).
+
+Annotations follow the part: their picks name the model's faces, edges and vertices
+(the same persistent names the 3-D picks use), so after an edit a dimension reads the new
+size and its text keeps its place beside its geometry (its distance off the geometry stays
+the same on the paper should the scale change). One whose edge is gone, or that no longer
+measures what it did, is drawn where it was in orange, counted under the drawing ("1 lost")
+and says why in the side panel, rather than showing a wrong value. Symbols are drawn as
+lines (they print and export the same everywhere), text by ISO 3098 heights (3.5 mm, 5 mm
+on A1 and A0; titles 5 and 7 mm), set to its laid-out width.
 
 Select the drawing for its tools:
 
@@ -979,7 +1029,8 @@ Select the drawing for its tools:
 - **Print** at true scale on the sheet's size (or save as PDF), **SVG** in millimetres,
   **DXF** R2000 in paper millimetres with true CIRCLE, ARC and ELLIPSE entities, layers
   VISIBLE, HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT and BORDER with ISO
-  lineweights and line types.
+  lineweights and line types. Dimensions, frames and symbols go on DIM, notes, callouts,
+  balloons and tables on TEXT (as lines, SOLIDs and fitted TEXT; lost ones in orange).
 
 The drawing follows the part: the views are computed in the worker and kept by design
 and view, so redrawing an unchanged part costs nothing. The flange assembly's four views
@@ -1219,6 +1270,19 @@ What it is not, honestly:
     and side views; one on the side view stays on the side view when the projection
     changes (left becomes right). Shafts and bolts cut lengthwise are hatched like everything else.
     Section views leave hidden lines out.
+  - Annotations need OpenCascade's build of the part (with the mesh kernel only the overall
+    sizes from the views' boxes are drawn). They pick lines, circles, arcs, corners and
+    cylinder outlines: not circles seen at an angle, B-splines or the isometric view's
+    curves; a pick on line work that is no model entity (a thread line) stays where it was
+    and is flagged when that line work moves.
+  - A detail's circle stays where it was drawn: a dimension in it whose geometry moves out
+    is flagged. Places along the geometry scale with the view, so after a large change of
+    scale hand-placed annotations may need moving.
+  - Automatic dimensions cover the overall sizes and the holes of the front, top and side
+    views (not steps, bosses or sections); a hidden automatic centre mark is found again
+    by its place. ISO 286 classes: H and c to s only (no other holes, no a, b or t to zc).
+    The frame's semantics are not checked beyond datums, and DXF dimensions are lines and
+    text, not DIMENSION entities.
   - Centre lines are drawn for cylinders and cones going at least half round; there are
     no bolt-circle centre lines, and none in the isometric view.
 - **Sweeps, coils, threads, ribs, the limits:**
@@ -1269,8 +1333,8 @@ What it is not, honestly:
     A sketch or joint picked while it draws the part gets no name either, so it follows
     its face only by place.
 - **Joints:** no joint limits, motion studies or contact.
-- **Drawings:** only the overall sizes are dimensioned automatically, and there is no
-  GD&T.
+- **Drawings:** no tolerance stack-up or GD&T analysis; one sheet per drawing (sheet n of m
+  is written as entered).
 
 It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
 calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
@@ -1363,7 +1427,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings from the exact solids (views, hidden and centre lines, sections, details, cosmetic threads, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings from the exact solids (views, hidden and centre lines, sections, details, cosmetic threads; associative dimensions with ISO 286 fits, GD&T, datum and surface symbols, hole callouts, ISO 7200 title block, parts list and balloons; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |

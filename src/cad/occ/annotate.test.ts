@@ -20,7 +20,7 @@ import { autoDimensions } from '../autoDims';
 import { bomRows, type Annotation, type DimAnnotation, type DrawPick } from '../annotations';
 import { newDimension } from '../annotationTools';
 import { pickAt, pickOf, type DrawnPart } from '../drawingRefs';
-import { points, rect, single, solve, withCircles } from './fixtures';
+import { points, poly, rect, roundedRect, single, solve, withCircles } from './fixtures';
 
 const { PI } = Math;
 
@@ -124,7 +124,8 @@ describe('annotations on the sheet', () => {
     const ws = cadExample();
     const { results } = evaluateWorksheet(ws);
     const asm = ws.regions.find((q) => q.kind === 'cad' && q.name === 'asm') as CadRegion;
-    const r0 = ws.regions.find((q) => q.kind === 'drawing') as DrawingRegion;
+    // the example's drawing without its own annotations
+    const r0 = { ...(ws.regions.find((q) => q.kind === 'drawing') as DrawingRegion), annotations: [] };
     const design = designOf(asm), numbers = designNumbers((results.get(asm.id) as CadResult).design!);
     const views = (await answer({ op: 'drawing', design, numbers, views: drawingRequests(r0) })).value as Record<string, DrawView>;
     const parts = annotationParts(displayFor(design, numbers), design)!;
@@ -132,6 +133,75 @@ describe('annotations on the sheet', () => {
     const params = (results.get(asm.id) as CadResult).design!.params;
     const placed = annotateSheet(sheet, r0, { unit: 'mm', parts, design, params }, autoDimensions(r0, sheet, parts));
     expect(placed.map((p) => `${p.view}:${p.text}`).sort()).toEqual(['front:180', 'front:Ø200', 'top:6× Ø9 ⌴ Ø15 ↧ 4', 'top:Ø150', 'top:Ø51'].sort());
+  });
+});
+
+describe('angles, radii and arc lengths', () => {
+  it('a plate with a corner cut at 45° and rounded corners: 45°, R10 and the quarter arc π/2 · 10 = 15.71', async () => {
+    const r = drawing({ views: { front: false, top: true, side: false, iso: false } });
+    const cut = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: poly('a', [[0, 0], [100, 0], [60, 40], [0, 40]]) },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+    ]);
+    const a = await sheetOf(cut, r);
+    const bottom = pick(r, a.sheet, a.parts, 'top', 50, 0, { points: false }), slant = pick(r, a.sheet, a.parts, 'top', 80, 20, { points: false });
+    const angle = newDimension('ang', 'top', [bottom, slant], [80, 6])!;
+    expect(angle.type).toBe('angle');
+    expect(annotateSheet(a.sheet, { ...r, annotations: [angle] }, { unit: 'mm', parts: a.parts }).map((p) => p.text)).toEqual(['45°']);
+    const round = single([
+      { kind: 'sketch', id: 's1', name: 'S', plane: { ref: 'XY' }, sketch: roundedRect('a', 100, 60, 10) },
+      { kind: 'extrude', id: 'f1', name: 'Plate', sketch: 's1', extent: { type: 'one', d: '10' }, op: 'new' },
+    ]);
+    const b = await sheetOf(round, r);
+    // the corner round at (90, 50): its arc through (90 + 10 cos 45°, 50 + 10 sin 45°)
+    const arc = pick(r, b.sheet, b.parts, 'top', 90 + 10 * Math.SQRT1_2, 50 + 10 * Math.SQRT1_2, { points: false });
+    const rad = newDimension('rad', 'top', [arc], [110, 70])!;
+    expect(rad.type).toBe('radius');
+    const len: DimAnnotation = { ...rad, id: 'len', type: 'arc', text: [105, 65] };
+    expect(annotateSheet(b.sheet, { ...r, annotations: [rad, len] }, { unit: 'mm', parts: b.parts }).map((p) => [p.text, p.value])).toEqual([
+      ['R10', expect.closeTo(10, 9)], ['⌒15.71', expect.closeTo((PI / 2) * 10, 9)],
+    ]);
+  });
+});
+
+describe('the example drawing', () => {
+  /** The flange assembly's drawing as the example has it, at a torque T. */
+  async function example(T: string) {
+    const ws = cadExample();
+    const math = ws.regions.find((q) => q.kind === 'math' && q.source.startsWith('T :='));
+    if (math?.kind === 'math') math.source = `T := ${T}`;
+    const { results } = evaluateWorksheet(ws);
+    const asm = ws.regions.find((q) => q.kind === 'cad' && q.name === 'asm') as CadRegion;
+    const r = ws.regions.find((q) => q.kind === 'drawing') as DrawingRegion;
+    const res = results.get(asm.id) as CadResult;
+    const design = designOf(asm), numbers = designNumbers(res.design!);
+    const views = (await answer({ op: 'drawing', design, numbers, views: drawingRequests(r) })).value as Record<string, DrawView>;
+    const parts = annotationParts(displayFor(design, numbers), design)!;
+    // as the app lays it out: the parts list over the title block
+    const bom = bomRows(design, { density: asm.density });
+    const sheet = layoutSheet(r, views, { unit: 'mm', name: 'asm', date: '', bom, assembly: true, overall: false })!;
+    return { sheet, placed: annotateSheet(sheet, r, { unit: 'mm', parts, design, params: res.design!.params, bom }) };
+  }
+
+  it('reads its own sizes and follows the torque: T 450 → 900 N·m makes the shaft Ø50 (g6: −9 / −25 µm from 30 up to 50 mm)', async () => {
+    const a = await example('450 N*m');
+    expect(a.sheet.scale).toBe(0.4);
+    expect(a.placed.map((p) => [p.id, p.text, p.lost ?? null])).toEqual([
+      ['n_d', 'Ø40 g6 ( −0.009 / −0.025 )', null], ['n_cb', '4', null], ['n_g', 'Perpendicularity Ø0.05 | A', null], ['n_a', 'A', null],
+      ['n_r1', 'Ra 0.8', null], ['n_r2', 'Ra 3.2', null], ['n_n', 'General tolerances ISO 2768-mK\nBreak sharp edges 0.3', null],
+      ['n_b1', 'Item 1: Flange', null], ['n_b2', 'Item 2: Shaft', null],
+    ]);
+    // d = ceil((16 T / (π 40 MPa))^(1/3) / 5 mm) 5 mm = 50 mm at 900 N·m; the sheet goes to 1:5
+    const b = await example('900 N*m');
+    expect(b.sheet.scale).toBe(0.2);
+    expect(b.placed.find((p) => p.id === 'n_d')).toMatchObject({ text: 'Ø50 g6 ( −0.009 / −0.025 )', value: 50 });
+    // the counterbore is on the larger bolt circle now, outside detail B's fixed circle: flagged, not silently elsewhere
+    expect(b.placed.find((p) => p.id === 'n_cb')?.lost).toMatch(/no longer inside detail B/);
+    expect(b.placed.filter((p) => p.lost).map((p) => p.id)).toEqual(['n_cb']);
+    // placed at 1:2.5, the frame under the Ø keeps its paper distance from the shaft at 1:5
+    const label = (s: Sheet, id: string) => s.labels.find((l) => l.owner === id)!;
+    const shaftX = (s: Sheet) => s.views.find((v) => v.key === 'front')!.ox;
+    expect(label(b.sheet, 'n_d').x - shaftX(b.sheet) - 25 * 0.2).toBeCloseTo(label(a.sheet, 'n_d').x - shaftX(a.sheet) - 20 * 0.4, 6);
   });
 });
 

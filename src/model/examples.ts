@@ -1,6 +1,7 @@
-import { createRegion, emptyWorksheet, PX_PER_MM, type Frame3DRegion, type PlateRegion, type Region, type Worksheet } from './types';
+import { createRegion, emptyWorksheet, PX_PER_MM, type DrawingRegion, type Frame3DRegion, type PlateRegion, type Region, type Worksheet } from './types';
 import type { CadConstraint, CadEntity, CadSketch } from '../cad/model';
 import type { CadDesign } from '../cad/design';
+import type { Annotation, DrawPick } from '../cad/annotations';
 import type { BeamAnalysis, BeamCases, BeamData, BeamPanel } from '../beam/model';
 import { windCases, type F3Load, type F3Member, type F3Node } from '../frame3d/model';
 
@@ -400,14 +401,15 @@ export function cadExample(): Worksheet {
     ['math', L, mm(455), { source: 'asm.Imz = kg*cm^2' }],
     ['math', mm(85), mm(455), { source: 'asm.Spin = deg' }],
     ['math', mm(130), mm(455), { source: 'asm.Lz = mm' }],
-    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: exact standard views with hidden and centre lines, overall dimensions and a title block, kept up to date with the part. Here a section A–A cut through two bolt holes on the top view, and a detail B of a counterbore. Select it to draw more (**Section**, **Detail**), print it on A3 at true scale or export SVG / DXF.' }],
+    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: exact standard views with hidden and centre lines, automatic dimensions and a title block, kept up to date with the part. Here a section A–A cut through two bolt holes on the top view, a detail B of a counterbore, the shaft Ø40 g6 with a perpendicularity to datum A, surface textures, the parts list and balloons: change `T` and they follow. Select it to annotate (**Dimension**, **Hole**, **GD&T**, **Datum**, **Surface** …), print it on A3 at true scale or export SVG / DXF.' }],
   ]);
   const asm = ws.regions.find((r) => r.kind === 'cad' && r.name === 'asm');
   if (asm) {
-    ws.regions.push(createRegion('drawing', L, mm(492), {
+    ws.regions.push(createRegion('drawing', L, mm(510), {
       cad: asm.id, title: 'Flange with shaft', partNo: 'FA-001', material: 'EN-GJL-250 / C45', sheet: 'A3',
       sections: [{ id: 'sa', letter: 'A', view: 'top', a: { x: -115, y: 0 }, b: { x: 115, y: 0 } }],
       details: [{ id: 'db', letter: 'B', view: 'sec:sa', c: { x: 75, y: 8 }, r: 13, scale: 2 }],
+      ...flangeDrawingNotes(),
     }));
   }
   return ws;
@@ -1049,4 +1051,40 @@ export function curvesExample(): Worksheet {
     ['text', L, mm(230), { width: mm(80), markdown: '**Tag**: the volume the engraving removed, 0.8 mm deep (the letters\' holes stay).' }],
     ['math', mm(105), mm(230), { source: '70 mm * 24 mm * 3 mm - cs.Tag.V = mm^3' }],
   ]);
+}
+
+// ------------------------------------------------------------ CAD drawing: annotations
+
+/**
+ * What the flange assembly's drawing says besides its views: the shaft Ø40 g6 with its
+ * deviations and a perpendicularity to datum A (the flange's seat), surface textures, the
+ * counterbore depth in detail B (between corners of the cut), a general note, balloons with
+ * the parts list, and a filled ISO 7200 title block. Picks name the model's faces and
+ * edges, so they follow the part when the worksheet changes its sizes.
+ */
+function flangeDrawingNotes(): Partial<DrawingRegion> {
+  const edge = (occ: string, body: string, key: string, p: [number, number, number], type: 'circle', r: number) => ({ occ, ref: { kind: 'edge' as const, body, key, hint: { p, type, d: [0, 0, 1] as [number, number, number], r } } });
+  const shaft: DrawPick = { occ: 'os', ref: { kind: 'face', body: 'fs1', key: 'fs1/side:sk0', hint: { p: [0, 0, 90], type: 'cylinder', d: [0, 0, -1], r: 20 } }, snap: 'cyl', shape: { k: 'cyl', x1: 0, y1: 140, x2: 0, y2: -40, r: 20 } };
+  const rim: DrawPick = { occ: 'of', ref: { kind: 'face', body: 'ff1', key: 'ff1/side:fk0', hint: { p: [0, 0, 6], type: 'cylinder', d: [0, 0, -1], r: 100 } }, snap: 'cyl', shape: { k: 'cyl', x1: 0, y1: 12, x2: 0, y2: 0, r: 100 } };
+  const seat: DrawPick = { ...edge('of', 'ff1', 'ff1/side:fk0|ff1/start', [-100, 0, 0], 'circle', 100), snap: 'line', shape: { k: 'line', x1: -100, y1: 0, x2: 100, y2: 0 } };
+  const face: DrawPick = { ...edge('of', 'ff1', 'ff1/end|ff1/side:fk0', [-100, 0, 12], 'circle', 100), snap: 'line', shape: { k: 'line', x1: -100, y1: 12, x2: 100, y2: 12 } };
+  const cbTop: DrawPick = { ...edge('of', 'ff1', 'ff1/end|ff3/hole0:cb', [67.5, 0, 12], 'circle', 7.5), snap: 'cut1', shape: { k: 'point', x: 82.5, y: 12 } };
+  const cbFloor: DrawPick = { ...edge('of', 'ff1', 'ff3/hole0:cb|ff3/hole0:cbFloor', [67.5, 0, 8], 'circle', 7.5), snap: 'cut1', shape: { k: 'point', x: 82.5, y: 8 } };
+  return {
+    drawnBy: 'Example', bom: { show: true },
+    titleBlock: { owner: 'mathstudii', checkedBy: 'P. Novak', approvedBy: 'M. Weber', revisions: true },
+    revisions: [{ rev: 'A', text: 'First issue', date: '2026-10-17', by: 'Example' }],
+    // placed on the sheet at 1:2.5 (detail B at 2:1): at another scale they keep their distances on the paper
+    annotations: ([
+      { id: 'n_d', kind: 'dim', view: 'front', type: 'diameter', a: shaft, text: [62, 112], tol: { kind: 'fit', code: 'g6', show: 'dev' } },
+      { id: 'n_g', kind: 'gdt', view: 'front', char: 'perpendicularity', tol: 0.05, dia: true, datums: [{ letter: 'A' }], at: [62, 90], dim: 'n_d' },
+      { id: 'n_a', kind: 'datum', view: 'front', letter: 'A', at: [-82, -24], leader: seat },
+      { id: 'n_r1', kind: 'surface', view: 'front', param: 'Ra', value: 0.8, process: 'removal', method: 'ground', at: [48, 52], leader: shaft },
+      { id: 'n_r2', kind: 'surface', view: 'front', param: 'Ra', value: 3.2, process: 'removal', at: [51, 12], leader: face },
+      { id: 'n_cb', kind: 'dim', view: 'det:db', type: 'linear', orient: 'v', a: cbTop, b: cbFloor, text: [90, 10] },
+      { id: 'n_n', kind: 'note', view: 'top', text: 'General tolerances ISO 2768-mK\nBreak sharp edges 0.3', at: [-100, -132] },
+      { id: 'n_b1', kind: 'balloon', view: 'front', occ: 'of', a: rim, at: [-132, 6] },
+      { id: 'n_b2', kind: 'balloon', view: 'front', occ: 'os', a: shaft, at: [-55, 118] },
+    ] as Annotation[]).map((a) => ({ ...a, k: a.view.startsWith('det:') ? 2 : 0.4 })),
+  };
 }

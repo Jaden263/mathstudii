@@ -138,6 +138,8 @@ describe('what the tools make of picks', () => {
     const dia = newDimension('c', 'top', [{ snap: 'circle', shape: { k: 'circle', cx: 0, cy: 0, r: 10, a0: 0, a1: 2 * Math.PI } }], [20, 0])!;
     const td = followText(dia, { a: dia.a.shape }, { a: { k: 'circle', cx: 5, cy: 0, r: 15, a0: 0, a1: 2 * Math.PI } });
     expect(td).toEqual([30, 0]);
+    // at half the scale (1:1 placed, drawn at 1:2) it stays 15 mm off the part on the paper: 30 units in the view
+    expect(followText(d, { a: d.a.shape, b: d.b!.shape }, { a: d.a.shape, b: d.b!.shape }, 2)).toEqual([50, -30]);
     // dragging takes the geometry as it is now
     const moved = movedAnnotation(d, [0, -5], t, { a: { k: 'point', x: 0, y: 5 }, b: { k: 'point', x: 120, y: 5 } });
     expect(moved).toMatchObject({ text: [60, -15], a: { shape: { x: 0, y: 5 } }, b: { shape: { x: 120 } } });

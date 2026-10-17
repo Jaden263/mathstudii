@@ -6,7 +6,7 @@
 import { GDT_INFO, type Annotation, type DimAnnotation, type DrawPick, type Shape2, type XY } from './annotations';
 import { centreOf, inferOrient, measureAngle, measureLinear } from './drawingRefs';
 
-const { abs, hypot, sign } = Math;
+const { hypot, sign } = Math;
 
 /**
  * A dimension from the picks and the place of its text, or null when they make none (a
@@ -51,7 +51,7 @@ export function continueDimension(id: string, mode: 'chain' | 'baseline', first:
   const c = along(prev.text) + (mode === 'baseline' ? out * step : 0);
   const mid: XY = [(m.p1[0] + m.p2[0]) / 2, (m.p1[1] + m.p2[1]) / 2];
   const text: XY = [mid[0] + n[0] * (c - along(mid)), mid[1] + n[1] * (c - along(mid))];
-  return { id, kind: 'dim', view: prev.view, type: 'linear', ...(prev.orient ? { orient: prev.orient } : {}), a: from, b: pick, text };
+  return { id, kind: 'dim', view: prev.view, type: 'linear', ...(prev.orient ? { orient: prev.orient } : {}), ...(prev.k ? { k: prev.k } : {}), a: from, b: pick, text };
 }
 
 /** Picks with their geometry taken as it is now (where it was found). */
@@ -59,10 +59,12 @@ const refreshed = (p: DrawPick, s?: Shape2): DrawPick => (s ? { ...p, shape: s }
 
 /**
  * An annotation dragged by `d` (view units) from where it is drawn (`pos`, its position as
- * the geometry now has it), its picks' geometry brought up to date with `now`.
+ * the geometry now has it), its picks' geometry brought up to date with `now`, and the
+ * view's scale now (`k`) taken as its own.
  */
-export function movedAnnotation(a: Annotation, d: XY, pos?: XY, now?: { a?: Shape2; b?: Shape2 }): Annotation {
+export function movedAnnotation(a0: Annotation, d: XY, pos?: XY, now?: { a?: Shape2; b?: Shape2 }, k?: number): Annotation {
   const to = (p: XY): XY => [p[0] + d[0], p[1] + d[1]];
+  const a = k ? { ...a0, k } : a0;
   switch (a.kind) {
     case 'dim':
       return { ...a, text: to(pos ?? a.text), a: refreshed(a.a, now?.a), ...(a.b ? { b: refreshed(a.b, now?.b) } : {}) };
@@ -112,6 +114,3 @@ export function annotationName(a: Annotation, reads?: string): string {
       return `Balloon${reads ? `: ${reads}` : ''}`;
   }
 }
-
-/** Whether two view points are the same place (picking again what was picked). */
-export const samePlace = (p: XY, q: XY, tol: number) => abs(p[0] - q[0]) <= tol && abs(p[1] - q[1]) <= tol;

@@ -307,10 +307,11 @@ function drawArcLength(pen: Pen, pv: PlacedView, s: Extract<Shape2, { k: 'circle
 }
 
 /** An angle between two lines: an arc about their crossing through the text, extension lines out to it, the figure upright. */
-function drawAngle(pen: Pen, pv: PlacedView, a: Extract<Shape2, { k: 'line' }>, b: Extract<Shape2, { k: 'line' }>, m: { V: XY; r1: XY; r2: XY; value: number }, T: V2, t: DimText, basic: boolean): TextBox {
+function drawAngle(pen: Pen, pv: PlacedView, a: Extract<Shape2, { k: 'line' }>, b: Extract<Shape2, { k: 'line' }>, m: { V: XY; r1: XY; r2: XY; value: number; flip?: boolean }, T: V2, t: DimText, basic: boolean): TextBox {
   const V = toPaper(pv, ...m.V), Tp = toPaper(pv, ...T);
   const Rd = max(4 * pen.al, hypot(Tp[0] - V[0], Tp[1] - V[1]));
-  const a1 = atan2(m.r1[1], m.r1[0]), a2 = a1 + m.value;
+  const start = m.flip ? m.r2 : m.r1;
+  const a1 = atan2(start[1], start[0]), a2 = a1 + m.value;
   // each line from its nearest end out (or in) to the arc
   for (const [ln, r] of [[a, m.r1], [b, m.r2]] as const) {
     const ts = [[ln.x1, ln.y1], [ln.x2, ln.y2]].map(([x, y]) => dotp(sub(toPaper(pv, x, y), V), r));
@@ -398,8 +399,16 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       continue;
     }
     const vp = picksOf(pv);
-    // a pick found again, or where it was (flagged) when it is gone
-    const find = (p: DrawPick): Resolved => (!ctx.parts || !vp ? { ok: true, shape: p.shape } : resolvePick(p, ctx.parts, vp.frame, vp.snaps));
+    const det = pv.kind === 'detail' ? r.details?.find((q) => `det:${q.id}` === pv.key) : undefined;
+    // a pick found again, or where it was (flagged) when it is gone (or, on a detail, out of its circle)
+    const find = (p: DrawPick): Resolved => {
+      if (!ctx.parts || !vp) return { ok: true, shape: p.shape };
+      const f = resolvePick(p, ctx.parts, vp.frame, vp.snaps);
+      if (f.ok && det && curveDistance(f.shape, det.c.x, det.c.y) > det.r * (1 + 1e-9)) return { ok: false, why: `it is no longer inside detail ${det.letter}’s circle` };
+      return f;
+    };
+    // its distances from its geometry stay the same on the paper when the view's scale changes
+    const ratio = a.k && a.k > 0 ? a.k / pv.k : 1;
     const resolve = (pa: DrawPick, pb?: DrawPick): Picked => {
       const ra = find(pa), rb = pb && find(pb);
       const lost = !ra.ok ? ra.why : rb && !rb.ok ? rb.why : undefined;
@@ -410,11 +419,13 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       };
     };
     const fmt = (v: number) => fmtSize(v, ctx.unit, a.kind === 'dim' ? a.decimals ?? r.decimals : r.decimals);
+    // tolerance zones and roughness values are written as given, never rounded to the drawing's decimals
+    const exact = (v: number) => String(+v.toFixed(6)).replace('-', '−');
     switch (a.kind) {
       case 'dim': {
         const pk = resolve(a.a, a.b);
         const was = { a: a.a.shape, ...(a.b ? { b: a.b.shape } : {}) }, now = { a: pk.a.shape, ...(pk.b ? { b: pk.b.shape } : {}) };
-        const T = pk.lost ? a.text : followText(a, was, now);
+        const T = followText(a, was, pk.lost ? was : now, ratio);
         const d: DimAnnotation = { ...a, text: T };
         const iso = pv.key === 'iso';
         let value = dimensionValue(d, pk.a, pk.b, iso);
@@ -466,7 +477,7 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       case 'hole': {
         const pk = a.kind === 'hole' || a.leader ? resolve(a.kind === 'hole' ? a.a : a.leader!) : null;
         const src = a.kind === 'hole' ? a.a : a.leader;
-        const at = pk && src && !pk.lost ? followPoint(src.shape, pk.a.shape, a.at) : a.at;
+        const at = pk && src ? followPoint(src.shape, pk.lost ? src.shape : pk.a.shape, a.at, ratio) : a.at;
         let lines: string[];
         if (a.kind === 'note') lines = a.text.split('\n');
         else {
@@ -489,10 +500,10 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       case 'gdt': {
         const host = a.dim ? boxes.get(a.dim) : undefined;
         const pk = !a.dim && a.leader ? resolve(a.leader) : null;
-        const at = pk && a.leader && !pk.lost ? followPoint(a.leader.shape, pk.a.shape, a.at) : a.at;
+        const at = pk && a.leader ? followPoint(a.leader.shape, pk.lost ? a.leader.shape : pk.a.shape, a.at, ratio) : a.at;
         const lost = pk?.lost ?? (a.dim && !host ? 'the dimension it belongs to is gone' : undefined);
         const pen = new Pen(sheet, a.id, !!lost, h);
-        const L = gdtLayout(a, h, fmt);
+        const L = gdtLayout(a, h, exact);
         const W = L.widths.reduce((s, w) => s + w, 0);
         // under its dimension's figures, or where it was put
         let x0: number, y: number;
@@ -514,7 +525,7 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       case 'datum': {
         const host = a.dim ? boxes.get(a.dim) : undefined;
         const pk = !host ? resolve(a.leader) : null;
-        const at = pk && !pk.lost ? followPoint(a.leader.shape, pk.a.shape, a.at) : a.at;
+        const at = pk ? followPoint(a.leader.shape, pk.lost ? a.leader.shape : pk.a.shape, a.at, ratio) : a.at;
         const lost = pk?.lost ?? (a.dim && !host ? 'the dimension it belongs to is gone' : undefined);
         const pen = new Pen(sheet, a.id, !!lost, h);
         const F = toPaper(pv, ...at), H = 2 * h;
@@ -547,7 +558,7 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       }
       case 'surface': {
         const pk = a.leader ? resolve(a.leader) : null;
-        const at = pk && a.leader && !pk.lost ? followPoint(a.leader.shape, pk.a.shape, a.at) : a.at;
+        const at = pk && a.leader ? followPoint(a.leader.shape, pk.lost ? a.leader.shape : pk.a.shape, a.at, ratio) : a.at;
         const pen = new Pen(sheet, a.id, !!pk?.lost, h);
         const S = toPaper(pv, ...at);
         let tip = S;
@@ -559,8 +570,8 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
             leader(pen, S, target, 'arrow');
           } else tip = target;
         }
-        surfaceSymbol(pen, a, tip, fmt);
-        Object.assign(placed, { handle: S, pos: at, text: `${a.param} ${fmt(a.value)}`, ...(pk?.lost ? { lost: pk.lost } : {}), ...(pk && !pk.lost ? { now: { a: pk.a.shape } } : {}) });
+        surfaceSymbol(pen, a, tip, exact);
+        Object.assign(placed, { handle: S, pos: at, text: `${a.param} ${exact(a.value)}`, ...(pk?.lost ? { lost: pk.lost } : {}), ...(pk && !pk.lost ? { now: { a: pk.a.shape } } : {}) });
         break;
       }
       case 'centre': {
@@ -582,7 +593,7 @@ export function annotateSheet(sheet: Sheet, r: DrawingRegion, ctx: AnnotationCon
       }
       case 'balloon': {
         const pk = resolve(a.a);
-        const at = !pk.lost ? followPoint(a.a.shape, pk.a.shape, a.at) : a.at;
+        const at = followPoint(a.a.shape, pk.lost ? a.a.shape : pk.a.shape, a.at, ratio);
         const comp = ctx.parts?.find((p) => p.occ === a.occ)?.component ?? ctx.design?.occurrences.find((o) => o.id === a.occ)?.component;
         const row = ctx.bom?.find((b) => b.component === comp);
         const lost = pk.lost ?? (row ? undefined : 'its part is not in the parts list');
@@ -641,7 +652,7 @@ function surfaceSymbol(pen: Pen, a: Extract<Annotation, { kind: 'surface' }>, ti
   const req = `${a.param} ${fmt(a.value)}`;
   const w = lineWidth(req, h);
   const method = a.method?.trim() ?? '';
-  const top = max(w, method ? lineWidth(method, h) : 0) + h;
+  const top = max(w, method ? lineWidth(method, h) : 0) + 0.6 * h;
   pen.line('DIM', long, add(long, [1, 0], top));
   // the requirement under the line (position a), the method over it (c), the lay beside the long leg (d)
   pen.text('DIM', long[0] + 0.3 * h, long[1] - h - 0.5, req);

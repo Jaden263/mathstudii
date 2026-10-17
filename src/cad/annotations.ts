@@ -6,7 +6,8 @@
 // Annotations sit on a view and pick its geometry: a pick names a face, edge or vertex
 // of an occurrence by its persistent name (topology.ts), so a dimension follows the part
 // through edits and is flagged when what it measures is gone. Positions are view
-// coordinates (model units on the paper of the view), so they move with the view.
+// coordinates (model units on the paper of the view), so they move with the view, and are
+// kept beside their geometry as it changes (drawingRefs.ts followText, followPoint).
 import type { HoleFeature, CadDesign } from './design';
 import type { TopoRef } from './topology';
 import { MATERIALS } from './model';
@@ -61,6 +62,11 @@ interface Base {
   id: string;
   /** The placed view it is on: 'front', 'top', 'side', 'iso', `sec:${id}`, `det:${id}`. */
   view: string;
+  /**
+   * Paper millimetres per model unit of its view when it was placed: should the view's
+   * scale change, its distances from its geometry stay the same on the paper.
+   */
+  k?: number;
 }
 
 export interface DimAnnotation extends Base {
@@ -313,17 +319,6 @@ export function dimText(value: number, unit: string, o: { prefix?: string; suffi
   return wrap({ main: `${main} (`, stack: stacked(up, lo, tol.show === 'limits'), tail: ')' });
 }
 
-/** A fit's deviations in part units, for the side panel. */
-export function fitValues(code: string, value: number, unit: string): { upper: number; lower: number } | null {
-  try {
-    const mm = MM[unit] ?? 1;
-    const d = fitDeviations(code, value * mm);
-    return { upper: d.upper / 1000 / mm, lower: d.lower / 1000 / mm };
-  } catch {
-    return null;
-  }
-}
-
 // ------------------------------------------------------------ hole callouts
 
 /** What a hole feature is, in part units (a countersink angle in radians). */
@@ -461,7 +456,7 @@ const WIDTHS: Record<string, number> = {
   'Ø': 778, '±': 584, '×': 584, '°': 400, '–': 556, '—': 1000, '−': 584, 'µ': 556, '²': 333, '³': 333, 'ø': 611,
 };
 
-export const CAP = 0.72;
+const CAP = 0.72;
 
 /** Width (mm) of text whose capitals are h high. */
 export function textWidth(text: string, h: number): number {

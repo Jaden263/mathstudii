@@ -12,7 +12,7 @@ import { LazyInput } from '../sketch/SketchProps';
 import { fitKind, fitDeviations, parseFit } from '../../cad/fits';
 import { GDT_CHARS, GDT_INFO, MM, devDecimals, fmtDev, type Annotation, type DimAnnotation, type GdtAnnotation, type Lay, type SurfaceAnnotation, type Tolerance } from '../../cad/annotations';
 import { annotationName } from '../../cad/annotationTools';
-import { selectAnnotation, takeFocus, useDrawingState } from './drawingState';
+import { focused, selectAnnotation, useDrawingState, wantsFocus } from './drawingState';
 
 const LAYS: Lay[] = ['=', '⊥', 'X', 'M', 'C', 'R', 'P'];
 const LAY_NAMES: Record<Lay, string> = { '=': '= parallel', '⊥': '⊥ perpendicular', X: 'X crossed', M: 'M multi-directional', C: 'C circular', R: 'R radial', P: 'P particulate' };
@@ -54,7 +54,7 @@ export function AnnotationProps({ region, dispatch }: { region: DrawingRegion; d
       <h3 className="sub">Annotations ({list.length}){lostCount ? <span className="dw-lost-mark" title="Annotations whose geometry is gone"> · {lostCount} lost</span> : null}</h3>
       <div className="row2">
         <label className="field"><span>Decimals</span>
-          <select value={region.decimals ?? ''} onChange={(e) => set({ decimals: e.target.value === '' ? undefined : Number(e.target.value) })}>
+          <select aria-label="Decimals of dimensions" value={region.decimals ?? ''} onChange={(e) => set({ decimals: e.target.value === '' ? undefined : Number(e.target.value) })}>
             <option value="">As needed (up to {live?.unit === 'mm' || !live ? 2 : 3})</option>
             {[0, 1, 2, 3, 4].map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
@@ -97,10 +97,14 @@ function Editor({ a, region, unit, reads, update, remove }: {
 }) {
   const noteRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (a.kind === 'note' && takeFocus(region.id, a.id)) {
+    if (a.kind !== 'note' || !wantsFocus(region.id, a.id)) return;
+    // after the click that placed it has settled (it would take the focus back)
+    const t = window.setTimeout(() => {
       noteRef.current?.focus();
       noteRef.current?.select();
-    }
+      focused(region.id);
+    }, 60);
+    return () => window.clearTimeout(t);
   }, [a.id, a.kind, region.id]);
   return (
     <div className="dw-ann-edit">
@@ -168,7 +172,7 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
       <p className="dw-ann-note">{reads?.text}{value !== undefined && d.type !== 'angle' ? ` · measured ${+value.toFixed(6)} ${unit}` : ''}</p>
       <div className="row2">
         <label className="field"><span>Kind</span>
-          <select value={d.type === 'linear' ? `linear:${d.orient ?? ''}` : d.type} onChange={(e) => {
+          <select aria-label="Dimension kind" value={d.type === 'linear' ? `linear:${d.orient ?? ''}` : d.type} onChange={(e) => {
             const v = e.target.value;
             update(v.startsWith('linear:') ? { type: 'linear', orient: (v.slice(7) || undefined) as DimAnnotation['orient'] } : { type: v as DimAnnotation['type'] });
           }}>
@@ -188,7 +192,7 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
           </select>
         </label>
         <label className="field"><span>Decimals</span>
-          <select value={d.decimals ?? ''} onChange={(e) => update({ decimals: e.target.value === '' ? undefined : Number(e.target.value) })}>
+          <select aria-label="Decimals of the value" value={d.decimals ?? ''} onChange={(e) => update({ decimals: e.target.value === '' ? undefined : Number(e.target.value) })}>
             <option value="">Drawing’s</option>
             {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
@@ -200,7 +204,7 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
       </div>
       <label className="field"><span>Text instead of the value</span><LazyInput label="Override text" mono={false} value={d.override ?? ''} placeholder="<> stands for the value" onCommit={(v) => update({ override: v.trim() || undefined })} /></label>
       <label className="field"><span>Tolerance</span>
-        <select value={tol?.kind ?? ''} onChange={(e) => setTol(e.target.value)}>
+        <select aria-label="Tolerance kind" value={tol?.kind ?? ''} onChange={(e) => setTol(e.target.value)}>
           {TOL_KINDS.filter(([k]) => d.type !== 'angle' || k !== 'fit').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </label>
@@ -218,7 +222,7 @@ function DimEditor({ d, unit, reads, update }: { d: DimAnnotation; unit: string;
               <LazyInput label="ISO 286 class" value={tol.code} placeholder="H7, g6, H7/g6" onCommit={(v) => update({ tol: { ...tol, code: v.trim() || 'H7' } })} />
             </label>
             <label className="field"><span>Show</span>
-              <select value={tol.show ?? 'code'} onChange={(e) => update({ tol: { ...tol, show: e.target.value === 'code' ? undefined : (e.target.value as 'dev' | 'limits') } })}>
+              <select aria-label="Fit shown as" value={tol.show ?? 'code'} onChange={(e) => update({ tol: { ...tol, show: e.target.value === 'code' ? undefined : (e.target.value as 'dev' | 'limits') } })}>
                 <option value="code">Class only (Ø20 H7)</option>
                 <option value="dev">With deviations</option>
                 <option value="limits">With limits</option>
@@ -248,7 +252,7 @@ function GdtEditor({ g, update }: { g: GdtAnnotation; update: (patch: Partial<Gd
   return (
     <>
       <label className="field"><span>Characteristic (ISO 1101)</span>
-        <select value={g.char} onChange={(e) => {
+        <select aria-label="Characteristic" value={g.char} onChange={(e) => {
           const c = e.target.value as GdtAnnotation['char'];
           update({ char: c, ...(GDT_INFO[c].datum === 'none' ? { datums: undefined } : {}), ...(GDT_INFO[c].dia ? {} : { dia: undefined }) });
         }}>
@@ -258,7 +262,7 @@ function GdtEditor({ g, update }: { g: GdtAnnotation; update: (patch: Partial<Gd
       <div className="row2">
         <label className="field"><span>Tolerance</span><Num label="Tolerance value" value={g.tol} onCommit={(v) => v !== undefined && v > 0 && update({ tol: v })} /></label>
         <label className="field"><span>Modifier</span>
-          <select value={g.mod ?? ''} onChange={(e) => update({ mod: (e.target.value || undefined) as GdtAnnotation['mod'] })}>
+          <select aria-label="Tolerance modifier" value={g.mod ?? ''} onChange={(e) => update({ mod: (e.target.value || undefined) as GdtAnnotation['mod'] })}>
             <option value="">None</option>
             <option value="M">Ⓜ maximum material</option>
             <option value="L">Ⓛ least material</option>
@@ -273,7 +277,7 @@ function GdtEditor({ g, update }: { g: GdtAnnotation; update: (patch: Partial<Gd
             <div key={i} className="row2">
               <label className="field"><span>{['Primary', 'Secondary', 'Tertiary'][i]} datum</span><LazyInput label={`Datum ${i + 1}`} value={d.letter} placeholder={i ? '' : 'A'} onCommit={(v) => setDatum(i, { letter: v })} /></label>
               <label className="field"><span>Modifier</span>
-                <select value={d.mod ?? ''} onChange={(e) => setDatum(i, { mod: (e.target.value || undefined) as 'M' | 'L' | undefined })} disabled={!d.letter.trim()}>
+                <select aria-label={`Datum ${i + 1} modifier`} value={d.mod ?? ''} onChange={(e) => setDatum(i, { mod: (e.target.value || undefined) as 'M' | 'L' | undefined })} disabled={!d.letter.trim()}>
                   <option value="">None</option>
                   <option value="M">Ⓜ</option>
                   <option value="L">Ⓛ</option>
@@ -293,7 +297,7 @@ function SurfaceEditor({ s, update }: { s: SurfaceAnnotation; update: (patch: Pa
     <>
       <div className="row2">
         <label className="field"><span>Parameter</span>
-          <select value={s.param} onChange={(e) => update({ param: e.target.value as 'Ra' | 'Rz' })}>
+          <select aria-label="Surface parameter" value={s.param} onChange={(e) => update({ param: e.target.value as 'Ra' | 'Rz' })}>
             <option value="Ra">Ra (mean deviation)</option>
             <option value="Rz">Rz (max. height)</option>
           </select>
@@ -301,7 +305,7 @@ function SurfaceEditor({ s, update }: { s: SurfaceAnnotation; update: (patch: Pa
         <label className="field"><span>Value (µm)</span><Num label="Roughness value" value={s.value} onCommit={(v) => v !== undefined && v > 0 && update({ value: v })} /></label>
       </div>
       <label className="field"><span>Process</span>
-        <select value={s.process} onChange={(e) => update({ process: e.target.value as SurfaceAnnotation['process'] })}>
+        <select aria-label="Process" value={s.process} onChange={(e) => update({ process: e.target.value as SurfaceAnnotation['process'] })}>
           <option value="any">Any process</option>
           <option value="removal">Material removal required</option>
           <option value="noremoval">Material removal not permitted</option>
@@ -309,7 +313,7 @@ function SurfaceEditor({ s, update }: { s: SurfaceAnnotation; update: (patch: Pa
       </label>
       <div className="row2">
         <label className="field"><span>Lay</span>
-          <select value={s.lay ?? ''} onChange={(e) => update({ lay: (e.target.value || undefined) as Lay | undefined })}>
+          <select aria-label="Lay" value={s.lay ?? ''} onChange={(e) => update({ lay: (e.target.value || undefined) as Lay | undefined })}>
             <option value="">—</option>
             {LAYS.map((l) => <option key={l} value={l}>{LAY_NAMES[l]}</option>)}
           </select>
