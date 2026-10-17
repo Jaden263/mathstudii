@@ -293,7 +293,10 @@ export function dimText(value: number, unit: string, o: { prefix?: string; suffi
   if (o.override?.trim()) return wrap({ main: o.override.replace(/<>/g, v) });
   const tol = o.tol;
   if (!tol) return wrap({ main: `${pre}${v}${suf}` });
-  if (tol.kind === 'sym') return wrap({ main: `${pre}${v} ±${fmtSize(Math.abs(tol.t), unit, devDecimals([tol.t], unit))}${sg}${suf}` });
+  const pm = (t: number) => `±${fmtSize(Math.abs(t), unit, devDecimals([t], unit))}${sg}`;
+  if (tol.kind === 'sym') return wrap({ main: `${pre}${v} ${pm(tol.t)}${suf}` });
+  // deviations equal either side are written once with ± (ISO 129-1)
+  const even = (up: number, lo: number) => up !== 0 && Math.abs(up + lo) <= 1e-12 * Math.abs(up);
   const stacked = (a: number, b: number, limits: boolean): [string, string] => {
     // the upper one above, whichever way round they were entered
     const [up, lo] = a >= b ? [a, b] : [b, a];
@@ -304,7 +307,10 @@ export function dimText(value: number, unit: string, o: { prefix?: string; suffi
     const d = devDecimals([up, lo], unit);
     return [fmtDev(up, d) + sg, fmtDev(lo, d) + sg];
   };
-  if (tol.kind === 'dev') return wrap({ main: `${pre}${v}`, stack: stacked(tol.upper, tol.lower, false), ...(suf ? { tail: suf } : {}) });
+  if (tol.kind === 'dev') {
+    if (even(tol.upper, tol.lower)) return wrap({ main: `${pre}${v} ${pm(tol.upper)}${suf}` });
+    return wrap({ main: `${pre}${v}`, stack: stacked(tol.upper, tol.lower, false), ...(suf ? { tail: suf } : {}) });
+  }
   if (tol.kind === 'limits') return wrap({ main: pre, stack: stacked(tol.upper, tol.lower, true), ...(suf ? { tail: suf } : {}) });
   // a fit: deviations from the tables at the nominal size in millimetres, back in part units
   const code = tol.code.trim();
@@ -320,6 +326,7 @@ export function dimText(value: number, unit: string, o: { prefix?: string; suffi
   }
   if (!dev || !tol.show || tol.show === 'code') return wrap({ main });
   const up = dev.upper / 1000 / mm, lo = dev.lower / 1000 / mm;
+  if (tol.show === 'dev' && even(up, lo)) return wrap({ main: `${main} (${pm(up)})` });
   return wrap({ main: `${main} (`, stack: stacked(up, lo, tol.show === 'limits'), tail: ')' });
 }
 

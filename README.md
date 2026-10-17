@@ -969,7 +969,7 @@ landscape or portrait, ISO 5457 frame) with:
   the drawing's own;
 - an ISO 7200 title block (title, drawing number, revision, scale, sheet size, units,
   projection symbol, created / checked / approved by, date of issue, legal owner, document
-  type, material and mass from the part, sheet n of m), an optional revision table, and for
+  type, material from the part and the mass of what the parts list holds, sheet n of m), an optional revision table, and for
   assemblies an ISO 7573 parts list over the title block (item, quantity counting repeated
   occurrences, name, material from the density, mass each), all edited in the side panel.
 
@@ -985,11 +985,13 @@ the pointer until the click that places it.
   (horizontal, vertical or aligned by where the text goes), two lines their angle.
   **Chain** and **Baseline** dimension each further point from the last, or from the
   first a row further out. Values are the model's own in the part's unit, whatever the
-  scale (in the isometric view, true 3-D lengths), with the drawing's or the dimension's
-  decimals; tolerances ±t, deviations, limits, or an ISO 286-1/-2 class or fit (hole H,
+  scale (the isometric view, and a detail of it, foreshortens everything: lengths and
+  angles there are measured in space between model corners and edges and drawn aligned),
+  with the drawing's or the dimension's decimals; tolerances ±t, deviations (equal ones
+  written once with ±), limits, or an ISO 286-1/-2 class or fit on a diameter or width (hole H,
   shafts c d e f g h js k m n p r s, IT5 to IT11, sizes up to 500 mm) written "Ø20 H7" with
-  its deviations or limits if wanted; reference (in parentheses) and theoretically exact
-  (framed) dimensions.
+  its deviations or limits if wanted; angles with their tolerances in degrees ("30° ±0.5°");
+  reference (in parentheses) and theoretically exact (framed) dimensions.
 - **Note** with a leader, **Hole** callouts made from the hole feature ("4× M8 – 6H ↧ 12"
   with the drill on a second line when it goes deeper, "Ø8.5 ⌴ Ø14 ↧ 8", "2× Ø6.6 ⌵ Ø13 × 90°")
   or from the thread feature ("M12 – 6g" on a shaft, "M8 – 6H ↧ 12 LH" in a hole); the
@@ -1002,7 +1004,8 @@ the pointer until the click that places it.
   standing on the edge or on a leader.
 - **Centre:** add a centre mark to any circle or arc, or take an automatic one away.
 - **Balloon:** item numbers of the parts list on leaders ending in a dot; **Add balloons**
-  in the side panel puts one for every part of a view in columns beside it.
+  in the side panel puts one for every part of a view in columns beside it (on an edge, or
+  on a circle for a part the view shows only end-on, such as a pin).
 - Click an annotation to select it, drag it to move it, Delete removes it, and the side
   panel edits it (a fit's deviations at the size and the kind of fit are shown there).
 

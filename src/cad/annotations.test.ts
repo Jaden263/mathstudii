@@ -20,6 +20,7 @@ describe('dimension text', () => {
     expect(dimText(20, 'mm', { prefix: 'Ø', tol: { kind: 'sym', t: 0.1 } })).toEqual({ main: 'Ø20 ±0.1' });
     expect(dimText(20, 'mm', { tol: { kind: 'dev', upper: 0.1, lower: -0.05 } })).toEqual({ main: '20', stack: ['+0.10', '−0.05'] });
     expect(dimText(20, 'mm', { tol: { kind: 'dev', upper: 0.2, lower: 0 } })).toEqual({ main: '20', stack: ['+0.2', '0'] });
+    expect(dimText(20, 'mm', { tol: { kind: 'dev', upper: 0.05, lower: -0.05 } })).toEqual({ main: '20 ±0.05' });
     expect(dimText(20, 'mm', { tol: { kind: 'limits', upper: 0.021, lower: 0 } })).toEqual({ main: '', stack: ['20.021', '20.000'] });
     // an auxiliary dimension in parentheses
     expect(dimText(35, 'mm', { reference: true })).toEqual({ main: '(35', tail: ')' });
@@ -43,8 +44,9 @@ describe('dimension text', () => {
     expect(dimText(20, 'mm', { prefix: 'Ø', tol: { kind: 'fit', code: 'g6', show: 'limits' } })).toEqual({ main: 'Ø20 g6 (', stack: ['19.993', '19.980'], tail: ')' });
     // f7 at 50 mm: −25 / −50 µm; in a part drawn in centimetres the same in cm
     expect(dimText(5, 'cm', { prefix: 'Ø', tol: { kind: 'fit', code: 'f7', show: 'dev' } })).toEqual({ main: 'Ø5 f7 (', stack: ['−0.0025', '−0.0050'], tail: ')' });
-    // js6 at 25 mm: ±6.5 µm (IT6 = 13)
-    expect(dimText(25, 'mm', { tol: { kind: 'fit', code: 'js6', show: 'dev' } }).stack).toEqual(['+0.0065', '−0.0065']);
+    // js6 at 25 mm: ±6.5 µm (IT6 = 13), written once with ± (ISO 129-1); its limits stacked
+    expect(dimText(25, 'mm', { tol: { kind: 'fit', code: 'js6', show: 'dev' } })).toEqual({ main: '25 js6 (±0.0065)' });
+    expect(dimText(25, 'mm', { tol: { kind: 'fit', code: 'js6', show: 'limits' } }).stack).toEqual(['25.0065', '24.9935']);
     // a fit of hole and shaft is written as a pair
     expect(dimText(20, 'mm', { prefix: 'Ø', tol: { kind: 'fit', code: 'H7/g6', show: 'dev' } })).toEqual({ main: 'Ø20 H7/g6' });
     expect(dimText(20, 'mm', { tol: { kind: 'fit', code: 'G7' } }).error).toMatch(/not an ISO 286 class/);
