@@ -230,6 +230,8 @@ export const FUNCTIONS: FunctionDoc[] = [
     ['stiffb', 'stiffb(y0, x1, x2, acc, D, J, kmax, save)', 'Stiff solver steps with a Jacobian'],
     ['stiffr', 'stiffr(y0, x1, x2, acc, D, J, kmax, save)', 'Stiff solver steps with a Jacobian'],
     ['Odesolve', 'Odesolve(t, b [, steps, "method"])', 'Same as odesolve'], ['Adams', 'Adams(y0, x1, x2, n, D)', 'Non-stiff ODE solution matrix (Dormand–Prince here)'],
+    ['Pdesolve', 'Pdesolve(u, x, [a, b], t, [t0, t1] [, xpts, tpts])', 'Solve block: u := Pdesolve(u, x, [0, L], t, [0, T]) solves the PDE above (u_t(x, t) = α·u_xx(x, t), u_tt …) with u(x, 0) = f(x) and a condition on u or u_x at each end; returns u(x, t). Method of lines, Radau in t; 201 points in x by default'],
+    ['numol', 'numol(xr, xpts, tr, tpts, npde, npae, pde, pinit, bc)', 'Method of lines: matrix of u at xpts × tpts nodes; pde(x, t, u, ux, uxx) gives u_t, bc(t) rows [left, right, "D" or "N"]'],
   ]),
   ...F('Special functions', [
     ['gamma', 'gamma(x) | gamma(a, x)', 'Gamma function Γ(x); with two arguments the upper incomplete Γ(a, x) = ∫ₓ^∞ t^(a−1) e^−t dt'],

@@ -21,6 +21,7 @@ import { solveFrame3D, frame3dValue, slimFrame3D, type Frame3DResult } from '../
 import { solvePlateRegion, plateValue, slimPlate, type PlateResult } from '../plate/evaluate';
 import { pythonReady, runPython, resetPython, pyParams } from '../python/runtime';
 import { odesolveArgs, odesolveNames, solveOdeBlock, type OdeLine } from './odesolve';
+import { pdesolveArgs, pdesolveNames, solvePdeBlock } from './pdesolve';
 import { solveSpreadsheet, type SpreadsheetResult } from '../sheet/component';
 import './materialsLib';
 import './specialLib';
@@ -652,6 +653,7 @@ class Evaluator {
     const cons: Constraint[] = [];
     // in an odesolve block the variable (t) and the unknown functions are names, not units
     for (const n of odesolveNames(r.solver)) texCtx.defined.add(n);
+    for (const n of pdesolveNames(r.solver)) texCtx.defined.add(n);
     for (const c of lines(r.constraints)) {
       const parts = splitComparison(c);
       if (!parts) {
@@ -707,6 +709,8 @@ class Evaluator {
     if (!lhs) show = true;
     const odeArgs = odesolveArgs(rest);
     if (odeArgs) return this.runOdesolve(lhs, odeArgs, local, cons.map((c) => c.src));
+    const pdeArgs = pdesolveArgs(rest);
+    if (pdeArgs) return this.runOdesolve(lhs, pdeArgs, local, cons.map((c) => c.src), true);
     const m = /^\s*(find|minerr|minimize|maximize)\s*\((.*)\)\s*$/s.exec(rest);
     if (!m) throw new Error('Solver must be find(…), minerr(…), minimize(f, …) or maximize(f, …)');
     const fn = m[1];
@@ -828,11 +832,12 @@ class Evaluator {
   }
 
   /** y := odesolve(t, b): the constraints are differential equations and their conditions. */
-  private runOdesolve(lhs: Lhs | null, args: string[], local: ChainScope, lines: OdeLine[]) {
-    if (!lhs) throw new Error('Assign the solution to the unknown function: y := odesolve(t, 10 s)');
+  private runOdesolve(lhs: Lhs | null, args: string[], local: ChainScope, lines: OdeLine[], pde = false) {
+    if (!lhs) throw new Error(pde ? 'Assign the solution to the unknown function: u := Pdesolve(u, x, [0, L], t, [0, T])' : 'Assign the solution to the unknown function: y := odesolve(t, 10 s)');
     const lhsNames = lhs.kind === 'destructure' ? lhs.names : lhs.kind === 'var' || lhs.kind === 'func' ? [lhs.name] : [];
-    const { functions } = solveOdeBlock(lines, args, lhsNames, local, engineCtx.tol);
-    const callTex = exprTex(`odesolve(${args.join(', ')})`);
+    // Pdesolve (pdesolve.ts) gives functions u(x, t) the same way
+    const { functions } = (pde ? solvePdeBlock : solveOdeBlock)(lines, args, lhsNames, local, engineCtx.tol);
+    const callTex = exprTex(`${pde ? 'Pdesolve' : 'odesolve'}(${args.join(', ')})`);
     if (lhs.kind === 'destructure') {
       if (lhs.names.length !== functions.length) throw new Error(`Expected ${functions.length} names on the left`);
       lhs.names.forEach((n, i) => {

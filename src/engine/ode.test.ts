@@ -173,3 +173,25 @@ describe('invariants and replay', () => {
     expect(Math.abs(sens - (Math.exp(-3) - Math.exp(-3 * a)))).toBeLessThan(1e-7);
   });
 });
+
+describe('banded systems (method of lines)', () => {
+  it('Radau on a band gives the dense result, from fewer evaluations', () => {
+    // y_i′ = (y_{i−1} − 2y_i + y_{i+1})/h², y = 0 at both ends: the discrete sine mode decays
+    // exactly as e^(λt), λ = −(4/h²) sin²(πh/2)
+    const n = 39, h = 1 / (n + 1);
+    const f = (_t: number, y: number[]) => y.map((v, i) => ((i > 0 ? y[i - 1] : 0) - 2 * v + (i < n - 1 ? y[i + 1] : 0)) / (h * h));
+    const y0 = Array.from({ length: n }, (_, i) => Math.sin(Math.PI * (i + 1) * h));
+    const dense = solveIvp(f, 0, y0, 0.1, { method: 'radau', rtol: 1e-9 });
+    const band = solveIvp(f, 0, y0, 0.1, { method: 'radau', rtol: 1e-9, band: 1 });
+    const lambda = -(4 / (h * h)) * Math.sin((Math.PI * h) / 2) ** 2;
+    for (const t of [0.013, 0.05, 0.1]) {
+      const a = dense.at(t), b = band.at(t);
+      for (let i = 0; i < n; i++) {
+        expect(Math.abs(a[i] - b[i])).toBeLessThan(1e-12);
+        expect(Math.abs(b[i] - y0[i] * Math.exp(lambda * t))).toBeLessThan(1e-8);
+      }
+    }
+    // each Jacobian from 3 evaluations instead of 39
+    expect(band.evals).toBeLessThan(dense.evals);
+  });
+});
