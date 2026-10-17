@@ -400,10 +400,16 @@ export function cadExample(): Worksheet {
     ['math', L, mm(455), { source: 'asm.Imz = kg*cm^2' }],
     ['math', mm(85), mm(455), { source: 'asm.Spin = deg' }],
     ['math', mm(130), mm(455), { source: 'asm.Lz = mm' }],
-    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: standard views with hidden lines, overall dimensions and a title block, kept up to date with the part. Select it to print it on A4 at true scale or export SVG / DXF.' }],
+    ['text', L, mm(470), { width: mm(170), markdown: '## Drawing\nRight-click a part → **Make a drawing**: exact standard views with hidden and centre lines, overall dimensions and a title block, kept up to date with the part. Here a section A–A cut through two bolt holes on the top view, and a detail B of a counterbore. Select it to draw more (**Section**, **Detail**), print it on A3 at true scale or export SVG / DXF.' }],
   ]);
   const asm = ws.regions.find((r) => r.kind === 'cad' && r.name === 'asm');
-  if (asm) ws.regions.push(createRegion('drawing', L, mm(492), { cad: asm.id, title: 'Flange with shaft', partNo: 'FA-001', material: 'EN-GJL-250 / C45' }));
+  if (asm) {
+    ws.regions.push(createRegion('drawing', L, mm(492), {
+      cad: asm.id, title: 'Flange with shaft', partNo: 'FA-001', material: 'EN-GJL-250 / C45', sheet: 'A3',
+      sections: [{ id: 'sa', letter: 'A', view: 'top', a: { x: -115, y: 0 }, b: { x: 115, y: 0 } }],
+      details: [{ id: 'db', letter: 'B', view: 'sec:sa', c: { x: 75, y: 8 }, r: 13, scale: 2 }],
+    }));
+  }
   return ws;
 }
 

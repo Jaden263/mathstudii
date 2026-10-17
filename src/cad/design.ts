@@ -12,7 +12,7 @@ import { findProfiles, type ProfileRegion, type Vec2 } from './profile';
 import { extrudeProps, revolveProps, type MassProps } from './features';
 import {
   Arena, IDENTITY, add3, combineMass, cross3, dot3, frameDir, frameFromNormal, frameMatrix, framePoint,
-  len3, m4Frame, m4Inv, m4Mirror, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, massFromProps, norm3, propsFromMass,
+  len3, m4Dir, m4Frame, m4Inv, m4Mirror, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, massFromProps, norm3, propsFromMass,
   scale3, solidMass, sub3, transformMass, transformSolid,
   type Frame, type M4, type Manifold, type ManifoldToplevel, type Mass3, type Vec3,
 } from './solid';
@@ -882,6 +882,7 @@ export interface Timeline<S> {
   tools: Map<string, TimelineTool<S>>;
   /** Sketches the timeline solved again (their projected references moved). */
   sketches: Record<string, RebuiltSketch>;
+  threads: ThreadMark[];
 }
 
 /** z-range of a box in a sketch frame. */
@@ -964,7 +965,37 @@ export interface TimelineState<S> {
   made: string[];
   /** Sketches whose projected references moved: projected again on the bodies before them and solved again. */
   sketches: Record<string, RebuiltSketch>;
+  /** Cosmetic threads so far (drawings draw them per ISO 6410). */
+  threads: ThreadMark[];
 }
+
+/**
+ * A cosmetic thread (a thread feature without geometry, or a tapped hole): where it runs
+ * and its diameters, for the drawings (component coordinates, part units).
+ */
+export interface ThreadMark {
+  /** Feature that made it (a pattern's copies carry its prefix, `${pattern}.${k}.${feature}`). */
+  feature: string;
+  /** Body it is on, when known (a tapped hole cuts its targets). */
+  body?: string;
+  /** On the axis where the threaded face starts; `axis` points along it (unit). */
+  o: Vec3;
+  axis: Vec3;
+  /** Radius of the threaded face (a hole's: its tap drill). */
+  R: number;
+  /** The thread runs from z0 to z1 along the axis (z1 undefined: as far as the hole goes); the face or hole ends at `length` (undefined: through). */
+  z0: number;
+  z1?: number;
+  length?: number;
+  /** Major diameter and the root of an external thread (d3) or the crest of an internal one (D1), ISO 68-1. */
+  d: number;
+  d1: number;
+  internal: boolean;
+  name: string;
+}
+
+/** A thread mark moved by a placement. */
+const movedMark = (m: ThreadMark, M: M4, feature = m.feature, body = m.body): ThreadMark => ({ ...m, feature, body, o: m4Point(M, m.o), axis: norm3(m4Dir(M, m.axis)) });
 
 /** A sketch as its timeline rebuilt it (its reference geometry projected again). */
 export interface RebuiltSketch {
@@ -973,7 +1004,7 @@ export interface RebuiltSketch {
   result: CadResult;
 }
 
-export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {} });
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {}, threads: [] });
 
 /** The face a sketch follows, if it does (sketches made on faces before references existed do not). */
 export const sketchFace = (s: DesignSketch): TopoRef | undefined => ('frame' in s.plane ? s.plane.face : undefined);
@@ -1487,6 +1518,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   const errors = { ...prev.errors };
   const warnings = { ...prev.warnings };
   const made = [...prev.made];
+  // old cached states (made before threads were kept) have none
+  let threads = prev.threads ?? [];
   const built = prev.frames;
   // construction items and coils add planes and datums
   let frames = prev.frames, datums = prev.datums;
@@ -1588,6 +1621,15 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         const make = (sg: number) => ops.hole(centres.map(([x, y]) => framePoint(f, { x, y })), scale3(f.n, sg), opts, item.id);
         const sg = dir === '+' ? 1 : dir === '-' ? -1 : bestSide(ops, make, tgt);
         let tool = make(sg);
+        if (item.tap && !item.tap.modeled) {
+          // a cosmetic thread at every hole, as deep as the thread (the whole hole when through)
+          const size = threadIn(parseThread(item.tap.size), inp.numbers.unit);
+          const z1 = p.tdepth ?? (item.through ? undefined : depth);
+          threads = [...threads, ...centres.map(([x, y]): ThreadMark => ({
+            feature: item.id, o: framePoint(f, { x, y }), axis: scale3(f.n, sg), R: p.d / 2, z0: 0, z1,
+            length: item.through ? undefined : depth, d: size.d, d1: size.d1, internal: true, name: size.name,
+          }))];
+        }
         if (item.tap?.modeled) {
           // the thread's groove cut with the drill, from outside the hole's mouth
           const size = threadIn(parseThread(item.tap.size), inp.numbers.unit);
@@ -1617,6 +1659,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
             const src = tools.get(ref);
             if (!src) throw new Error('a patterned feature failed or no longer exists');
             const copies = Ms.map((M, k) => ops.transform(src.tool, M, `${item.id}.${k + 1}.`));
+            const marks = threads.filter((m) => m.feature === ref || m.feature.startsWith(`${ref}.`));
+            threads = [...threads, ...Ms.flatMap((M, k) => marks.map((m) => movedMark(m, M, `${item.id}.${k + 1}.${m.feature}`)))];
             // cutting (or joining) copy after copy is one boolean with all of them: much
             // faster for a grid of holes, the same solid
             if (copies.length > 1 && (src.op === 'cut' || (src.op === 'join' && bodies.length))) apply(`${item.id}.1.${ref}`, { ...src, tool: ops.group(copies) });
@@ -1627,6 +1671,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
             const b = bodies.find((q) => q.id === ref);
             if (!b) throw new Error('a body to copy no longer exists');
             const copies = Ms.map((M, k) => ops.transform(b.solid, M, `${item.id}.${k + 1}.`));
+            const marks = threads.filter((m) => m.body === ref);
+            threads = [...threads, ...Ms.flatMap((M, k) => marks.map((m) => movedMark(m, M, `${item.id}.${k + 1}.${m.feature}`, item.join ? ref : `${item.id}.${k + 1}.${ref}`)))];
             if (item.join) b.solid = ops.union([b.solid, ...copies]);
             else copies.forEach((s, k) => created(`${item.id}.${k + 1}.${ref}`, item.id, s));
           }
@@ -1696,6 +1742,13 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
             const tf = threadFace(g.topo, g.topo.faces[q.index], item.flip);
             const geom = threadGeometry(size, tf, { length: p.length, offset: p.offset, left: item.hand === 'left' }, inp.numbers.unit);
             if (item.modeled) grooves.push(ops.thread(geom, `${item.id}/thread${k++}`));
+            else {
+              const z0 = p.offset ?? 0;
+              threads = [...threads, {
+                feature: item.id, body: id, o: tf.o, axis: tf.axis, R: tf.radius, z0, z1: Math.min(tf.length, p.length === undefined ? tf.length : z0 + p.length),
+                length: tf.length, d: size.d, d1: tf.internal ? size.d1 : size.d3, internal: tf.internal, name: size.name,
+              }];
+            }
           }
           if (!grooves.length) continue;
           const b = bodies.find((x) => x.id === id)!;
@@ -1711,6 +1764,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         const u = ts.length > 1 ? ops.union(ts.map((b) => b.solid)) : ts[0].solid;
         t.solid = item.op === 'join' ? ops.union([t.solid, u]) : item.op === 'cut' ? ops.cut(t.solid, u) : ops.intersect(t.solid, u);
         if (!item.keepTools) for (const b of ts) bodies.splice(bodies.indexOf(b), 1);
+        // the threads of tools joined into the target are on it now
+        if (item.op === 'join' && !item.keepTools) threads = threads.map((m) => (ts.some((b) => b.id === m.body) ? { ...m, body: t.id } : m));
         break;
       }
       case 'fillet':
@@ -1747,6 +1802,9 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
           // a moved body keeps the names of its faces; a copy's carry a prefix, as a pattern's do
           if (item.copy) created(`${item.id}.1.${b.id}`, item.id, ops.transform(b.solid, M, `${item.id}.1.`));
           else b.solid = ops.transform(b.solid, M, '');
+          // the body's cosmetic threads go with it (a copy's are copied)
+          const marks = threads.filter((m) => m.body === b.id).map((m) => movedMark(m, M, item.copy ? `${item.id}.1.${m.feature}` : m.feature, item.copy ? `${item.id}.1.${b.id}` : b.id));
+          threads = item.copy ? [...threads, ...marks] : [...threads.filter((m) => m.body !== b.id), ...marks];
         }
         break;
       }
@@ -1754,7 +1812,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { ...prev, bodies, tools, errors, warnings, made, frames, datums };
+  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads };
 }
 
 /**
@@ -1772,7 +1830,7 @@ export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): Timeli
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */

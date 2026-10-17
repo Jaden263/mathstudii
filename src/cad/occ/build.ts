@@ -4,7 +4,7 @@
 // from the feature that changed, cache.ts).
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import {
-  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type RebuiltSketch, type TimelineBody, type TimelineTool,
+  buildInputs, runTimeline, type CadDesign, type Datum, type DesignNumbers, type Placement, type RebuiltSketch, type ThreadMark, type TimelineBody, type TimelineTool,
 } from '../design';
 import { designKey } from '../keys';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
@@ -28,6 +28,8 @@ export interface OccComponentBuild {
   tools: Map<string, TimelineTool<OccSolid>>;
   /** Sketches the timeline solved again (their projected references moved). */
   sketches?: Record<string, RebuiltSketch>;
+  /** Cosmetic threads (drawings draw them). */
+  threads?: ThreadMark[];
 }
 
 export interface OccBuiltDesign {

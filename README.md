@@ -848,8 +848,8 @@ workspace opens full screen in the page. Its layout follows Fusion:
   outside the diameter. Path only gives just the helix, for a sweep to follow.
 - **Thread:** ISO metric coarse and fine (ISO 261/262, M1.6 to M64, profile by ISO 68-1)
   on picked cylinders: external on a shaft, internal in a hole, the size suggested from
-  the diameter. Cosmetic threads are listed in the inspector and drawn as rings; modeled
-  ones cut the real groove (it takes a few seconds).
+  the diameter. Cosmetic threads are listed in the inspector, drawn as rings in the 3-D
+  view and per ISO 6410 on drawings; modeled ones cut the real groove (it takes a few seconds).
 - **Rib:** an open line, arc, spline or elliptical arc drawn on a plane through the middle of the rib grows in that
   plane until the body closes it off (or to a depth), as thick as asked across the plane
   (both sides, one or the other) — the gusset in the corner of a bracket. Both sides of the
@@ -943,19 +943,46 @@ size.
 - **Loft** joins the first profile of one sketch to the first profile of another, on a
   different plane, with a ruled surface (a square to a circle, for example).
 
-**Drawings:** right-click a part → **Make a drawing**. You get a sheet (A4 or A3
-landscape) with:
+**Drawings:** right-click a part → **Make a drawing**. You get a sheet (A4 to A0,
+landscape or portrait, ISO 5457 frame) with:
 
 - front, top and side views in first-angle (ISO) or third-angle projection, plus an
-  isometric view;
-- visible lines solid and hidden lines dashed, with overall dimensions;
-- a standard scale and an ISO 7200-style title block with the projection symbol.
+  isometric view, at the largest standard scale that fits (or one you pick);
+- lines from OpenCascade's exact hidden-line removal on the solids: straight edges are
+  lines, circles and arcs stay true circles and arcs, a circle seen at an angle is a true
+  ellipse, only B-spline edges become fine polylines;
+- ISO 128 line types and widths by sheet size (line group 0.5 on A4–A2, 0.7 on A1 and
+  A0): visible edges and outlines wide, hidden lines narrow dashed, tangent edges narrow
+  (can be switched off), centre lines narrow long-dash dotted, hatching narrow;
+- centre marks on holes and shafts seen end-on and centre lines along them seen side-on,
+  3 mm past the outline (switchable per view);
+- cosmetic threads (the thread feature without geometry, tapped holes) per ISO 6410: a
+  narrow line at the root (d3 of a bolt, D of a nut), a ¾ circle seen end-on, a wide
+  line where the full thread ends, dashed where the material hides them;
+- overall dimensions and an ISO 7200-style title block with the projection symbol.
 
-The drawing follows the part. Select it to print at true scale (or save it as PDF), or
-to export SVG or DXF (layers VISIBLE, HIDDEN, DIM, FRAME). The lines are the mesh's
-sharp edges and the silhouettes of curved walls. Each line is tested in short pieces
-against every triangle in front of it, then merged, so hidden pieces that lie under
-visible lines disappear.
+Select the drawing for its tools:
+
+- **Section:** click two points on the front, top or side view for the cutting line (it
+  snaps to centres, ends and middles of lines, and straight across or up within 5°). The
+  section view A–A keeps what lies beyond the plane: the cut faces hatched at 45° (each
+  body of an assembly at its own angle or spacing, ISO 128-50, the spacing set on the
+  paper), the rest drawn as seen. The cutting line on the parent is long-dash dotted,
+  wide at its ends, with arrows and letters. Flip it in the side panel.
+- **Detail:** click a centre and then the size of a circle on any view. The detail B
+  (2:1) is that circle of the view clipped exactly (lines, arcs and ellipses are cut where
+  they cross it), at its own scale (change it in the side panel); the circle and letter
+  stay on the parent.
+- Drag section and detail views to place them; otherwise they line up to the right.
+- **Print** at true scale on the sheet's size (or save as PDF), **SVG** in millimetres,
+  **DXF** R2000 in paper millimetres with true CIRCLE, ARC and ELLIPSE entities, layers
+  VISIBLE, HIDDEN, CENTER, TANGENT, THIN, HATCH, DIM, TEXT and BORDER with ISO
+  lineweights and line types.
+
+The drawing follows the part: the views are computed in the worker and kept by design
+and view, so redrawing an unchanged part costs nothing. The flange assembly's four views
+and a section take about 0.3 s. Without OpenCascade the views come from the display mesh
+as before (a section clips the mesh and closes it).
 
 **The 2-D sketcher** (also used for every sketch):
 
@@ -1094,8 +1121,8 @@ shaded, and edges are the true edges as crisp lines (no seams). In the CAD windo
   - **Sketch on a face** takes the face's exact plane, and follows it.
   - **Joints** snap to face centres, axes, circle centres, edge midpoints and vertices.
   - **Fillet, chamfer, shell, draft, press-pull** start from the picked edges or faces.
-- **Drawings:** the hidden-line views come from the worker and are dimensioned from the
-  exact box.
+- **Drawings:** the views are OpenCascade's exact hidden-line removal, computed in the
+  worker.
 
 **References that survive edits.** Every face, edge and vertex has a name from the feature
 history, the same after every rebuild. Sketches on faces, joints on geometry, the modify
@@ -1176,9 +1203,20 @@ What it is not, honestly:
   - There is no Delete face: this OpenCascade build has no defeaturing algorithm.
   - The mesh kernel (only while OpenCascade loads, or if it cannot) makes no fillets,
     chamfers, shells, drafts or press-pulls; it splits and moves bodies.
-- **Faceted where it matters little:** drawings are hidden-line views of the display
-  mesh, so circles in them are fine polylines (their dimensions are exact). The section
-  view's cut bodies cannot be picked. Lofts are ruled (straight between the two profiles).
+- **Faceted where it matters little:** the 3-D section view's cut bodies cannot be
+  picked. Lofts are ruled (straight between the two profiles).
+- **Drawings, the limits:**
+  - Coils, sweeps along coils and modeled threads are drawn from their facets (the exact
+    hidden-line removal takes minutes on helical faces: over two for an M12 thread seen
+    along its axis), with the other bodies still exact; the sheet says *partly from the
+    mesh*. A modeled thread is drawn as its geometry, not per ISO 6410.
+  - Cosmetic threads follow their body through patterns, mirrors, moves and joins; the
+    threads of a tool body that a Combine cuts or intersects with go with it.
+  - Section lines are straight (no stepped or aligned sections), only on the front, top
+    and side views. Shafts and bolts cut lengthwise are hatched like everything else.
+    Section views leave hidden lines out.
+  - Centre lines are drawn for cylinders and cones going at least half round; there are
+    no bolt-circle centre lines, and none in the isometric view.
 - **Sweeps, coils, threads, ribs, the limits:**
   - A sweep takes a twist or a taper, not both, and neither on a closed path. Coils have
     no taper angle and no flat spiral.
@@ -1187,7 +1225,7 @@ What it is not, honestly:
     Web.
   - Threads are the basic ISO profile: no tolerance classes, no runout, only metric. A
     modeled thread on a mesh-kernel build waits for OpenCascade (a tapped hole is drilled
-    to its tap drill until then). Cosmetic threads are not in drawings yet.
+    to its tap drill until then).
   - The tangent plane is for cylinders only. A vertex is picked as the corner nearest the
     click on a face or edge; sketch points and curves are chosen from the dialog's lists.
   - Sweeps, coils and threads need the B-rep kernel; the mesh kernel only shows the helix
@@ -1227,8 +1265,8 @@ What it is not, honestly:
     A sketch or joint picked while it draws the part gets no name either, so it follows
     its face only by place.
 - **Joints:** no joint limits, motion studies or contact.
-- **Drawings:** only the overall sizes are dimensioned automatically. There are no section
-  views on the sheet and no GD&T.
+- **Drawings:** only the overall sizes are dimensioned automatically, and there is no
+  GD&T.
 
 It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
 calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
@@ -1321,7 +1359,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | 3-D frames: nodes, members, sections, supports (per unknown, springs) and loads in tables of worksheet expressions, member releases, β, load cases and combinations, envelope; orbit view with deformed shape, N/V/T/M diagrams, reactions, hover values; results back into the worksheet | ✅ (linear elastic; first or second order, optional shear deformation, flexural buckling α_cr; no lateral-torsional buckling) |
 | Design checks with utilisation, steel section and material library (IPE/HEA/HEB/HEM, CHS/SHS/RHS, steel, concrete, timber, rebar) | ✅ |
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste and CSV import/export | ✅ |
-| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings (views, hidden lines, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
+| CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings from the exact solids (views, hidden and centre lines, sections, details, cosmetic threads, title block; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no sweeps or delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Import works on test files built to the documented format; not yet tried on files saved by Mathcad. No export back to Mathcad. Input controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
 | Opening SMath Studio `.sm`/`.smz` files | ⚠️ Checked on SMath's own bundled examples (numeric ones reproduce SMath's results). SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert. No export back to SMath |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |

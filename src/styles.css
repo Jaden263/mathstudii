@@ -5622,3 +5622,82 @@ div.pl-cutplot {
   gap: 6px;
   padding: 2px 0;
 }
+
+/* ---------------------------------------------------------------- drawings: section and detail tools */
+
+.dw-sheet.dw-picking .dw-svg {
+  cursor: crosshair;
+}
+
+.dw-svg .dw-movable {
+  fill: transparent;
+  stroke: var(--accent);
+  stroke-width: 0.35;
+  stroke-dasharray: 2 1.5;
+  cursor: move;
+}
+
+.dw-svg .dw-view {
+  fill: none;
+  stroke: none;
+  pointer-events: none;
+}
+
+.dw-svg .dw-draft {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 0.5;
+  stroke-dasharray: 3 1.5;
+  pointer-events: none;
+}
+
+.dw-hint {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: 12px var(--font);
+  pointer-events: none;
+}
+
+.dw-tools .btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dw-item small {
+  color: var(--text-muted);
+}
+
+.cad-clist .dw-item {
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cad-clist li > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cad-clist select {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 1px 2px;
+}
+
+@media print {
+  .dw-hint,
+  .dw-svg .dw-movable,
+  .dw-svg .dw-draft {
+    display: none;
+  }
+}
