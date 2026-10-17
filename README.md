@@ -1455,7 +1455,8 @@ right-click menu. They download in the browser and open a save dialog in the des
   whose surface changed (the plate made thicker) is reported lost and the sketch stays where
   it was, never moved to another face.
 - **STL** (binary and ASCII), **OBJ** (pick its .mtl with it for colours) and **3MF**
-  (unit, colours, objects placed by the build) become **mesh bodies**: welded, checked
+  (unit, colours, objects placed by the build, objects kept in model parts of their own as
+  Bambu Studio writes them) become **mesh bodies**: welded, checked
   closed (every edge between two triangles running along it opposite ways), their volume,
   centre and inertia by the divergence theorem over the triangles (exact for the polyhedron
   the mesh is). They are shown, measured, placed in assemblies, checked for interference,

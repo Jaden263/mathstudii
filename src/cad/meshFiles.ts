@@ -185,63 +185,100 @@ export function read3mf(b: Uint8Array, name = 'Model'): MeshFile {
     throw new Error('the 3MF file is not a zip package');
   }
   const part = modelPart(files);
-  const xml = strFromU8(files[part] ?? files[Object.keys(files).find((k) => k.toLowerCase() === part.toLowerCase()) ?? '']);
+  const text = (path: string) => {
+    const f = files[path] ?? files[Object.keys(files).find((k) => k.toLowerCase() === path.toLowerCase()) ?? ''];
+    return f ? strFromU8(f) : '';
+  };
+  const xml = text(part);
   if (!xml) throw new Error('the 3MF package has no 3-D model');
-  const model = attrs(/<(?:\w+:)?model\b([^>]*)>/.exec(xml)?.[1] ?? '');
-  const mm = UNIT_3MF[model.unit ?? 'millimeter'];
-  if (!mm) throw new Error(`the 3MF unit "${model.unit}" is not one of the specification's`);
+  const unitOf = (x: string) => {
+    const unit = attrs(/<(?:\w+:)?model\b([^>]*)>/.exec(x)?.[1] ?? '').unit ?? 'millimeter';
+    const mm = UNIT_3MF[unit];
+    if (!mm) throw new Error(`the 3MF unit "${unit}" is not one of the specification's`);
+    return mm;
+  };
+  const mm = unitOf(xml);
   const warnings: string[] = [];
-  // materials: basematerials groups of display colours (#RRGGBB or #RRGGBBAA)
-  const colours = new Map<string, string[]>();
-  const groups = /<(?:\w+:)?basematerials\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?basematerials>/g;
-  let g: RegExpExecArray | null;
-  while ((g = groups.exec(xml))) {
-    const list: string[] = [];
-    const base = /<(?:\w+:)?base\b([^>]*)\/?>/g;
-    let m: RegExpExecArray | null;
-    while ((m = base.exec(g[2]))) list.push((attrs(m[1]).displaycolor ?? '').slice(0, 7).toLowerCase());
-    colours.set(attrs(g[1]).id, list);
-  }
-  // objects: a mesh, or components placing other objects
-  interface Obj { id: string; name: string; color?: string; mesh?: TriMesh; components: { id: string; M: M4 }[] }
+  // objects: a mesh, or components placing other objects, by their id (in the root model) or
+  // `${part}#${id}` in another model part of the package (the production extension, as Bambu
+  // Studio writes every object to a file of its own)
+  interface Obj { id: string; name: string; named: boolean; color?: string; mesh?: TriMesh; components: { id: string; M: M4 }[] }
   const objects = new Map<string, Obj>();
-  const objRe = /<(?:\w+:)?object\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?object>/g;
-  let o: RegExpExecArray | null;
-  while ((o = objRe.exec(xml))) {
-    const a = attrs(o[1]);
-    const body = o[2];
-    const ob: Obj = { id: a.id, name: a.name?.trim() || `${name} ${a.id}`, components: [] };
-    const colour = (pid?: string, pindex?: string) => (pid !== undefined ? colours.get(pid)?.[+(pindex ?? 0)] : undefined);
-    if (/<(?:\w+:)?mesh\b/.test(body)) {
-      const v: number[] = [];
-      const vre = /<(?:\w+:)?vertex\b([^>]*)\/?>/g;
+  const read = new Set<string>();
+  const readModel = (path: string, x: string, depth: number) => {
+    read.add(path);
+    const root = path === part;
+    const key = (id: string) => (root ? id : `${path}#${id}`);
+    // its vertices in the root model's unit, its moves in millimetres
+    const fileMm = root ? mm : unitOf(x), scale = fileMm / mm;
+    // materials: basematerials groups of display colours (#RRGGBB or #RRGGBBAA)
+    const colours = new Map<string, string[]>();
+    const groups = /<(?:\w+:)?basematerials\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?basematerials>/g;
+    let g: RegExpExecArray | null;
+    while ((g = groups.exec(x))) {
+      const list: string[] = [];
+      const base = /<(?:\w+:)?base\b([^>]*)\/?>/g;
       let m: RegExpExecArray | null;
-      while ((m = vre.exec(body))) {
-        const q = attrs(m[1]);
-        v.push(+q.x, +q.y, +q.z);
-      }
-      const tri: number[] = [];
-      const tre = /<(?:\w+:)?triangle\b([^>]*)\/?>/g;
-      let first: Record<string, string> | null = null;
-      while ((m = tre.exec(body))) {
-        const q = attrs(m[1]);
-        first ??= q;
-        tri.push(+q.v1, +q.v2, +q.v3);
-      }
-      const nv = v.length / 3;
-      if (v.some((x) => !Number.isFinite(x)) || tri.some((i) => !(Number.isInteger(i) && i >= 0 && i < nv))) throw new Error(`the mesh of 3MF object ${ob.name} is damaged`);
-      // the object's material, else that of its first triangle
-      ob.color = colour(a.pid, a.pindex) ?? colour(first?.pid, first?.p1);
-      ob.mesh = { name: ob.name, positions: new Float64Array(v), indices: new Uint32Array(tri), ...(ob.color ? { color: ob.color } : {}) };
+      while ((m = base.exec(g[2]))) list.push((attrs(m[1]).displaycolor ?? '').slice(0, 7).toLowerCase());
+      colours.set(attrs(g[1]).id, list);
     }
-    const cre = /<(?:\w+:)?component\b([^>]*)\/?>/g;
-    let c: RegExpExecArray | null;
-    while ((c = cre.exec(body))) {
-      const q = attrs(c[1]);
-      if (q.path) warnings.push(`a component of ${ob.name} is in another part of the package (${q.path}), which is not read`);
-      else ob.components.push({ id: q.objectid, M: transform3mf(q.transform, mm) });
+    const objRe = /<(?:\w+:)?object\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?object>/g;
+    let o: RegExpExecArray | null;
+    while ((o = objRe.exec(x))) {
+      const a = attrs(o[1]);
+      const body = o[2];
+      const ob: Obj = { id: key(a.id), name: a.name?.trim() || `${name} ${a.id}`, named: !!a.name?.trim(), components: [] };
+      const colour = (pid?: string, pindex?: string) => (pid !== undefined ? colours.get(pid)?.[+(pindex ?? 0)] : undefined);
+      if (/<(?:\w+:)?mesh\b/.test(body)) {
+        const v: number[] = [];
+        const vre = /<(?:\w+:)?vertex\b([^>]*)\/?>/g;
+        let m: RegExpExecArray | null;
+        while ((m = vre.exec(body))) {
+          const q = attrs(m[1]);
+          v.push(+q.x * scale, +q.y * scale, +q.z * scale);
+        }
+        const tri: number[] = [];
+        const tre = /<(?:\w+:)?triangle\b([^>]*)\/?>/g;
+        let first: Record<string, string> | null = null;
+        while ((m = tre.exec(body))) {
+          const q = attrs(m[1]);
+          first ??= q;
+          tri.push(+q.v1, +q.v2, +q.v3);
+        }
+        const nv = v.length / 3;
+        if (v.some((c) => !Number.isFinite(c)) || tri.some((i) => !(Number.isInteger(i) && i >= 0 && i < nv))) throw new Error(`the mesh of 3MF object ${ob.name} is damaged`);
+        // the object's material, else that of its first triangle
+        ob.color = colour(a.pid, a.pindex) ?? colour(first?.pid, first?.p1);
+        ob.mesh = { name: ob.name, positions: new Float64Array(v), indices: new Uint32Array(tri), ...(ob.color ? { color: ob.color } : {}) };
+      }
+      const cre = /<(?:\w+:)?component\b([^>]*)\/?>/g;
+      let c: RegExpExecArray | null;
+      while ((c = cre.exec(body))) {
+        const q = attrs(c[1]);
+        const target = q.path?.replace(/^\//, '');
+        if (target && target !== path) {
+          const other = read.has(target) || depth > 8 ? '' : text(target);
+          if (!read.has(target) && !other) {
+            warnings.push(`a component of ${ob.name} is in a part of the package that is missing (${q.path})`);
+            continue;
+          }
+          if (other) readModel(target, other, depth + 1);
+        }
+        ob.components.push({ id: !target ? key(q.objectid) : target === part ? q.objectid : `${target}#${q.objectid}`, M: transform3mf(q.transform, fileMm) });
+      }
+      objects.set(ob.id, ob);
     }
-    objects.set(ob.id, ob);
+  };
+  readModel(part, xml, 0);
+  // an unnamed mesh takes the name of the object that places it (Bambu Studio names only those)
+  for (const ob of objects.values()) {
+    for (const c of ob.named ? ob.components : []) {
+      const m = objects.get(c.id);
+      if (m?.mesh && !m.named) {
+        m.name = m.mesh.name = ob.name;
+        m.named = true;
+      }
+    }
   }
   // parts: the mesh objects; instances: the build items, components followed down to the meshes
   const parts: MeshFile['parts'] = [];

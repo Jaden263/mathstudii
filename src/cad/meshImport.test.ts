@@ -201,3 +201,35 @@ describe('what the features do with a mesh body', () => {
     expect(gone.files).toBeUndefined();
   });
 });
+
+describe('a 3MF whose objects are in parts of their own (production extension)', () => {
+  it('follows the components into them, in their own unit, named after the objects that place them', () => {
+    // as Bambu Studio writes it: the root model places a component in 3D/Objects/object_1.model
+    const verts = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `<vertex x="${i & 1 ? 1 : 0}" y="${i & 2 ? 1 : 0}" z="${i & 4 ? 1 : 0}"/>`).join('');
+    const quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    const tris = quads.flatMap(([p, q, r, s]) => [`<triangle v1="${p}" v2="${q}" v3="${r}"/>`, `<triangle v1="${p}" v2="${r}" v3="${s}"/>`]).join('');
+    const ns = 'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"';
+    const root = `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" ${ns}><resources>
+      <object id="2" p:UUID="a" type="model" name="Bracket"><components><component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 5 0 0"/></components></object>
+      </resources><build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 100 0 0"/><item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 50 0"/></build></model>`;
+    // the object's own part in inches: a one-inch cube
+    const part = `<?xml version="1.0" encoding="UTF-8"?><model unit="inch" ${ns}><resources><object id="1" type="model"><mesh><vertices>${verts}</vertices><triangles>${tris}</triangles></mesh></object></resources><build/></model>`;
+    const pkg = zipSync({
+      '[Content_Types].xml': strToU8('<Types/>'),
+      '_rels/.rels': strToU8('<Relationships><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>'),
+      '3D/3dmodel.model': strToU8(root),
+      '3D/Objects/object_1.model': strToU8(part),
+    });
+    const f = read3mf(pkg, 'plate');
+    expect(f.warnings).toEqual([]);
+    expect(f.parts.map((p) => [p.key, p.name])).toEqual([['3D/Objects/object_1.model#1', 'Bracket']]);
+    // the build item's move and the component's: 105 and (5, 50) mm
+    expect(f.instances.map((x) => [x.M[12], x.M[13]])).toEqual([[105, 0], [5, 50]]);
+    const d = insertImport(emptyDesign(), planImport('plate.3mf', '3mf', pkg), { unit: 'mm', active: 'c1' }).design;
+    const { res } = solve(d);
+    expect(res.design!.errors).toEqual({});
+    // two one-inch cubes, the root model in millimetres
+    expect(res.design!.total!.V).toBeCloseTo(2 * 25.4 ** 3, 6);
+    expect(res.design!.total!.xg).toBeCloseTo((105 + 5) / 2 + 12.7, 6);
+  });
+});
