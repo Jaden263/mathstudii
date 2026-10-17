@@ -281,7 +281,8 @@ export function motionTsv(design: CadDesign, result: MotionResult, unit: string)
       if (xs) cols.push({ head: `${j.name}.${k} [${isAngleDof(k) ? 'deg' : unit}]`, at: (f) => String(+(isAngleDof(k) ? xs[f] * DEG : xs[f]).toPrecision(10)) });
     }
   }
-  if (result.clearance) cols.push({ head: `c [${unit}]`, at: (f) => String(+result.clearance![f].d.toPrecision(10)) });
+  // no pair measured: no clearance (Infinity here, null after the desktop window's JSON)
+  if (result.clearance) cols.push({ head: `c [${unit}]`, at: (f) => { const d = result.clearance![f].d; return Number.isFinite(d) ? String(+d.toPrecision(10)) : ''; } });
   return [cols.map((c) => c.head).join('\t'), ...result.t.map((_, f) => cols.map((c) => c.at(f)).join('\t'))].join('\n');
 }
 

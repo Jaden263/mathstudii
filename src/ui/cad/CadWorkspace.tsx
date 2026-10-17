@@ -55,7 +55,7 @@ import { bomCsv, bomTable, bomTsv } from '../../cad/bom';
 import { autoExplode } from '../../cad/explode';
 import { m4Mul } from '../../cad/solid';
 import { sampleTimes } from '../../cad/motion';
-import { asBuiltOrigin, solveKinematics } from '../../cad/kinematics';
+import { asBuiltOrigin, placementsWithout } from '../../cad/kinematics';
 import { paintHits, useAssemblyView } from './assemblyView';
 import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
 import { canRecord, exportPngFrames, recordWebm } from './motionExport';
@@ -1029,7 +1029,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         const farOcc = occ === other ? j[side].occ : other;
         // where the parts stand without this joint (not where its present origins put them)
         const kin = build?.kin ?? dr?.kin;
-        const now = kin && solveKinematics({ ...kin.model, joints: kin.model.joints.filter((q) => q.id !== j.id) }).placements;
+        const now = kin && placementsWithout(kin.model, j.id);
         const placed = (id: string) => now?.[id]?.matrix ?? build?.placements[id]?.matrix ?? dr?.placements[id]?.matrix;
         const Mp = placed(occ), Mf = placed(farOcc), cid = occOf(occ)?.component;
         if (farOcc === occ || !Mp || !Mf || !cid || !dr) return setMsg('Pick a part of one of the two occurrences the joint holds');

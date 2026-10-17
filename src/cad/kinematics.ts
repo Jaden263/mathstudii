@@ -112,6 +112,11 @@ export function asBuiltOrigin(Mfar: M4, Mpick: M4, F: M4): { kind: 'frame'; o: V
   return { kind: 'frame', o: [L[12], L[13], L[14]], z: [L[8], L[9], L[10]], x: [L[0], L[1], L[2]] };
 }
 
+/** Where the occurrences stand without one joint: an as-built joint is put there, not where its own first origins pull them. */
+export function placementsWithout(model: KinModel, joint: string): Record<string, Placement> {
+  return solveKinematics({ ...model, joints: model.joints.filter((j) => j.id !== joint) }).placements;
+}
+
 /** Angle of the rotation between two frames (radians). */
 function rotationGap(T: M4, W: M4): number {
   // trace of Wᵀ·T = 1 + 2 cos α

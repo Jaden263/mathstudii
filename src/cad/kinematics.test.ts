@@ -8,7 +8,7 @@ import { JOINT_DOFS, type DofKey } from './assembly';
 import { linkRatio, motionValue } from './assemblyParams';
 import { motionResult, runMotion } from './motion';
 import { jointFrame, type CadDesign, type CadJoint, type DesignNumbers, type JointType, type Placement } from './design';
-import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
+import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, placementsWithout, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
 import type { Unit } from 'mathjs';
 import { math } from '../engine/math';
 import { IDENTITY, m4Frame, m4Inv, m4Mul, m4Point, m4Pose, m4Rotate, m4Translate, type M4, type Vec3 } from './solid';
@@ -395,6 +395,21 @@ describe('as-built joints', () => {
     p0.forEach((v, i) => expect(p1[i]).toBeCloseTo(v, 12));
     const x0 = m4Point(B, [13, 4, 0]), x1 = m4Point(at90, [13, 4, 0]);
     x0.forEach((v, i) => expect(x1[i]).toBeCloseTo(v, 12));
+  });
+
+  it('leave a free part where it stands, not where the new joint at the component origins would pull it', () => {
+    // a part typed 200 along X and turned 30°, joined to the ground at both origins: the joint
+    // as first made pulls it onto the ground's origin; as built from the placements without it, it stays
+    const pose = m4Pose([200, 0, 0], [0, 0, 30]);
+    const m: KinModel = { occs: [{ id: 'g', pose: IDENTITY, grounded: true }, { id: 'f', pose }], joints: [joint('J', 'g', 'f', IDENTITY, IDENTITY, { type: 'rigid' })], links: [], size: 200 };
+    expect(solveKinematics(m).placements.f.matrix[12]).toBeCloseTo(0, 12);
+    const P = placementsWithout(m, 'J');
+    expect(P.f.by).toBe('free');
+    // picked on f: a point 10 along its own X, Z up
+    const F = m4Translate([10, 0, 0]);
+    const far = asBuiltOrigin(P.g.matrix, P.f.matrix, F);
+    m.joints[0] = joint('J', 'g', 'f', jointFrame({ sketches: {}, frames: {}, params: {}, errors: {} }, far), F, { type: 'rigid' });
+    solveKinematics(m).placements.f.matrix.forEach((v, i) => expect(v).toBeCloseTo(pose[i], 12));
   });
 
   it('lock a mechanism: a rigid one from the ground to the coupler fits, and the crank then cannot turn', () => {
