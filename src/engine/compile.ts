@@ -4,7 +4,7 @@ import { preprocess } from './syntax';
 
 // Functions whose Mathcad meaning differs from mathjs, renamed at the AST level
 // so mathjs internals that depend on the originals keep working.
-const RENAME: Record<string, string> = {
+export const RENAME: Record<string, string> = {
   log: 'mcLog',
   ln: 'mcLn',
   sum: 'mcSum',
@@ -51,10 +51,33 @@ export function parseExpr(src: string): MathNode {
   return node;
 }
 
+let unitFunctions: Set<string> | null = null;
+/**
+ * Names that are both a function and a unit: min, sec, pF, pt, qt … Called they are the
+ * function; written as a value they are the unit (5 min, 1800 sec, 10 pF), as in Mathcad.
+ */
+function isUnitFunction(name: string): boolean {
+  if (!unitFunctions) {
+    unitFunctions = new Set(Object.keys(math).filter((k) => {
+      if (typeof (math as unknown as Record<string, unknown>)[k] !== 'function') return false;
+      try {
+        return math.Unit.isValuelessUnit(k);
+      } catch {
+        return false;
+      }
+    }));
+  }
+  return unitFunctions.has(name);
+}
+
 /** Engine transforms: renames, ORIGIN-aware indexing, transpose semantics. */
 export function transformForEval(node: MathNode): MathNode {
   return node.transform((n: MathNode) => {
     const any = n as unknown as Record<string, unknown>;
+    if (n.type === 'SymbolNode' && isUnitFunction(any.name as string)) {
+      // a worksheet variable of that name still wins (looked up when evaluated)
+      return new math.FunctionNode(new math.SymbolNode('__unitName'), [new math.ConstantNode(any.name as string)]);
+    }
     if (n.type === 'FunctionNode') {
       const fn = any.fn as MathNode & { name?: string };
       const name = fn.type === 'SymbolNode' ? fn.name! : '';

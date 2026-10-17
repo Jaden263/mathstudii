@@ -8,7 +8,7 @@
 import { unzipSync, gunzipSync, decompressSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import { createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH, type Region, type PlotTrace } from '../model/types';
-import { fitToPage, isNumberLiteral, P, sanitize, Unsupported, unitName, wrap, type Ex, type ImportResult } from './common';
+import { fitToPage, isNumberLiteral, P, sanitize, Unsupported, unitName, wrap, type Ex, type ImportResult, type SavedResult } from './common';
 
 type El = XElement;
 
@@ -132,7 +132,7 @@ const BINOPS: Record<string, { op: string; p: number }> = {
 const FN_MAP: Record<string, string> = {
   arcsin: 'asin', arccos: 'acos', arctan: 'atan', arccot: 'acot', arcsec: 'asec', arccsc: 'acsc',
   arcsinh: 'asinh', arccosh: 'acosh', arctanh: 'atanh', arccoth: 'acoth', Gamma: 'gamma', Γ: 'gamma',
-  random: 'rnd', product: 'prod', mod: 'mod',
+  random: 'rnd', product: 'prod', mod: 'mod', Min: 'min', Max: 'max',
 };
 
 /** SMath unit names that mean something else here (g is gravity in Mathcad convention). */
@@ -154,10 +154,15 @@ class Converter {
     return n;
   }
 
+  /** The region being converted ignores units (SMath's ignoreUnits="true"). */
+  ignoreUnits = false;
+
   /** Plot variable renaming (x → x_plot when x is already a worksheet variable). */
   rename: Record<string, string> = {};
 
   unit(raw: string): Ex {
+    // a region marked "ignore units" calculates with every unit as 1
+    if (this.ignoreUnits) return { s: '1', p: P.ATOM };
     const name = SMATH_UNITS[raw] ?? unitName(raw);
     if (this.assigned.has(name) || this.assigned.has(raw)) return { s: `unit(1, "${name}")`, p: P.ATOM };
     return { s: name, p: P.ATOM };
@@ -220,6 +225,9 @@ class Converter {
     if (!bin || t.args.length !== 2) throw new Unsupported(`the “${op}” operator`);
     const x = this.expr(a), y = this.expr(b);
     if (op === '^') return { s: `${wrap(x, P.POW + 1)}^${wrap(y, P.POW)}`, p: P.POW };
+    if (op === '*' && this.ignoreUnits && this.unitOnly(b)) return x;
+    // 10 % is 10/100 here (% is a display unit only)
+    if (op === '*' && y.s === '%') return { s: `${wrap(x, P.MUL)}/100`, p: P.MUL };
     if (op === '*' && isNumberLiteral(x.s) && this.unitOnly(b)) return { s: `${x.s} ${y.s}`, p: P.MUL };
     return { s: `${wrap(x, bin.p)}${bin.op}${wrap(y, bin.p + 1)}`, p: bin.p };
   }
@@ -504,6 +512,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   };
 
   const regions: Region[] = [];
+  const saved: SavedResult[] = [];
   const definedBefore = new Set<string>();
   const fail = (what: string, e: unknown, at: Placed) => {
     const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet` : (e as Error).message;
@@ -519,6 +528,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const kind = local(body);
     const width = Number(r.getAttribute('width') ?? 0);
     try {
+      conv.ignoreUnits = kind === 'math' && body.getAttribute('ignoreUnits') === 'true';
+      if (conv.ignoreUnits) warnings.push(`math at ${Math.round(at.y)} px: SMath ignores the units in this region (each counts as 1); so does the import`);
       if (kind === 'math') {
         const toks = parseRpn(child(body, 'input'));
         if (!toks.length) return;
@@ -527,7 +538,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         const result = child(body, 'result');
         const action = result?.getAttribute('action') ?? '';
         const contract = parseRpn(child(body, 'contract'))[0];
-        const unit = contract ? ` ${conv.expr(contract).s}` : '';
+        const unit = contract && !conv.ignoreUnits ? ` ${conv.expr(contract).s}` : '';
         const show = result ? (action === 'symbolic' ? ' →' : ` =${unit}`) : '';
 
         if (isOp(t, ':') && isFn(t.args[1], 'sys') && plotLists.has(targetName(t.args[0]) ?? '')) {
@@ -556,6 +567,23 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           regions.push(createRegion('math', at.x, at.y, { source: `${eq} → solve, ${conv.expr(t.args[1]).s}` }));
         } else {
           regions.push(createRegion('math', at.x, at.y, { source: `${conv.expr(t).s}${show}` }));
+        }
+        // the value SMath showed, in the region's display unit, rounded as it was shown
+        const last = regions[regions.length - 1];
+        if (result && action !== 'symbolic' && last?.kind === 'math' && / =( |$)/.test(last.source.split('\n')[0])) {
+          try {
+            const tok = parseRpn(result)[0];
+            const value = conv.expr(tok).s;
+            // the result has its unit when SMath chose it, else it is a number in the display unit
+            let hasUnit = false;
+            walk(tok, (n) => { if (n.style === 'unit') hasUnit = true; });
+            // rounded to the digits shown: half a unit in the last significant digit
+            const digits = (/\d[\d.]*/.exec(value)?.[0] ?? '').replace('.', '').replace(/^0+/, '').length || 1;
+            const shownIn = unit.trim() === '%' ? '1/100' : unit.trim();
+            saved.push({ regionId: last.id, expr: shownIn && !hasUnit ? `(${value})*(${shownIn})` : value, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
+          } catch {
+            /* a result we cannot read (a matrix of text, a placeholder) is not compared */
+          }
         }
         // worksheet-level names only: locals of a function's program stay local
         if (isOp(t, ':')) {
@@ -593,7 +621,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
 
   fitToPage(regions);
   ws.regions = regions;
-  return { ws, warnings, format: 'SMath Studio (.sm)' };
+  return { ws, warnings, format: 'SMath Studio (.sm)', saved };
 }
 
 /**

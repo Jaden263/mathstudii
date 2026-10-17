@@ -90,6 +90,36 @@ export function unitStringTex(units: string): string {
 }
 
 /** Split a unit into display number + display unit string, letting mathjs pick prefix/derived units. */
+const ANGLE = 7; // mathjs base dimension of angles
+
+/** The SI number of a quantity whose only dimension is an angle (or none), else the unit. */
+function angleFree(u: Unit): number | Unit {
+  const d = (u as unknown as { dimensions: number[] }).dimensions;
+  if (d.every((x, i) => i === ANGLE || x === 0)) return (u.value as number) ?? 1;
+  return u;
+}
+
+/**
+ * Convert to a display unit, treating angles as plain numbers as Mathcad and SMath do: a 1/s
+ * result shows in rad/s, a cm/rad one in cm.
+ */
+function toLoose(u: Unit, target: string): Unit {
+  // 1/s: mathjs wants the unit without the number
+  if (/^\s*1\s*\//.test(target)) {
+    const t = math.evaluate(target);
+    if (isUnit(t)) target = t.formatUnits();
+  }
+  try {
+    return u.to(target);
+  } catch (e) {
+    const t = math.unit(1, target) as Unit;
+    const du = (u as unknown as { dimensions: number[] }).dimensions, dt = (t as unknown as { dimensions: number[] }).dimensions;
+    if (!du.every((x, i) => i === ANGLE || Math.abs(x - dt[i]) < 1e-9)) throw e;
+    const k = dt[ANGLE] - du[ANGLE];
+    return (math.multiply(u, math.pow(math.unit(1, 'rad'), k) as Unit) as Unit).to(target);
+  }
+}
+
 export function unitParts(u: Unit, target?: string, metric = false): { value: unknown; units: string } {
   if (!target && metric && !(u as unknown as { fixPrefix?: boolean }).fixPrefix) {
     const auto = autoUnit(u);
@@ -101,7 +131,12 @@ export function unitParts(u: Unit, target?: string, metric = false): { value: un
       }
     }
   }
-  const disp = target ? u.to(target) : u;
+  if (target === '%') {
+    // a ratio (or an angle, a plain number to Mathcad) shown in percent
+    const n = angleFree(u);
+    if (typeof n === 'number') return { value: n * 100, units: '%' };
+  }
+  const disp = target ? toLoose(u, target) : u;
   const s = disp.formatUnits();
   if (!s) return { value: disp.value ?? 1, units: '' };
   if (target || (disp as unknown as { fixPrefix?: boolean }).fixPrefix) {

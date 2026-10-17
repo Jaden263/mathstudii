@@ -5,7 +5,7 @@ import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, Bea
 import { evaluationOrder } from '../model/areas';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
-import { compileExpr, parseExpr, freeSymbols } from './compile';
+import { compileExpr, parseExpr, freeSymbols, RENAME } from './compile';
 import { parseStatement, parseRange, splitComparison, splitChain, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
 import { engineCtx, toVector, vec, assignIndex, normalize } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
@@ -25,6 +25,8 @@ import { solveSpreadsheet, type SpreadsheetResult } from '../sheet/component';
 import './materialsLib';
 import './specialLib';
 import './odeLib';
+import './mathcadLib';
+import { resetRandom } from './random';
 
 export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult, SpreadsheetResult };
 
@@ -131,8 +133,19 @@ export function friendlyError(e: unknown): string {
   return msg;
 }
 
+/**
+ * A worksheet function named like a built-in that calls are renamed for (log, sum, sort …):
+ * the renamed calls reach it too, so the worksheet's definition wins, as in Mathcad.
+ */
+function shadowBuiltin(name: string, fn: unknown, ...scopes: ScopeLike[]) {
+  const internal = RENAME[name];
+  if (internal) for (const s of scopes) s.set(internal, fn);
+}
+
 class Evaluator {
   readonly results = new Map<string, RegionResult>();
+  /** The value each region shows (x =, x := … =), for checks against results saved in imported files. */
+  readonly shown = new Map<string, unknown>();
   readonly global: ChainScope;
   /** Range variables: name → the vector object currently bound in scope. */
   readonly ranges = new Map<string, unknown>();
@@ -160,6 +173,8 @@ class Evaluator {
     engineCtx.tol = this.ws.settings.tol;
     engineCtx.iterationBudget = 1e8;
     engineCtx.deadline = performance.now() + 20000;
+    // random numbers start where Mathcad's do, so a recalculation draws the same ones
+    resetRandom();
     math.Unit.setUnitSystem(this.ws.settings.unitSystem ?? 'si');
     texCtx.defined = new Set(this.global.keys());
     if (pythonReady()) resetPython();
@@ -355,7 +370,10 @@ class Evaluator {
           break;
       }
       const res: MathResult = { kind: 'math', tex: this.statementTex(st, value) };
-      if (st.type === 'eval' || ((st.type === 'define' || st.type === 'program') && st.show)) Object.assign(res, this.resultInfo(value));
+      if (st.type === 'eval' || ((st.type === 'define' || st.type === 'program') && st.show)) {
+        Object.assign(res, this.resultInfo(value));
+        this.shown.set(r.id, value);
+      }
       this.results.set(r.id, res);
     } catch (e) {
       let tex: string;
@@ -514,11 +532,13 @@ class Evaluator {
         const fn = (...args: unknown[]) => {
           if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
           const local = new ChainScope(snap);
-          params.forEach((p, i) => local.set(p, args[i]));
+          // a column vector argument is a vector here as everywhere (n×1 + vector broadcast to a matrix)
+          params.forEach((p, i) => local.set(p, normalize(args[i])));
           return normalize(compiled.evaluate(local));
         };
         snap.set(name, fn);
         scope.set(name, fn);
+        shadowBuiltin(name, fn, snap, scope);
         this.ranges.delete(name);
         return fn;
       }
@@ -534,10 +554,16 @@ class Evaluator {
         let cur: unknown = scope.local.has(name) || scope.has(name) ? scope.get(name) : undefined;
         if (typeof cur === 'function' || (!isMatrix(cur) && !Array.isArray(cur))) cur = undefined;
         const local = new ChainScope(scope);
+        const recurrence = syms.has(name);
         const assignOnce = () => {
+          // a recurrence (x[i + 1] := f(x[i])) reads the elements written in the steps before
+          if (recurrence && cur !== undefined) local.set(name, normalize(cur));
           const idx = cIdx.map((c) => c.evaluate(local));
-          cur = assignIndex(cur, idx, normalize(cRhs.evaluate(local)));
+          const value = normalize(cRhs.evaluate(local));
+          assigned.push(value);
+          cur = assignIndex(cur, idx, value);
         };
+        const assigned: unknown[] = [];
         if (rv.length === 0) assignOnce();
         else if (rv.length === 1) {
           for (const x of toVector(scope.get(rv[0]))) {
@@ -556,7 +582,8 @@ class Evaluator {
         const v = normalize(cur);
         scope.set(name, v);
         this.ranges.delete(name);
-        return v;
+        // x[i] := … = shows the elements it wrote (x[i] over the range), as Mathcad does
+        return rv.length === 1 ? normalize(vec(assigned)) : v;
       }
       case 'destructure': {
         const v = this.evalWithRanges(rhs, scope);
@@ -585,11 +612,12 @@ class Evaluator {
       const fn = (...args: unknown[]) => {
         if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
         const locals: Record<string, unknown> = {};
-        params.forEach((p, i) => (locals[p] = args[i]));
+        params.forEach((p, i) => (locals[p] = normalize(args[i])));
         return runProgram(stmts, snap, locals);
       };
       snap.set(name, fn);
       scope.set(name, fn);
+      shadowBuiltin(name, fn, snap, scope);
       this.symFunctions.delete(name);
       return fn;
     }
@@ -643,6 +671,7 @@ class Evaluator {
     try {
       const { tex, value } = this.runSolver(solverSrc, local, cons);
       out.solver = { tex: tex(value) };
+      if (value !== null && value !== undefined) this.shown.set(r.id, value);
     } catch (e) {
       out.solver = { tex: this.solverTexFallback(solverSrc), error: friendlyError(e) };
     }
@@ -691,70 +720,93 @@ class Evaluator {
     }
     if (args.length === 0 || !args.every(isIdentifier)) throw new Error(`${fn}: list the unknowns, e.g. ${fn}(x, y)`);
     const units: (Unit | null)[] = [];
-    const x0 = args.map((name) => {
+    for (const name of args) {
       if (!local.has(name)) throw new Error(`No guess value for "${name}"`);
-      const s = splitUnit(local.get(name));
-      units.push(s.unit);
-      return s.value;
-    });
-    const setUnknowns = (xs: number[]) => args.forEach((n, i) => local.set(n, joinUnit(xs[i], units[i])));
-    // residual scales from the initial guess keep mixed-unit systems well conditioned
-    setUnknowns(x0);
-    const scales = cons.map((c) => {
-      try {
-        const a = Math.abs(splitUnit(c.lhs.evaluate(local)).value);
-        const b = Math.abs(splitUnit(c.rhs.evaluate(local)).value);
-        return Math.max(a, b) || 1;
-      } catch {
-        return 1;
-      }
-    });
-    const residuals = (xs: number[]): number[] => {
-      setUnknowns(xs);
-      return cons.map((c, i) => {
-        const l = c.lhs.evaluate(local);
-        const rr = c.rhs.evaluate(local);
-        const d = splitUnit(math.subtract(l as never, rr as never)).value / scales[i];
-        switch (c.op) {
-          case '<': case '<=': case '≤': return Math.max(0, d);
-          case '>': case '>=': case '≥': return Math.max(0, -d);
-          default: return d;
+      units.push(splitUnit(local.get(name)).unit);
+    }
+    /** The block solved in a scope (the worksheet's, or a call's when the solver defines a function). */
+    const solveIn = (scope: ChainScope): number[] => {
+      const x0 = args.map((name) => splitUnit(scope.get(name)).value);
+      const setUnknowns = (xs: number[]) => args.forEach((n, i) => scope.set(n, joinUnit(xs[i], units[i])));
+      // residual scales from the initial guess keep mixed-unit systems well conditioned
+      setUnknowns(x0);
+      const scales = cons.map((c) => {
+        try {
+          const a = Math.abs(splitUnit(c.lhs.evaluate(scope)).value);
+          const b = Math.abs(splitUnit(c.rhs.evaluate(scope)).value);
+          return Math.max(a, b) || 1;
+        } catch {
+          return 1;
         }
       });
-    };
-    let xs: number[];
-    if (objective) {
-      const sign = fn === 'maximize' ? -1 : 1;
-      const obj = objective;
-      const f0 = Math.abs(splitUnit(obj(...args.map((n) => local.get(n)))).value) || 1;
-      let penalty = 1e2;
-      xs = x0;
-      for (let round = 0; round < 6; round++) {
-        const mu = penalty;
-        xs = N.nelderMead((v) => {
-          const res = cons.length ? residuals(v) : [];
-          setUnknowns(v);
-          const val = splitUnit(obj(...args.map((n) => local.get(n)))).value;
-          return (sign * val) / f0 + mu * res.reduce((s, x) => s + x * x, 0);
-        }, xs, 4000);
-        penalty *= 100;
-        if (!cons.length) break;
-      }
-      if (cons.length) {
-        const bad = residuals(xs).some((x) => Math.abs(x) > 1e-5);
-        if (bad) throw new Error('Could not satisfy all constraints');
-      }
-    } else {
-      if (cons.length === 0) throw new Error('Add at least one constraint');
-      const res = N.levenbergMarquardt(residuals, x0, { maxIter: 1000 });
-      xs = res.x;
-      if (fn === 'find') {
-        const worst = Math.max(...residuals(xs).map(Math.abs));
-        if (!(worst < Math.max(1e-7, Math.sqrt(engineCtx.tol)))) {
-          throw new Error('No solution found. Try other guess values, or use minerr for a best fit');
+      const residuals = (xs: number[]): number[] => {
+        setUnknowns(xs);
+        return cons.map((c, i) => {
+          const l = c.lhs.evaluate(scope);
+          const rr = c.rhs.evaluate(scope);
+          const d = splitUnit(math.subtract(l as never, rr as never)).value / scales[i];
+          switch (c.op) {
+            case '<': case '<=': case '≤': return Math.max(0, d);
+            case '>': case '>=': case '≥': return Math.max(0, -d);
+            default: return d;
+          }
+        });
+      };
+      let xs: number[];
+      if (objective) {
+        const sign = fn === 'maximize' ? -1 : 1;
+        const obj = objective;
+        const f0 = Math.abs(splitUnit(obj(...args.map((n) => scope.get(n)))).value) || 1;
+        let penalty = 1e2;
+        xs = x0;
+        for (let round = 0; round < 6; round++) {
+          const mu = penalty;
+          xs = N.nelderMead((v) => {
+            const res = cons.length ? residuals(v) : [];
+            setUnknowns(v);
+            const val = splitUnit(obj(...args.map((n) => scope.get(n)))).value;
+            return (sign * val) / f0 + mu * res.reduce((s, x) => s + x * x, 0);
+          }, xs, 4000);
+          penalty *= 100;
+          if (!cons.length) break;
+        }
+        if (cons.length) {
+          const bad = residuals(xs).some((x) => Math.abs(x) > 1e-5);
+          if (bad) throw new Error('Could not satisfy all constraints');
+        }
+      } else {
+        if (cons.length === 0) throw new Error('Add at least one constraint');
+        const res = N.levenbergMarquardt(residuals, x0, { maxIter: 1000 });
+        xs = res.x;
+        if (fn === 'find') {
+          const worst = Math.max(...residuals(xs).map(Math.abs));
+          if (!(worst < Math.max(1e-7, Math.sqrt(engineCtx.tol)))) {
+            throw new Error('No solution found. Try other guess values, or use minerr for a best fit');
+          }
         }
       }
+      return xs;
+    };
+    // f(a, b) := find(x): a function whose arguments the constraints use, solved at every call
+    if (lhs && lhs.kind === 'func') {
+      const { name, params } = lhs;
+      const guesses = new ChainScope(local);
+      const solver = (...vals: unknown[]) => {
+        if (vals.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+        const sc = new ChainScope(guesses);
+        params.forEach((q, i) => sc.set(q, normalize(vals[i])));
+        args.forEach((n) => sc.set(n, local.get(n)));
+        const xs = solveIn(sc);
+        const out = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, units[i]));
+        return out.length === 1 ? out[0] : vec(out);
+      };
+      this.global.set(name, solver);
+      this.ranges.delete(name);
+      this.updateDefined();
+      const callTex = `\\mathrm{${fn}}\\left(${args.map((a) => exprTex(a)).join(',')}\\right)`;
+      return { tex: () => `${lhsTex(lhs)} \\coloneqq ${callTex}`, value: null as unknown };
     }
+    const xs = solveIn(local);
     const values = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, units[i]));
     const value = values.length === 1 ? values[0] : vec(values);
     if (lhs) {
@@ -1263,10 +1315,10 @@ function bigValue(v: unknown): string | null {
 }
 
 /** Evaluate and keep the worksheet's variables as they are at the end (for exporting them). */
-export function evaluateWithScope(ws: Worksheet): { results: Map<string, RegionResult>; variables: Map<string, unknown>; fmt: FormatOptions } {
+export function evaluateWithScope(ws: Worksheet): { results: Map<string, RegionResult>; variables: Map<string, unknown>; fmt: FormatOptions; shown: Map<string, unknown> } {
   const ev = new Evaluator(ws);
   ev.run();
-  return { results: ev.results, variables: ev.global.local, fmt: ev.fmt };
+  return { results: ev.results, variables: ev.global.local, fmt: ev.fmt, shown: ev.shown };
 }
 
 export function evaluateWorksheet(ws: Worksheet, overrides?: Record<string, string>): EvaluationOutput {

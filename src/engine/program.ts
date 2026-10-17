@@ -9,11 +9,11 @@
 import { compileExpr } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
 import { parseRange, isIdentifier, splitTop } from './syntax';
-import { tick, toVector, assignIndex, normalize } from './library';
-import { isUnit, isComplex, isMatrix, joinUnit, splitUnit } from './math';
+import { tick, toVector, assignIndex, normalize, engineCtx, int, matrix2D } from './library';
+import { math, isUnit, isComplex, isMatrix, joinUnit, splitUnit } from './math';
 
 type Stmt =
-  | { k: 'assign'; name: string; index: string[] | null; expr: string; line: number }
+  | { k: 'assign'; name: string; index: string[] | null; expr: string; line: number; column?: boolean }
   | { k: 'if'; branches: { cond: string | null; body: Stmt[] }[]; line: number }
   | { k: 'for'; v: string; iter: string; body: Stmt[]; line: number }
   | { k: 'while'; cond: string; body: Stmt[]; line: number }
@@ -92,6 +92,9 @@ export function parseProgram(src: string[]): Stmt[] {
       const expr = ln.text.slice(arrow.index + arrow[0].length).trim();
       const im = /^(\S+?)\s*\[(.*)\]$/.exec(lhs);
       if (im && isIdentifier(im[1])) return { k: 'assign', name: im[1], index: splitTop(im[2], ','), expr, line: ln.no };
+      // Mathcad's column assignment M<j> ← v
+      const cm = /^col\s*\(\s*([^\s,()]+)\s*,(.*)\)$/.exec(lhs);
+      if (cm && isIdentifier(cm[1])) return { k: 'assign', name: cm[1], index: [cm[2].trim()], expr, line: ln.no, column: true };
       if (!isIdentifier(lhs)) throw new Error(`Line ${ln.no}: cannot assign to "${lhs}"`);
       return { k: 'assign', name: lhs, index: null, expr, line: ln.no };
     }
@@ -154,6 +157,18 @@ function roundish(v: number): number {
   return Math.abs(v - r) < 1e-12 * Math.max(1, Math.abs(v)) ? r : v;
 }
 
+/** Set column j of a matrix to a vector, growing it (zero-filled) as Mathcad does. */
+function assignColumn(cur: unknown, j: unknown, v: unknown): unknown {
+  const k = int(j, 'column') - engineCtx.origin;
+  if (k < 0) throw new Error(`Column below ORIGIN (${engineCtx.origin})`);
+  const col = toVector(v);
+  const rows: unknown[][] = isMatrix(cur) || Array.isArray(cur) ? matrix2D(cur).map((r) => r.slice()) : [];
+  const height = Math.max(rows.length, col.length), width = Math.max(rows[0]?.length ?? 0, k + 1);
+  const out = Array.from({ length: height }, (_, i) => Array.from({ length: width }, (_, c) => (c === k ? (col[i] ?? 0) : rows[i]?.[c] ?? 0)));
+  // a first column written into nothing is still a matrix (n×1), not a vector
+  return math.matrix(out as never);
+}
+
 function run(stmts: Stmt[], scope: ChainScope): unknown {
   let last: unknown = undefined;
   for (const s of stmts) {
@@ -176,7 +191,7 @@ function exec(s: Stmt, scope: ChainScope): unknown {
       if (s.index) {
         const idx = s.index.map((i) => compileExpr(i).evaluate(scope));
         const cur = scope.local.has(s.name) ? scope.local.get(s.name) : undefined;
-        scope.set(s.name, assignIndex(cur, idx, v));
+        scope.set(s.name, s.column ? assignColumn(cur, idx[0], v) : assignIndex(cur, idx, v));
       } else scope.set(s.name, v);
       return v;
     }
