@@ -44,8 +44,14 @@ export function setOccEnabled(on: boolean) {
 export function initOcc(wasmUrl?: string): Promise<OC> {
   if (K) return Promise.resolve(K);
   url = wasmUrl;
+  // the pending load must not keep the instance: after a renewal the first one would stay
+  // reachable through it (and with it its whole heap)
   loading ??= instantiate().then(
-    (m) => (K = m),
+    (m) => {
+      K = m;
+      loading = null;
+      return m;
+    },
     (e) => {
       failure = e instanceof Error ? e.message : String(e);
       throw e;
@@ -54,30 +60,84 @@ export function initOcc(wasmUrl?: string): Promise<OC> {
   return loading;
 }
 
+/** Every instance loaded here, to tell how much of them is still around (see occStaleBytes). */
+const instances: WeakRef<OC>[] = [];
+
 async function instantiate(): Promise<OC> {
   const { default: init } = await import('replicad-opencascadejs');
   // OCCT reports every STEP transfer on stdout; nobody reads it
   const quiet = () => {};
-  return init({ ...(url ? { locateFile: () => url } : {}), print: quiet, printErr: quiet });
+  const m = await init({ ...(url ? { locateFile: () => url } : {}), print: quiet, printErr: quiet });
+  instances.push(new WeakRef(m));
+  return m;
 }
 
-/** Heap size past which the kernel is renewed (see renewOcc). */
-const RENEW_BYTES = 768 * 2 ** 20;
+/**
+ * Heaps of replaced instances that have not been collected yet (bytes): garbage, but
+ * memory taken until the worker's next major collection.
+ */
+export function occStaleBytes(): number {
+  let n = 0;
+  for (let i = instances.length - 1; i >= 0; i--) {
+    const m = instances[i].deref();
+    if (!m) instances.splice(i, 1);
+    else if (m !== K) n += m.wasmMemory.buffer.byteLength;
+  }
+  return n;
+}
+
+/**
+ * Heap size past which the kernel is renewed (see renewOcc). A fresh instance takes 100 MB;
+ * WASM memory never shrinks, so whatever a heap grows to stays taken until it is renewed.
+ */
+export const RENEW_BYTES = 256 * 2 ** 20;
+
+/** Size of the kernel's heap (bytes), or 0 when it is not loaded. */
+export function occHeapBytes(): number {
+  return K ? K.wasmMemory.buffer.byteLength : 0;
+}
+
+const renewedListeners = new Set<() => void>();
+
+/**
+ * Called when a renewed kernel takes over: whatever holds objects (or results) of the old
+ * instance lets go of them, so the old heap can be collected as a whole.
+ */
+export function onOccRenewed(f: () => void): () => void {
+  renewedListeners.add(f);
+  return () => renewedListeners.delete(f);
+}
+
+let bloated: (() => boolean) | null = null;
+
+/**
+ * Who deals with a heap past RENEW_BYTES: a handler that returns true takes care of it
+ * (the calculation worker has the page start a fresh worker, which frees the old heap at
+ * once, where a replaced instance waits for a garbage collection, a minute or more in an
+ * idle worker); otherwise renewOcc replaces the instance here. Null: always here.
+ */
+export function onOccBloated(f: (() => boolean) | null) {
+  bloated = f;
+}
 
 /**
  * OCCT itself leaks a little inside some algorithms (in this build about 10 kB per
  * boolean and 50 kB per fillet, with every handle deleted), so a long session slowly
  * fills the WASM heap. Call this between builds: once the heap is past `limit` a fresh
  * instance loads in the background and takes over when it is ready (never in the middle
- * of a build, which is synchronous), and the old one goes with the garbage. Returns the
+ * of a build, which is synchronous), and the old one goes with the garbage (onOccRenewed
+ * tells the caches to let go of it). A trap (`limit` 0) always renews here. Returns the
  * pending renewal, if any.
  */
 export function renewOcc(limit = RENEW_BYTES): Promise<OC> | null {
   if (!K || renewing || K.wasmMemory.buffer.byteLength < limit) return renewing;
+  if (limit > 0 && bloated?.()) return null;
   renewing = instantiate().then(
     (m) => {
       K = m;
       renewing = null;
+      // the old instance's objects die with it: nothing is freed one by one
+      for (const f of renewedListeners) f();
       return m;
     },
     (e) => {

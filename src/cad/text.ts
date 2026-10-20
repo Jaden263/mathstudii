@@ -41,6 +41,8 @@ const cache = new Map<string, { start: Vec2; pieces: ({ kind: 'L'; p: Vec2 } | {
 function contours(text: string) {
   let got = cache.get(text);
   if (got) return got;
+  // every string typed into a text sketch (each prefix while typing): the latest few hundred
+  if (cache.size >= 200) cache.delete(cache.keys().next().value!);
   const f = textFont();
   const cmds: Cmd[] = f.getPath(text, 0, 0, f.unitsPerEm, { kerning: true }).commands;
   got = [];

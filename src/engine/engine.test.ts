@@ -278,6 +278,11 @@ describe('symbolic', () => {
   beforeAll(async () => {
     await loadCas();
   });
+  it('keeps nothing of the expressions it evaluated (the CAS numbers and keeps every one)', async () => {
+    const nerd = ((await import('nerdamer-prime')) as unknown as { default: { expressions(): unknown[] } }).default;
+    for (let i = 0; i < 20; i++) run([`a := ${i}`, 'diff(x^3 + a x, x) →', 'x^2 - 1 → factor', 'x^2 = 4 → solve, x']);
+    expect(nerd.expressions()).toHaveLength(0);
+  });
   it('differentiates and integrates', () => {
     const r = run(['diff(x^3, x) →'])[0] as MathResult;
     expect(r.error).toBeUndefined();

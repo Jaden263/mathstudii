@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import type { Mesh } from '../../cad/mesh';
 import type { DisplayMesh } from '../../cad/display';
-import { clampPitch, clampZoom, panBy, viewRotation as yUpRotation, zoomAt, type Display } from './Cad3DView';
+import { clampPitch, clampZoom, panBy, releaseContext, viewRotation as yUpRotation, zoomAt, type Display } from './Cad3DView';
 
 /**
  * The modeller works Z up (as Fusion and most CAD programs do); the camera of the page
@@ -1046,6 +1046,7 @@ export function Scene3D(props: {
       c.removeEventListener('webglcontextrestored', init);
       renderer.current?.dispose();
       renderer.current = null;
+      releaseContext(c, ctx);
       cancelAnimationFrame(hover.current.raf);
     };
   }, []);

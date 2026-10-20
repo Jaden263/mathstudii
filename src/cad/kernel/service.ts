@@ -15,7 +15,8 @@ import { designKey } from '../keys';
 import { initKernel, kernel } from '../solid';
 import { buildDesignCached } from '../occ/build';
 import { mmPerUnit, stepFile, stlFile } from '../occ/exchange';
-import { initOcc, occ, occFailure, renewOcc, type OC } from '../occ/kernel';
+import { initOcc, occ, occFailure, onOccRenewed, renewOcc, type OC } from '../occ/kernel';
+import { ByteLru } from '../../model/lru';
 import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc } from '../occ/query';
 import { cachedResultOcc } from '../occ/result';
 import { drawViewOcc } from '../occ/drawing';
@@ -54,8 +55,8 @@ export function ensureMesh(): Promise<boolean> {
 /** The B-rep kernel, or null when the mesh kernel has to answer (it could not load, or is switched off). */
 const brepNow = (): OC | null => occ();
 
-const displays = new Map<string, BuildResult>();
-const DISPLAYS = 6;
+/** Display data made here, by design key: a few parts, within a byte budget. */
+const displays = new ByteLru<string, BuildResult>(48 * 2 ** 20, 6);
 let displaysBy: OC | null = null;
 
 /**
@@ -70,11 +71,7 @@ export function displayFor(design: CadDesign, numbers: DesignNumbers): BuildResu
   }
   const key = designKey(design, numbers);
   const hit = displays.get(key);
-  if (hit) {
-    displays.delete(key);
-    displays.set(key, hit);
-    return hit;
-  }
+  if (hit) return hit;
   const oc = brepNow();
   let out: BuildResult | null = null;
   if (oc) {
@@ -88,7 +85,6 @@ export function displayFor(design: CadDesign, numbers: DesignNumbers): BuildResu
   if (!out && (oc || occFailure()) && K) out = meshBuildResult(K, design, numbers);
   if (!out) return null;
   displays.set(key, out);
-  if (displays.size > DISPLAYS) displays.delete(displays.keys().next().value!);
   return out;
 }
 
@@ -102,9 +98,26 @@ async function shownFor(design: CadDesign, numbers: DesignNumbers): Promise<Buil
   return (await ensureMesh()) ? displayFor(design, numbers) : null;
 }
 
-const drawn = new Map<string, DrawView>();
-const DRAWN = 48;
+/** Drawing views made here (a drawing has a few views; a part edited makes new ones). */
+const drawn = new ByteLru<string, DrawView>(24 * 2 ** 20, 24);
 let drawnBy: OC | null = null;
+
+// a renewed kernel builds afresh (the old one may have failed on a part), and nothing here
+// may keep the old instance reachable
+onOccRenewed(() => {
+  displays.clear();
+  drawn.clear();
+  displaysBy = drawnBy = null;
+});
+
+/** Bytes of display data and drawing views kept here. */
+export const kernelCacheBytes = () => displays.bytes + drawn.bytes;
+
+/** Forget the display data and drawing views kept here (they are made again on demand). */
+export function dropKernelCaches() {
+  displays.clear();
+  drawn.clear();
+}
 
 /**
  * A drawing view of a design, filed by its design key and the view (a drawing that
@@ -120,11 +133,7 @@ export function drawViewFor(design: CadDesign, numbers: DesignNumbers, shown: Bu
   }
   const k = `${key}|${shown.kernel}|${JSON.stringify([v.name, v.dir, v.up, v.hidden, v.cut ?? null])}`;
   const hit = drawn.get(k);
-  if (hit) {
-    drawn.delete(k);
-    drawn.set(k, hit);
-    return hit;
-  }
+  if (hit) return hit;
   let out: DrawView | null = null;
   if (oc && shown.kernel === 'brep') {
     try {
@@ -135,7 +144,6 @@ export function drawViewFor(design: CadDesign, numbers: DesignNumbers, shown: Bu
   }
   out ??= meshDrawView(drawMeshes(shown, design), v);
   drawn.set(k, out);
-  if (drawn.size > DRAWN) drawn.delete(drawn.keys().next().value!);
   return out;
 }
 
@@ -148,8 +156,11 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
   const oc = brepNow(), K = kernel();
   const which = oc ? 'brep' : K ? 'mesh' : 'none';
   const { design, numbers } = req;
-  // the display data stays cached here: it travels as a copy
-  if (req.op === 'display') return { value: await shownFor(design, numbers), kernel: which, transfer: [] };
+  // the display data stays cached here: a copy of it travels, its arrays moved (not copied again)
+  if (req.op === 'display') {
+    const value = structuredClone(await shownFor(design, numbers));
+    return { value, kernel: which, transfer: buffersOf(value) };
+  }
   if (req.op === 'drawing') {
     const shown = await shownFor(design, numbers);
     if (!shown) return { value: null, kernel: which, transfer: [] };
@@ -188,11 +199,18 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
   }
 }
 
+let pendingRequests = 0;
+let lastRequest = 0;
+
+/** Kernel requests waiting or running here, and when the last one was answered (performance.now()). */
+export const kernelActivity = () => ({ pending: pendingRequests, last: lastRequest });
+
 /** Serve kernel requests arriving on a port, one at a time (OCCT is synchronous anyway). */
 export function serveKernel(port: { postMessage(m: unknown, transfer: Transferable[]): void; onmessage: ((e: MessageEvent) => void) | null }) {
   let queue = Promise.resolve();
   port.onmessage = (e: MessageEvent<KernelCall>) => {
     const { rid, req } = e.data;
+    pendingRequests++;
     queue = queue.then(async () => {
       let reply: KernelReply, transfer: Transferable[] = [];
       try {
@@ -205,6 +223,8 @@ export function serveKernel(port: { postMessage(m: unknown, transfer: Transferab
         // between requests: a CAD window's own worker never measures a worksheet, where the
         // calculation worker renews the heap OCCT's own leaks fill, so it is renewed here too
         renewOcc()?.catch((err) => console.warn('renewing the B-rep kernel failed', err));
+        pendingRequests--;
+        lastRequest = performance.now();
       }
       port.postMessage(reply, transfer);
     });

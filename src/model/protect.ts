@@ -53,6 +53,27 @@ export function isViewPatch(patch: object): boolean {
   return Object.keys(patch).every((k) => VIEW_KEYS.has(k));
 }
 
+/** The two regions differ in how they are looked at only. */
+function sameButView(a: Region, b: Region): boolean {
+  if (a.id !== b.id || a.kind !== b.kind) return false;
+  const x = a as unknown as Record<string, unknown>, y = b as unknown as Record<string, unknown>;
+  for (const k in x) if (x[k] !== y[k] && !VIEW_KEYS.has(k)) return false;
+  for (const k in y) if (!(k in x) && !VIEW_KEYS.has(k)) return false;
+  return true;
+}
+
+/**
+ * Two states of a worksheet calculate the same: everything but how regions are looked at
+ * (cameras, zoom, open tabs) is the same object.
+ */
+export function sameForEvaluation(a: Worksheet, b: Worksheet): boolean {
+  if (a === b) return true;
+  if (a.settings !== b.settings || a.regions.length !== b.regions.length) return false;
+  for (const k in a) if (k !== 'regions' && (a as unknown as Record<string, unknown>)[k] !== (b as unknown as Record<string, unknown>)[k]) return false;
+  for (let i = 0; i < a.regions.length; i++) if (a.regions[i] !== b.regions[i] && !sameButView(a.regions[i], b.regions[i])) return false;
+  return true;
+}
+
 /** Where a region is (layout, which follows undo even when the region is locked). */
 function layoutOf(r: Region): Partial<Region> {
   const out: Record<string, unknown> = { x: r.x, y: r.y };

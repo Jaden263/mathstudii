@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRegion, emptyWorksheet, type AreaRegion, type Frame3DRegion, type MathRegion, type Region, type Worksheet } from '../model/types';
-import { initialState, reducer, type Action, type State } from './store';
+import { HISTORY_BYTES, initialState, reducer, stepBytes, trimHistory, type Action, type State } from './store';
 import { canEdit } from '../model/protect';
 
 const math = (id: string, y: number, source: string, extra: Partial<MathRegion> = {}): MathRegion => ({ ...(createRegion('math', 80, y, { source }) as MathRegion), id, ...extra });
@@ -176,5 +176,49 @@ describe('areas through the store', () => {
     // the area's band growing is not an undo step
     s = run(s, { type: 'redo' }, { type: 'areaFit', id: 'A', height: 200 });
     expect(s.past.length).toBe(1);
+  });
+});
+
+describe('undo history within a memory budget', () => {
+  const sheetOf = (n: number) => ({ cells: Object.fromEntries(Array.from({ length: n }, (_, i) => [`A${i + 1}`, `${i}`])) });
+
+  it('counts what a step holds that the next state does not share', () => {
+    const big = 'x'.repeat(100_000);
+    const a = math('a', 40, 'a := 1', { name: big } as Partial<MathRegion>);
+    const ws: Worksheet = { ...emptyWorksheet(), regions: [a, math('b', 80, 'b := 2')] };
+    // a field edited: only what changed counts, not the long text both states share
+    const edited: Worksheet = { ...ws, regions: [{ ...a, source: 'a := 2' }, ws.regions[1]] };
+    expect(stepBytes(ws, edited)).toBeLessThan(1000);
+    // a region deleted: the step holds all of it
+    expect(stepBytes(ws, { ...ws, regions: [ws.regions[1]] })).toBeGreaterThan(100_000);
+    expect(stepBytes(ws, { ...ws })).toBe(256);
+  });
+
+  it('keeps the newest steps that fit (and always the last one)', () => {
+    const past = ['s1', 's2', 's3', 's4'];
+    expect(trimHistory(past, [10, 10, 10, 10], 200, 25)).toEqual({ past: ['s3', 's4'], bytes: [10, 10] });
+    expect(trimHistory(past, [10, 10, 10, 10], 3, 1000)).toEqual({ past: ['s2', 's3', 's4'], bytes: [10, 10, 10] });
+    expect(trimHistory(past, [1, 1, 1, 500], 200, 100)).toEqual({ past: ['s4'], bytes: [500] });
+    const same = trimHistory(past, [1, 1, 1, 1]);
+    expect(same.past).toBe(past);
+  });
+
+  it('a large region edited over and over keeps a bounded number of copies', () => {
+    // a large table changed 30 times (a linked workbook read again): each step holds its old copy (~3 MB)
+    let s = start([math('a', 40, 'a := 1', { name: 'T' } as Partial<MathRegion>)]);
+    for (let i = 0; i < 30; i++) s = run(s, { type: 'update', id: 'a', patch: { sheet: { csv: `${i};`.repeat(1_000_000) } } as Partial<Region> });
+    expect(stepBytes(start([math('a', 40, '', { sheet: sheetOf(1000) } as Partial<MathRegion>)]).ws, emptyWorksheet())).toBeGreaterThan(20_000);
+    const held = s.pastBytes.reduce((a, b) => a + b, 0);
+    expect(s.past.length).toBeLessThan(30);
+    expect(s.past.length).toBeGreaterThan(5);
+    expect(held).toBeLessThanOrEqual(HISTORY_BYTES + s.pastBytes[s.pastBytes.length - 1]);
+    expect(s.pastBytes).toHaveLength(s.past.length);
+    // undo and redo keep the two lists together
+    s = run(s, { type: 'undo' }, { type: 'undo' }, { type: 'redo' });
+    expect(s.pastBytes).toHaveLength(s.past.length);
+    // small edits are not limited by bytes: 200 steps
+    let t = start([math('a', 40, 'a := 1')]);
+    for (let i = 0; i < 250; i++) t = run(t, { type: 'update', id: 'a', patch: { source: `a := ${i}` } });
+    expect(t.past.length).toBe(200);
   });
 });

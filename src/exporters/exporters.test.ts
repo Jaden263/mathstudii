@@ -193,7 +193,8 @@ describe('export to Mathcad Prime, Mathcad 15 and SMath, read back with our impo
       }
     }
     expect(compared).toBeGreaterThan(300);
-  });
+    // eleven real files, each through three formats and back: about 40 s on a 4-core machine
+  }, 120_000);
 
   it('SMath: the results written in the file agree with what is calculated from it', () => {
     // SMath shows a result only where the file has one: ours, in the display unit, read back as "saved"
