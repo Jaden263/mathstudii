@@ -1270,20 +1270,21 @@ export function sheetMetalExample(): Worksheet {
     ['cad', L, mm(60), { name: 'br', width: mm(170), height: mm(84), mode: '3d', view3d: { yaw: -35, pitch: 28 }, density: '7850 kg/m^3', design: bracketDesign() }],
     ['text', L, mm(146), { width: mm(80), markdown: '**The blank**: the legs h and the base a are outer sizes; each bend takes (R + t) off both legs at it and adds its bend allowance BA = (π/2)(R + K·t).' }],
     ['math', mm(105), mm(146), { source: 'br.flat.L = mm' }],
-    ['math', mm(105), mm(157), { source: '2 (h - t_s - R_i) + (a - 2 (t_s + R_i)) + 2 * π/2 * (R_i + 0.44 t_s) = mm' }],
-    ['math', mm(105), mm(168), { source: 'br.flat.W = mm' }],
-    ['math', mm(105), mm(179), { source: 'br.flat.n =' }],
-    ['math', mm(105), mm(190), { source: 'br.flat.BA = mm' }],
-    ['text', L, mm(204), { width: mm(80), markdown: '**Blank and part**: the blank\'s area less its four holes, its mass, and the mass of the bent part (CAD keeps t in the bends, so it is a little heavier: t²(1/2 − K) per bend and unit of θ·width).' }],
-    ['math', mm(105), mm(204), { source: 'br.flat.A = cm^2' }],
-    ['math', mm(105), mm(215), { source: 'br.flat.m = g' }],
-    ['math', mm(105), mm(226), { source: 'br.m = g' }],
-    ['text', L, mm(240), { width: mm(80), markdown: '**DIN 6935** for comparison: its compensation v for the two bends (legs measured outside), with its own k = 0.65 + 0.5 lg(R/t).' }],
-    ['math', mm(105), mm(240), { source: 'br.flat.v = mm' }],
-    ['text', L, mm(256), { width: mm(170), markdown: '## Drawing of the blank\nThe flat pattern view: its contour and holes, the bend lines dashed with their notes (UP 90° R3). Its DXF has them on layers OUTER, INNER, BEND and BEND_NOTES.' }],
+    ['math', mm(105), mm(157), { source: 'br.flat.W = mm' }],
+    ['math', mm(105), mm(168), { source: 'br.flat.n =' }],
+    ['math', mm(105), mm(179), { source: 'br.flat.BA = mm' }],
+    ['text', L, mm(192), { width: mm(30), markdown: 'By hand:' }],
+    ['math', mm(45), mm(192), { source: '2 (h - t_s - R_i) + (a - 2 (t_s + R_i)) + 2 * π/2 * (R_i + 0.44 t_s) = mm' }],
+    ['text', L, mm(207), { width: mm(80), markdown: '**Blank and part**: the blank\'s area less its four holes, its mass, and the mass of the bent part (CAD keeps t in the bends, so it is a little heavier: t²(1/2 − K) per bend and unit of θ·width).' }],
+    ['math', mm(105), mm(207), { source: 'br.flat.A = cm^2' }],
+    ['math', mm(105), mm(218), { source: 'br.flat.m = g' }],
+    ['math', mm(105), mm(229), { source: 'br.m = g' }],
+    ['text', L, mm(243), { width: mm(80), markdown: '**DIN 6935** for comparison: its compensation v for the two bends (legs measured outside), with its own k = 0.65 + 0.5 lg(R/t).' }],
+    ['math', mm(105), mm(243), { source: 'br.flat.v = mm' }],
+    ['text', L, mm(259), { width: mm(170), markdown: '## Drawing of the blank\nThe flat pattern view: its contour and holes, the bend lines dashed with their notes (UP 90° R3). Its DXF has them on layers OUTER, INNER, BEND and BEND_NOTES.' }],
   ]);
   const br = ws.regions.find((r) => r.kind === 'cad' && r.name === 'br');
-  if (br) ws.regions.push(createRegion('drawing', L, mm(274), { cad: br.id, title: 'U bracket, flat pattern', partNo: 'SM-001', material: 'S235, t = 2', sheet: 'A4', views: { front: true, top: false, side: false, iso: false }, flat: {} }));
+  if (br) ws.regions.push(createRegion('drawing', L, mm(277), { cad: br.id, title: 'U bracket, flat pattern', partNo: 'SM-001', material: 'S235, t = 2', sheet: 'A4', views: { front: true, top: false, side: false, iso: false }, flat: {} }));
   return ws;
 }
 EXAMPLES.push({ name: 'CAD: sheet-metal bracket, flat pattern', make: sheetMetalExample });
