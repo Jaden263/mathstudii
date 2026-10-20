@@ -729,7 +729,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const placement = (occId: string) => av.shown?.placements[occId]?.matrix ?? build?.placements[occId]?.matrix ?? dr?.placements[occId]?.matrix;
   const sceneSize = dr?.box ? Math.max(...[0, 1, 2].map((i) => dr.box!.max[i] - dr.box!.min[i]), 20) : 100;
   const motionStudy = dialog?.kind === 'motion' ? design.motions?.find((m) => m.id === dialog.id) : undefined;
-  const player = useMotionPlayer(motionStudy?.duration ?? 1);
+  const player = useMotionPlayer(motionStudy?.duration ?? 1, !!motionStudy);
   const linkOpen = dialog?.kind === 'link' ? design.links?.find((l) => l.id === dialog.id) : sel?.startsWith('link:') ? design.links?.find((l) => l.id === sel.slice(5)) : undefined;
   const glyphs = dialog?.kind === 'joint' ? [dialog.id] : dialog?.kind === 'drive' ? [dialog.joint] : linkOpen ? [linkOpen.a.joint, linkOpen.b.joint] : sel?.startsWith('joint:') ? [sel.slice(6)] : [];
   const av = useAssemblyView({ design, build, dr, size: sceneSize, drive: dialog?.kind === 'drive' ? dialog : null, motion: motionStudy ? { study: motionStudy, t: player.t } : null, explode, trails, glyphs });

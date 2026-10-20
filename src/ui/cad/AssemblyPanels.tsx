@@ -219,15 +219,20 @@ export function MotionFields({ design, study: m, unit, onChange }: { design: Cad
   );
 }
 
-/** Play a study: the time, playing or not, looping, how fast. */
-export function useMotionPlayer(duration: number) {
+/**
+ * Play a study: the time, playing or not, looping, how fast. It plays only while `active`
+ * (its dialog is open): a study closed any way (Esc, another command) stops, so nothing
+ * animates while the workspace is idle.
+ */
+export function useMotionPlayer(duration: number, active = true) {
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
   const last = useRef(0);
+  if (!active && playing) setPlaying(false);
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || !active) return;
     let raf = 0;
     last.current = performance.now();
     const tick = (now: number) => {
@@ -244,7 +249,7 @@ export function useMotionPlayer(duration: number) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, loop, speed, duration]);
+  }, [playing, active, loop, speed, duration]);
   return { t: Math.min(t, duration), setT, playing, setPlaying, loop, setLoop, speed, setSpeed };
 }
 
