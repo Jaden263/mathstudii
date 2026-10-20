@@ -86,7 +86,7 @@ export function InfluencePanels({ r, d, res, vp, top, h, width, train }: {
         // exactly between positions as the worksheet does
         const axles = train?.filter((a) => a.x >= line.x[0] - 1e-9 && a.x <= line.x[line.x.length - 1] + 1e-9)
           .map((a) => ({ ...a, v: ordinateValue(r, line.quantity, ilValue(line, a.x)) }));
-        const sum = axles?.reduce((acc, a) => acc + (a.P / u.forceN) * a.v, 0);
+        const sum = axles?.reduce((acc, a) => acc + (a.P / u.forceShownN) * a.v, 0);
         return (
           <g key={line.id} className="bm-panel IL">
             <line x1={0} y1={y0} x2={width} y2={y0} className="bm-panel-sep" />
@@ -145,7 +145,7 @@ export function TrainGlyph({ r, d, res, vp, moving, lead, dir }: { r: BeamRegion
   // one label beside the axles at mid-height, clear of the strip above the structure
   const byX = [...on].sort((a, b) => a.p.x - b.p.x), L0 = byX[0].p, R0 = byX[byX.length - 1].p, left = L0.x, right = R0.x;
   const same = on.every((a) => a.P === on[0].P);
-  const text = same ? `${on.length > 1 ? `${on.length} × ` : ''}${u.force(on[0].P)}` : `${on.map((a) => fmt(a.P / u.forceN)).join(' + ')} ${r.forceUnit}`;
+  const text = same ? `${on.length > 1 ? `${on.length} × ` : ''}${u.force(on[0].P)}` : `${on.map((a) => fmt(a.P / u.forceShownN)).join(' + ')} ${u.names.force}`;
   const flip = right > vp.width - 90;
   const yl = Math.min(...on.map((a) => a.p.y)) - 24;
   return (

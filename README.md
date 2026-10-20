@@ -553,7 +553,8 @@ already there opens with the Select tool, an empty one with Member):
 **Moving about** (while editing): the **wheel** zooms about the pointer and a trackpad
 **pinch** (or two fingers on a touch screen) zooms the drawing, not the page; on the page
 (not editing) the wheel just scrolls. Pan by dragging empty space, with the **middle
-button**, **Space + drag** or the arrow keys. **+ / −** zoom, **0** fits the structure
+button**, **Space + drag**, the arrow keys or one finger (with a drawing tool a finger
+places when it lifts, so a pan or a pinch never puts anything down). **+ / −** zoom, **0** fits the structure
 (the toolbar's zoom and Fit buttons do the same). Symbols, text and the grid keep their
 size at every zoom (the grid thins out when zoomed out); the diagrams under a straight
 beam follow the zoom, aligned with it. The view is kept with the region without undo

@@ -9,6 +9,7 @@ import { straightBeam } from '../../beam/evaluate';
 import { ilPeak, MAX_POSITIONS, MIN_STEPS, type Critical } from '../../beam/influence';
 import { beamId, movingLoad, type BeamCombo, type BeamInfluenceLine, type BeamMovingLoad, type BeamTraffic, type InfluenceQuantity } from '../../beam/model';
 import { identifierOf } from '../../beam/traffic';
+import { displayUnits } from '../../beam/units';
 import { LazyInput } from '../sketch/SketchProps';
 import { LENGTH_M, fmt, units } from './beamDraw';
 import { QtyInput } from './BeamUnits';
@@ -39,22 +40,22 @@ function freeName(base: string, used: string[], numbered = false): string {
   }
 }
 
-/** Unit of an influence ordinate: the quantity per unit force (kN·m/kN for a moment, a length; – for a force). */
+/** Unit of an influence ordinate: the quantity per unit force (kN·m/kN for a moment, a length; – for a force), as the results are shown. */
 export function ordinateUnit(r: BeamRegion, q: InfluenceQuantity): string {
-  return q === 'M' || q === 'Mr' ? `${r.forceUnit}·${r.lengthUnit}/${r.forceUnit}` : q === 'w' ? `${trainUnit(r, q)}/${r.forceUnit}` : '–';
+  const n = units(r).names;
+  return q === 'M' || q === 'Mr' ? `${n.moment}/${n.force}` : q === 'w' ? `${n.defl}/${n.force}` : '–';
 }
 
 /** Unit of Σ P η, the response to the axles. */
 export function trainUnit(r: BeamRegion, q: InfluenceQuantity): string {
-  const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
-  return q === 'M' || q === 'Mr' ? `${r.forceUnit}·${r.lengthUnit}` : q === 'w' ? (metric ? 'mm' : 'in') : r.forceUnit;
+  const n = units(r).names;
+  return q === 'M' || q === 'Mr' ? n.moment : q === 'w' ? n.defl : n.force;
 }
 
-/** An ordinate in SI (per newton) in the region's units. */
+/** An ordinate in SI (per newton) in the units the results are shown in. */
 export function ordinateValue(r: BeamRegion, q: InfluenceQuantity, v: number): number {
-  const L = LENGTH_M[r.lengthUnit] ?? 1, F = units(r).forceN;
-  const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
-  return q === 'M' || q === 'Mr' ? v / L : q === 'w' ? (v * F) / (metric ? 1e-3 : 0.0254) : v;
+  const d = displayUnits(r);
+  return q === 'M' || q === 'Mr' ? v / (d.moment[1] / d.force[1]) : q === 'w' ? (v * d.force[1]) / d.defl[1] : v;
 }
 
 /** What an influence line is of, in words: at x on a beam, on a member of a frame. */
@@ -285,7 +286,7 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
           {(() => {
             const m = res?.moving.find((q) => q.id === ml.id);
             if (!m) return null;
-            const axles = m.P.length ? `${m.P.length === 1 ? '' : `${m.P.length} × `}${m.P.every((p) => p === m.P[0]) ? u.force(m.P[0]) : m.P.map((p) => fmt(p / u.forceN)).join(' + ') + ` ${region.forceUnit}`}${m.P.length > 1 ? ` over ${fmt(m.offsets.at(-1)! / Lm)} ${region.lengthUnit}` : ''}` : '';
+            const axles = m.P.length ? `${m.P.length === 1 ? '' : `${m.P.length} × `}${m.P.every((p) => p === m.P[0]) ? u.force(m.P[0]) : m.P.map((p) => fmt(p / u.forceShownN)).join(' + ') + ` ${u.names.force}`}${m.P.length > 1 ? ` over ${fmt(m.offsets.at(-1)! / Lm)} ${region.lengthUnit}` : ''}` : '';
             const lane = m.q ? `${u.line(m.q)} where adverse` : '';
             const env = m.env;
             const ex = env?.extremes;

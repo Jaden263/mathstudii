@@ -3426,8 +3426,10 @@ kbd {
   stroke: var(--ok);
 }
 
-/* the status (coordinates, zoom, notes) sits top left, clear of the strip and its summary */
+/* the status (coordinates, zoom, notes) sits top left, clear of the strip and its summary;
+   loads under it are still picked and the wheel still zooms there */
 .bm-chrome > .bm-status {
+  pointer-events: none;
   left: 6px;
   right: auto;
   top: 4px;

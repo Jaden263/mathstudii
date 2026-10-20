@@ -16,8 +16,19 @@ const NUMBER = /^\s*[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i;
 /** A plain number written out ("12", "-2.5", "1e3"), not an expression. */
 export const isNumberText = (s: string) => NUMBER.test(s);
 
-/** A converted number without the round-off of the conversion (0.30000000000000004 → 0.3). */
-export const tidy = (v: number) => +v.toPrecision(15);
+/**
+ * A converted number without the round-off of the conversion (0.30000000000000004 → 0.3):
+ * a short decimal that it misses by round-off only, else its 15 digits that count. So
+ * m → in → m comes back as 5, not as 4.99999999999999, however many units it went through.
+ */
+export function tidy(v: number): number {
+  if (!Number.isFinite(v) || v === 0) return v;
+  for (let p = 1; p <= 9; p++) {
+    const c = +v.toPrecision(p);
+    if (Math.abs(c - v) <= Math.abs(v) * 1e-12) return c;
+  }
+  return +v.toPrecision(15);
+}
 
 /**
  * A number typed into a field that is in `unit` (a length, an angle in deg): plain, with a

@@ -64,6 +64,8 @@ export function units(r: Pick<BeamRegion, 'forceUnit' | 'lengthUnit'> & { displa
     names: { force: d.force[0], moment: d.moment[0], line: d.line[0], defl: d.defl[0], stress: d.stress[0] },
     /** Newtons per force unit (of the region). */
     forceN: F,
+    /** Newtons per force unit shown. */
+    forceShownN: d.force[1],
   };
 }
 

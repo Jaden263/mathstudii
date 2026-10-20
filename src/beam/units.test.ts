@@ -102,6 +102,22 @@ describe('changing the units of a beam region', () => {
     expectSame(res.solution!, solve(back).res.solution!, 1e-8);
   });
 
+  it('comes back to the same numbers through any units, without round-off piling up', () => {
+    const { beam, res } = solve(frame());
+    let r: BeamRegion = beam;
+    const hops: [BeamRegion['lengthUnit'], BeamRegion['forceUnit']][] = [['mm', 'N'], ['in', 'MN'], ['cm', 'lbf'], ['ft', 'kip'], ['m', 'kN']];
+    for (const [lengthUnit, forceUnit] of hops) r = { ...r, ...changeUnits(r, { lengthUnit, forceUnit }, { bare: res.bare }) };
+    expect(r.nodes).toEqual(beam.nodes);
+    expect(r.grid).toBe(0.5);
+    expect(r.loads.find((l) => l.id === 'L2')).toMatchObject({ q1: '2', q2: '8' });
+    expect(r.loads.find((l) => l.id === 'M1')).toMatchObject({ value: '8' });
+    expect(r.supports[0].k).toBe('5000');
+    expect(r.supports[1].kr).toBe('20000');
+    expect(tidy(5 / 0.0254)).toBe(196.850393700787);
+    expect(tidy(196.850393700787 * 0.0254)).toBe(5);
+    expect(tidy(1234.56789012 * 1000)).toBe(1234567.89012);
+  });
+
   it('keeps the picture: the view follows the coordinates', () => {
     const { beam } = solve(frame());
     const conv = { ...beam, ...changeUnits(beam, { lengthUnit: 'cm', forceUnit: 'kN' }) };

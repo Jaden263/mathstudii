@@ -3,7 +3,7 @@
 // diagram strip below to reactions, N, V, M or the deflected shape. While editing, the
 // wheel or a pinch zooms the drawing about the pointer, and dragging empty space, the
 // middle button or Space + drag pans it; loads are picked anywhere on their glyph.
-import { useEffect, useMemo, useRef, useState, type Dispatch, type JSX, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { MousePointer2, Slash, Maximize, Trash2, Check, Magnet, ArrowDown, RotateCcw, CircleDot, ZoomIn, ZoomOut, Ruler, Pencil, SlidersHorizontal } from 'lucide-react';
 import type { BeamRegion } from '../../model/types';
@@ -136,8 +136,20 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const drag = useRef<Drag | null>(null);
   const editRef = useRef(edit);
   editRef.current = edit;
+  /** The value box, and how wide it came out (it stays inside the region). */
+  const editBox = useRef<HTMLDivElement>(null);
+  const [editW, setEditW] = useState(230);
+  useLayoutEffect(() => {
+    const w = editBox.current?.offsetWidth;
+    if (w) setEditW(w);
+  }, [edit?.id]);
   /** Touch points on the drawing (two of them pinch). */
   const touches = useRef(new Map<number, P2>());
+  /** A finger down with a drawing tool, which places when it lifts without moving (a tap). */
+  const tap = useRef<{ id: number; s: P2; alt: boolean } | null>(null);
+  /** What was selected before the first finger came down, and whether the side panel is to open when it lifts. */
+  const touchSel = useRef<string[] | null>(null);
+  const propsOnUp = useRef(false);
   /** A click on the page that started editing: what it was on is picked once editing. */
   const pendingPick = useRef<P2 | null>(null);
   // the latest region and selection, for menus and window listeners that outlive a render
@@ -200,7 +212,11 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   const maxStack = useMemo(() => region.loads.reduce((m, _l, i) => Math.max(m, lineStack(region.loads, i)), 0), [region.loads]);
   const fitMargins = { l: 100, r: 100, t: 70 + maxStack * 46, b: 100 };
   const autoView = useMemo(() => fitView(data, W, modelH, fitMargins), [region.nodes, W, modelH, maxStack]); // eslint-disable-line react-hooks/exhaustive-deps
-  const view = liveView ?? (editing ? region.view : autoView ?? region.view);
+  // (a view being zoomed or panned is in the length unit it was made in: one changed since, by
+  // a change of units or its undo, converted the region's view, and the gesture's is let go)
+  const liveUnit = useRef(region.lengthUnit);
+  const current = (v: View | null) => (v && liveUnit.current === region.lengthUnit ? v : null);
+  const view = current(liveView) ?? (editing ? region.view : autoView ?? region.view);
   const vp: Vp = { view, width: W, height: modelH };
   const lim = zoomLimits(data, W, region.grid);
 
@@ -236,18 +252,19 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
   // once the gesture rests (no undo step, no recalculation per wheel notch)
   const liveRef = useRef<View | null>(null);
   const viewRef = useRef(view);
-  viewRef.current = liveRef.current ?? view;
+  viewRef.current = current(liveRef.current) ?? view;
   const limRef = useRef(lim);
   limRef.current = lim;
   const viewTimer = useRef<number | undefined>(undefined);
   const showView = (v: View | null) => {
     liveRef.current = v;
+    liveUnit.current = live.current.region.lengthUnit;
     setLiveView(v);
   };
   const flushView = () => {
     window.clearTimeout(viewTimer.current);
     const v = liveRef.current;
-    if (v) set({ view: v }, false);
+    if (v && liveUnit.current === live.current.region.lengthUnit) set({ view: v }, false);
     showView(null);
   };
   const setView = (v: View, immediate = false) => {
@@ -672,9 +689,13 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     const s = screenOf(e);
     if (e.pointerType === 'touch') {
       touches.current.set(e.pointerId, s);
+      if (touches.current.size === 1) touchSel.current = mine ? ui.selected : [];
       if (touches.current.size === 2) {
-        // two fingers pinch and pan the drawing
+        // two fingers pinch and pan the drawing: the first one picked or placed nothing
         dropDrag();
+        tap.current = null;
+        propsOnUp.current = false;
+        if (touchSel.current) select(touchSel.current);
         const [[i1, p1], [i2, p2]] = [...touches.current];
         drag.current = { mode: 'pinch', ids: [i1, i2], start: [p1, p2], view: viewRef.current };
         svgRef.current?.setPointerCapture(e.pointerId);
@@ -699,12 +720,15 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       if (tool === 'select' && !e.shiftKey) select([]);
       return;
     }
-    const at = snapPoint(s, e.altKey);
+    // a finger with a drawing tool places when it lifts: until then it may become a pan or a pinch
+    if (e.pointerType === 'touch' && tool !== 'select' && tool !== 'line') {
+      tap.current = { id: e.pointerId, s, alt: e.altKey };
+      drag.current = { mode: 'pan', sx: s.x, sy: s.y, view: viewRef.current, moved: false };
+      svgRef.current?.setPointerCapture(e.pointerId);
+      return;
+    }
     switch (tool) {
-      case 'member': addMember(at); break;
-      case 'pin': case 'roller': case 'fixed': placeSupport(tool, at); break;
-      case 'hinge': if (at.snap?.kind === 'node') toggleHinge(at.snap.id); break;
-      case 'force': case 'moment': placeLoad(tool, at); break;
+      case 'member': case 'pin': case 'roller': case 'fixed': case 'hinge': case 'force': case 'moment': place(tool, s, e.altKey); break;
       case 'line': {
         const h = hitTest(s, ['member']);
         if (h?.kind === 'member') {
@@ -746,9 +770,22 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
           drag.current = { mode: 'load', id: h.id, sx: s.x, sy: s.y, moved: false, base: data };
           svgRef.current?.setPointerCapture(e.pointerId);
         }
-        showProperties();
+        // (a finger: once it lifts, it may have been the first of a pinch)
+        if (e.pointerType === 'touch') propsOnUp.current = true;
+        else showProperties();
         break;
       }
+    }
+  };
+
+  /** What a click with a drawing tool does at drawing point `s`. */
+  const place = (t: Exclude<BeamTool, 'select' | 'line'>, s: P2, alt: boolean) => {
+    const at = snapPoint(s, alt);
+    switch (t) {
+      case 'member': addMember(at); break;
+      case 'pin': case 'roller': case 'fixed': placeSupport(t, at); break;
+      case 'hinge': if (at.snap?.kind === 'node') toggleHinge(at.snap.id); break;
+      case 'force': case 'moment': placeLoad(t, at); break;
     }
   };
 
@@ -806,8 +843,10 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       return;
     }
     if (dr?.mode === 'pan') {
-      if (!dr.moved && Math.hypot(s.x - dr.sx, s.y - dr.sy) < 3) return;
+      // (a finger's tap wobbles a little)
+      if (!dr.moved && Math.hypot(s.x - dr.sx, s.y - dr.sy) < (tap.current ? 8 : 3)) return;
       dr.moved = true;
+      tap.current = null;
       showView(panBy(dr.view, s.x - dr.sx, s.y - dr.sy));
       return;
     }
@@ -855,14 +894,22 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     if (dr?.mode === 'pinch') {
       if (touches.current.size < 2) {
         drag.current = null;
-        if (liveRef.current) setView(liveRef.current, true);
+        if (current(liveRef.current)) setView(liveRef.current!, true);
       }
       return;
     }
     drag.current = null;
     if (dr?.mode === 'pan') {
       setGrabbing(false);
-      if (dr.moved && liveRef.current) setView(liveRef.current, true);
+      if (dr.moved && current(liveRef.current)) setView(liveRef.current!, true);
+      // a finger that did not move: the drawing tool's click
+      const t = tap.current;
+      tap.current = null;
+      if (t && t.id === e.pointerId && !dr.moved && e.type !== 'pointercancel' && tool !== 'select' && tool !== 'line') place(tool, t.s, t.alt);
+    }
+    if (propsOnUp.current) {
+      propsOnUp.current = false;
+      showProperties();
     }
     if (dr?.mode === 'band') {
       setBand(null);
@@ -960,6 +1007,8 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     if (!editing) return;
     const tag = (e.target as HTMLElement).tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // a button of the toolbar or the strip presses with Space and Enter as any button
+    if (tag === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return;
     const act = beamKey(e);
     // undo, redo, save, page zoom: the worksheet's (a note about what Ctrl+Z would undo is done with)
     if (act.kind === 'pass') {
@@ -973,8 +1022,9 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
     switch (act.kind) {
       case 'delete': deleteSelected(); break;
       case 'escape':
-        // step back: a box or drag, a member being drawn, the selection, then editing
-        if (drag.current) dropDrag();
+        // step back: the units, a box or drag, a member being drawn, the selection, then editing
+        if (unitsOpen) setUnitsOpen(false);
+        else if (drag.current) dropDrag();
         else if (chainFrom) setChainFrom(null);
         else if (mine && ui.selected.length) select([]);
         else onDone(false);
@@ -1097,8 +1147,9 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
             {unitsOpen && (
               // (opens to the right where there is no room to the left, as on a phone)
               <div className={`bm-pop${(unitsRef.current?.getBoundingClientRect().right ?? 400) < 330 ? ' to-right' : ''}`} role="dialog" aria-label="Units" onKeyDown={(e) => {
-                e.stopPropagation();
+                // (other keys go on: Ctrl+Z right after a change of units undoes it)
                 if (e.key === 'Escape') {
+                  e.stopPropagation();
                   setUnitsOpen(false);
                   wrapRef.current?.focus({ preventScroll: true });
                 }
@@ -1216,7 +1267,7 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
       </svg>
       {edit && editPos && editLoad && (
         <div
-          key={edit.id} className="bm-edit" style={{ left: Math.min(Math.max(editPos.x * k - 80, 4), region.width - 230), top: Math.max(editPos.y * k - 14, 4) }}
+          ref={editBox} key={edit.id} className="bm-edit" style={{ left: Math.max(4, Math.min(editPos.x * k - 80, region.width - editW - 4)), top: Math.max(editPos.y * k - 14, 4) }}
           onPointerDown={(e) => e.stopPropagation()}
           onBlur={(e) => {
             // leaving the box (not moving between its fields) confirms it

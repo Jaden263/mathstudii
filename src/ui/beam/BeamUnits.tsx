@@ -1,7 +1,7 @@
 // Units of a beam region, in its toolbar and at the top of its side panel: the length and
 // force units of the model (converting the numbers so the structure keeps its size, or
 // keeping them), the units the results are shown in, and number fields that take a unit.
-import { useEffect, useId, useState, type Dispatch } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore, type Dispatch } from 'react';
 import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import { BEAM_FORCE_UNITS, BEAM_LENGTH_UNITS } from '../../beam/model';
@@ -11,16 +11,30 @@ import type { Action } from '../store';
 
 const DISPLAY_LABELS: [keyof BeamDisplayUnits, string][] = [['force', 'Forces'], ['moment', 'Moments'], ['line', 'Line loads'], ['defl', 'Deflection'], ['stress', 'Stress']];
 
+// Convert or keep the numbers: the user's choice, not the document's, and one for every
+// units field open (the toolbar's and the side panel's show the same).
+let convertPref: boolean | null = null;
+const prefListeners = new Set<() => void>();
+const getConvert = () => (convertPref ??= loadPref('beamConvertUnits', true) ?? true);
+const subscribeConvert = (f: () => void) => {
+  prefListeners.add(f);
+  return () => prefListeners.delete(f);
+};
+function setConvert(v: boolean) {
+  convertPref = v;
+  savePref('beamConvertUnits', v);
+  for (const f of prefListeners) f();
+}
+
 /** Length and force units (converting or keeping the numbers) and the units of the results. */
 export function BeamUnitsFields({ region, result, dispatch, onChanged }: {
   region: BeamRegion; result?: BeamResult; dispatch: Dispatch<Action>;
   /** Told what was done (for a short note). */
   onChanged?: (note: string) => void;
 }) {
-  const [convert, setConvert] = useState<boolean>(() => loadPref('beamConvertUnits', true) ?? true);
+  const convert = useSyncExternalStore(subscribeConvert, getConvert);
   // (the toolbar's and the side panel's radio buttons are separate groups)
   const group = useId();
-  useEffect(() => savePref('beamConvertUnits', convert), [convert]);
   // what "auto" means: from the units, and line loads from the force shown
   const auto = displayUnits({ lengthUnit: region.lengthUnit, forceUnit: region.forceUnit, display: { force: region.display?.force } });
   const change = (to: { lengthUnit?: BeamRegion['lengthUnit']; forceUnit?: BeamRegion['forceUnit'] }) => {
