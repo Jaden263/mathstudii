@@ -57,7 +57,7 @@ import { m4Mul } from '../../cad/solid';
 import { sampleTimes } from '../../cad/motion';
 import { asBuiltOrigin, placementsWithout } from '../../cad/kinematics';
 import { paintHits, useAssemblyView } from './assemblyView';
-import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
+import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivePatches, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
 import { canRecord, exportPngFrames, recordWebm } from './motionExport';
 
 interface Props {
@@ -1568,18 +1568,24 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const field = dialog.dof;
       const sol = av.solution;
       const problems = sol ? [...Object.entries(sol.errors).map(([id, e]) => [id, e, 'region-error']), ...Object.entries(sol.warnings).map(([id, e]) => [id, e, 'region-warn'])] : [];
+      // the driven value, or (a solved DOF driven) the values of the joints that drive its loop
+      const patches = sol ? drivePatches(design, sol.values, (build?.kin ?? dr?.kin)?.values ?? {}, dialog, u, sceneSize) : { [j.id]: { [field]: dofExpr(field, dialog.value, u) } };
+      const solvedDrive = !!j.dofs?.[dialog.dof]?.free;
+      const written = (p: Partial<CadJoint>) => Object.entries(p).flatMap(([k, v]) => (k === 'dofs' ? Object.values(v as NonNullable<CadJoint['dofs']>).flatMap((d) => (d?.rest ? [`rest ${d.rest}`] : [])) : [String(v)])).join(', ');
+      const alsoSet = Object.entries(patches).filter(([id]) => solvedDrive || id !== j.id).map(([id, p]) => `${design.joints.find((q) => q.id === id)?.name ?? id}: ${written(p)}`);
       return (
         <Dialog title={`Drive — ${j.name}`} okLabel="Set as value" onOk={() => {
-          patchJoint(j.id, { [field]: dofExpr(field, sol?.values[j.id]?.[field] ?? dialog.value, u) } as Partial<CadJoint>);
+          if (Object.keys(patches).length) setDesign({ ...cur(), joints: cur().joints.map((q) => (patches[q.id] ? { ...q, ...patches[q.id] } : q)) });
           setDialog(null);
         }} onCancel={() => setDialog(null)}>
           {drivenDofs(design, j).length > 1 && (
-            <Pick label="DOF" value={dialog.dof} options={drivenDofs(design, j).map((k) => [k, dofLabel(j.type, k)] as [DofKey, string])}
+            <Pick label="DOF" value={dialog.dof} options={drivenDofs(design, j).map((k) => [k, `${dofLabel(j.type, k)}${j.dofs?.[k]?.free ? ' (solved)' : ''}`] as [DofKey, string])}
               onChange={(dof) => setDialog({ ...dialog, dof, value: placedValues(j.id)?.[dof] ?? 0 })} />
           )}
           <DrivePanel joint={j} dof={dialog.dof} value={dialog.value} unit={u} size={sceneSize} values={{ min: kj.min[dialog.dof], max: kj.max[dialog.dof], rest: kj.rest[dialog.dof] }}
             onValue={(value) => setDialog((d) => (d?.kind === 'drive' ? { ...d, value } : d))} />
           {sol && <p className="hint">Placed at {dofText(dialog.dof, sol.values[j.id]?.[dialog.dof], u)}{design.joints.filter((q) => q.id !== j.id && JOINT_DOFS[q.type].some((k) => q.dofs?.[k]?.free)).map((q) => ` · ${q.name} ${JOINT_DOFS[q.type].filter((k) => q.dofs?.[k]?.free).map((k) => dofText(k, sol.values[q.id]?.[k], u)).join(', ')}`).join('')}</p>}
+          {alsoSet.length > 0 && <p className="hint">{solvedDrive ? `${j.name} stays solved: Set as value writes ` : 'Set as value also writes '}{alsoSet.join(' · ')}.</p>}
           {problems.map(([id, e, cls]) => <div key={`${cls}:${id}`} className={cls}>{design.joints.find((q) => q.id === id)?.name ?? id}: {e}</div>)}
         </Dialog>
       );

@@ -302,6 +302,11 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
   const byId = new Map(joints.map((j) => [j.id, j]));
   const report = (j: KinJoint) => j.group ?? j.id;
   const label = (j: KinJoint, k: DofKey) => `the ${dofWord(j.type, k)}`;
+  /** A joint's warnings one after the other: a limit and the stop it leads to are both said. */
+  const warn = (id: string, w: string) => {
+    if (!warnings[id]) warnings[id] = w;
+    else if (!warnings[id].includes(w)) warnings[id] += `; ${w}`;
+  };
 
   // ---- what drives what
   const free = new Map<string, Set<DofKey>>();
@@ -368,21 +373,6 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
     for (const l of links) q.get(l.b.joint)![l.b.dof] = l.ratio * q.get(l.a.joint)![l.a.dof] + l.offset;
   };
 
-  // driven values past their limits stop there
-  for (const j of joints) {
-    const v = target.get(j.id)!;
-    for (const k of JOINT_DOFS[j.type]) {
-      if (free.get(j.id)!.has(k) || follows.has(key(j.id, k))) continue;
-      const lo = j.min[k], hi = j.max[k];
-      if (lo !== undefined && v[k] < lo - 1e-12 * (1 + Math.abs(lo))) {
-        warnings[report(j)] ??= `${label(j, k)} ${say(k, v[k])} is past its limit (min ${say(k, lo)}): the joint stops there`;
-        v[k] = lo;
-      } else if (hi !== undefined && v[k] > hi + 1e-12 * (1 + Math.abs(hi))) {
-        warnings[report(j)] ??= `${label(j, k)} ${say(k, v[k])} is past its limit (max ${say(k, hi)}): the joint stops there`;
-        v[k] = hi;
-      }
-    }
-  }
 
   // ---- the spanning tree: joint after joint from the grounded occurrences, as placements always went
   const occs = model.occs;
@@ -446,6 +436,37 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
   const onLoop = new Set<string>();
   for (const s of loopOf.values()) for (const id of s) for (const k of JOINT_DOFS[byId.get(id)!.type]) onLoop.add(key(id, k));
   for (const l of [...links].reverse()) if (onLoop.has(key(l.b.joint, l.b.dof))) onLoop.add(key(l.a.joint, l.a.dof));
+  // a solved DOF driven (by hand, or by a study's track) takes over its loops: the DOFs that
+  // drove them are solved instead, so a four-bar's rocker dragged turns the crank
+  const linked = new Map<string, string>();
+  const groupOf = (id: string): string => (linked.has(id) ? groupOf(linked.get(id)!) : id);
+  const unite = (p: string, s: string) => {
+    const [x, y] = [groupOf(p), groupOf(s)];
+    if (x !== y) linked.set(x, y);
+  };
+  for (const [c, s] of loopOf) for (const id of s) unite(c, id);
+  for (const l of links) unite(l.a.joint, l.b.joint);
+  const takenOver = new Set<string>();
+  for (const j of joints) for (const k of j.free) if (onLoop.has(key(j.id, k)) && Number.isFinite(o.drive?.[j.id]?.[k])) takenOver.add(groupOf(j.id));
+  if (takenOver.size) for (const j of joints) for (const k of JOINT_DOFS[j.type]) {
+    const kk = key(j.id, k);
+    if (takenOver.has(groupOf(j.id)) && onLoop.has(kk) && !follows.has(kk) && !Number.isFinite(o.drive?.[j.id]?.[k])) free.get(j.id)!.add(k);
+  }
+  // driven values past their limits stop there
+  for (const j of joints) {
+    const v = target.get(j.id)!;
+    for (const k of JOINT_DOFS[j.type]) {
+      if (free.get(j.id)!.has(k) || follows.has(key(j.id, k))) continue;
+      const lo = j.min[k], hi = j.max[k];
+      if (lo !== undefined && v[k] < lo - 1e-12 * (1 + Math.abs(lo))) {
+        warn(report(j), `${label(j, k)} ${say(k, v[k])} is past its limit (min ${say(k, lo)}): the joint stops there`);
+        v[k] = lo;
+      } else if (hi !== undefined && v[k] > hi + 1e-12 * (1 + Math.abs(hi))) {
+        warn(report(j), `${label(j, k)} ${say(k, v[k])} is past its limit (max ${say(k, hi)}): the joint stops there`);
+        v[k] = hi;
+      }
+    }
+  }
   const unknowns: { j: KinJoint; k: DofKey }[] = [];
   for (const j of joints) for (const k of JOINT_DOFS[j.type]) if (free.get(j.id)!.has(k) && onLoop.has(key(j.id, k))) unknowns.push({ j, k });
   const isUnknown = new Set(unknowns.map((u) => key(u.j.id, u.k)));
@@ -519,7 +540,9 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
       // driven DOFs of the loops go from where the mechanism was assembled (or the previous frame) to their values
       if (!free.get(j.id)!.has(k) && !follows.has(key(j.id, k)) && onLoop.has(key(j.id, k))) {
         const to = target.get(j.id)![k];
-        const from = o.from?.[j.id]?.[k] ?? j.rest[k] ?? 0;
+        let from = o.from?.[j.id]?.[k] ?? j.rest[k] ?? 0;
+        // a solved angle driven (it reads between −180° and 180°) turns the short way round to its value
+        if (j.free.includes(k) && isAngleDof(k) && j.min[k] === undefined && j.max[k] === undefined) from = to - Math.atan2(Math.sin(to - from), Math.cos(to - from));
         if (Math.abs(to - from) > 1e-12 * (1 + Math.abs(to))) mechOf(j.id)?.drivers.push({ j, k, from, to });
       }
       // a solved DOF (or a link's follower) past its limit stops the mechanism where it gets there
@@ -589,15 +612,24 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
           // why: a limit (the loop still closes just past it) or the loop itself
           const after = solveAt(hi, xl);
           const hit = after.ok ? within(withX(after.base, full(after.x))) : undefined;
-          const reached = drivers.map((d) => `${d.j.name} = ${say(d.k, d.from + t * (d.to - d.from))}`).join(', ');
+          const reached = drivers.map((d) => {
+            const v = d.from + t * (d.to - d.from);
+            // a solved angle driven reads between −180° and 180°, as it does when solved
+            return `${d.j.name}${JOINT_DOFS[d.j.type].length > 1 ? ` ${dofWord(d.j.type, d.k)}` : ''} = ${say(d.k, d.j.free.includes(d.k) && isAngleDof(d.k) && d.j.min[d.k] === undefined && d.j.max[d.k] === undefined ? Math.atan2(Math.sin(v), Math.cos(v)) : v)}`;
+          }).join(', ');
           if (hit) {
             const lim = withX(at(m, t), full(x)).get(hit.j.id)![hit.k];
-            warnings[report(hit.j)] ??= `${label(hit.j, hit.k)} reaches its limit ${say(hit.k, lim)} at ${reached}: the mechanism stops there`;
+            warn(report(hit.j), `${label(hit.j, hit.k)} reaches its limit ${say(hit.k, lim)} at ${reached}: the mechanism stops there`);
             stop = `stops at ${reached}: ${hit.j.name} reaches its limit`;
           } else {
             stop = `stops at ${reached}: the loop cannot close beyond (a dead point, or out of reach)`;
           }
-          for (const d of drivers) warnings[report(d.j)] ??= `${label(d.j, d.k)} ${stop}`;
+          // once per joint (a ball's yaw and pitch stop together)
+          const told = new Set<string>();
+          for (const d of drivers) if (!told.has(report(d.j))) {
+            told.add(report(d.j));
+            warn(report(d.j), `${label(d.j, d.k)} ${stop}`);
+          }
         }
       } else {
         // it does not close where it was assembled: try the driven values straight away (and
@@ -649,7 +681,7 @@ export function solveKinematics(model: KinModel, o: SolveOptions = {}): KinSolut
     const lo = j.min[l.b.dof], hi = j.max[l.b.dof];
     const past = (lo !== undefined && v[l.b.dof] < lo - 1e-9 * scaleOf(l.b.dof)) ? lo : (hi !== undefined && v[l.b.dof] > hi + 1e-9 * scaleOf(l.b.dof)) ? hi : undefined;
     if (past === undefined || onLoop.has(key(j.id, l.b.dof))) continue;
-    warnings[report(j)] ??= `the link ${l.name} takes ${label(j, l.b.dof)} to ${say(l.b.dof, v[l.b.dof])}, past its limit ${say(l.b.dof, past)}: it stops there`;
+    warn(report(j), `the link ${l.name} takes ${label(j, l.b.dof)} to ${say(l.b.dof, v[l.b.dof])}, past its limit ${say(l.b.dof, past)}: it stops there`);
     v[l.b.dof] = past;
   }
   const finalP = links.length ? place(q) : P;

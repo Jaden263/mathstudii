@@ -5,7 +5,7 @@
 // assemblies without loops, which must stay exactly what they were.
 import { describe, expect, it } from 'vitest';
 import { JOINT_DOFS, type DofKey } from './assembly';
-import { linkRatio, motionValue } from './assemblyParams';
+import { jointParams, linkRatio, motionValue } from './assemblyParams';
 import { motionResult, runMotion } from './motion';
 import { jointFrame, type CadDesign, type CadJoint, type DesignNumbers, type JointType, type Placement } from './design';
 import { asBuiltOrigin, kinModel, levenbergMarquardt, motionMatrix, placementsWithout, rankOf, solveKinematics, type KinJoint, type KinModel } from './kinematics';
@@ -154,6 +154,51 @@ describe('four-bar linkage', () => {
     expect(sol.mobility).toBe(1);
   });
 
+  it('drives the rocker by hand: the crank that drives the loop is solved instead (Freudenstein solved for θ2)', () => {
+    // from θ2 = 40° (θ4 = 57.32°) the rocker is dragged to 100°. Freudenstein's equation in
+    // θ2 is A·cos θ2 + B·sin θ2 = C with A = −K2 − cos θ4, B = −sin θ4, C = −(K1 cos θ4 + K3);
+    // its root followed by continuation in steps of 1° from θ2 = 40°
+    const m = fourBar(a, b, c, d, 40 * D, open0);
+    const start = solveKinematics(m);
+    const sol = solveKinematics(m, { drive: { J4: { angle: 100 * D } }, from: start.values });
+    expect(sol.errors).toEqual({});
+    expect(sol.warnings).toEqual({});
+    let t2 = 40 * D;
+    for (let t4deg = Math.round(start.values.J4.angle! / D); t4deg <= 100; t4deg++) {
+      const t4 = t4deg * D, A = -K2 - Math.cos(t4), B = -Math.sin(t4), C = -(K1 * Math.cos(t4) + K3);
+      const roots = [1, -1].map((s) => Math.atan2(B, A) + s * Math.acos(C / Math.hypot(A, B)));
+      t2 = roots.sort((p, q) => Math.abs(wrap(p - t2)) - Math.abs(wrap(q - t2)))[0];
+    }
+    expect(sol.values.J4.angle! / D).toBeCloseTo(100, 12);
+    expect(Math.abs(wrap(sol.values.J1.angle! - t2))).toBeLessThan(1e-8);
+    expect(Math.abs(K1 * Math.cos(100 * D) - K2 * Math.cos(sol.values.J1.angle!) + K3 - Math.cos(sol.values.J1.angle! - 100 * D))).toBeLessThan(1e-8);
+    // the crank turns where the solve put it
+    expect(Math.abs(wrap(angleOf(sol.placements.crank.matrix) - t2))).toBeLessThan(1e-8);
+    // past the rocker's swing (128.68°: crank and coupler folded, Norton §4.4) it stops with a warning
+    const far = solveKinematics(m, { drive: { J4: { angle: 150 * D } }, from: start.values });
+    expect(far.values.J4.angle! / D).toBeCloseTo(180 - Math.acos((d * d + c * c - (b - a) ** 2) / (2 * d * c)) / D, 4);
+    expect(far.warnings.J4).toMatch(/stops at J4 = 128\.68\d*°: the loop cannot close beyond/);
+  });
+
+  it('lets a motion study drive the rocker: its track takes the loop over from the crank', () => {
+    // θ4 from 70° to 110° in 10 frames; each frame's crank satisfies Freudenstein's equation,
+    // on the open circuit the linkage was assembled in
+    const m = fourBar(a, b, c, d, 40 * D, open0);
+    const sol = solveKinematics(m);
+    const kin = { model: m, values: sol.values, parent: sol.parent, mobility: sol.mobility };
+    const study = { id: 's', name: 'Rock', duration: 1, steps: 10, tracks: [{ joint: 'J4', dof: 'angle' as const, keys: [{ t: 0, v: '70' }, { t: 1, v: '110' }] }] };
+    const frames = runMotion(kin, study, { s: { 'v:0:0': 70 * D, 'v:0:1': 110 * D } });
+    expect(frames).toHaveLength(11);
+    frames.forEach((f, i) => {
+      expect(f.error).toBeUndefined();
+      expect(f.warning).toBeUndefined();
+      const t4 = (70 + 4 * i) * D, t2 = f.values.J1.angle!;
+      expect(f.values.J4.angle!).toBeCloseTo(t4, 12);
+      expect(Math.abs(K1 * Math.cos(t4) - K2 * Math.cos(t2) + K3 - Math.cos(t2 - t4))).toBeLessThan(1e-8);
+      expect(Math.abs(wrap(theta4(a, b, c, d, t2, true) - t4))).toBeLessThan(1e-8);
+    });
+  });
+
   it('moves two linkages of one assembly apart: one stopping at its dead point does not hold the other back', () => {
     // the triple rocker above, driven from 90° down past its stop at acos(16500/18000), and
     // beside it the crank-rocker driven to 200°
@@ -292,6 +337,19 @@ describe('limits', () => {
     const t = sol.values.J1.angle!;
     expect(r * Math.cos(t) + Math.sqrt(l * l - (r * Math.sin(t)) ** 2)).toBeCloseTo(130, 6);
   });
+
+  it('says both when a clamped joint then cannot move its loop at all', () => {
+    // the crank of a planar four-bar made a ball joint and pitched 20°: the loop cannot close
+    // anywhere but where it was assembled (pitch 0), so it stays there; its yaw is clamped too
+    const [a, b, c, d] = [40, 120, 80, 100];
+    const m = fourBar(a, b, c, d, 40 * D, open(a, b, c, d, 0));
+    Object.assign(m.joints[0], { type: 'ball', q: { ...m.joints[0].q, angle2: 20 * D }, max: { angle: 30 * D } });
+    const sol = solveKinematics(m);
+    expect(sol.errors).toEqual({});
+    expect(sol.warnings.J1).toMatch(/^the yaw 40° is past its limit \(max 30°\): the joint stops there; the yaw stops at J1 yaw = 0°, J1 pitch = 0°: the loop cannot close beyond/);
+    expect(sol.values.J1).toEqual({ angle: 0, angle2: 0, angle3: 0 });
+    expect(Math.abs(wrap(sol.values.J4.angle! - theta4(a, b, c, d, 0, true)))).toBeLessThan(1e-8);
+  });
 });
 
 // ------------------------------------------------------------ joint types
@@ -301,6 +359,15 @@ describe('planar, pin-slot and ball joints', () => {
     const m = model(['g', 'b'], [joint('J', 'g', 'b', T(10, 0, 5), IDENTITY, { type, q: { angle: 0, angle2: 0, angle3: 0, offset: 0, x: 0, y: 0, ...q } })]);
     return solveKinematics(m).placements.b.matrix;
   };
+
+  it('reads only the DOFs its type has: a ball joint made a revolute keeps no hidden pitch', () => {
+    // bare numbers: degrees for angles, part units for lengths (as the worksheet's values)
+    const value = (src: string | undefined, fallback: string, kind: 'L' | 'A') => Number(src?.trim() || fallback) * (kind === 'A' ? D : 1);
+    const ball: CadJoint = { id: 'j', name: 'J', type: 'ball', a: { occ: 'a', origin: { kind: 'origin' } }, b: { occ: 'b', origin: { kind: 'origin' } }, angle: '30', offset: '2', angle2: '20', angle3: '10', x: '5' };
+    expect(jointParams(ball, value)).toEqual({ angle: 30 * D, offset: 2, angle2: 20 * D, angle3: 10 * D });
+    expect(jointParams({ ...ball, type: 'revolute' }, value)).toEqual({ angle: 30 * D, offset: 2 });
+    expect(jointParams({ ...ball, type: 'pinslot' }, value)).toEqual({ angle: 30 * D, offset: 2, x: 5 });
+  });
 
   it('planar: slides x, y in the plane and turns about its normal', () => {
     expect(JOINT_DOFS.planar).toEqual(['x', 'y', 'angle']);

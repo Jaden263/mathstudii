@@ -12,10 +12,11 @@ import { meshDistance, meshTree, type MeshTree } from '../clearance';
 import type { CadDesign, DesignNumbers } from '../design';
 import type { KinState } from '../kinematics';
 import { hashString } from '../keys';
+import { ByteLru } from '../../model/lru';
 import { joinedPairs, motionResult, runMotion, type FrameClearance, type MotionFrame, type MotionResult } from '../motion';
 import { m4Point, type M4, type Vec3 } from '../solid';
 import { buildDesignCached, type OccBuiltDesign } from './build';
-import { guard, hasSolid, scratch, trsf, type OC } from './kernel';
+import { guard, hasSolid, onOccRenewed, scratch, trsf, type OC } from './kernel';
 import { shapeVolume } from './ops';
 import { common, placedBodies } from './query';
 import { cachedResultOcc } from './result';
@@ -112,18 +113,22 @@ export function clearanceOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, f
   });
 }
 
-// frames by what they are solved from, and clearances by the shapes and where the frames put them
-const framesOf = new Map<string, MotionFrame[]>();
-const clearances = new Map<string, FrameClearance[]>();
-const KEPT = 24;
+// frames by what they are solved from, and clearances by the shapes and where the frames put
+// them: a few studies' worth, within a byte budget (2000 frames of a large assembly are megabytes)
+const framesOf = new ByteLru<string, MotionFrame[]>(16 * 2 ** 20, 24);
+const clearances = new ByteLru<string, FrameClearance[]>(4 * 2 ** 20, 24);
 let keptBy: OC | null = null;
 /** Each shape a number, the same for as long as the timeline cache keeps it (unchanged bodies keep their shapes). */
 const shapeIds = new WeakMap<TopoDS_Shape, number>();
 let nextShape = 0;
+// a renewed kernel has other shapes, and nothing here may keep the old instance reachable
+onOccRenewed(() => {
+  clearances.clear();
+  keptBy = null;
+});
 
-function remember<T>(m: Map<string, T>, key: string, v: T): T {
+function remember<T>(m: ByteLru<string, T>, key: string, v: T): T {
   m.set(key, v);
-  if (m.size > KEPT) m.delete(m.keys().next().value!);
   return v;
 }
 

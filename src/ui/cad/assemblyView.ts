@@ -72,7 +72,8 @@ export function useAssemblyView(o: AssemblyViewInput): AssemblyView {
   const solution = useMemo(() => {
     if (!kin || !moving) return null;
     const drive: Record<string, DofValues> = o.drive ? { [o.drive.joint]: { [o.drive.dof]: o.drive.value } } : driveAt(o.motion!.study, o.dr?.params ?? {}, o.motion!.t);
-    const from = last.current?.key === moving ? last.current.values : undefined;
+    // a drive starts from the configuration shown (a solved DOF driven turns what drove its loop)
+    const from = (last.current?.key === moving ? last.current.values : undefined) ?? (o.drive ? kin.values : undefined);
     const sol = solveKinematics(kin.model, { drive, ...(from ? { from } : {}) });
     last.current = { key: moving, values: sol.values };
     return sol;

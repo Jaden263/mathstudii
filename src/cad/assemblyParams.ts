@@ -13,13 +13,18 @@ import type { MotionResult } from './motion';
 /** An expression → part units ('L') or radians ('A'; bare numbers are degrees). */
 export type ValueOf = (src: string | undefined, fallback: string, kind: 'L' | 'A', what: string) => number;
 
-/** A joint's values (angle and offset as always; the other DOFs, limits and rest values when given). */
+/**
+ * A joint's values (angle and offset as always; the other DOFs, limits and rest values when
+ * given). x, y, pitch and roll count only for the types that move by them: a ball joint made
+ * a revolute does not keep a tilt nothing shows.
+ */
 export function jointParams(j: CadJoint, value: ValueOf): Record<string, number> {
   const p: Record<string, number> = { angle: value(j.angle, '0', 'A', 'angle'), offset: value(j.offset, '0', 'L', 'offset') };
-  if (j.x?.trim()) p.x = value(j.x, '0', 'L', dofWord(j.type, 'x'));
-  if (j.y?.trim()) p.y = value(j.y, '0', 'L', 'y');
-  if (j.angle2?.trim()) p.angle2 = value(j.angle2, '0', 'A', 'pitch');
-  if (j.angle3?.trim()) p.angle3 = value(j.angle3, '0', 'A', 'roll');
+  const has = (k: DofKey) => JOINT_DOFS[j.type].includes(k);
+  if (has('x') && j.x?.trim()) p.x = value(j.x, '0', 'L', dofWord(j.type, 'x'));
+  if (has('y') && j.y?.trim()) p.y = value(j.y, '0', 'L', 'y');
+  if (has('angle2') && j.angle2?.trim()) p.angle2 = value(j.angle2, '0', 'A', 'pitch');
+  if (has('angle3') && j.angle3?.trim()) p.angle3 = value(j.angle3, '0', 'A', 'roll');
   for (const k of DOF_KEYS) {
     const d = j.dofs?.[k];
     if (!d || !JOINT_DOFS[j.type].includes(k)) continue;
@@ -154,22 +159,32 @@ export function motionValue(st: MotionStudy, mr: MotionResult, kin: KinState, un
     const of: Record<string, unknown> = {};
     // a plot asks for every joint at the same inputs: each input solved once
     const seen = new Map<number, Record<string, DofValues> | Error>();
+    // a solved angle driven turns the short way round (kinematics.ts)
+    const kj = kin.model.joints.find((j) => j.id === tr.joint);
+    const wraps = !!kj?.free.includes(tr.dof) && isAngleDof(tr.dof) && kj.min[tr.dof] === undefined && kj.max[tr.dof] === undefined;
+    const gap = (x: number, v: number) => (wraps ? Math.atan2(Math.sin(x - v), Math.cos(x - v)) : x - v);
+    // where the mechanism stopped going either way from a frame: an input further out stops
+    // there too (a plot past a dead point asks for many)
+    const stops = new Map<string, { reach: number; err: Error }>();
     const solveAt = (x: unknown) => {
       const xv = dimensionValue(x, unit, isAngleDof(tr.dof));
       const got = seen.get(xv);
       if (got) return got;
       let best = 0;
-      input.forEach((v, i) => Math.abs(v - xv) < Math.abs(input[best] - xv) && (best = i));
+      input.forEach((v, i) => Math.abs(gap(v, xv)) < Math.abs(gap(input[best], xv)) && (best = i));
+      const dx = gap(xv, input[best]), way = `${best}${dx < 0 ? '-' : '+'}`;
+      const stop = stops.get(way);
+      if (stop && Math.abs(dx) >= stop.reach) return stop.err;
       const from = Object.fromEntries(Object.keys(mr.values).map((jid) => [jid, at(jid, best)]));
       const sol = solveKinematics(kin.model, { drive: { [tr.joint]: { [tr.dof]: xv } }, from });
       // an input the mechanism cannot reach (past a dead point or a limit) has no value: a
       // gap in a plot, not the place where it stopped
       const reached = sol.values[tr.joint]?.[tr.dof];
       const name = kin.model.joints.find((j) => j.id === tr.joint)?.name ?? tr.joint;
-      const why = reached === undefined || Math.abs(reached - xv) > 1e-9 * (isAngleDof(tr.dof) ? 1 : kin.model.size)
-        ? `${name}: ${sol.warnings[tr.joint] ?? Object.values(sol.errors)[0] ?? 'out of reach'}`
-        : Object.values(sol.errors)[0];
+      const short = reached !== undefined && Math.abs(gap(reached, xv)) > 1e-9 * (isAngleDof(tr.dof) ? 1 : kin.model.size);
+      const why = reached === undefined || short ? `${name}: ${sol.warnings[tr.joint] ?? Object.values(sol.errors)[0] ?? 'out of reach'}` : Object.values(sol.errors)[0];
       const values = why ? new Error(why) : sol.values;
+      if (short && values instanceof Error && stops.size < 4096) stops.set(way, { reach: Math.abs(gap(reached!, input[best])), err: values });
       if (seen.size < 4096) seen.set(xv, values);
       return values;
     };

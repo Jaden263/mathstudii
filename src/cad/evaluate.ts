@@ -450,6 +450,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     dr.placements = placed.placements;
     dr.kin = placed.kin;
     Object.assign(dr.errors, placed.errors);
+    Object.assign(dr.warnings!, placed.warnings);
   }
   // motion studies: the frames sampled, and their clearance on the exact shapes
   if (design.motions?.length && dr.kin) {

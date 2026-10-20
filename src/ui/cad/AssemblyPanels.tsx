@@ -61,7 +61,7 @@ export function JointDofFields({ joint: j, values, unit, onChange, onDrive }: {
               <label className="check" title="The assembly finds the value: a joint in a closed loop (a four-bar's pins)">
                 <input type="checkbox" checked={solved} onChange={(e) => setDof(k, { free: e.target.checked || undefined })} /> Solved
               </label>
-              {!solved && onDrive && <button className="btn" title="Move it by hand: the document changes only on Set" onClick={() => onDrive(k)}>Drive…</button>}
+              {onDrive && <button className="btn" title={solved ? 'Move it by hand: the joints that drive its loop follow; the document changes only on Set' : 'Move it by hand: the document changes only on Set'} onClick={() => onDrive(k)}>Drive…</button>}
             </div>
             <div className="row3">
               <Expr label="Min" value={d?.min ?? ''} placeholder="none" onChange={(v) => setDof(k, { min: v || undefined })} />
@@ -120,9 +120,35 @@ export function DrivePanel({ joint: j, dof, value, unit, size, values, onValue }
   );
 }
 
-/** The DOFs of a joint a drive can move: neither solved by the assembly nor following a link. */
+/** The DOFs of a joint a drive can move: any but a link's follower (a solved one moves what drives its loop). */
 export function drivenDofs(design: CadDesign, j: CadJoint): DofKey[] {
-  return JOINT_DOFS[j.type].filter((k) => !j.dofs?.[k]?.free && !(design.links ?? []).some((l) => !l.suppressed && l.b.joint === j.id && l.b.dof === k));
+  return JOINT_DOFS[j.type].filter((k) => !(design.links ?? []).some((l) => !l.suppressed && l.b.joint === j.id && l.b.dof === k));
+}
+
+/**
+ * What Set as value writes after a drive: the driven DOF's value, and every other driven DOF
+ * the drive moved (a drive of a solved DOF moves the joints that drive its loop). Solved DOFs
+ * stay solved: the document finds them again from the values written. A loop nothing drives
+ * (every DOF solved) keeps where it was moved to as its solved DOFs' rest values.
+ */
+export function drivePatches(design: CadDesign, solved: Record<string, DofValues>, before: Record<string, DofValues>, drive: { joint: string; dof: DofKey }, unit: string, size: number): Record<string, Partial<CadJoint>> {
+  const out: Record<string, Partial<CadJoint>> = {};
+  const moved = (j: CadJoint, k: DofKey) => {
+    const now = solved[j.id]?.[k], was = before[j.id]?.[k];
+    return now !== undefined && (was === undefined || Math.abs(now - was) > 1e-9 * (isAngleDof(k) ? 1 : Math.max(1, size)));
+  };
+  for (const j of design.joints) for (const k of drivenDofs(design, j)) {
+    if (j.dofs?.[k]?.free || solved[j.id]?.[k] === undefined) continue;
+    if ((j.id === drive.joint && k === drive.dof) || moved(j, k)) (out[j.id] ??= {})[FIELD[k]] = dofExpr(k, solved[j.id][k]!, unit);
+  }
+  if (Object.keys(out).length || !design.joints.find((j) => j.id === drive.joint)?.dofs?.[drive.dof]?.free) return out;
+  for (const j of design.joints) for (const k of JOINT_DOFS[j.type]) {
+    const d = j.dofs?.[k];
+    if (!d?.free || !moved(j, k)) continue;
+    const dofs = { ...j.dofs, ...out[j.id]?.dofs, [k]: { ...d, rest: dofExpr(k, solved[j.id][k]!, unit) } };
+    out[j.id] = { ...out[j.id], dofs };
+  }
+  return out;
 }
 
 /** The joints' moving DOFs as choices: `${joint}/${dof}`. */
