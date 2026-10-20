@@ -1196,8 +1196,11 @@ base made longer keeps its rounded edge rounded. Every size is a worksheet expre
     A driven value outside its limits is clamped to them, with a yellow warning on the
     joint. The selected joint's glyph shows its frame, its DOFs and the limits (red
     ticks).
-  - **Drive** turns or slides one driven DOF by hand (a slider and a field), the
-    mechanism following in the view. The document changes only with **Set as value**.
+  - **Drive** turns or slides one DOF by hand (a slider and a field), the mechanism
+    following in the view. The document changes only with **Set as value**. Driving a
+    solved DOF (a four-bar's rocker) moves what drives its loop instead (the crank), and
+    Set as value writes the crank's angle (the dialog says what it will write); a loop
+    nothing drives keeps where it was moved to as its solved DOFs' rest values.
   - **As-built:** pick one origin; the other side's origin is put where it stands now, so
     nothing moves.
   - **Flip** makes mating faces point at each other.
@@ -1218,9 +1221,10 @@ base made longer keeps its rounded edge rounded. Every size is a worksheet expre
   - The joint panel shows the mobility, the DOFs the loops leave free (unknowns less the
     rank of the loop Jacobian).
   - Unconstrained occurrences take typed positions and rotations.
-- **Motion studies:** keyframes of driven DOFs over time, straight or smooth (a monotone
+- **Motion studies:** keyframes of DOFs over time, straight or smooth (a monotone
   cubic that eases in and out and never overshoots a key), sampled at n frames, each
-  solved from the one before.
+  solved from the one before. A track on a solved DOF takes its loop over, as a drive
+  does.
   - Play, pause, loop, speed and a scrubber.
   - With **Track clearance**, every frame's least distance between occurrences (pairs a
     joint joins can be left out) and the volume they overlap. It is drawn as a chart, and
