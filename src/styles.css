@@ -6863,3 +6863,98 @@ div.pl-cutplot {
   border-radius: 3px;
   background: var(--surface-2);
 }
+
+/* ---------------------------------------------------------------- CAD sheet metal: flat pattern */
+
+.cadw-flat {
+  position: absolute;
+  inset: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font: 12.5px var(--font);
+  z-index: 6;
+  overflow: hidden;
+}
+
+.cadw-flat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cadw-flat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+}
+
+.cadw-flat-svg {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cadw-flat-outer,
+.cadw-flat-inner {
+  fill: none;
+  stroke: var(--text);
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.4px !important;
+}
+
+.cadw-flat-inner {
+  stroke: var(--accent);
+}
+
+.cadw-flat-bend {
+  fill: none;
+  stroke: var(--error);
+}
+
+.cadw-flat-note {
+  fill: var(--error);
+  font-family: var(--font);
+}
+
+.cadw-flat-side {
+  flex: none;
+  width: 280px;
+  overflow: auto;
+}
+
+.cadw-flat-table th,
+.cadw-flat-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cadw-flat-table th:first-child,
+.cadw-flat-table td:first-child {
+  text-align: left;
+}
+
+.hint.warn {
+  color: var(--warn);
+}
+
+@media (max-width: 720px) {
+  .cadw-flat-body {
+    flex-direction: column;
+  }
+
+  .cadw-flat-side {
+    width: auto;
+    max-height: 40%;
+  }
+}

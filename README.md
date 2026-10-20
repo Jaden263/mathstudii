@@ -1479,6 +1479,57 @@ features and the selection store these names:
   - The worksheet shows the message too. Nothing is ever moved to some other face.
 - **Order:** a sketch can only refer to faces built before it in the timeline.
 
+**Sheet metal** (Sheet Metal tab; the flat pattern and edge flanges need the B-rep kernel):
+
+- **Rules** per component: thickness t, inner bend radius R, K-factor, bend relief
+  (rectangular, round or tear, with width and depth, default t × t) and corner relief (none,
+  square or round, default size R + t). All are worksheet expressions with units, so
+  `t_s` from the worksheet can drive them. The K-factor defaults from the material: steel
+  0.44 and aluminium 0.43, as Autodesk Fusion's default sheet-metal rules have them;
+  stainless steel 0.45 and copper 0.44 are typical for air bending at R ≈ t. A test bend
+  gives the K-factor of your own tooling.
+- **Flange** on a sketch: a closed profile becomes a plate t thick, below the sketch plane
+  or flipped. Open lines end to end become a strip, bent at every corner with the rules'
+  radius; the lines are one face of the sheet.
+- **Edge flange** on straight edges picked in the view (an edge on the top face bends up):
+  height to the outer or inner virtual sharp, bend angle, bend position (inside, outside,
+  centre or adjacent), offsets from both ends (with bend reliefs) and the other way.
+  Where the end of the new bend meets another bend, the rules' corner relief is cut.
+- **Hem** (open with a gap, or closed) on picked edges, and **Bend** along a sketch line
+  across a flat face (centred on the line, or with either tangent line on it).
+- **Flat pattern** (ribbon, or `part.flat` in the worksheet): the blank with its
+  cut-outs, the bend lines (the middle of each bend) with notes like *UP 90° R2*, and a bend
+  table with angle, radius, direction, BA and DIN 6935's correction v (information
+  only: the flat uses BA). The developed length is the sum of the flat lengths and of
+  BA = θ·(R + K·t) for every bend. An L bracket with outer legs a and b gives
+  (a − t − R) + (b − t − R) + BA.
+- **Worksheet:** `part.flat.L` and `W` (blank length and width), `Lx`, `Ly`, `A` (blank area
+  less cut-outs), `m` (A·t·ρ), `n` (number of bends), `BA` (sum of the allowances), `v`,
+  `t` and `K`, also per body (`part.Body1.flat.L`, with the component's name between them in
+  an assembly).
+- **Exports:** **DXF** (R12, 1:1 in the part's unit) has the outer contour on layer OUTER,
+  the cut-outs on INNER, bend lines on BEND (DASHED) and their notes as TEXT on
+  BEND_NOTES. Arcs and circles stay ARC and CIRCLE entities. **SVG** is at true size. A
+  drawing can show the flat pattern as a view: tick *Flat pattern* in its properties.
+- **How it is built:** each flange is a prism of its flat outline. Each bend is its
+  cross-section revolved about the bend axis, so its faces are exact cylinders. Faces are
+  named after the feature and piece, so sketches, holes and drawing dimensions on a flange
+  stay on it when heights, angles or rules change. Holes and cuts through a flange (made
+  with the usual Solid features after folding) are mapped back into the flat.
+- **The limits:**
+  - Cuts across a bend are not unrolled into the flat: the flat pattern warns and leaves
+    them out. The same applies to cuts that only go part way into the sheet.
+  - Bend refolds the sheet from its flanges. Cut-outs through it are carried along, but
+    other features made on the sheet before the bend are dropped, and the faces of the
+    carried cut-outs get new names.
+  - Open profiles take lines only (no arcs). A Bend line must cross the face square to
+    two straight edges, and must not run through a hole.
+  - Corner reliefs are made only where the end of one bend meets the tangent line of
+    another bend.
+  - No forming tools, louvres, lofted or rolled flanges, and no unfold/refold feature. The
+    flat view of a drawing shows the first sheet-metal body of the part, and its
+    dimensions are not associative.
+
 **Exchange:**
 
 - **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and

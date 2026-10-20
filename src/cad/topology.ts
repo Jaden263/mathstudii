@@ -345,6 +345,13 @@ export function faceWords(key: string, featureName: (id: string) => string | und
     const kind = ({ p: 'flat', c: 'cylindrical', k: 'conical', s: 'spherical', t: 'toroidal' } as Record<string, string>)[imported[2]] ?? 'curved';
     return `a ${kind} face of ${feature}${+imported[1] ? ` (body ${+imported[1] + 1})` : ''}${copy}`;
   }
+  // sheet metal: a flange or bend of an edge flange, hem, bend or bent strip (sheetMetal.ts)
+  const sheet = /^(fl|bend)(?::[^/]*)?\/(start|end|side:(\w+))/.exec(role);
+  if (sheet) {
+    const side = sheet[3];
+    const face = sheet[2] === 'start' || side === 'a' ? 'face A' : sheet[2] === 'end' || side === 'b' ? 'face B' : side === 'far' ? 'far edge face' : 'side face';
+    return `the ${face} of the ${sheet[1] === 'fl' ? 'flange' : 'bend'} of ${feature}${copy}`;
+  }
   const what = role === 'start' ? 'start face' : role === 'end' ? 'end face' : role.startsWith('side') ? 'side face'
     : role.startsWith('round') ? 'rounding' : role.startsWith('chamfer') ? 'chamfer'
       : role.startsWith('in:') ? 'inner wall' : role.startsWith('out:') ? 'outer wall' : role === 'split' ? 'cut face'

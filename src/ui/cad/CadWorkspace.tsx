@@ -51,6 +51,8 @@ import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
 import { BendIcon, EdgeFlangeIcon, FlangeIcon, HemIcon } from './sheetIcons';
+import { FlatPanel, RulesFields, SheetFields, SheetRibbon, exportFlat, pickSheetEdge, pickingEdges, sheetBodiesOf, sheetHint, startSheet } from './SheetMetalUI';
+import { DEFAULT_RULES, isSheetFeature } from '../../cad/sheetMetal';
 
 interface Props {
   region: CadRegion;
@@ -61,7 +63,7 @@ interface Props {
   connected?: boolean;
 }
 
-type Tab = 'solid' | 'assemble' | 'inspect' | 'file' | 'sketch' | 'constrain';
+type Tab = 'solid' | 'assemble' | 'inspect' | 'file' | 'sketch' | 'constrain' | 'sheet';
 
 type Dlg =
   /**
@@ -74,7 +76,9 @@ type Dlg =
   | { kind: 'sketch'; ref: PlaneRef | string; offset: string }
   | { kind: 'joint'; id: string; mark: number; isNew: boolean; picking: 'a' | 'b' | null; snap?: string }
   | { kind: 'measure'; picks: Measured[]; result?: Distance | null; error?: string }
-  | { kind: 'interference'; rows: Interference[] | null; error?: string };
+  | { kind: 'interference'; rows: Interference[] | null; error?: string }
+  /** The sheet-metal rules of a component (Cancel puts them back). */
+  | { kind: 'sheetRules'; cid: string; mark: number };
 
 /** Something picked to measure, with what the panel says about it. */
 interface Measured {
@@ -256,6 +260,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const [isolate, setIsolate] = useState(false);
   // inspection: a section plane through the model
   const [section, setSection] = useState<{ plane: 'XY' | 'XZ' | 'YZ'; at: number; flip: boolean } | null>(null);
+  // the flat pattern of the active component's sheet-metal body, over the 3-D view
+  const [flatOpen, setFlatOpen] = useState(false);
   // phones start with the panels folded away; they open over the view
   const narrow = typeof window !== 'undefined' && window.innerWidth < 760;
   const [showTree, setShowTree] = useState(!narrow);
@@ -535,6 +541,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const m = startBuild(kind, id, name, op);
       if (!m) return;
       f = m;
+    } else if (isSheetFeature({ kind })) {
+      const m = startSheet(kind as 'flange', {
+        design: cur(), comp, id, name, items, result, selSketch, selProfile,
+        edges: () => usePicks('edge', (e) => !!(e as { line?: unknown }).line), sheetBodies: sheetBodiesOf(dr, comp.id).map((b) => b.id),
+      });
+      if (typeof m === 'string') return setMsg(m);
+      f = m;
     } else if (MODIFY_KINDS.has(kind)) {
       const m = startModify(kind as ModifyFeature['kind'], id, name);
       if (!m) return;
@@ -548,6 +561,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     seal();
     const m = mark();
     insertItem(comp.id, f);
+    // the first sheet-metal feature brings the default rules (steel, 2 mm)
+    if (isSheetFeature(f) && !comp.sheet) patchComp(comp.id, { sheet: DEFAULT_RULES });
     setSel(null);
     setDialog({ kind: 'feature', cid: comp.id, id, mark: m, isNew: true });
   };
@@ -634,7 +649,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
   const closeDialog = (ok: boolean) => {
     if (!dialog) return;
-    if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint')) revertTo(dialog.mark);
+    if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint' || dialog.kind === 'sheetRules')) revertTo(dialog.mark);
     if (ok) finishRollback();
     seal();
     setDialog(null);
@@ -885,6 +900,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (!c || !f) return;
       if (isModify(f)) return pickForModify(c, f, hit);
       if (isBuildFeature(f)) return pickForBuild(c, f, hit);
+      if (pickingEdges(f)) {
+        const on = hitBody(hit);
+        if (!on) return;
+        if (occOf(on.occ)?.component !== c.id) return setMsg('That body belongs to another component');
+        const r = pickSheetEdge(f, on.b, hit.edge, build?.components[c.id]?.bodies ?? [], sheetBodiesOf(dr, c.id).some((b) => b.id === on.body));
+        return typeof r === 'string' ? setMsg(r) : patchItem(c.id, f.id, r);
+      }
       if (key.startsWith('p:') && (f.kind === 'extrude' || f.kind === 'revolve')) {
         const p = parseProfile(key);
         if (p.sketch !== f.sketch) return patchItem(c.id, f.id, { sketch: p.sketch, profiles: [p.key] } as Partial<DesignItem>);
@@ -999,6 +1021,21 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     } catch (err) {
       setMsg(`Could not read ${file.name}: ${(err as Error).message}`);
     }
+  };
+  /** The flat pattern of the active component's (first) sheet-metal body as DXF or SVG. */
+  const exportSheet = async (format: 'dxf' | 'svg') => {
+    const b = sheetBodiesOf(dr, comp?.id)[0];
+    if (!b || !dr || !comp) return setMsg('There is no sheet-metal body to unfold: make one with Sheet Metal → Flange (the flat pattern needs OpenCascade)');
+    try {
+      const fp = await kernelRequest({ op: 'flat', design: cur(), numbers: designNumbers(dr), component: comp.id, body: b.id });
+      await exportFlat(fp, format, region.unit, `${fileBase}-${b.name}`);
+    } catch (e) {
+      if (!isSuperseded(e)) setMsg(`The flat pattern failed: ${(e as Error).message}`);
+    }
+  };
+  const openRules = (cid: string) => {
+    seal();
+    openDialog({ kind: 'sheetRules', cid, mark: mark() });
   };
   const exportDxf = async () => {
     if (!ds) return;
@@ -1182,7 +1219,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // references), its plane or axis if picked, and the roundings or chamfers it made
   const modified = activeFeature && isModify(activeFeature) ? activeFeature : null;
   // a sweep, coil, thread or construction item: what it holds is marked the same way
-  const held = activeFeature && isBuildFeature(activeFeature) ? activeFeature : null;
+  const held = activeFeature && (isBuildFeature(activeFeature) || pickingEdges(activeFeature)) ? activeFeature : null;
   const modMarks = useMemo(() => {
     const out = new Map<string, { faces: number[]; edges: number[] }>();
     const occ = (modified || held) && dialog?.kind === 'feature' ? editOccurrence(design, dialog.cid) : undefined;
@@ -1253,7 +1290,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     : null;
   // … and a sweep, coil, thread or construction dialog the faces or edges of its fields, a thread's faces, a sweep's path edges
   const buildPick = held && dialog?.kind === 'feature'
-    ? (dialog.pick ? (['plane', 'cylinder', 'face'].includes(dialog.pick.kind) ? 'faces' : 'edges') : held.kind === 'thread' ? 'faces' : held.kind === 'sweep' && held.path.kind === 'edges' ? 'edges' : null)
+    ? (dialog.pick ? (['plane', 'cylinder', 'face'].includes(dialog.pick.kind) ? 'faces' : 'edges') : held.kind === 'thread' ? 'faces' : held.kind === 'sweep' && held.path.kind === 'edges' ? 'edges' : pickingEdges(held) ? 'edges' : null)
     : null;
   const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint' || modPick === 'edges' || modPick === 'faces' || !!buildPick;
   const onHover = (h: PickHit) => {
@@ -1347,6 +1384,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     }
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'coil' && !dialog.pick && activeFeature.op !== 'new' && !activeFeature.pathOnly) return 'Click bodies for the targets (none: every body it meets) · Pick fills a field from the view · Esc cancels';
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'rib') return 'Pick the sketch and its curves in the dialog · click a body to join the rib to it · Esc cancels';
+    if (dialog?.kind === 'feature' && activeFeature && isSheetFeature(activeFeature)) return sheetHint(activeFeature);
+    if (dialog?.kind === 'sheetRules') return 'The rules apply to every flange, hem and bend of the component · Esc cancels';
     if (dialog?.kind === 'feature' && held) return 'Pick fills a field from the view (a face, an edge, a corner or a plane) · Esc cancels';
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';
     return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · F fillet · Q press pull · J joint · M measure';
@@ -1380,6 +1419,31 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             onChange={(p, k) => patchItem(c.id, f.id, p, k ? `${f.id}:${k}` : undefined)} />
           {dr?.warnings?.[f.id] && <div className="region-warn">{dr.warnings[f.id]}</div>}
           {dialog.rollback && <p className="hint">The timeline is rolled back to {f.name} while you edit it.</p>}
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'feature' && activeFeature && isSheetFeature(activeFeature)) {
+      const c = design.components.find((q) => q.id === dialog.cid)!;
+      return (
+        <Dialog title={featureTitle(activeFeature)} error={dr?.errors[activeFeature.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <SheetFields comp={c} feature={activeFeature} result={result} onRules={() => openRules(c.id)}
+            onChange={(p, k) => patchItem(c.id, activeFeature.id, p, k ? `${activeFeature.id}:${k}` : undefined)} />
+          {dr?.warnings?.[activeFeature.id] && <p className="hint warn">{dr.warnings[activeFeature.id]}</p>}
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'sheetRules') {
+      const c = design.components.find((q) => q.id === dialog.cid);
+      if (!c) return null;
+      // the numbers a sheet feature of the component resolved them to
+      const used = c.items.find((i) => isSheetFeature(i) && dr?.params[i.id]?.t);
+      return (
+        <Dialog title={`Sheet-metal rules — ${c.name}`} error={used ? dr?.errors[used.id] : undefined} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <RulesFields rules={c.sheet ?? DEFAULT_RULES} numbers={used ? dr?.params[used.id] : undefined}
+            onChange={(r, k) => {
+              const mat = r.material !== (c.sheet ?? DEFAULT_RULES).material ? MATERIALS.find((m) => m.name === ({ steel: 'Steel', aluminium: 'Aluminium', stainless: 'Stainless steel', copper: 'Copper' } as Record<string, string>)[r.material ?? '']) : undefined;
+              patchComp(c.id, { sheet: r, ...(mat ? { density: mat.density } : {}) }, k ? `${c.id}:sheet:${k}` : undefined);
+            }} />
         </Dialog>
       );
     }
@@ -1648,7 +1712,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const inSketch = !!(ds && sketchRegion);
   const tabs: { id: Tab; label: string }[] = inSketch
     ? [{ id: 'sketch', label: 'Sketch' }, { id: 'constrain', label: 'Constrain' }]
-    : [{ id: 'solid', label: 'Solid' }, { id: 'assemble', label: 'Assemble' }, { id: 'inspect', label: 'Inspect' }, { id: 'file', label: 'File' }];
+    : [{ id: 'solid', label: 'Solid' }, { id: 'sheet', label: 'Sheet Metal' }, { id: 'assemble', label: 'Assemble' }, { id: 'inspect', label: 'Inspect' }, { id: 'file', label: 'File' }];
   const shownTab = tabs.some((t) => t.id === tab) ? tab : tabs[0].id;
   const selIds = ui.regionId === region.id ? ui.selected : [];
   const selOcc = sel?.startsWith('occ:') ? sel.slice(4) : sel?.startsWith('body:') ? parseBody(`b:${sel.slice(5)}`).occ : null;
@@ -1847,6 +1911,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           </>
         )}
         {shownTab === 'file' && exchange.ribbon}
+        {shownTab === 'sheet' && (
+          <SheetRibbon Group={Group} Button={RibbonButton} active={activeFeature?.kind} flatOn={flatOpen}
+            onSketch={() => openDialog({ kind: 'sketch', ref: 'XY', offset: '' })} onStart={startFeature} onRules={() => comp && openRules(comp.id)}
+            onFlat={() => setFlatOpen(!flatOpen)} onExport={exportSheet} />
+        )}
       </div>
 
       <div className="cadw-main">
@@ -1925,6 +1994,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           {!inSketch && (shown.notice || (shown.state !== 'ready' && shown.state !== 'none' && scene.meshes.length > 0)) && (
             <span className={`cadw-kernel${shown.notice ? ' warn' : ''}`} title={shown.notice}>{shown.notice ? (shown.noticeShort === 'Mesh kernel' ? 'Mesh kernel (approximate)' : shown.noticeShort) : shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Rebuilding…'}</span>
           )}
+          {!inSketch && flatOpen && <FlatPanel design={cur()} dr={dr} comp={comp} unit={region.unit} base={fileBase} onClose={() => setFlatOpen(false)} />}
           {!inSketch && section && (
             <div className="cadw-inspect" onPointerDown={(e) => e.stopPropagation()}>
               <b>Section</b>

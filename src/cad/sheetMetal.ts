@@ -463,17 +463,21 @@ export function addFlange(m: SheetModel, hit: EdgeHit, sp: FlangeSpec): FlangeAd
     const p = vadd(near, vmul(vsub(far, near), (q - qn) / (qf - qn)));
     return { seg: end === 'b' ? line(nb.a, p) : line(p, nb.b), p };
   };
+  const named = new Map<Seg, string>();
   const put = (into: Seg[], names: string[], s: Seg, name: string) => {
     if (s.kind === 'line' && vlen(vsub(s.b, s.a)) <= tol) return;
     into.push(s);
     names.push(name);
+    named.set(s, name);
   };
-  // the pieces of the parent the new outline cuts off: its new stretch, then back along the old outline
+  // the pieces of the parent the new outline cuts off: its new stretch, then back along the old
+  // outline. The new stretch keeps the names it has in the outline, so the faces the cut leaves
+  // are named as a rebuild of the parent from its outline would name them
   const removed: Loop[] = [];
   const piece = (path: Seg[], old: Vec2[]) => {
     const back = old.slice().reverse().filter((p, i, all) => i === 0 || vlen(vsub(p, all[i - 1])) > tol);
-    const lp: Loop = { segs: [...path, ...back.slice(0, -1).map((p, i) => line(p, back[i + 1]))], entities: [] };
-    lp.entities = lp.segs.map((_, i) => `x${i}`);
+    const closing = back.slice(0, -1).map((p, i) => line(p, back[i + 1]));
+    const lp: Loop = { segs: [...path, ...closing], entities: [...path.map((q) => named.get(q) ?? `${sp.token}:x`), ...closing.map((_, i) => `${sp.token}:o${n}.${i}`)] };
     if (Math.abs(loopArea(lp)) > tol * tol) removed.push(ccw(lp));
   };
   /** A corner relief from `from` to `to` about the corner E: a square, or a quarter circle. */
@@ -571,6 +575,7 @@ export function addFlange(m: SheetModel, hit: EdgeHit, sp: FlangeSpec): FlangeAd
   }
   if (!(b1 - a1 > tol)) throw new Error('the reliefs leave nothing of the edge for the bend');
   const tangent = line(P(a1, sb), P(b1, sb));
+  named.set(tangent, `${sp.token}:t`);
   // with a setback, everything from where the outline leaves to where it comes back is one piece
   if (deep) {
     const onEdge = (s: Seg) => s.kind === 'line' && Math.abs(vdot(vsub(s.a, A), nIn)) < tol && Math.abs(vdot(vsub(s.b, A), nIn)) < tol;
