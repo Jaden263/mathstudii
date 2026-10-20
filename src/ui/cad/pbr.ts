@@ -1,7 +1,7 @@
 // Physically based shading of CAD bodies in the 3-D views. Metallic-roughness
-// appearances (appearances.ts) are lit by a small studio: a key, a fill and a rim light
-// fixed to the viewer, and an environment of sky above and floor below the world's
-// horizon for reflections and ambient light. Specular is GGX / Cook–Torrance (Smith
+// appearances (appearances.ts) are lit by a small studio: a key and a fill light fixed
+// to the viewer, and an environment of sky above and floor below the world's horizon
+// for reflections and ambient light. Specular is GGX / Cook–Torrance (Smith
 // height-correlated visibility, Schlick's Fresnel), diffuse Lambert, the environment's
 // specular the split-sum BRDF approximation for mobile (Karis 2014); colours are mixed in
 // linear light, tone-mapped with ACES filmic (Narkowicz 2015) and written as sRGB.
@@ -50,7 +50,6 @@ const float PI = 3.14159265;
 // view space: x right, y up, z towards the viewer
 const vec3 KEY = vec3(-0.4152, 0.5709, 0.7083);
 const vec3 FILL = vec3(0.6262, -0.1818, 0.7581);
-const vec3 RIM = vec3(0.2357, 0.7071, -0.6667);
 const vec3 BOX = vec3(-0.3015, 0.8040, 0.5126);
 const float EXPOSURE = 1.0;
 
@@ -138,7 +137,8 @@ void main() {
   float a = rough * rough;
   vec3 f0 = mix(vec3(0.04), uBase, uMetal);
   vec3 diff = uBase * (1.0 - uMetal);
-  vec3 c = light(n, v, KEY, 3.4, f0, diff, a, NoV) + light(n, v, FILL, 0.8, f0, diff, a, NoV) + light(n, v, RIM, 0.6, f0, diff, a, NoV);
+  // the key light in full; the soft fill only diffuse (its highlight would hardly show)
+  vec3 c = light(n, v, KEY, 3.4, f0, diff, a, NoV) + diff * (0.8 / PI) * sat(dot(n, FILL));
   vec2 ab = envBRDF(NoV, rough);
   vec3 spec = f0 * ab.x + ab.y;
   c += irradiance(n) * diff * (1.0 - spec) + studio(reflect(-v, n), rough) * spec;

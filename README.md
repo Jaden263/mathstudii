@@ -1065,7 +1065,8 @@ workspace opens full screen in the page. Its layout follows Fusion:
   and sketches, occurrences and joints. Each item has a visibility toggle.
 - **3-D viewport** (WebGL, Z up): drag to orbit, Shift or middle drag to pan, wheel to
   zoom at the cursor. The ViewCube's faces, edges and corners jump to views. Shaded,
-  shaded-with-edges and wireframe display.
+  shaded-with-edges and wireframe display; bodies shade physically based in their
+  materials' appearances.
 - **Dialog / properties** (right): feature and joint dialogs, or the properties and mass
   properties of the selected component, body, occurrence, joint or timeline item.
 - **Timeline** (bottom): the active component's sketches and features in order. Click to
@@ -1241,9 +1242,47 @@ base made longer keeps its rounded edge rounded. Every size is a worksheet expre
 
 **Inspect:** measure between picked points (snapping to corners, with the line drawn in
 the view); **Section** cuts every body with the XY, XZ or YZ plane at any position, with
-the cut faces in colour (Flip keeps the other half); mass properties of the assembly,
-each component and each body (volume, mass, centre of gravity, inertia tensor); overall
-size.
+the cut faces in colour (Flip keeps the other half); overall size; and:
+
+- **Properties** (mass properties) of the assembly, a component or a body: mass, volume,
+  surface area, mean density, the centre of gravity (marked in the view), the inertia
+  tensor about it and about the origin (parallel-axis theorem; off the diagonal
+  J_xy = −∫xy dm), the principal moments with their axes (drawn red, green, blue from the
+  smallest) and the radii of gyration √(I/m). A component's and a body's are in the
+  component's coordinates, the assembly's in its own. **Copy to worksheet** puts math
+  regions on the clipboard that read them from the part (`asm.Flange.Im1 = kg*mm^2`), or
+  the values as definitions when the part has no name.
+- **Zebra** stripes (bands of light reflected in the surfaces: broken across an edge where
+  faces only meet, kinked where they are tangent, smooth where the curvature runs on),
+  **Draft** (faces green where they part along the pull direction by at least the draft
+  asked, red where they part against it, yellow in between; the picked face's angle) and
+  **Curvature** (mean or Gaussian, blue to red, with a legend and a range of its own or
+  the 95th percentile). The analyses paint see-through bodies opaque.
+- **Render** saves the view as a PNG 1×, 2× or 4× its size, transparent or on white, the
+  bodies alone or with planes and sketches: drawn tile by tile into the view's own
+  antialiased canvas, so its size is what the browser allows a canvas (16384 px a side).
+
+**Materials and appearance** (Inspect → **Materials**, or A; also in the component's and
+the body's panels):
+
+- **Physical materials** from a library with their sources: structural steels S235–S460
+  (EN 10025, values of EN 1993-1-1), stainless 1.4301 and 1.4404 (EN 1993-1-4),
+  aluminium EN AW-6061-T6, 6082-T6, 5083-H111 (EN 1999-1-1) and 7075-T6 (EN 755-2),
+  EN-GJL-250 and EN-GJS-400-15, CuZn39Pb3, Cu-ETP, Ti-6Al-4V, POM, PA6, ABS, PLA, PETG, PC,
+  PEEK (typical datasheet values), C24 and GL24h (EN 338, EN 14080), C30/37 (EN 1992-1-1)
+  and soda-lime glass (EN 572-1): density, E, ν, G, yield (0.2 % proof) and tensile
+  strength, thermal expansion.
+- A body's material beats its component's, which beats the part's. A density expression
+  wins over a material at its level (the material's other properties stay), so parts
+  made before materials keep their masses.
+- **Appearances**: paints (RAL), anodised aluminium, bare metals brushed and polished,
+  plastics gloss and matte, rubber, wood, glass and clear plastics. By default a body looks
+  like its material; an appearance (or a colour) can be set on a component, a body, or on
+  faces picked in the view, which keep it through edits (found by their references).
+- The views shade physically based: a key and a fill light and a studio environment (sky,
+  horizon and floor, upright strip lights, a softbox) reflected with GGX specular, ACES
+  tone mapping; see-through bodies are drawn back to front, far side first, and grow
+  opaque towards grazing angles. Edges stay crisp lines.
 
 **Extrude options and Loft:**
 
@@ -1416,7 +1455,12 @@ as before (a section clips the mesh and closes it).
   `b_p + 5 mm`, `30 deg`, `n_b`), so the design follows the calculation above it.
 - **Part → worksheet:** name the part (`asm`) and the math below can use
   - the whole assembly: `asm.V`, `asm.m`, the centre of gravity `asm.xg` …, the mass moments
-    of inertia `asm.Imx` … `asm.Imyz`, and the overall size `asm.Lx`, `asm.Ly`, `asm.Lz`
+    of inertia `asm.Imx` … `asm.Imyz`, and the overall size `asm.Lx`, `asm.Ly`, `asm.Lz`;
+    the surface area `asm.S`, the principal moments `asm.Im1` ≤ `Im2` ≤ `Im3` and axes `e1` …
+    `e3`, radii of gyration `kx` … `kz` and `k1` … `k3`, the moments about the origin
+    `asm.ImOx` … `asm.ImOyz` (on components and bodies too)
+  - a component's or a body's material, `asm.Flange.material.E`, `.rho` (the density it
+    weighs with), `.nu`, `.G`, `.f_y` (`.fy`), `.f_u`, `.alpha_T`, `.name`
   - each component, `asm.Flange.m`, and each body, `asm.Flange.Body1.V`. A single-component
     part puts its bodies and sketches directly on the part.
   - each sketch's section, `asm.Disc.A`; the first sketch's section is also on the part
@@ -1567,6 +1611,12 @@ Freudenstein's equation (a plot of the part's `of.θ4` over the closed form). Th
 the math. The page also has a drawing with an exploded isometric view, balloons and the
 parts list.
 
+The **CAD: materials, mass properties, appearance** example is an S355 bracket, powder
+coated with its machined top face bare, a 6082-T6 pad (a body of its own material,
+anodised), a glass cover and a POM bush: their masses, the plate's principal moment
+m(B² + H²)/12 and radius of gyration against the closed forms, and the materials'
+properties (`bk.Bracket.material.f_y`) read into the math.
+
 What it is not, honestly:
 
 - **Modify features, the limits:**
@@ -1680,6 +1730,23 @@ What it is not, honestly:
     one level (no sub-assemblies).
 - **Drawings:** no tolerance stack-up or GD&T analysis; one sheet per drawing (sheet n of m
   is written as entered).
+- **Materials, appearance and analyses, the limits:**
+  - Material values are nominal: the steels' and aluminiums' strengths are for the
+    thicknesses named in their source, the plastics' typical (dry, 23 °C), timber's E and ν
+    along the grain only (no orthotropy). A material does not change a part's behaviour
+    anywhere but its mass and what the worksheet reads.
+  - Appearances are flat colours with roughness: no textures (wood grain, brushing
+    directions), no shadows, no refraction through glass. STEP keeps exporting the
+    components' colours, not appearances.
+  - Transparency is sorted body by body (by its centre): see-through bodies that pass
+    through each other can show in the wrong order where they overlap.
+  - Curvature is exact on planes, cylinders, cones, spheres and tori (OCCT's surface types);
+    on B-splines and other surfaces it is estimated from the mesh's exact vertex normals
+    (within about 1–2 % on a sphere's mesh), so sharp changes inside a face are smoothed
+    over a triangle. Zebra stripes are tied to the view and drawn on the display mesh, so
+    a coarse mesh can ripple them a little.
+  - The physically based shading costs more than the old flat lighting: about 30 % more
+    time per frame in software rendering (SwiftShader); on a GPU it does not show.
 
 It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
 calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
