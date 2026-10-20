@@ -705,8 +705,11 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
           return x;
         };
         const look = adjust(sm.look ?? plainLook(sm.color));
-        // faces in looks of their own leave gaps in the body's run
         const m = sm.mesh;
+        // an analysis paints a body opaque, glass too: its colours are what it shows
+        const analysed = (!!sm.tint && sm.tint.length >= m.positions.length) || (shading.mode === 'zebra' && isDisplayMesh(m));
+        const see = (l: Look) => alpha * (analysed ? 1 : l.opacity);
+        // faces in looks of their own leave gaps in the body's run
         const runs: Run[] = [];
         const own = isDisplayMesh(m) ? (sm.faceLooks ?? []).filter((g) => g.faces.length) : [];
         if (own.length && isDisplayMesh(m)) {
@@ -720,12 +723,12 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
             start = m.faceStart[x + 1];
           }
           if (b.count > start * 3) rest.push([start * 3, b.count - start * 3]);
-          runs.push({ look, alpha: alpha * look.opacity, ranges: rest });
+          runs.push({ look, alpha: see(look), ranges: rest });
           for (const g of own) {
             const l = adjust(g.look);
-            runs.push({ look: l, alpha: alpha * l.opacity, ranges: ranges(g.faces) });
+            runs.push({ look: l, alpha: see(l), ranges: ranges(g.faces) });
           }
-        } else runs.push({ look, alpha: alpha * look.opacity, ranges: [[0, b.count]] });
+        } else runs.push({ look, alpha: see(look), ranges: [[0, b.count]] });
         items.push({ sm, b, mvp, rot, det: f.det, look, alpha, depth: dot([R[6], R[7], R[8]], centre), runs });
       }
       /**

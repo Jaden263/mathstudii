@@ -1814,7 +1814,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       return (
         <Dialog title="Materials and appearances" okLabel="Done" onOk={() => setDialog(null)} onCancel={() => setDialog(null)}>
           <p className="hint">A physical material gives the mass (unless a density expression is set) and the worksheet its properties; an appearance only changes the view. A body’s own beat its component’s; pick faces in the view to give them an appearance.</p>
-          <MaterialsPanel design={design} dr={dr} unit={u} faces={facesLook || undefined} onPatch={(cid, p) => patchComp(cid, p)} />
+          <MaterialsPanel design={design} dr={dr} unit={u} faces={facesLook || undefined} onPatch={(cid, p, k) => patchComp(cid, p, k)} />
         </Dialog>
       );
     }

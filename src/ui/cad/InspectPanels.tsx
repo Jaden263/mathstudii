@@ -118,14 +118,14 @@ export function BodyLook({ design, comp, body, dr, unit, onPatch }: { design: Ca
 }
 
 /** Every component and body with its material and appearance: assigning them all in one place. */
-export function MaterialsPanel({ design, dr, unit, onPatch, faces }: { design: CadDesign; dr?: DesignResult; unit: string; onPatch: (cid: string, p: Partial<CadComponent>) => void; faces?: ReactNode }) {
+export function MaterialsPanel({ design, dr, unit, onPatch, faces }: { design: CadDesign; dr?: DesignResult; unit: string; onPatch: (cid: string, p: Partial<CadComponent>, coalesce?: string) => void; faces?: ReactNode }) {
   return (
     <div className="cadm-list">
       {faces}
       {design.components.map((c) => (
         <section key={c.id} className="cadm-comp">
           <h4>{c.name}</h4>
-          <ComponentLook design={design} comp={c} dr={dr} unit={unit} onPatch={(p) => onPatch(c.id, p)} />
+          <ComponentLook design={design} comp={c} dr={dr} unit={unit} onPatch={(p, k) => onPatch(c.id, p, k)} />
           {(dr?.bodies[c.id] ?? []).filter((b) => !b.empty).length > 1 && (dr?.bodies[c.id] ?? []).filter((b) => !b.empty).map((b) => (
             <div key={b.id} className="cadm-body">
               <b>{b.name}</b>

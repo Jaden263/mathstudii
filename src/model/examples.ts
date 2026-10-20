@@ -1331,3 +1331,84 @@ export function fourBarExample(): Worksheet {
 }
 
 EXAMPLES.push({ name: 'CAD: four-bar linkage (motion)', make: fourBarExample });
+
+// ---------------------------------------------------------------- materials, mass properties, appearance
+
+/** A steel bracket with an aluminium pad (a body of its own material), a glass cover and a POM bush. */
+function materialsDesign(): CadDesign {
+  return {
+    version: 2,
+    components: [
+      {
+        id: 'cb', name: 'Bracket', material: 'S355', appearance: 'powder-anthracite',
+        bodyNames: { fb1: 'Plate', fb2: 'Pad' },
+        bodyMaterials: { fb2: 'EN AW-6082-T6' }, bodyAppearances: { fb2: 'anodised-red' },
+        // the machined top face shows the bare steel under the powder coat
+        faceAppearances: [{ face: { kind: 'face', body: 'fb1', key: 'fb1/end', hint: { p: [0, 0, 10], d: [0, 0, 1], type: 'plane' } }, appearance: 'steel-satin' }],
+        items: [
+          { kind: 'sketch', id: 'sb1', name: 'Base', plane: { ref: 'XY' }, sketch: centredRect('b', 120, 80, 'B', 'H') },
+          { kind: 'extrude', id: 'fb1', name: 'Plate', sketch: 'sb1', extent: { type: 'one', d: 't', dir: '+' }, op: 'new' },
+          { kind: 'sketch', id: 'sb2', name: 'PadSketch', plane: { ref: 'XY', offset: 't' }, sketch: centredRect('p', 40, 40, 'a_p', 'a_p') },
+          { kind: 'extrude', id: 'fb2', name: 'Pad', sketch: 'sb2', extent: { type: 'one', d: 't_p', dir: '+' }, op: 'new' },
+        ],
+      },
+      {
+        id: 'cw', name: 'Window', material: 'Glass',
+        items: [
+          { kind: 'sketch', id: 'sw1', name: 'Pane', plane: { ref: 'XY' }, sketch: centredRect('w', 60, 40, '60 mm', '40 mm') },
+          { kind: 'extrude', id: 'fw1', name: 'Pane', sketch: 'sw1', extent: { type: 'one', d: '4 mm', dir: '+' }, op: 'new' },
+        ],
+      },
+      {
+        id: 'cu', name: 'Bush', material: 'POM',
+        items: [
+          { kind: 'sketch', id: 'su1', name: 'Rings', plane: { ref: 'XY' }, sketch: rings('u', [[30, 'D_u'], [16, 'd_u']]) },
+          { kind: 'extrude', id: 'fu1', name: 'Bush', sketch: 'su1', extent: { type: 'one', d: 'h_u', dir: '+' }, op: 'new' },
+        ],
+      },
+    ],
+    occurrences: [
+      { id: 'ob', component: 'cb', grounded: true },
+      { id: 'ow', component: 'cw', grounded: true, pos: [0, 0, 16] },
+      { id: 'ou', component: 'cu', grounded: true, pos: [42, 0, 10] },
+    ],
+    joints: [],
+  };
+}
+
+export function materialsExample(): Worksheet {
+  return build('CAD: materials, mass properties, appearance', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Materials and mass properties\nA bracket in **S355** steel (EN 10025-2), powder-coated, with its machined top face bare; an **EN AW-6082-T6** pad, a body of its own material (anodised red); a **glass** cover and a **POM** bush. The masses come from the materials, and the worksheet reads each material’s properties. Double-click the part: **Inspect → Properties** shows the centre of gravity and the principal axes, **Materials** (A) assigns materials and appearances, **Zebra**, **Draft** and **Curvature** analyse the surfaces, **Render** saves a picture.' }],
+    ['math', L, mm(46), { source: 'B := 120 mm' }],
+    ['math', mm(50), mm(46), { source: 'H := 80 mm' }],
+    ['math', mm(80), mm(46), { source: 't := 10 mm' }],
+    ['math', mm(110), mm(46), { source: 'a_p := 40 mm' }],
+    ['math', mm(145), mm(46), { source: 't_p := 6 mm' }],
+    ['math', L, mm(57), { source: 'D_u := 30 mm' }],
+    ['math', mm(50), mm(57), { source: 'd_u := 16 mm' }],
+    ['math', mm(80), mm(57), { source: 'h_u := 20 mm' }],
+    ['cad', L, mm(66), { name: 'bk', width: mm(170), height: mm(78), mode: '3d', view3d: { yaw: -32, pitch: 30 }, density: '', design: materialsDesign() }],
+    ['text', L, mm(148), { width: mm(170), markdown: '## Masses from the materials\nThe plate weighs ρ·B·H·t with the density of S355 the part read from its material; the pad with that of 6082-T6, the cover and the bush with glass’s and POM’s.' }],
+    ['math', L, mm(166), { source: 'ρ_s := bk.Bracket.Plate.material.rho = kg/m^3' }],
+    ['math', mm(95), mm(166), { source: 'bk.Bracket.Pad.material.name =' }],
+    ['math', L, mm(178), { source: 'm_plate := ρ_s · B · H · t = kg' }],
+    ['math', mm(95), mm(178), { source: 'bk.Bracket.Plate.m = kg' }],
+    ['math', L, mm(190), { source: 'bk.Bracket.Pad.material.rho · a_p^2 · t_p = g' }],
+    ['math', mm(95), mm(190), { source: 'bk.Bracket.Pad.m = g' }],
+    ['math', L, mm(202), { source: 'bk.Bush.material.rho · π/4 · (D_u^2 - d_u^2) · h_u = g' }],
+    ['math', mm(95), mm(202), { source: 'bk.Bush.m = g' }],
+    ['text', L, mm(216), { width: mm(170), markdown: '## Principal moments and the material’s strength\nThe plate’s largest principal moment is m(B² + H²)/12, about its axis through the centre of gravity normal to it; the radius of gyration is √(I/m). The bracket’s yield strength comes from its material (EN 1993-1-1 Table 3.1).' }],
+    ['math', L, mm(236), { source: 'bk.Bracket.Plate.Im3 = kg*cm^2' }],
+    ['math', mm(95), mm(236), { source: 'm_plate · (B^2 + H^2) / 12 = kg*cm^2' }],
+    ['math', L, mm(248), { source: 'bk.Bracket.Plate.k3 = mm' }],
+    ['math', mm(95), mm(248), { source: 'sqrt((B^2 + H^2) / 12) = mm' }],
+    ['math', L, mm(260), { source: 'bk.m = kg' }],
+    ['math', mm(55), mm(260), { source: 'bk.zg = mm' }],
+    ['math', mm(110), mm(260), { source: 'bk.Window.material.E = GPa' }],
+    ['math', L, mm(272), { source: 'γ_M0 := 1.0' }],
+    ['math', mm(40), mm(272), { source: 'f_yd := bk.Bracket.material.f_y / γ_M0 = MPa' }],
+    ['math', mm(120), mm(272), { source: 'bk.S = cm^2' }],
+  ]);
+}
+
+EXAMPLES.push({ name: 'CAD: materials, mass properties, appearance', make: materialsExample });

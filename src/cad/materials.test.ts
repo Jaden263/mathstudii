@@ -169,3 +169,30 @@ describe('material names', () => {
     near(designNumbers(res.design!).params.c1.density, 4430e-9);
   });
 });
+
+describe('the materials example', () => {
+  it('evaluates without errors, its masses the closed forms, its machined face found', async () => {
+    const { materialsExample } = await import('../model/examples');
+    const { buildResultOcc } = await import('./occ/result');
+    const { occ } = await import('./occ/kernel');
+    const { faceLooks } = await import('./appearances');
+    const ws = materialsExample();
+    const out = evaluateWorksheet(ws);
+    for (const r of ws.regions) {
+      const res = out.results.get(r.id);
+      if (r.kind === 'math') expect((res as MathResult).error, r.source).toBeUndefined();
+    }
+    const cad = ws.regions.find((r): r is CadRegion => r.kind === 'cad')!;
+    const res = out.results.get(cad.id) as CadResult;
+    expect(res.featureError).toBeUndefined();
+    // S355 plate, 6082-T6 pad, glass cover, POM bush
+    const m = 7850e-9 * 120 * 80 * 10 + 2700e-9 * 40 * 40 * 6 + 2500e-9 * 60 * 40 * 4 + 1410e-9 * (Math.PI / 4) * (30 ** 2 - 16 ** 2) * 20;
+    near(res.design!.total!.m!, m);
+    // the machined top face of the plate is found by its reference on the body as built
+    const built = buildResultOcc(occ()!, cad.design!, designNumbers(res.design!));
+    const looks = faceLooks(cad.design!.components[0], built.components.cb.bodies).get('fb1')!;
+    expect(looks).toHaveLength(1);
+    const top = built.components.cb.bodies.find((b) => b.id === 'fb1')!.faces[looks[0].faces[0]];
+    expect(top.key).toBe('fb1/end');
+  });
+});
