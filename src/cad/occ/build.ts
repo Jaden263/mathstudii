@@ -12,6 +12,8 @@ import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
 import { failedComponent, placeBuilt, timelineCache } from './cache';
 import { hasSolid, occBox, onOccRenewed, renewOcc, scratch, trsf, volumeProperties, xyz, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
+import type { FlatSummary, SheetModel } from '../sheetMetal';
+import { bodyFlat } from './flat';
 
 export { occBox };
 
@@ -33,6 +35,8 @@ export interface OccComponentBuild {
   threads?: ThreadMark[];
   /** Imported mesh bodies (no B-rep). */
   meshes?: MeshBody[];
+  /** Sheet-metal bodies' models, by body id. */
+  sheets?: Record<string, SheetModel>;
 }
 
 export interface OccBuiltDesign {
@@ -112,6 +116,8 @@ export interface MeasuredBody {
   empty?: boolean;
   /** An imported mesh body. */
   mesh?: boolean;
+  /** A sheet-metal body's flat pattern. */
+  flat?: FlatSummary;
 }
 
 /** A box moved by a placement (the box of its moved corners). */
@@ -194,7 +200,7 @@ export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbe
       if (cb.sketches && Object.keys(cb.sketches).length) Object.assign((out.sketches ??= {}), cb.sketches);
       out.bodies[c.id] = cb.bodies.map((b) => (isEmptyShape(oc, b.solid.shape)
         ? { id: b.id, name: b.name, feature: b.feature, empty: true }
-        : { id: b.id, name: b.name, feature: b.feature, mass: shapeMass(oc, b.solid.shape) }));
+        : { id: b.id, name: b.name, feature: b.feature, mass: shapeMass(oc, b.solid.shape), ...bodyFlat(oc, b.solid.shape, cb.sheets?.[b.id]) }));
       // mesh bodies: volume properties only when closed
       for (const m of cb.meshes ?? []) out.bodies[c.id].push({ id: m.id, name: m.name, feature: m.feature, mesh: true, ...(m.mass ? { mass: m.mass } : { empty: true }) });
       // the box of each visible occurrence: its bodies moved into place

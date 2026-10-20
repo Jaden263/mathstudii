@@ -26,6 +26,9 @@ import { drawViewOcc } from '../occ/drawing';
 import { exportModelMesh, interferenceMesh, meshBuilt, outlineMesh, sectionMesh } from './meshFallback';
 import { addInterference, hasMeshBodies, meshInterference, sectionMeshBodies } from '../meshQueries';
 import { buffersOf, NO_KERNEL, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
+import { flatPatternOcc } from '../occ/flat';
+import { flatView } from '../flatExport';
+import type { FlatPattern } from '../sheetMetal';
 
 let loadBrep: () => Promise<unknown> = () => initOcc();
 let loadMesh: () => Promise<unknown> = () => initKernel();
@@ -170,7 +173,7 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
     if (!shown) return { value: null, kernel: which, transfer: [] };
     const key = designKey(design, numbers);
     const views: Record<string, DrawView> = {};
-    for (const v of req.views) views[v.key] = drawViewFor(design, numbers, shown, v, key);
+    for (const v of req.views) views[v.key] = v.flat ? flatViewFor(design, numbers, v.flat.body) : drawViewFor(design, numbers, shown, v, key);
     return { value: views, kernel: which, transfer: [] };
   }
   if (!oc && !K) throw new Error(NO_KERNEL);
@@ -221,6 +224,36 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
       if (!oc) throw new Error('a face DXF needs the B-rep kernel (OpenCascade did not load)');
       return { value: faceDxf(oc, buildDesignCached(oc, design, numbers), req.component, req.body, req.face, req.unit), kernel: which, transfer: [] };
     }
+    case 'flat':
+      return { value: sheetFlat(design, numbers, req.component, req.body).fp, kernel: which, transfer: [] };
+  }
+}
+
+/**
+ * The flat pattern of a sheet-metal body (the first one of the design when none is named):
+ * from the B-rep kernel's build (it is kept with the body's solid, so asking again costs nothing).
+ */
+function sheetFlat(design: CadDesign, numbers: DesignNumbers, component: string | undefined, body: string | undefined): { fp: FlatPattern; name: string } {
+  const oc = brepNow();
+  if (!oc) throw new Error('the flat pattern needs the B-rep kernel (OpenCascade did not load)');
+  const built = buildDesignCached(oc, design, numbers);
+  for (const [cid, cb] of built.components) {
+    if (component && cid !== component) continue;
+    for (const b of cb.bodies) {
+      const m = cb.sheets?.[b.id];
+      if (m && (!body || b.id === body)) return { fp: flatPatternOcc(oc, b.solid.shape, m), name: b.name };
+    }
+  }
+  throw new Error(body ? 'that body is not sheet metal (or is gone)' : 'the part has no sheet-metal body: make one with Sheet Metal → Flange');
+}
+
+/** A drawing's flat pattern view; empty, with a note, when there is none to draw. */
+function flatViewFor(design: CadDesign, numbers: DesignNumbers, body: string | undefined): DrawView {
+  try {
+    const { fp, name } = sheetFlat(design, numbers, undefined, body);
+    return flatView(fp, `Flat pattern of ${name}`);
+  } catch (e) {
+    return { name: 'Flat pattern', visible: [], hidden: [], tangent: [], thin: [], axes: [], box: { x0: 0, y0: 0, x1: 0, y1: 0 }, note: e instanceof Error ? e.message : String(e) };
   }
 }
 

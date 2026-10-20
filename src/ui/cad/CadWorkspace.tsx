@@ -50,6 +50,7 @@ import { BuildFields, emptyDef, isBuildFeature, withPick, type FieldPick } from 
 import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate } from './jointPick';
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
+import { BendIcon, EdgeFlangeIcon, FlangeIcon, HemIcon } from './sheetIcons';
 
 interface Props {
   region: CadRegion;
@@ -194,6 +195,7 @@ const ICON: Record<DesignItem['kind'], ReactNode> = {
   sweep: <Route size={14} />, coil: <Tornado size={14} />, thread: <Screw size={14} />, rib: <TriangleRight size={14} />,
   plane: <Diamond size={14} />, axis: <MoveDiagonal size={14} />, point: <Locate size={14} />,
   import: <FileInput size={14} />,
+  flange: <FlangeIcon size={14} />, edgeflange: <EdgeFlangeIcon size={14} />, hem: <HemIcon size={14} />, bend: <BendIcon size={14} />,
 };
 
 /** Where a sketch is: "the XY plane", "the end face of Extrude1", "face of Body1" (made before sketches followed faces). */

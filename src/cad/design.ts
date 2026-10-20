@@ -41,6 +41,8 @@ import { meshBodyTopology, type MeshBody } from './meshBody';
 import { runImport } from './importFeature';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
+import type { SheetFeature, SheetModel, SheetRules } from './sheetMetal';
+import { sheetStep } from './sheetSteps';
 
 export type { Helix, MeshBody };
 
@@ -482,7 +484,7 @@ export interface ImportFeature extends FeatureBase {
 }
 
 export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature
-  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem | ImportFeature;
+  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem | ImportFeature | SheetFeature;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -496,6 +498,8 @@ export interface CadComponent {
   marker?: number;
   bodyNames?: Record<string, string>;
   hiddenBodies?: string[];
+  /** Sheet-metal rules of its flanges, hems and bends (sheetMetal.ts). */
+  sheet?: SheetRules;
 }
 
 export interface CadOccurrence {
@@ -555,6 +559,7 @@ export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
   fillet: 'Fillet', chamfer: 'Chamfer', shell: 'Shell', draft: 'Draft', presspull: 'Press pull', split: 'Split', move: 'Move',
   sweep: 'Sweep', coil: 'Coil', thread: 'Thread', rib: 'Rib', plane: 'Plane', axis: 'Axis', point: 'Point',
   import: 'Import',
+  flange: 'Flange', edgeflange: 'Edge flange', hem: 'Hem', bend: 'Bend',
 };
 
 /** Features that work on what is picked on the bodies: they are edited with the timeline rolled back to them. */
@@ -566,7 +571,8 @@ export const isConstruct = (i: DesignItem): i is ConstructItem => CONSTRUCT_KIND
 
 /** Items that pick faces, edges or vertices of the bodies before them: edited with the timeline rolled back to them. */
 export const picksOnBodies = (i: DesignItem): boolean => isModify(i) || isConstruct(i) || i.kind === 'thread'
-  || (i.kind === 'sweep' && i.path.kind === 'edges') || (i.kind === 'coil' && (typeof i.plane !== 'string' || (i.centre !== undefined && typeof i.centre !== 'string')));
+  || (i.kind === 'sweep' && i.path.kind === 'edges') || (i.kind === 'coil' && (typeof i.plane !== 'string' || (i.centre !== undefined && typeof i.centre !== 'string')))
+  || i.kind === 'edgeflange' || i.kind === 'hem';
 
 /** Profiles are identified by the entities of their outer loop. */
 export function profileKey(r: ProfileRegion): string {
@@ -899,6 +905,8 @@ export interface SolidOps<S> {
   stepBodies?(file: ImportedFile, part: { key: string; index: number } | undefined, unit: string, tag: string): { solids: S[]; warnings: string[] };
   /** A closed mesh sewn into a solid of plane triangles merged into faces (B-rep kernel only). */
   meshSolid?(mesh: MeshBody, body: number, unit: string, tag: string): S;
+  /** The cut-outs through each flange of a sheet-metal body, in flat coordinates (B-rep kernel only). */
+  sheetCutouts?(s: S, m: SheetModel): { tag: string; regions: ProfileRegion[] }[];
 }
 
 export interface TimelineBody<S> {
@@ -931,6 +939,8 @@ export interface Timeline<S> {
   threads: ThreadMark[];
   /** Imported mesh bodies (not B-rep: no feature works on them). */
   meshes: MeshBody[];
+  /** Sheet-metal bodies' models, by body id. */
+  sheets?: Record<string, SheetModel>;
 }
 
 /** z-range of a box in a sketch frame. */
@@ -1017,6 +1027,8 @@ export interface TimelineState<S> {
   threads: ThreadMark[];
   /** Imported mesh bodies so far. */
   meshes?: MeshBody[];
+  /** Sheet-metal bodies' models so far, by body id. */
+  sheets?: Record<string, SheetModel>;
 }
 
 /**
@@ -1572,6 +1584,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   // old cached states (made before threads were kept) have none
   let threads = prev.threads ?? [];
   let meshes = prev.meshes ?? [];
+  let sheets = prev.sheets ?? {};
   const built = prev.frames;
   // construction items and coils add planes and datums
   let frames = prev.frames, datums = prev.datums;
@@ -1858,6 +1871,15 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         threads = [...threads, ...pieces.slice(1).flatMap((_, k) => marks.map((m) => ({ ...m, body: `${item.id}.${k + 1}.${b.id}` })))];
         break;
       }
+      case 'flange':
+      case 'edgeflange':
+      case 'hem':
+      case 'bend':
+        sheets = sheetStep(ops, {
+          design, inp, bodies, sheets, created, frameOf, itemName: (id) => itemName(design, id), warn: (w) => (warnings[item.id] = w),
+          profiles: (sid, key) => selectedProfiles(inp, sid, key ? [key] : undefined).slice(0, key ? undefined : 1),
+        }, item, p);
+        break;
       case 'move': {
         if (!item.bodies.length) throw new Error('pick the bodies to move');
         let M = m4Translate([p.dx ?? 0, p.dy ?? 0, p.dz ?? 0]);
@@ -1881,7 +1903,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads, meshes };
+  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads, meshes, sheets };
 }
 
 /**
@@ -1905,7 +1927,7 @@ export function namedMeshes<S>(comp: CadComponent, st: TimelineState<S>): MeshBo
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads, meshes: namedMeshes(comp, st) };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads, meshes: namedMeshes(comp, st), sheets: st.sheets };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */

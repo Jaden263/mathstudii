@@ -20,6 +20,7 @@ import { edgeInfo, faceInfo, topologyOcc } from './topology';
 import { sweepOps } from './sweep';
 import { stepBodiesOcc } from './stepImport';
 import { meshSolidOcc } from './meshSolid';
+import { sheetCutoutsOcc } from './sheet';
 
 export interface FaceTag {
   face: TopoDS_Shape;
@@ -1142,6 +1143,7 @@ export function occOps(oc: OC, arena: Arena): SolidOps<OccSolid> {
     // imported geometry (stepImport.ts, meshSolid.ts)
     stepBodies: (file, part, unit, tag) => stepBodiesOcc(oc, arena, file, part, unit, tag),
     meshSolid: (mesh, body, unit, tag) => meshSolidOcc(oc, arena, mesh, body, unit, tag),
+    sheetCutouts: (s, m) => sheetCutoutsOcc(oc, s.shape, m),
   };
   // an OCCT exception from a step without its own message still becomes a readable Error
   for (const k of Object.keys(ops) as (keyof SolidOps<OccSolid>)[]) {

@@ -299,7 +299,7 @@ function curvePoints(oc: OC, a: InstanceType<OC['BRepAdaptor_Curve']>, at: (u: n
 }
 
 /** The edges of an HLR result (2-D edges in the projection plane) as primitives. */
-function edgePrims(oc: OC, t: Arena, c: TopoDS_Shape, size: number): Prim[] {
+export function edgePrims(oc: OC, t: Arena, c: TopoDS_Shape, size: number): Prim[] {
   const C = oc.GeomAbs_CurveType;
   const out: Prim[] = [];
   for (const e of subShapes(oc, t, c, oc.TopAbs_ShapeEnum.TopAbs_EDGE)) {

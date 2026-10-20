@@ -15,6 +15,8 @@ export interface DrawViewRequest {
   /** Direction the viewer looks in, and what is up on the paper. */
   dir: Vec3;
   up: Vec3;
+  /** The flat pattern of a sheet-metal body instead of a view of the part (the first sheet-metal body when none is named). */
+  flat?: { body?: string };
   hidden: boolean;
   /** A section view: only what lies beyond the plane through this point, square to `dir`, is kept. */
   cut?: Vec3;
@@ -60,6 +62,9 @@ export interface DrawView {
   /** Drawn from the display mesh: every body (no B-rep kernel), or only some (coils and modeled threads). */
   mesh?: 'all' | 'some';
   note?: string;
+  /** A flat pattern: its bend lines and their notes ("UP 90° R2", degrees counter-clockwise). */
+  bends?: Prim[];
+  notes?: { x: number; y: number; text: string; rot: number }[];
 }
 
 const TAU = 2 * Math.PI;

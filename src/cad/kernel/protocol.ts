@@ -11,6 +11,7 @@ import type { Frame } from '../solid';
 import type { ExportScope } from '../occ/exchange';
 import type { Interference, SectionBody } from '../occ/query';
 import type { DrawView, DrawViewRequest } from '../drawing2d';
+import type { FlatPattern } from '../sheetMetal';
 
 export type { Distance, EntityRef, ExportScope, Interference, SectionBody, SectionPlane };
 
@@ -31,7 +32,9 @@ export type KernelRequest =
   /** Drawing views of the visible bodies: exact: hidden-line removal on the B-rep (the display mesh's without OpenCascade). */
   | ({ op: 'drawing'; views: DrawViewRequest[] } & Built)
   /** A flat face of a body as a DXF profile (its index in the body's faces). */
-  | ({ op: 'faceDxf'; component: string; body: string; face: number; unit: CadUnit } & Built);
+  | ({ op: 'faceDxf'; component: string; body: string; face: number; unit: CadUnit } & Built)
+  /** The flat pattern of a sheet-metal body (B-rep kernel). */
+  | ({ op: 'flat'; component: string; body: string } & Built);
 
 /** Exchange formats the kernel writes (OBJ comes as a zip of the .obj and its .mtl). */
 export type ExportFormat = 'step' | 'stl' | '3mf' | 'obj' | 'glb';
@@ -55,6 +58,7 @@ export interface KernelValues {
   /** Null while there is nothing built to draw. */
   drawing: Record<string, DrawView> | null;
   faceDxf: string;
+  flat: FlatPattern;
 }
 
 export type KernelOp = KernelRequest['op'];
