@@ -3,7 +3,7 @@
 // a strip where its sketch line is, and flat lengths of brackets from their outer legs.
 import { describe, expect, it } from 'vitest';
 import {
-  addFlange, bendAllowance, bendAlongLine, chainMatrix, din6935, findEdge, flatNumbers, innerSetback, outerSetback, plateModel, sheetParams, sheetRuleNumbers, stripModel,
+  addFlange, bendAllowance, bendAlongLine, chainMatrix, din6935, findEdge, flatNumbers, innerSetback, outerSetback, plateModel, sheetParams, sheetRuleNumbers, sheetVolume, stripModel,
   type FlangeSpec, type SheetModel,
 } from './sheetMetal';
 import { m4Point, type Frame, type Vec3 } from './solid';
@@ -99,6 +99,12 @@ describe('folds', () => {
     close(place(m, w2.chain, [fn.box.x1, 0, t]), [50, 0, 2]);
     expect([fn.box.y0, fn.box.y1]).toEqual([-40, 0]);
     close(place(m, w2.chain, [fn.box.x1, -40, 0]), [50, -40, 0]);
+  });
+
+  it('the volume of the L: the flat parts of the legs times t and the quarter ring between R and R + t', () => {
+    const m = stripModel('f1', { pts: [{ x: 0, y: 30 }, { x: 0, y: 0 }, { x: 50, y: 0 }], ids: ['l0', 'l1'], sketch: XZ, flip: false, width: [0, 40], t, R, K });
+    // flat parts 30 − 4 and 50 − 4, 40 wide; the bend π/4·(4² − 2²)·40
+    near(sheetVolume(m), (26 + 46) * 40 * 2 + (PI / 4) * (16 - 4) * 40, 1e-9);
   });
 
   it('a 60° bend: the flat parts shorter by (R + t)·tan 30° each', () => {

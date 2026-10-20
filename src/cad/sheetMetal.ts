@@ -52,10 +52,12 @@ export interface SheetMaterial {
 }
 
 /**
- * Default K-factors for air bending with R ≈ t. Steel 0.44 and aluminium 0.43 are the
- * defaults of Autodesk Fusion's sheet-metal rule library; stainless steel and copper are
- * typical values for the same process. The K-factor depends on the material, the tooling
- * and R/t: a test bend gives the one to use for parts that need it.
+ * Default K-factors for air bending with R from t to 3t. Steel 0.44 is the K-factor of
+ * Autodesk Fusion's built-in sheet-metal rules (which use it for every material); aluminium,
+ * stainless steel and copper are typical values for the same process, within the 0.40–0.45
+ * that generic K-factor charts give for R = t … 3t (softer metals lower). The K-factor
+ * depends on the material, the tooling and R/t: a test bend gives the one to use for parts
+ * that need it.
  */
 export const SHEET_MATERIALS: SheetMaterial[] = [
   { key: 'steel', name: 'Steel', density: '7850 kg/m^3', K: 0.44 },
@@ -261,6 +263,25 @@ export function modelSize(m: SheetModel): number {
     hi = Math.max(hi, p.x, p.y);
   }
   return Math.max(hi - lo, 0) + m.t;
+}
+
+/**
+ * The volume of the sheet as its model makes it: each flange its area times t, each bend
+ * the ring sector between R and R + t, θ/2·((R + t)² − R²)·w = θ·w·t·(R + t/2).
+ */
+export function sheetVolume(m: SheetModel): number {
+  const flanges = m.flanges.reduce((s, f) => s + (loopArea(f.region.outer) + f.region.holes.reduce((a, h) => a + loopArea(h), 0)) * m.t, 0);
+  return flanges + m.bends.reduce((s, b) => s + b.angle * (b.s1 - b.s0) * m.t * (b.R + m.t / 2), 0);
+}
+
+/**
+ * What the B-rep kernel finds cut through a sheet's flanges (flat coordinates), and how far
+ * the solid's volume is from its model's less those cut-outs: what other features added or
+ * took away (bosses, pockets, chamfers, cuts across bends).
+ */
+export interface SheetCutouts {
+  cuts: { tag: string; regions: ProfileRegion[] }[];
+  other: number;
 }
 
 // ------------------------------------------------------------ base flanges

@@ -1435,10 +1435,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     if (dialog.kind === 'sheetRules') {
       const c = design.components.find((q) => q.id === dialog.cid);
       if (!c) return null;
-      // the numbers a sheet feature of the component resolved them to
+      // the numbers a sheet feature of the component resolved them to; none resolved: the rules are wrong, and every sheet feature says why
       const used = c.items.find((i) => isSheetFeature(i) && dr?.params[i.id]?.t);
+      const first = c.items.find((i) => isSheetFeature(i));
       return (
-        <Dialog title={`Sheet-metal rules — ${c.name}`} error={used ? dr?.errors[used.id] : undefined} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+        <Dialog title={`Sheet-metal rules — ${c.name}`} error={dr?.errors[(used ?? first)?.id ?? '']} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
           <RulesFields rules={c.sheet ?? DEFAULT_RULES} numbers={used ? dr?.params[used.id] : undefined}
             onChange={(r, k) => {
               const mat = r.material !== (c.sheet ?? DEFAULT_RULES).material ? MATERIALS.find((m) => m.name === ({ steel: 'Steel', aluminium: 'Aluminium', stainless: 'Stainless steel', copper: 'Copper' } as Record<string, string>)[r.material ?? '']) : undefined;

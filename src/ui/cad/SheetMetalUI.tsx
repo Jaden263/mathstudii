@@ -89,7 +89,10 @@ export function startSheet(kind: SheetFeature['kind'], cx: StartContext): Design
     return { kind, id, name, sketch: sk.id, ...(cx.selProfile?.sketch === sk.id ? { profile: cx.selProfile.key } : {}), ...(open ? { width: '40' } : {}) };
   }
   if (kind === 'bend') {
-    const sk = cx.selSketch && lines(cx.selSketch) ? cx.selSketch : lastSketch(lines);
+    // a flange's own profile is no bend line
+    const profiles = new Set(cx.items.flatMap((i) => (i.kind === 'flange' ? [i.sketch] : [])));
+    const bendLines = (s: DesignSketch) => lines(s) && !profiles.has(s.id);
+    const sk = cx.selSketch && bendLines(cx.selSketch) ? cx.selSketch : lastSketch(bendLines);
     if (!sk) return 'Sketch the bend line on a face of the sheet first (Sketch, then a line across the face)';
     if (!cx.sheetBodies.length) return 'A bend goes on a sheet-metal body: make one with Flange first';
     return { kind, id, name, sketch: sk.id, angle: '90' };
@@ -244,7 +247,7 @@ export function RulesFields({ rules, onChange, numbers }: { rules: SheetRules; o
           {din && <tr><td>DIN 6935</td><td>k = {num(din.k, 4)}, v(90°) = {num(din.v)}</td></tr>}
         </tbody></table>
       )}
-      <p className="hint">K-factors: steel 0.44 and aluminium 0.43 as Fusion’s default rules, stainless steel and copper typical for air bending at R ≈ t. A test bend gives the K-factor of your tooling. Choosing a material also sets the component’s density for the blank’s mass.</p>
+      <p className="hint">K-factors: steel 0.44 is the K-factor of Fusion’s built-in rules; the others are typical air-bending values for R from t to 3t (generic K-factor charts give 0.40–0.45 there, softer metals lower). A test bend gives the K-factor of your tooling. Choosing a material also sets the component’s density for the blank’s mass.</p>
     </>
   );
 }

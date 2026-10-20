@@ -371,6 +371,8 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     if (e) sheet.labels.push({ layer: 'TEXT', x: (pv.box.x0 + pv.box.x1) / 2, y: pv.box.y1 + 5, h: group.label, text: e.label, anchor: 'middle' });
     // a cutting line's arrows and letters sit past the view's edges: its dimensions stand further off
     if (pv.kind === 'base' && r.dims && info.overall !== false && pv.key !== 'iso') dimension(sheet, pv, (r.sections ?? []).some((s) => s.view === pv.key) ? 15 : 8);
+    // the blank's length and width on a flat pattern (the automatic dimensions from the model size only the standard views)
+    if (pv.kind === 'flat' && r.dims) dimension(sheet, pv, 8);
   }
   // the cutting lines and detail circles on their parents
   for (const s of r.sections ?? []) {

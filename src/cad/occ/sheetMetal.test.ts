@@ -16,16 +16,18 @@ import { occ } from './kernel';
 import { buildResultOcc } from './result';
 import { buildDesignOcc } from './build';
 import { flatPatternOcc } from './flat';
+import { sheetCutoutsOcc } from './sheet';
 import { facePlane, type CadDesign, type DesignItem } from '../design';
 import type { CadSketch } from '../model';
 import { refTo, type TopoRef } from '../topology';
 import type { Vec3 } from '../solid';
 import { bendAllowance, type FlatPattern, type SheetRules } from '../sheetMetal';
-import { flatDxf } from '../flatExport';
+import { flatDxf, flatView } from '../flatExport';
+import { layoutSheet } from '../drawingSheet';
 import type { Prim } from '../drawing2d';
 import type { Unit } from 'mathjs';
 import { evaluateWorksheet, type CadResult } from '../../engine/evaluator';
-import { createRegion, emptyWorksheet, type CadRegion } from '../../model/types';
+import { createRegion, emptyWorksheet, type CadRegion, type DrawingRegion } from '../../model/types';
 import { cadValue } from '../evaluate';
 
 const { PI, tan, sqrt } = Math;
@@ -352,7 +354,7 @@ describe('worksheet values', () => {
 });
 
 describe('memory', () => {
-  it('the flat pattern deletes the OCCT objects it makes', () => {
+  it('the flat pattern and the cut-outs a Bend carries delete the OCCT objects they make', () => {
     const d = part([...withFlanges(plate(), [[50, 20, t]]).components[0].items,
       { kind: 'sketch', id: 's9', name: 'Hole', plane: { ref: 'YZ', offset: '50' }, sketch: circles('h', [[20, 17, 3]]) },
       { kind: 'extrude', id: 'x9', name: 'Cut', sketch: 's9', extent: { type: 'all', both: true }, op: 'cut' }]);
@@ -363,6 +365,10 @@ describe('memory', () => {
     const w = watchHandles(oc);
     try {
       flatPatternOcc(oc, cb.bodies[0].solid.shape, cb.sheets!.g0 ?? Object.values(cb.sheets!)[0]);
+      const found = sheetCutoutsOcc(oc, cb.bodies[0].solid.shape, Object.values(cb.sheets!)[0]);
+      // the hole Ø6 through the standing flange, and nothing else
+      expect(found.cuts.flatMap((c) => c.regions)).toHaveLength(1);
+      expect(found.other).toBeLessThan(1e-6);
     } finally {
       w.stop();
       built.free();
@@ -371,4 +377,94 @@ describe('memory', () => {
   });
 
   void sqrt;
+});
+
+describe('features that fail, or that the sheet model must follow', () => {
+  it('an edge flange on two edges whose second is gone leaves the plate as it was (solid and flat agree)', () => {
+    const ref = edgeAt(part(plate()), [50, 20, t]);
+    // the same edge twice: the first flange takes it away, the second finds nothing
+    const d = part([...plate(), { kind: 'edgeflange', id: 'g0', name: 'Edge0', edges: [ref, ref], height: '30' } as DesignItem]);
+    const { res, numbers } = solve(d);
+    expect(res.design!.errors.g0).toMatch(/reference lost/);
+    near(volumes(res)[0], 50 * 40 * t, 1e-12);
+    const oc = occ()!;
+    const built = buildDesignOcc(oc, d, numbers);
+    try {
+      const cb = built.components.get('c1')!;
+      const fp = flatPatternOcc(oc, cb.bodies[0].solid.shape, cb.sheets!.f1);
+      // no flange in the model, and no sliver of a bend taken for a cut-out
+      near(fp.area, 2000, 1e-12);
+      expect(fp.inner).toEqual([]);
+    } finally {
+      built.free();
+    }
+  });
+
+  const bendAt50 = (more: DesignItem[]): CadDesign => part([
+    ...plate(100, 40), ...more,
+    { kind: 'sketch', id: 's2', name: 'Line', plane: { ref: 'XY', offset: '2' }, sketch: lines('b', [[50, -5], [50, 45]]) },
+    { kind: 'bend', id: 'b1', name: 'Bend1', sketch: 's2', angle: '90' },
+  ]);
+  // the plate 100 × 40 bent 90° up at x = 50: (4000 − 40·BA)·t + the quarter ring π/4·(4² − 2²)·40
+  const V0 = (4000 - 40 * BA90) * t + (PI / 4) * 12 * 40;
+
+  it('a hole made before a bend goes along, without a warning', () => {
+    const { fp, V, res } = flatOf(bendAt50([
+      { kind: 'sketch', id: 's8', name: 'H', plane: { ref: 'XY' }, sketch: circles('h', [[80, 20, 3]]) },
+      { kind: 'extrude', id: 'x8', name: 'Cut', sketch: 's8', extent: { type: 'all', both: true }, op: 'cut' },
+    ]));
+    expect(res.design!.warnings).toEqual({});
+    near(V, V0 - 9 * PI * t, 1e-9);
+    const arc = fp.inner[0].find((p): p is Extract<Prim, { k: 'arc' }> => p.k === 'arc')!;
+    near(arc.cx, 80);
+    near(arc.cy, 20);
+  });
+
+  it('a boss made before a bend is left out, and the bend says so', () => {
+    const boss: DesignItem[] = [
+      { kind: 'sketch', id: 's7', name: 'B', plane: { ref: 'XY', offset: '2' }, sketch: rect('k', 10, 10, 20, 20) },
+      { kind: 'extrude', id: 'x7', name: 'Boss', sketch: 's7', extent: { type: 'one', d: '5' }, op: 'join' },
+    ];
+    // the boss is there before the bend: 10 × 10 × 5
+    near(volumes(solve(part([...plate(100, 40), ...boss])).res)[0], 4000 * t + 500, 1e-12);
+    const { V, res } = flatOf(bendAt50(boss));
+    expect(res.design!.warnings?.b1).toMatch(/left out/);
+    near(V, V0, 1e-9);
+  });
+
+  it('a hole across the bend line is refused (it would be cut on one side of the bend only)', () => {
+    const d = bendAt50([
+      { kind: 'sketch', id: 's8', name: 'H', plane: { ref: 'XY' }, sketch: circles('h', [[50, 20, 3]]) },
+      { kind: 'extrude', id: 'x8', name: 'Cut', sketch: 's8', extent: { type: 'all', both: true }, op: 'cut' },
+    ]);
+    expect(solve(d).res.design!.errors.b1).toMatch(/crosses the bend/);
+  });
+
+  it('a moved sheet keeps its flat pattern and its edges: a hole after the move, a flange after that', () => {
+    const moved: DesignItem[] = [...plate(), { kind: 'move', id: 'mv', name: 'Move1', bodies: ['f1'], dx: '5', dz: '10' } as DesignItem];
+    const ref = edgeAt(part(moved), [55, 20, 10 + t]);
+    const d = part([...moved,
+      { kind: 'edgeflange', id: 'g0', name: 'Edge0', edges: [ref], height: '30' } as DesignItem,
+      { kind: 'sketch', id: 's9', name: 'Hole', plane: { ref: 'XY' }, sketch: circles('h', [[25, 20, 3]]) },
+      { kind: 'extrude', id: 'x9', name: 'Cut', sketch: 's9', extent: { type: 'all', both: true }, op: 'cut' },
+    ]);
+    const { fp, res } = flatOf(d);
+    expect(fp.warnings).toEqual([]);
+    near(width(fp), (50 - t - R) + BA90 + (30 - t - R));
+    const arc = fp.inner[0].find((p): p is Extract<Prim, { k: 'arc' }> => p.k === 'arc')!;
+    // the hole at x = 25 of the part is 20 from the plate's start, which moved by 5
+    near(arc.cx, 20);
+    near(res.design!.box!.max[2], 10 + 30);
+  });
+});
+
+describe('the drawing of a flat pattern', () => {
+  it('its view carries the blank\'s length and width as overall dimensions', () => {
+    const { fp } = flatOf(withFlanges(plate(), [[50, 20, t]]));
+    const r = createRegion('drawing', 0, 0, { flat: {}, views: { front: false, top: false, side: false, iso: false } }) as DrawingRegion;
+    const sheet = layoutSheet(r, { flat: flatView(fp, 'Flat pattern') }, { unit: 'mm', name: 'Part', date: '', overall: false })!;
+    const texts = sheet.labels.filter((l) => l.layer === 'DIM').map((l) => l.text);
+    expect(texts).toEqual([`${+width(fp).toFixed(2)}`, '40']);
+    expect(sheet.inks.some((i) => i.layer === 'BEND')).toBe(true);
+  });
 });

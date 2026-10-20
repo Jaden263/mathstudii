@@ -8,10 +8,10 @@
 // flat would need the bend unrolled): the flat pattern says so.
 import type { TopoDS_Shape } from 'replicad-opencascadejs';
 import { loopMoment, type Loop, type ProfileRegion, type Seg, type Vec2 } from '../profile';
-import { chainMatrix, matrixFrame, modelSize, reversedLoop, type SheetFlange, type SheetModel } from '../sheetMetal';
+import { chainMatrix, matrixFrame, modelSize, reversedLoop, sheetVolume, type SheetCutouts, type SheetFlange, type SheetModel } from '../sheetMetal';
 import { m4Inv, m4Mul, m4Translate, type Arena, type M4 } from '../solid';
 import { regionFace } from './geometry';
-import { guard, occError, scratch, subShapes, trsf, xyz, type OC } from './kernel';
+import { guard, occError, scratch, subShapes, trsf, volumeProperties, xyz, type OC } from './kernel';
 
 type Op = { SetArguments(l: unknown): void; SetTools(l: unknown): void; SetFuzzyValue(v: number): void; Build(r: unknown): void; HasErrors(): boolean; Shape(): TopoDS_Shape; SimplifyResult(a?: boolean, b?: boolean, c?: number): void; Clear(): void };
 
@@ -131,14 +131,26 @@ function faceRegion(oc: OC, t: Arena, f: TopoDS_Shape, tol: number): ProfileRegi
   return { outer: outer ?? { segs: [], entities: [] }, holes };
 }
 
-/** The cut-outs through each flange of a sheet-metal body, as regions in flat coordinates. */
-export function sheetCutoutsOcc(oc: OC, solid: TopoDS_Shape, m: SheetModel): { tag: string; regions: ProfileRegion[] }[] {
+/**
+ * The cut-outs through each flange of a sheet-metal body, as regions in flat coordinates,
+ * and how far the solid's volume is from its model's less those cut-outs (what a refold
+ * from the model would lose).
+ */
+export function sheetCutoutsOcc(oc: OC, solid: TopoDS_Shape, m: SheetModel): SheetCutouts {
   const size = modelSize(m);
-  return scratch((t) => m.flanges.map((f) => {
-    const cut = throughCut(oc, t, solid, m, f, size);
-    // a flange the solid is no longer on (moved, or cut away) has nothing to carry over
-    const area = cut.reduce((s, q) => s + faceArea(oc, t, q), 0);
-    if (area > 0.999 * regionArea(f.region)) return { tag: f.tag, regions: [] };
-    return { tag: f.tag, regions: cut.map((q) => faceRegion(oc, t, q, 1e-6 * size)) };
-  }));
+  return scratch((t) => {
+    let gone = 0;
+    const cuts = m.flanges.map((f) => {
+      const cut = throughCut(oc, t, solid, m, f, size);
+      // a flange the solid is no longer on (moved, or cut away) has nothing to carry over
+      const area = cut.reduce((s, q) => s + faceArea(oc, t, q), 0);
+      if (area > 0.999 * regionArea(f.region)) return { tag: f.tag, regions: [] };
+      gone += area;
+      return { tag: f.tag, regions: cut.map((q) => faceRegion(oc, t, q, 1e-6 * size)) };
+    });
+    const props = t.add(new oc.GProp_GProps());
+    volumeProperties(oc, t, solid, props);
+    const V = props.Mass();
+    return { cuts, other: Math.abs(V - (sheetVolume(m) - gone * m.t)) };
+  });
 }

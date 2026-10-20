@@ -3,13 +3,14 @@
 // flange is a prism of its flat outline, a bend its cross-section revolved about its axis.
 // Edge flanges and hems add their pieces to the body as it is (so holes made before them
 // stay, with their names); a Bend folds part of the sheet, so the body is made again from
-// the model and the cut-outs through it are carried to where their flanges went.
+// the model and the cut-outs through it are carried to where their flanges went (one across
+// the bend line is refused; anything else done to the sheet before is left out, with a warning).
 import type { BuildInputs, CadDesign, SolidOps, TimelineBody } from './design';
 import { loopPolygon, type ProfileRegion, type Vec2 } from './profile';
 import { framePoint, type Frame, type Vec3 } from './solid';
 import { refToken, refWords, resolveRef, resolvedEntity } from './topology';
 import {
-  addFlange, bendAlongLine, bendSection, chainMatrix, cornerOf, findEdge, innerSetback, matrixFrame, outerSetback, plateModel, reliefOf, stripModel,
+  addFlange, bendAlongLine, bendSection, chainMatrix, cornerOf, findEdge, innerSetback, matrixFrame, modelSize, outerSetback, plateModel, reliefOf, sheetVolume, stripModel,
   type BendFeature, type EdgeFlangeFeature, type FlangeFeature, type HemFeature, type SheetBend, type SheetFeature, type SheetFlange, type SheetModel,
 } from './sheetMetal';
 
@@ -101,7 +102,19 @@ function lineChain<S>(cx: SheetContext<S>, item: FlangeFeature): { pts: Vec2[]; 
 // ------------------------------------------------------------ Edge flanges and hems
 
 function edgeFlanges<S>(ops: SolidOps<S>, cx: SheetContext<S>, item: EdgeFlangeFeature | HemFeature, p: Record<string, number>): Record<string, SheetModel> {
-  if (!item.edges.length) throw new Error('pick straight edges of the sheet for the flange');
+  const hem = item.kind === 'hem';
+  if (!item.edges.length) throw new Error(`pick straight edges of the sheet for the ${hem ? 'hem' : 'flange'}`);
+  // every edge or none: an edge that fails puts the bodies back, so the solid and the sheet model still agree
+  const before = cx.bodies.map((b) => b.solid);
+  try {
+    return edgeFlangesOn(ops, cx, item, p);
+  } catch (e) {
+    cx.bodies.forEach((b, i) => (b.solid = before[i]));
+    throw e;
+  }
+}
+
+function edgeFlangesOn<S>(ops: SolidOps<S>, cx: SheetContext<S>, item: EdgeFlangeFeature | HemFeature, p: Record<string, number>): Record<string, SheetModel> {
   let sheets = cx.sheets;
   const { t, R } = p;
   const hem = item.kind === 'hem';
@@ -166,10 +179,12 @@ function bendFeature<S>(ops: SolidOps<S>, cx: SheetContext<S>, item: BendFeature
       continue;
     }
     // the cut-outs through the sheet so far, carried to where their flange went
-    const cuts = ops.sheetCutouts ? ops.sheetCutouts(body.solid, model) : [];
+    const found = ops.sheetCutouts ? ops.sheetCutouts(body.solid, model) : { cuts: [], other: 0 };
     let s = sheetSolid(ops, done.model);
     const tools: S[] = [];
-    for (const c of cuts) for (const rg of c.regions) {
+    for (const c of found.cuts) for (const rg of c.regions) {
+      // a cut-out in the bend's flat width would be cut on one side of it only
+      if (c.tag === done.split && across(done.bend, rg, 1e-6 * modelSize(model))) throw new Error('a cut-out of the sheet crosses the bend: move the bend line off it, or make the cut after the bend');
       const into = c.tag === done.split ? (beyond(done.bend, rg) ? done.moving : done.split) : c.tag;
       const fl = done.model.flanges.find((q) => q.tag === into);
       if (!fl) continue;
@@ -177,6 +192,8 @@ function bendFeature<S>(ops: SolidOps<S>, cx: SheetContext<S>, item: BendFeature
     }
     if (tools.length) s = ops.cut(s, ops.group(tools));
     body.solid = s;
+    // what else features before it did to the sheet (bosses, pockets, chamfers, cuts across bends) is not refolded: say so
+    if (found.other > 1e-6 * sheetVolume(model)) cx.warn('the sheet is refolded from its flanges and the cut-outs through them: what other features before the bend added or took away (bosses, pockets, chamfers, cuts across bends) is left out');
     return { ...cx.sheets, [id]: done.model };
   }
   if (last) throw last;
@@ -188,4 +205,10 @@ function beyond(b: SheetBend, rg: ProfileRegion): boolean {
   const pts = loopPolygon(rg.outer, Math.PI / 18);
   const c = pts.reduce((s, q) => ({ x: s.x + q.x / pts.length, y: s.y + q.y / pts.length }), { x: 0, y: 0 });
   return (c.x - b.o.x) * b.w.x + (c.y - b.o.y) * b.w.y > b.BA / 2;
+}
+
+/** Whether a cut-out of a split flange reaches into the bend's flat width (between its two tangent lines). */
+function across(b: SheetBend, rg: ProfileRegion, tol: number): boolean {
+  const q = loopPolygon(rg.outer, Math.PI / 36).map((p) => (p.x - b.o.x) * b.w.x + (p.y - b.o.y) * b.w.y);
+  return Math.max(...q) > tol && Math.min(...q) < b.BA - tol;
 }

@@ -41,7 +41,7 @@ import { meshBodyTopology, type MeshBody } from './meshBody';
 import { runImport } from './importFeature';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
-import type { SheetFeature, SheetModel, SheetRules } from './sheetMetal';
+import type { SheetCutouts, SheetFeature, SheetModel, SheetRules } from './sheetMetal';
 import { sheetStep } from './sheetSteps';
 
 export type { Helix, MeshBody };
@@ -905,8 +905,8 @@ export interface SolidOps<S> {
   stepBodies?(file: ImportedFile, part: { key: string; index: number } | undefined, unit: string, tag: string): { solids: S[]; warnings: string[] };
   /** A closed mesh sewn into a solid of plane triangles merged into faces (B-rep kernel only). */
   meshSolid?(mesh: MeshBody, body: number, unit: string, tag: string): S;
-  /** The cut-outs through each flange of a sheet-metal body, in flat coordinates (B-rep kernel only). */
-  sheetCutouts?(s: S, m: SheetModel): { tag: string; regions: ProfileRegion[] }[];
+  /** The cut-outs through each flange of a sheet-metal body, in flat coordinates, and what else changed its volume (B-rep kernel only). */
+  sheetCutouts?(s: S, m: SheetModel): SheetCutouts;
 }
 
 export interface TimelineBody<S> {
@@ -1893,6 +1893,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
           // a moved body keeps the names of its faces; a copy's carry a prefix, as a pattern's do
           if (item.copy) created(`${item.id}.1.${b.id}`, item.id, ops.transform(b.solid, M, `${item.id}.1.`));
           else b.solid = ops.transform(b.solid, M, '');
+          // a sheet-metal body's model moves with it (its flat pattern and edge flanges follow the solid)
+          if (!item.copy && sheets[b.id]) sheets = { ...sheets, [b.id]: { ...sheets[b.id], root: m4Mul(M, sheets[b.id].root) } };
           // the body's cosmetic threads go with it (a copy's are copied)
           const marks = threads.filter((m) => m.body === b.id).map((m) => movedMark(m, M, item.copy ? `${item.id}.1.${m.feature}` : m.feature, item.copy ? `${item.id}.1.${b.id}` : b.id));
           threads = item.copy ? [...threads, ...marks] : [...threads.filter((m) => m.body !== b.id), ...marks];

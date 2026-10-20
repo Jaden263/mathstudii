@@ -1485,9 +1485,10 @@ features and the selection store these names:
   (rectangular, round or tear, with width and depth, default t × t) and corner relief (none,
   square or round, default size R + t). All are worksheet expressions with units, so
   `t_s` from the worksheet can drive them. The K-factor defaults from the material: steel
-  0.44 and aluminium 0.43, as Autodesk Fusion's default sheet-metal rules have them;
-  stainless steel 0.45 and copper 0.44 are typical for air bending at R ≈ t. A test bend
-  gives the K-factor of your own tooling.
+  0.44 (the K-factor of Autodesk Fusion's built-in rules), aluminium 0.43, stainless steel
+  0.45 and copper 0.44, typical for air bending at R from t to 3t (generic K-factor charts
+  give 0.40–0.45 there, softer metals lower). A test bend gives the K-factor of your own
+  tooling.
 - **Flange** on a sketch: a closed profile becomes a plate t thick, below the sketch plane
   or flipped. Open lines end to end become a strip, bent at every corner with the rules'
   radius; the lines are one face of the sheet.
@@ -1510,7 +1511,8 @@ features and the selection store these names:
 - **Exports:** **DXF** (R12, 1:1 in the part's unit) has the outer contour on layer OUTER,
   the cut-outs on INNER, bend lines on BEND (DASHED) and their notes as TEXT on
   BEND_NOTES. Arcs and circles stay ARC and CIRCLE entities. **SVG** is at true size. A
-  drawing can show the flat pattern as a view: tick *Flat pattern* in its properties.
+  drawing can show the flat pattern as a view: tick *Flat pattern* in its properties (with
+  overall dimensions on, it gets the blank's length and width).
 - **How it is built:** each flange is a prism of its flat outline. Each bend is its
   cross-section revolved about the bend axis, so its faces are exact cylinders. Faces are
   named after the feature and piece, so sketches, holes and drawing dimensions on a flange
@@ -1520,8 +1522,9 @@ features and the selection store these names:
   - Cuts across a bend are not unrolled into the flat: the flat pattern warns and leaves
     them out. The same applies to cuts that only go part way into the sheet.
   - Bend refolds the sheet from its flanges. Cut-outs through it are carried along, but
-    other features made on the sheet before the bend are dropped, and the faces of the
-    carried cut-outs get new names.
+    other features made on the sheet before the bend are dropped (the Bend warns), and
+    the faces of the carried cut-outs get new names. A cut-out across the bend line is
+    refused: make that cut after the bend.
   - Open profiles take lines only (no arcs). A Bend line must cross the face square to
     two straight edges, and must not run through a hole.
   - Corner reliefs are made only where the end of one bend meets the tangent line of
