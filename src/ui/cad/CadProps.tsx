@@ -10,6 +10,7 @@ import type { Action } from '../store';
 import { LazyInput } from '../sketch/SketchProps';
 import { useOpenCad } from './cadWindow';
 import { MassTable } from './SketchPanel';
+import { MaterialSelect } from './InspectPanels';
 
 export function CadProps({ region, result, dispatch }: { region: CadRegion; result?: CadResult; dispatch: Dispatch<Action> }) {
   const openCad = useOpenCad();
@@ -28,7 +29,7 @@ export function CadProps({ region, result, dispatch }: { region: CadRegion; resu
         <LazyInput label="Variable name" value={region.name} placeholder="e.g. part" onCommit={(v) => set({ name: v.trim() }, 'name')} />
       </label>
       <p className="hint">
-        The math below can use <code>{name}.V</code>, <code>{name}.m</code>, <code>{name}.Imz</code>, <code>{name}.Lx</code>
+        The math below can use <code>{name}.V</code>, <code>{name}.m</code>, <code>{name}.Imz</code>, <code>{name}.Im1</code>, <code>{name}.Lx</code>{comps.length === 1 && (design.material || comps[0].material) ? <>, <code>{name}.material.E</code></> : null}
         {firstSketch ? <>, the first sketch's section (<code>{name}.A</code>, <code>{name}.Ix</code>)</> : null}
         {comps.length > 1 ? <>, each component (<code>{name}.{identifier(comps[1].name)}.m</code>)</> : null}
         {' '}and every named dimension (<code>{name}.d1</code>).
@@ -42,15 +43,9 @@ export function CadProps({ region, result, dispatch }: { region: CadRegion; resu
         </label>
         <label className="field">
           <span>Material</span>
-          <select value={material ? material.density : region.density.trim() ? 'custom' : 'none'} onChange={(e) => {
-            const v = e.target.value;
-            if (v === 'none') set({ density: '' });
-            else if (v !== 'custom') set({ density: v });
-          }}>
-            {MATERIALS.map((x) => <option key={x.name} value={x.density}>{x.name}</option>)}
-            <option value="custom">Custom density</option>
-            <option value="none">No mass</option>
-          </select>
+          {/* a library material leaves the density to it; a density typed below wins over it */}
+          <MaterialSelect value={design.material} inherit={region.density.trim() ? material?.name ?? 'By the density' : 'None (no mass)'}
+            onChange={(m) => set({ design: { ...design, material: m }, ...(m ? { density: '' } : {}) }, 'material')} />
         </label>
       </div>
       <label className="field">
@@ -63,7 +58,7 @@ export function CadProps({ region, result, dispatch }: { region: CadRegion; resu
       </label>
       <label className="field">
         <span>Density</span>
-        <LazyInput label="Density" value={region.density} placeholder="kg/m^3" onCommit={(v) => set({ density: v.trim() }, 'density')} />
+        <LazyInput label="Density" value={region.density} placeholder={design.material ? 'the material’s' : 'kg/m^3'} onCommit={(v) => set({ density: v.trim() }, 'density')} />
       </label>
       {result?.error && <div className="region-error">{result.error}</div>}
       {result?.featureError && <div className="region-error">{result.featureError}</div>}

@@ -20,6 +20,8 @@ export function viewRotation(view: { yaw: number; pitch: number }): number[] {
   return [0, 1, 2].flatMap((i) => [R[3 * i], -R[3 * i + 2], R[3 * i + 1]]);
 }
 import { ViewCube } from './ViewCube';
+import { PBR_VS, SHADING_MODE, pbrFragment, plainLook, tinted, toLinear, type Look, type Shading } from './pbr';
+import { renderSize, renderTiles, tileMatrix, type SceneCapture, type Tile } from './renderExport';
 
 export type Vec3 = [number, number, number];
 type RGB = [number, number, number];
@@ -47,6 +49,12 @@ export interface SceneMesh {
   hoverEdge?: number;
   /** Faces painted another colour (the cut faces of a section). */
   paint?: { faces: number[]; color: [number, number, number] };
+  /** How its surface looks (physically based); default: `color` as a satin dielectric. */
+  look?: Look;
+  /** Display meshes: faces in an appearance of their own. */
+  faceLooks?: { faces: number[]; look: Look }[];
+  /** Colours per vertex (an analysis map, 3 per vertex of the mesh): drawn instead of the look. */
+  tint?: Float32Array;
 }
 
 export const isDisplayMesh = (m: Mesh | DisplayMesh): m is DisplayMesh => 'indices' in m;
@@ -435,30 +443,7 @@ function planeCorners(p: ScenePlane): Vec3[] {
 
 // ------------------------------------------------------------ GL renderer
 
-const TRI_VS = `
-attribute vec3 aPos;
-attribute vec3 aNrm;
-uniform mat4 uMvp;
-uniform mat3 uRot;
-varying vec3 vNrm;
-void main() {
-  vNrm = uRot * aNrm;
-  gl_Position = uMvp * vec4(aPos, 1.0);
-}`;
-
-// Cad3DView's lighting, with an alpha for see-through bodies
-const TRI_FS = `
-precision mediump float;
-uniform vec3 uColor;
-uniform float uAlpha;
-varying vec3 vNrm;
-void main() {
-  vec3 n = normalize(vNrm);
-  if (!gl_FrontFacing) n = -n;
-  float key = max(dot(n, normalize(vec3(-0.35, 0.55, 1.0))), 0.0);
-  float fill = max(dot(n, normalize(vec3(0.6, -0.3, 0.5))), 0.0);
-  gl_FragColor = vec4(uColor * (0.32 + 0.62 * key + 0.12 * fill), uAlpha);
-}`;
+// the bodies are shaded physically based (pbr.ts)
 
 // uShift nudges the whole line by a fraction of a pixel: drawn a few times it makes a thick line
 const LINE_VS = `
@@ -519,6 +504,10 @@ interface DrawInput {
   w: number; // device pixels
   h: number;
   dpr: number;
+  shading?: Shading;
+  /** A tile of a larger image (a render), and how many image pixels make a CSS pixel there. */
+  tile?: Tile;
+  lineScale?: number;
   R: number[];
   frame: Frame;
   zoom: number;
@@ -552,17 +541,21 @@ function unindexed(m: DisplayMesh): { positions: Float32Array; normals: Float32A
 function createRenderer(gl: WebGLRenderingContext): Renderer {
   // 32-bit indices: everywhere in practice; without them display meshes are drawn unindexed
   const uint32 = !!gl.getExtension('OES_element_index_uint');
-  const tri = program(gl, TRI_VS, TRI_FS);
+  // smooth zebra stripes need screen-space derivatives (everywhere but very old phones)
+  const derivatives = !!gl.getExtension('OES_standard_derivatives');
+  const tri = program(gl, PBR_VS, pbrFragment(derivatives));
   const line = program(gl, LINE_VS, LINE_FS);
-  const tPos = gl.getAttribLocation(tri, 'aPos'), tNrm = gl.getAttribLocation(tri, 'aNrm');
+  const tPos = gl.getAttribLocation(tri, 'aPos'), tNrm = gl.getAttribLocation(tri, 'aNrm'), tCol = gl.getAttribLocation(tri, 'aCol');
   const lPos = gl.getAttribLocation(line, 'aPos');
+  const at = (n: string) => gl.getUniformLocation(tri, n);
   const u = {
-    tMvp: gl.getUniformLocation(tri, 'uMvp'), tRot: gl.getUniformLocation(tri, 'uRot'), tColor: gl.getUniformLocation(tri, 'uColor'), tAlpha: gl.getUniformLocation(tri, 'uAlpha'),
+    tMvp: at('uMvp'), tRot: at('uRot'), tBase: at('uBase'), tMetal: at('uMetal'), tRough: at('uRough'), tAlpha: at('uAlpha'), tMode: at('uMode'), tUp: at('uUp'), tStripes: at('uStripes'),
     lMvp: gl.getUniformLocation(line, 'uMvp'), lColor: gl.getUniformLocation(line, 'uColor'), lShift: gl.getUniformLocation(line, 'uShift'),
   };
-  // uploaded once per mesh / segment array object, swept when no longer drawn
+  // uploaded once per mesh / segment array / tint object, swept when no longer drawn
   const meshBufs = new Map<Mesh | DisplayMesh, MeshBufs>();
   const lineBufs = new Map<Float32Array, LineBufs>();
+  const tintBufs = new Map<Float32Array, WebGLBuffer | null>();
   const planeFill = gl.createBuffer(), planeEdge = gl.createBuffer();
 
   const upload = (data: Float32Array) => {
@@ -597,6 +590,21 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
       b.wires = segs.length / 3;
     }
   };
+  /** A mesh's colours per vertex (per corner where display meshes are drawn unindexed). */
+  const tintOf = (sm: SceneMesh): WebGLBuffer | null => {
+    const t = sm.tint!;
+    let b = tintBufs.get(t);
+    if (b === undefined) {
+      const m = sm.mesh;
+      let data = t;
+      if (isDisplayMesh(m) && !uint32) {
+        data = new Float32Array(m.indices.length * 3);
+        for (let k = 0; k < m.indices.length; k++) data.set(t.subarray(3 * m.indices[k], 3 * m.indices[k] + 3), 3 * k);
+      }
+      tintBufs.set(t, (b = upload(data)));
+    }
+    return b;
+  };
   const linesOf = (s: Float32Array): LineBufs => {
     let b = lineBufs.get(s);
     if (!b) {
@@ -606,7 +614,12 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
     return b;
   };
   const sweep = (meshes: SceneMesh[], lines: SceneLines[]) => {
-    const keepM = new Set(meshes.map((m) => m.mesh)), keepL = new Set(lines.map((l) => l.segments));
+    const keepM = new Set(meshes.map((m) => m.mesh)), keepL = new Set(lines.map((l) => l.segments)), keepT = new Set(meshes.map((m) => m.tint));
+    for (const [t, b] of tintBufs) {
+      if (keepT.has(t)) continue;
+      gl.deleteBuffer(b);
+      tintBufs.delete(t);
+    }
     for (const [m, b] of meshBufs) {
       if (keepM.has(m)) continue;
       for (const x of [b.pos, b.nrm, b.edge, b.wire, b.idx]) if (x) gl.deleteBuffer(x);
@@ -627,14 +640,18 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
       gl.depthMask(true);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       sweep(o.meshes, o.lines);
-      const VP = viewProjection(frame, R, w, h, o.zoom, o.pan);
+      // a tile of a render: the whole image's projection, cut down to the tile
+      const VP = o.tile ? mul4(tileMatrix(o.tile, w, h), viewProjection(frame, R, o.tile.W, o.tile.H, o.zoom, o.pan)) : viewProjection(frame, R, w, h, o.zoom, o.pan);
       const ink: RGB = theme.dark ? [0.86, 0.89, 0.94] : [0.12, 0.14, 0.18];
       const edgeInk: RGB = theme.dark ? [0.05, 0.06, 0.08] : [0.12, 0.14, 0.18];
       const accent = theme.accent;
       const accentEdge: RGB = theme.dark ? accent : scale(accent, 0.7);
-      const px = 0.75 * o.dpr; // thick lines: about 2.5 CSS px across
+      const px = 0.75 * (o.lineScale ?? o.dpr); // thick lines: about 2.5 CSS px across
       const thick: [number, number][] = [[0, 0], [px, 0], [-px, 0], [0, px], [0, -px]];
-      const thin: [number, number][] = [[0, 0]];
+      // a render keeps thin lines a CSS pixel wide however large it is
+      const hp = 0.3 * (o.lineScale ?? 1);
+      const thin: [number, number][] = o.lineScale && o.lineScale >= 1.75 ? [[0, 0], [hp, 0], [-hp, 0], [0, hp], [0, -hp]] : [[0, 0]];
+      const shading = o.shading ?? { mode: 'pbr' };
 
       // ---- helpers
       const blend = (on: boolean) => {
@@ -658,7 +675,15 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         }
       };
 
-      interface Item { sm: SceneMesh; b: MeshBufs; mvp: Float32Array; rot: number[]; det: number; color: RGB; alpha: number; depth: number }
+      // the world's up in view space (the environment's sky), and the zebra's bands
+      gl.useProgram(tri);
+      gl.uniform3f(u.tUp, R[2], R[5], R[8]);
+      gl.uniform1f(u.tStripes, shading.mode === 'zebra' ? shading.stripes : 0);
+
+      /** Runs of a mesh's triangles (index ranges) in one look; opaque ones and see-through ones are drawn apart. */
+      interface Run { look: Look; alpha: number; ranges: [number, number][] }
+      interface Item { sm: SceneMesh; b: MeshBufs; mvp: Float32Array; rot: number[]; det: number; look: Look; alpha: number; depth: number; runs: Run[] }
+      const grey: RGB = theme.dark ? [0.5, 0.52, 0.56] : [0.72, 0.74, 0.78];
       const items: Item[] = [];
       for (const sm of o.meshes) {
         if (!sm.mesh.positions.length) continue;
@@ -673,43 +698,86 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         const centre = applyPoint(f, [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2]);
         const op = Math.max(0, Math.min(1, sm.opacity ?? 1));
         const alpha = sm.ghost ? Math.min(op, 0.25) : op;
-        let color = sm.color;
-        if (sm.highlight) color = mix(color, accent, 0.6);
-        if (sm.ghost) color = mix(color, theme.dark ? [0.5, 0.52, 0.56] : [0.72, 0.74, 0.78], 0.4);
-        items.push({ sm, b, mvp, rot, det: f.det, color, alpha, depth: dot([R[6], R[7], R[8]], centre) });
+        const adjust = (l: Look) => {
+          let x = l;
+          if (sm.highlight) x = tinted(x, accent, 0.6);
+          if (sm.ghost) x = tinted(x, grey, 0.4);
+          return x;
+        };
+        const look = adjust(sm.look ?? plainLook(sm.color));
+        // faces in looks of their own leave gaps in the body's run
+        const m = sm.mesh;
+        const runs: Run[] = [];
+        const own = isDisplayMesh(m) ? (sm.faceLooks ?? []).filter((g) => g.faces.length) : [];
+        if (own.length && isDisplayMesh(m)) {
+          const taken = new Set(own.flatMap((g) => g.faces));
+          const ranges = (fs: number[]): [number, number][] => fs.filter((x) => x >= 0 && x + 1 < m.faceStart.length).map((x) => [m.faceStart[x] * 3, (m.faceStart[x + 1] - m.faceStart[x]) * 3]);
+          const rest: [number, number][] = [];
+          let start = 0;
+          for (let x = 0; x + 1 < m.faceStart.length; x++) {
+            if (!taken.has(x)) continue;
+            if (m.faceStart[x] > start) rest.push([start * 3, (m.faceStart[x] - start) * 3]);
+            start = m.faceStart[x + 1];
+          }
+          if (b.count > start * 3) rest.push([start * 3, b.count - start * 3]);
+          runs.push({ look, alpha: alpha * look.opacity, ranges: rest });
+          for (const g of own) {
+            const l = adjust(g.look);
+            runs.push({ look: l, alpha: alpha * l.opacity, ranges: ranges(g.faces) });
+          }
+        } else runs.push({ look, alpha: alpha * look.opacity, ranges: [[0, b.count]] });
+        items.push({ sm, b, mvp, rot, det: f.det, look, alpha, depth: dot([R[6], R[7], R[8]], centre), runs });
       }
-      /** Triangles first … first + count − 1 (all of them by default) in a colour. */
-      const faces = (it: Item, color: RGB = it.color, first = 0, count = it.b.count) => {
+      /**
+       * Triangles first … first + count − 1 in a look: shaded, as zebra stripes (bodies) or in
+       * the mesh's analysis colours.
+       */
+      const faces = (it: Item, look: Look, alpha: number, first: number, count: number, plain = false) => {
         if (!count) return;
         gl.frontFace(it.det < 0 ? gl.CW : gl.CCW); // a mirroring matrix turns the winding over
         gl.useProgram(tri);
         gl.uniformMatrix4fv(u.tMvp, false, it.mvp);
         gl.uniformMatrix3fv(u.tRot, false, it.rot);
-        gl.uniform3fv(u.tColor, color);
-        gl.uniform1f(u.tAlpha, it.alpha);
+        gl.uniform3f(u.tBase, toLinear(look.color[0]), toLinear(look.color[1]), toLinear(look.color[2]));
+        gl.uniform1f(u.tMetal, look.metal);
+        gl.uniform1f(u.tRough, look.rough);
+        gl.uniform1f(u.tAlpha, alpha);
+        const tint = !plain && it.sm.tint && it.sm.tint.length >= it.sm.mesh.positions.length ? tintOf(it.sm) : null;
+        const zebra = !plain && !tint && shading.mode === 'zebra' && isDisplayMesh(it.sm.mesh);
+        gl.uniform1f(u.tMode, tint ? SHADING_MODE.tint : zebra ? SHADING_MODE.zebra : SHADING_MODE.pbr);
         gl.bindBuffer(gl.ARRAY_BUFFER, it.b.pos);
         gl.enableVertexAttribArray(tPos);
         gl.vertexAttribPointer(tPos, 3, gl.FLOAT, false, 0, 0);
         gl.bindBuffer(gl.ARRAY_BUFFER, it.b.nrm);
         gl.enableVertexAttribArray(tNrm);
         gl.vertexAttribPointer(tNrm, 3, gl.FLOAT, false, 0, 0);
+        if (tint && tCol >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, tint);
+          gl.enableVertexAttribArray(tCol);
+          gl.vertexAttribPointer(tCol, 3, gl.FLOAT, false, 0, 0);
+        } else if (tCol >= 0) gl.vertexAttrib3f(tCol, 1, 1, 1);
         if (it.b.idx) {
           gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, it.b.idx);
           gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, first * 4);
         } else gl.drawArrays(gl.TRIANGLES, first, count);
         gl.disableVertexAttribArray(tNrm);
+        if (tint && tCol >= 0) gl.disableVertexAttribArray(tCol);
       };
-      /** One face of a display mesh drawn again on top of itself (same depth) in a colour. */
-      const face = (it: Item, f: number, color: RGB) => {
+      const run = (it: Item, r: Run) => {
+        for (const [first, count] of r.ranges) faces(it, r.look, r.alpha, first, count);
+      };
+      /** One face of a display mesh drawn again on top of itself (same depth) in a look. */
+      const face = (it: Item, f: number, look: Look) => {
         const m = it.sm.mesh;
         if (!isDisplayMesh(m) || f < 0 || f + 1 >= m.faceStart.length) return;
-        faces(it, color, m.faceStart[f] * 3, (m.faceStart[f + 1] - m.faceStart[f]) * 3);
+        faces(it, look, it.alpha * look.opacity, m.faceStart[f] * 3, (m.faceStart[f + 1] - m.faceStart[f]) * 3, true);
       };
+      const lookOfFace = (it: Item, f: number) => it.runs.find((r, k) => k > 0 && r.ranges.some(([a, n]) => isDisplayMesh(it.sm.mesh) && it.sm.mesh.faceStart[f] * 3 >= a && it.sm.mesh.faceStart[f] * 3 < a + n))?.look ?? it.look;
       const marks = (it: Item) => {
         const { sm } = it;
-        if (sm.paint) for (const f of sm.paint.faces) face(it, f, sm.paint.color);
-        for (const f of sm.selFaces ?? []) face(it, f, mix(it.color, accent, 0.65));
-        if (sm.hoverFace !== undefined && !sm.selFaces?.includes(sm.hoverFace)) face(it, sm.hoverFace, mix(it.color, accent, 0.35));
+        if (sm.paint) for (const f of sm.paint.faces) face(it, f, plainLook(sm.paint.color));
+        for (const f of sm.selFaces ?? []) face(it, f, tinted(lookOfFace(it, f), accent, 0.65));
+        if (sm.hoverFace !== undefined && !sm.selFaces?.includes(sm.hoverFace)) face(it, sm.hoverFace, tinted(lookOfFace(it, sm.hoverFace), accent, 0.35));
       };
       /** One edge of a display mesh, bold. */
       const edgeRun = (it: Item, e: number, color: RGB) => {
@@ -760,7 +828,7 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         gl.disable(gl.DEPTH_TEST);
         blend(true);
         for (const it of items) {
-          const tone = it.sm.highlight ? accentEdge : mix(it.sm.color, ink, 0.55);
+          const tone = it.sm.highlight ? accentEdge : mix(it.look.color, ink, 0.55);
           const k = it.sm.ghost ? 0.3 : Math.max(0.15, it.alpha);
           // a B-rep body is its edges; a plain mesh shows its triangles faintly as well
           if (!isDisplayMesh(it.sm.mesh)) {
@@ -778,14 +846,16 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
         return;
       }
 
-      // ---- opaque bodies, their edges, and depth-tested lines
+      // ---- opaque runs, their bodies' edges, and depth-tested lines
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       blend(false);
-      const opaque = items.filter((it) => it.alpha >= 1);
+      const solid = (r: Run) => r.alpha >= 1;
+      // a body whose own look is opaque has its edges and marks drawn with it
+      const opaque = items.filter((it) => solid(it.runs[0]));
       gl.enable(gl.POLYGON_OFFSET_FILL);
       gl.polygonOffset(1, 1); // faces pushed back a little so coplanar edges win the depth test
-      for (const it of opaque) faces(it);
+      for (const it of items) for (const r of it.runs) if (solid(r)) run(it, r);
       // highlighted faces: the same triangles again at the same depth (LEQUAL lets them through)
       for (const it of opaque) marks(it);
       gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -796,18 +866,24 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
       gl.depthMask(false);
       blend(true);
       const glass: ({ depth: number; run: () => void })[] = [
-        ...items.filter((it) => it.alpha < 1 && it.alpha > 0).map((it) => ({
+        ...items.filter((it) => it.runs.some((r) => !solid(r) && r.alpha > 0)).map((it) => ({
           depth: it.depth,
           run: () => {
-            // closed bodies: their back half would double the tint
+            const clear = it.runs.filter((r) => !solid(r) && r.alpha > 0);
             gl.enable(gl.CULL_FACE);
-            gl.cullFace(gl.BACK);
             gl.enable(gl.POLYGON_OFFSET_FILL);
-            faces(it);
-            marks(it);
+            // a closed body: its far side first, then its near side (its back half would
+            // otherwise double the tint, or vanish behind its front)
+            if (isDisplayMesh(it.sm.mesh)) {
+              gl.cullFace(gl.FRONT);
+              for (const r of clear) run(it, r);
+            }
+            gl.cullFace(gl.BACK);
+            for (const r of clear) run(it, r);
+            if (!solid(it.runs[0])) marks(it);
             gl.disable(gl.POLYGON_OFFSET_FILL);
             gl.disable(gl.CULL_FACE);
-            featureEdges(it);
+            if (!solid(it.runs[0])) featureEdges(it);
           },
         })),
         ...o.planes.map((p, i) => ({ depth: planeDepth(p), run: () => plane(p, i) })),
@@ -946,6 +1022,10 @@ export function Scene3D(props: {
   showTriad?: boolean;
   /** centered text when nothing to show / no WebGL */
   message?: string;
+  /** Appearances (default) or zebra stripes on the bodies. */
+  shading?: Shading;
+  /** Filled with what renders the view to a PNG at a larger scale (High-resolution render). */
+  capture?: { current: SceneCapture | null };
 }): JSX.Element {
   const { width, height, meshes, navigation = 'orbit', display = 'shadedEdges', showTriad = true } = props;
   const lines = props.lines ?? EMPTY_LINES, planes = props.planes ?? EMPTY_PLANES;
@@ -1087,12 +1167,36 @@ export function Scene3D(props: {
       return;
     }
     const R = viewRotation(view);
-    renderer.current.draw({ w, h, dpr, R, frame, zoom: view.zoom, pan: view.pan, display, theme, meshes, lines, planes });
+    renderer.current.draw({ w, h, dpr, R, frame, zoom: view.zoom, pan: view.pan, display, theme, meshes, lines, planes, shading: props.shading });
     if (g) {
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       drawOverlay(g, width, height, view, frame, planes, theme, showTriad);
     }
-  }, [meshes, lines, planes, frame, view.yaw, view.pitch, view.zoom, view.pan.x, view.pan.y, width, height, display, showTriad, themeTick, generation, gl]);
+  }, [meshes, lines, planes, frame, view.yaw, view.pitch, view.zoom, view.pan.x, view.pan.y, width, height, display, showTriad, themeTick, generation, gl, props.shading]);
+
+  // a render: the scene again, tile by tile at the scale asked, in the light theme (it goes on paper),
+  // without the overlay and the ViewCube; then the view as it was
+  const capture = props.capture;
+  useEffect(() => {
+    if (!capture) return;
+    capture.current = async ({ scale, background, plain }) => {
+      const c = canvas.current, r = renderer.current, L = latest.current;
+      if (!c || !r || !L.frame || !L.active) return null;
+      const { W, H, scale: s } = renderSize(L.width, L.height, scale);
+      const light = { ...readTheme(c), dark: false };
+      const base = { R: viewRotation(L.view), frame: L.frame, zoom: L.view.zoom, pan: L.view.pan, display, meshes: L.meshes, lines, planes: L.planes, shading: props.shading };
+      // only the bodies: the framing stays the view's
+      const shown = plain ? { ...base, meshes: L.meshes.filter((m) => m.key.startsWith('b:')), lines: [], planes: [] } : base;
+      try {
+        return await renderTiles(c, W, H, background, (tile) => r.draw({ ...shown, w: c.width, h: c.height, dpr: s, theme: light, tile, lineScale: s }));
+      } finally {
+        r.draw({ ...base, w: c.width, h: c.height, dpr: window.devicePixelRatio || 1, theme: readTheme(c) });
+      }
+    };
+    return () => {
+      capture.current = null;
+    };
+  });
 
   const end = (g: Gesture, el: Element, id: number) => {
     gesture.current = null;

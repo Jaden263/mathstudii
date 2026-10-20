@@ -103,3 +103,27 @@ export function massReport(mo: MassOut | null | undefined): MassReport | null {
     k: [gyr(J[0]), gyr(J[4]), gyr(J[8])], kp: [gyr(moments[0]), gyr(moments[1]), gyr(moments[2])],
   };
 }
+
+/**
+ * Worksheet lines for a mass report: read from the part when it has a name (they then
+ * follow every edit), else its values now as definitions named after what was measured.
+ */
+export function massLines(path: string | null, r: MassReport, unit: string, name: string): string[] {
+  const I = `kg*${unit}^2`;
+  if (path) {
+    return [
+      `${path}.m = kg`, `${path}.V = ${unit}^3`, ...(r.A !== undefined ? [`${path}.S = ${unit}^2`] : []),
+      `${path}.xg = ${unit}`, `${path}.yg = ${unit}`, `${path}.zg = ${unit}`,
+      `${path}.Im1 = ${I}`, `${path}.Im2 = ${I}`, `${path}.Im3 = ${I}`,
+      `${path}.k1 = ${unit}`, `${path}.k2 = ${unit}`, `${path}.k3 = ${unit}`,
+      `${path}.ImOx = ${I}`, `${path}.ImOy = ${I}`, `${path}.ImOz = ${I}`,
+    ];
+  }
+  const v = (x: number) => String(+x.toPrecision(6));
+  const s = `_${name || 'part'}`;
+  return [
+    `m${s} := ${v(r.m)} kg`, `V${s} := ${v(r.V)} ${unit}^3`, ...(r.A !== undefined ? [`S${s} := ${v(r.A)} ${unit}^2`] : []),
+    `xG${s} := ${v(r.c[0])} ${unit}`, `yG${s} := ${v(r.c[1])} ${unit}`, `zG${s} := ${v(r.c[2])} ${unit}`,
+    `I1${s} := ${v(r.moments[0])} ${I}`, `I2${s} := ${v(r.moments[1])} ${I}`, `I3${s} := ${v(r.moments[2])} ${I}`,
+  ];
+}

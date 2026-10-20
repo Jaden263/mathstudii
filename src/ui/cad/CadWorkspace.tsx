@@ -14,6 +14,7 @@ import {
   LineSquiggle, SplinePointer, Ellipse as EllipseIcon, CircleDotDashed, Type, VectorSquare, CornerRightDown, MoveHorizontal, ScissorsLineDashed,
   Grid2x2, Rotate3d, ScanLine,
   SlidersHorizontal, Cog, Group as GroupIcon, Link, Clapperboard, Expand, ClipboardList, Play, Film, Images,
+  Gem, Weight, Barcode, Mountain, ChartSpline, Camera,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -59,6 +60,13 @@ import { asBuiltOrigin, placementsWithout } from '../../cad/kinematics';
 import { paintHits, useAssemblyView } from './assemblyView';
 import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivePatches, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
 import { canRecord, exportPngFrames, recordWebm } from './motionExport';
+import { AnalysisBar, AppearanceSelect, BodyLook, ComponentLook, MassPanel, MaterialSelect, MaterialsPanel, RenderFields, massChoice, type MassChoice } from './InspectPanels';
+import { massGlyph, useAnalysisMeshes, type Analysis } from './inspectView';
+import type { RenderBackground, SceneCapture } from './renderExport';
+import { faceAppearanceAt } from '../../cad/appearances';
+import { draftAngle } from '../../cad/analysis';
+import { massLines } from '../../cad/massProps';
+import { createRegion, PX_PER_MM } from '../../model/types';
 
 interface Props {
   region: CadRegion;
@@ -89,7 +97,12 @@ type Dlg =
   | { kind: 'group'; occs: string[] }
   | { kind: 'motion'; id: string; mark: number; isNew: boolean; busy?: string }
   | { kind: 'measure'; picks: Measured[]; result?: Distance | null; error?: string }
-  | { kind: 'interference'; rows: Interference[] | null; error?: string };
+  | { kind: 'interference'; rows: Interference[] | null; error?: string }
+  /** Mass properties of the assembly (`asm`), a component (`c:id`) or a body (`b:component:body`). */
+  | { kind: 'mass'; target: string }
+  /** Physical materials and appearances of every component and body (and of picked faces). */
+  | { kind: 'materials' }
+  | { kind: 'render'; scale: number; background: RenderBackground; plain: boolean; busy?: boolean };
 
 /** Something picked to measure, with what the panel says about it. */
 interface Measured {
@@ -277,6 +290,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // the exploded view: how far out (0…1), null while assembled; trails from where the parts were
   const [explode, setExplode] = useState<number | null>(null);
   const [trails, setTrails] = useState(true);
+  // inspection: an analysis painted on the bodies, the mass panel's marks in the view, and what renders the view
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [massShow, setMassShow] = useState({ cog: true, axes: true });
+  const capture = useRef<SceneCapture | null>(null);
   const canvas = useRef<CadCanvasHandle>(null);
   const [viewRef, size] = useSize<HTMLDivElement>();
 
@@ -1215,6 +1232,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       else if (k === 'q') startFeature('presspull');
       else if (k === 'j') startJoint();
       else if (k === 'm') setDialog({ kind: 'measure', picks: [] });
+      else if (k === 'a') setDialog({ kind: 'materials' });
     }
   };
   useEffect(() => {
@@ -1344,6 +1362,18 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // what is being measured (corner points) and the shortest line between the two, and the
   // joint origins a face or edge offers while a joint picks one, drawn on top
   const measuring = dialog?.kind === 'measure' ? dialog : null;
+  // the mass panel's centre of gravity and principal axes (a component's placed by its first occurrence)
+  const massTarget = dialog?.kind === 'mass' ? dialog.target : null;
+  const massMarks = useMemo(() => {
+    if (!massTarget || (!massShow.cog && !massShow.axes)) return [];
+    const ch = massChoice(design, dr, region.name, massTarget);
+    if (!ch.report) return [];
+    const occ = ch.component ? editOccurrence(design, ch.component) : undefined;
+    const M = occ ? av.shown?.placements[occ.id]?.matrix ?? build?.placements[occ.id]?.matrix ?? dr?.placements[occ.id]?.matrix : undefined;
+    if (ch.component && !M) return [];
+    const lines = massGlyph(ch.report.c, massShow.axes ? ch.report.axes : null, sceneSize, M);
+    return massShow.cog ? lines : lines.filter((l) => l.key !== 'cog');
+  }, [massTarget, massShow, design, dr, region.name, av.shown, build, sceneSize]);
   const snapping = dialog?.kind === 'joint' && dialog.picking ? snapHover : null;
   const snapM = snapping ? placement(snapping.occ) : undefined;
   const scene = useMemo(() => {
@@ -1358,10 +1388,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (segs.length) extra.push({ key: 'measure', segments: new Float32Array(segs), color: [0.95, 0.6, 0.05] as [number, number, number], overlay: true });
     }
     // joint glyphs, explode trails, and the parts a playing study finds overlapping, in red
-    extra.push(...av.lines);
+    extra.push(...av.lines, ...massMarks);
     const meshes = paintHits(baseScene.meshes, av.hits, build, design);
     return extra.length || meshes !== baseScene.meshes ? { ...baseScene, meshes, lines: [...baseScene.lines, ...extra] } : baseScene;
-  }, [baseScene, measuring, snapping, snapM, sceneSize, av.lines, av.hits, build, design]);
+  }, [baseScene, measuring, snapping, snapM, sceneSize, av.lines, av.hits, build, design, massMarks]);
+  // an analysis paints the bodies (draft, curvature) or shades them (zebra)
+  const painted = useAnalysisMeshes(scene.meshes, analysis, build, design);
+  const shading = useMemo(() => (analysis?.kind === 'zebra' ? { mode: 'zebra' as const, stripes: analysis.stripes } : undefined), [analysis]);
   // while a joint is driven or a study plays the view keeps its framing (a little room to move in)
   const still = useRef<{ key: string; b: Bounds } | null>(null);
   const movingKey = dialog?.kind === 'drive' ? `d:${dialog.joint}/${dialog.dof}` : motionStudy ? `m:${motionStudy.id}` : '';
@@ -1489,6 +1522,97 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const material = (density: string) => MATERIALS.find((m) => m.density === density.trim());
   /** The bill of materials: masses each from the components' (hidden occurrences are left out). */
   const bom = () => bomTable(design, Object.fromEntries(Object.entries(dr?.components ?? {}).map(([k, v]) => [k, v?.m])), region.density);
+
+  // ------------------------------------------------------------ materials, mass, render
+
+  /** What the mass panel opens on: the selected body or component, else the assembly. */
+  const massTargetOf = (s: string | null) => {
+    if (s?.startsWith('comp:')) return `c:${s.slice(5)}`;
+    if (s?.startsWith('body:')) {
+      const { occ, body } = parseBody(`b:${s.slice(5)}`);
+      const o = occOf(occ);
+      if (o) return `b:${o.component}:${body}`;
+    }
+    return 'asm';
+  };
+
+  /** Math regions for the mass panel's values, on the clipboard: they paste into the worksheet. */
+  const copyMass = (ch: MassChoice) => {
+    if (!ch.report) return;
+    const lines = massLines(ch.path, ch.report, u, ch.label.replace(/[^\p{L}\p{N}]+/gu, ''));
+    const col = Math.round(60 * PX_PER_MM), row = Math.round(8 * PX_PER_MM);
+    const regions = lines.map((source, i) => createRegion('math', (i % 3) * col, Math.floor(i / 3) * row, { source }));
+    void navigator.clipboard?.writeText(JSON.stringify({ 'mathstudii/regions': regions })).then(
+      () => setMsg(`Copied ${lines.length} math regions${ch.path ? ` reading ${ch.path}` : ''}: paste them into the worksheet (Ctrl+V)`),
+      () => setMsg('The clipboard is not available here'),
+    );
+  };
+  /** The faces picked in the view, in an appearance of their own (or back to their body's). */
+  const setFaceLook = (id: string | undefined) => {
+    const d = cur();
+    const byComp = new Map<string, { refs: TopoRef[]; at: Set<string> }>();
+    for (const p of picks) {
+      if (p.kind !== 'face') continue;
+      const occ = occOf(p.occ), b = build && bodyOf(build, d, p.occ, p.body);
+      const f = b?.faces[p.index];
+      if (!occ || !f) continue;
+      const e = byComp.get(occ.component) ?? { refs: [], at: new Set<string>() };
+      e.refs.push(refTo('face', p.body, f));
+      e.at.add(`${p.body}:${p.index}`);
+      byComp.set(occ.component, e);
+    }
+    if (!byComp.size) return setMsg('Pick faces in the view first (click, Shift-click for more)');
+    let next = d;
+    for (const [cid, { refs, at }] of byComp) {
+      next = mapComp(next, cid, (c) => {
+        const shown = build?.components[cid]?.bodies ?? [];
+        // the picked faces' earlier appearances go, whichever reference found them
+        const keep = (c.faceAppearances ?? []).filter((fa) => {
+          const r = resolveRef(fa.face, shown);
+          return !(r.ok && at.has(`${r.body}:${r.index}`));
+        });
+        const all = id ? [...keep, ...refs.map((face) => ({ face, appearance: id }))] : keep;
+        return { ...c, faceAppearances: all.length ? all : undefined };
+      });
+    }
+    setDesign(next);
+  };
+  const pickedFaces = picks.filter((p) => p.kind === 'face');
+  /** The appearance the first picked face has of its own. */
+  const pickedFaceLook = (() => {
+    const p = pickedFaces[0], o = p && occOf(p.occ), c = o && design.components.find((q) => q.id === o.component);
+    return c && build ? faceAppearanceAt(c, build.components[c.id]?.bodies ?? [], p.body, p.index)?.appearance : undefined;
+  })();
+  const facesLook = pickedFaces.length > 0 && (
+    <div className="cadm-faces">
+      <label className="field"><span>Appearance of the {pickedFaces.length} picked face{pickedFaces.length > 1 ? 's' : ''}</span>
+        <AppearanceSelect value={pickedFaceLook} inherit="As its body" onChange={setFaceLook} />
+      </label>
+    </div>
+  );
+  /** The draft angle of the first picked face against the pull direction, as shown (degrees; null on a curved face). */
+  const pickedDraft = (() => {
+    if (analysis?.kind !== 'draft' || !pickedFaces.length || !build) return undefined;
+    const p = pickedFaces[0], b = bodyOf(build, design, p.occ, p.body), f = b?.faces[p.index], M = placement(p.occ);
+    if (!f || !M) return undefined;
+    if (!f.frame) return null;
+    const pull = { '+X': [1, 0, 0], '-X': [-1, 0, 0], '+Y': [0, 1, 0], '-Y': [0, -1, 0], '+Z': [0, 0, 1], '-Z': [0, 0, -1] }[analysis.pull] as Vec3;
+    return (draftAngle(m4Dir(M, f.frame.n), pull) * 180) / Math.PI;
+  })();
+  const renderNow = async (scale: number, background: RenderBackground, plain: boolean) => {
+    if (!capture.current) return setMsg('Nothing to render: the view is empty');
+    setDialog((d) => (d?.kind === 'render' ? { ...d, busy: true } : d));
+    try {
+      const blob = await capture.current({ scale, background, plain });
+      if (!blob) return setMsg('The view could not be rendered');
+      await exportFile(`${fileBase}-render.png`, new Uint8Array(await blob.arrayBuffer()), 'image/png');
+      setMsg(`Rendered ${fileBase}-render.png`);
+    } catch (e) {
+      setMsg(`The render failed: ${(e as Error).message}`);
+    } finally {
+      setDialog((d) => (d?.kind === 'render' ? { ...d, busy: false } : d));
+    }
+  };
 
   const dialogPanel = (() => {
     if (!dialog) return null;
@@ -1678,14 +1802,41 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         </Dialog>
       );
     }
+    if (dialog.kind === 'mass') {
+      return (
+        <Dialog title="Mass properties" okLabel="Done" onOk={() => setDialog(null)} onCancel={() => setDialog(null)}>
+          <MassPanel design={design} dr={dr} unit={u} partName={region.name} target={dialog.target} onTarget={(target) => setDialog({ kind: 'mass', target })}
+            show={massShow} onShow={setMassShow} onCopy={copyMass} />
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'materials') {
+      return (
+        <Dialog title="Materials and appearances" okLabel="Done" onOk={() => setDialog(null)} onCancel={() => setDialog(null)}>
+          <p className="hint">A physical material gives the mass (unless a density expression is set) and the worksheet its properties; an appearance only changes the view. A body’s own beat its component’s; pick faces in the view to give them an appearance.</p>
+          <MaterialsPanel design={design} dr={dr} unit={u} faces={facesLook || undefined} onPatch={(cid, p) => patchComp(cid, p)} />
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'render') {
+      return (
+        <Dialog title="Render image" okLabel={dialog.busy ? 'Rendering…' : 'Save PNG'} onOk={() => !dialog.busy && void renderNow(dialog.scale, dialog.background, dialog.plain)} onCancel={() => setDialog(null)}>
+          <RenderFields scale={dialog.scale} background={dialog.background} plain={dialog.plain} onChange={(p) => setDialog({ ...dialog, ...p })} />
+          <p className="hint">{Math.round(size.w * dialog.scale)} × {Math.round(size.h * dialog.scale)} pixels</p>
+        </Dialog>
+      );
+    }
     return null;
   })();
 
   const selectionPanel = (() => {
     if (picks.length && build) {
       return (
-        <SelectionPanel picks={picks} build={build} design={design} result={result} unit={u}
-          onBody={(occ, body) => { setPicks([]); setSel(`body:${occ}:${body}`); }} onClear={() => setPicks([])} />
+        <>
+          <SelectionPanel picks={picks} build={build} design={design} result={result} unit={u}
+            onBody={(occ, body) => { setPicks([]); setSel(`body:${occ}:${body}`); }} onClear={() => setPicks([])} />
+          {facesLook && <div className="props">{facesLook}</div>}
+        </>
       );
     }
     if (sel?.startsWith('comp:')) {
@@ -1696,17 +1847,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         <div className="props">
           <h3 className="sub">Component</h3>
           <label className="field"><span>Name</span><LazyInput label="Component name" mono={false} value={c.name} onCommit={(v) => v.trim() && patchComp(c.id, { name: v.trim() })} /></label>
-          <div className="row2">
-            <label className="field"><span>Material</span>
-              <select value={dens ? material(dens)?.density ?? 'custom' : 'part'} onChange={(e) => e.target.value !== 'custom' && patchComp(c.id, { density: e.target.value === 'part' ? undefined : e.target.value })}>
-                <option value="part">Part material</option>
-                {MATERIALS.map((m) => <option key={m.name} value={m.density}>{m.name}</option>)}
-                <option value="custom">Custom</option>
-              </select>
-            </label>
-            <label className="field"><span>Colour</span><input type="color" value={c.color ?? '#a3b0c4'} onChange={(e) => patchComp(c.id, { color: e.target.value }, `color:${c.id}`)} /></label>
-          </div>
-          <Expr label="Density (empty: part material)" value={dens} onChange={(v) => patchComp(c.id, { density: v || undefined })} />
+          <ComponentLook design={design} comp={c} dr={dr} unit={u} onPatch={(p, k) => patchComp(c.id, p, k)} />
+          <Expr label={`Density (empty: ${c.material ? 'the material’s' : 'the part’s'})`} value={dens} placeholder={material(dens)?.name} onChange={(v) => patchComp(c.id, { density: v || undefined })} />
           {dr?.errors[c.id] && <div className="region-error">{dr.errors[c.id]}</div>}
           <MassTable m={dr?.components[c.id]} unit={u} />
           <div className="cadd-actions">
@@ -1736,6 +1878,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           <h3 className="sub">Body · {c.name}</h3>
           <label className="field"><span>Name</span><LazyInput label="Body name" mono={false} value={info.name} onCommit={(v) => v.trim() && patchComp(c.id, { bodyNames: { ...c.bodyNames, [body]: v.trim() } })} /></label>
           <p className="hint">Made by {c.items.find((i) => i.id === info.feature)?.name ?? info.feature}.</p>
+          <BodyLook design={design} comp={c} body={body} dr={dr} unit={u} onPatch={(p) => patchComp(c.id, p)} />
           <MassTable m={info.mass} unit={u} />
           <div className="cadd-actions">
             <button className="btn" onClick={() => patchComp(c.id, { hiddenBodies: hidden ? c.hiddenBodies!.filter((x) => x !== body) : [...(c.hiddenBodies ?? []), body] })}>{hidden ? 'Show' : 'Hide'}</button>
@@ -1898,12 +2041,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
         <p className="hint">{design.components.length} component{design.components.length > 1 ? 's' : ''} · {design.occurrences.length} occurrence{design.occurrences.length > 1 ? 's' : ''} · {design.joints.length} joint{design.joints.length === 1 ? '' : 's'}</p>
         <div className="row2">
           <label className="field"><span>Material</span>
-            <select value={material(region.density)?.density ?? (region.density.trim() ? 'custom' : 'none')} onChange={(e) => e.target.value !== 'custom' && set({ density: e.target.value === 'none' ? '' : e.target.value })}>
-              {MATERIALS.map((m) => <option key={m.name} value={m.density}>{m.name}</option>)}
-              <option value="custom">Custom</option><option value="none">No mass</option>
-            </select>
+            {/* a library material leaves the density to it; a density typed wins over it */}
+            <MaterialSelect value={design.material} inherit={region.density.trim() ? material(region.density)?.name ?? 'By the density' : 'None (no mass)'}
+              onChange={(m) => set({ design: { ...cur(), material: m }, ...(m ? { density: '' } : {}) })} />
           </label>
-          <label className="field"><span>Density</span><LazyInput label="Density" value={region.density} onCommit={(v) => set({ density: v.trim() })} /></label>
+          <label className="field"><span>Density</span><LazyInput label="Density" value={region.density} placeholder={design.material ? 'the material’s' : 'kg/m^3'} onCommit={(v) => set({ density: v.trim() })} /></label>
         </div>
         <h3 className="sub">Mass properties (assembly)</h3>
         <MassTable m={dr?.total} unit={u} />
@@ -2125,11 +2267,27 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<ScanSearch size={20} />} label="Interference" title="Find overlapping occurrences" onClick={runInterference} />
             </Group>
             <Group label="Mass properties">
+              <RibbonButton icon={<Weight size={20} />} label="Properties" title="Mass, volume, area, centre of gravity, inertia tensors at it and at the origin, principal moments and axes, radii of gyration: of the assembly, a component or a body"
+                on={dialog?.kind === 'mass'} onClick={() => (dialog?.kind === 'mass' ? setDialog(null) : openDialog({ kind: 'mass', target: massTargetOf(sel) }))} />
               <div className="cadw-readout">
                 {dr?.total ? <span>V = <b>{num(dr.total.V)}</b> {u}³</span> : <span className="cadw-muted">No solid yet</span>}
                 {dr?.total?.m !== undefined && <span>m = <b>{num(dr.total.m, 4)}</b> kg</span>}
                 {dr?.total && <span>CoG = ({num(dr.total.xg, 4)}, {num(dr.total.yg, 4)}, {num(dr.total.zg, 4)}) {u}</span>}
               </div>
+            </Group>
+            <Group label="Look">
+              <RibbonButton icon={<Gem size={20} />} label="Materials" title="Physical materials and appearances of the components, bodies and picked faces (A)" on={dialog?.kind === 'materials'}
+                onClick={() => (dialog?.kind === 'materials' ? setDialog(null) : openDialog({ kind: 'materials' }))} />
+              <RibbonButton icon={<Camera size={20} />} label="Render" title="Save the view as a PNG image, 1×, 2× or 4× its size, transparent or on white" on={dialog?.kind === 'render'}
+                onClick={() => (dialog?.kind === 'render' ? setDialog(null) : openDialog({ kind: 'render', scale: 2, background: 'white', plain: true }))} />
+            </Group>
+            <Group label="Analysis">
+              <RibbonButton icon={<Barcode size={20} />} label="Zebra" title="Zebra stripes: bands of light reflected in the surfaces show whether faces meet with a kink (G0), tangent (G1) or curvature continuous (G2)"
+                on={analysis?.kind === 'zebra'} onClick={() => setAnalysis(analysis?.kind === 'zebra' ? null : { kind: 'zebra', stripes: 14 })} />
+              <RibbonButton icon={<Mountain size={20} />} label="Draft" title="Draft analysis: faces coloured by their angle to a pull direction (positive, negative, or less than the draft a mould needs)"
+                on={analysis?.kind === 'draft'} onClick={() => setAnalysis(analysis?.kind === 'draft' ? null : { kind: 'draft', pull: '+Z', angle: 1 })} />
+              <RibbonButton icon={<ChartSpline size={20} />} label="Curvature" title="Curvature map: mean or Gaussian curvature in colour, with a legend"
+                on={analysis?.kind === 'curvature'} onClick={() => setAnalysis(analysis?.kind === 'curvature' ? null : { kind: 'curvature', which: 'mean' })} />
             </Group>
           </>
         )}
@@ -2226,7 +2384,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               onStatus={setStatus} onUndo={onUndo} onRedo={onRedo} reference={reference} />
           ) : (
             <Scene3D
-              width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d} bounds={still.current?.b}
+              width={size.w} height={size.h} meshes={painted.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d} bounds={still.current?.b} shading={shading} capture={capture}
               navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch' && modPick !== 'faces' && buildPick !== 'faces'}
               onHover={onHover}
               message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.state === 'none' && shown.notice && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
@@ -2247,6 +2405,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <button className="icon-btn" onClick={() => setSection(null)} aria-label="Close section"><X size={14} /></button>
             </div>
           )}
+          {!inSketch && analysis && <AnalysisBar analysis={analysis} onChange={setAnalysis} range={painted.range} unit={u} draftOf={pickedDraft} onClose={() => setAnalysis(null)} />}
           {!inSketch && explode !== null && (
             <div className={`cadw-inspect cadj-explode${section ? ' below' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
               <b>Explode</b>
