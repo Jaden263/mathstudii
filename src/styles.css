@@ -3462,6 +3462,12 @@ kbd {
   color: var(--text);
 }
 
+.bm-pop.to-right {
+  right: auto;
+  left: 0;
+  max-width: calc(100vw - 16px);
+}
+
 .bm-units {
   display: flex;
   flex-direction: column;

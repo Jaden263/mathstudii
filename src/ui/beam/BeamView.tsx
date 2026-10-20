@@ -1095,7 +1095,8 @@ export function BeamView({ region, result, editing, selected: regionSelected, di
               <Ruler size={16} /><span>{region.lengthUnit}, {region.forceUnit}</span>
             </button>
             {unitsOpen && (
-              <div className="bm-pop" role="dialog" aria-label="Units" onKeyDown={(e) => {
+              // (opens to the right where there is no room to the left, as on a phone)
+              <div className={`bm-pop${(unitsRef.current?.getBoundingClientRect().right ?? 400) < 330 ? ' to-right' : ''}`} role="dialog" aria-label="Units" onKeyDown={(e) => {
                 e.stopPropagation();
                 if (e.key === 'Escape') {
                   setUnitsOpen(false);
