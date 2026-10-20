@@ -61,7 +61,7 @@ import { paintHits, useAssemblyView } from './assemblyView';
 import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivePatches, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
 import { canRecord, exportPngFrames, recordWebm } from './motionExport';
 import { AnalysisBar, AppearanceSelect, BodyLook, ComponentLook, MassPanel, MaterialSelect, MaterialsPanel, RenderFields, massChoice, type MassChoice } from './InspectPanels';
-import { massGlyph, useAnalysisMeshes, type Analysis } from './inspectView';
+import { PULL, massGlyph, useAnalysisMeshes, type Analysis } from './inspectView';
 import type { RenderBackground, SceneCapture } from './renderExport';
 import { faceAppearanceAt } from '../../cad/appearances';
 import { draftAngle } from '../../cad/analysis';
@@ -1596,8 +1596,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     const p = pickedFaces[0], b = bodyOf(build, design, p.occ, p.body), f = b?.faces[p.index], M = placement(p.occ);
     if (!f || !M) return undefined;
     if (!f.frame) return null;
-    const pull = { '+X': [1, 0, 0], '-X': [-1, 0, 0], '+Y': [0, 1, 0], '-Y': [0, -1, 0], '+Z': [0, 0, 1], '-Z': [0, 0, -1] }[analysis.pull] as Vec3;
-    return (draftAngle(m4Dir(M, f.frame.n), pull) * 180) / Math.PI;
+    return (draftAngle(m4Dir(M, f.frame.n), PULL[analysis.pull]) * 180) / Math.PI;
   })();
   const renderNow = async (scale: number, background: RenderBackground, plain: boolean) => {
     if (!capture.current) return setMsg('Nothing to render: the view is empty');
