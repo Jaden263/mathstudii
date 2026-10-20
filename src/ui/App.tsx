@@ -29,7 +29,9 @@ import { regionPictures } from './regionPicture';
 import { exportName, formatLabel, FORMAT_MIME, type Format } from '../exporters';
 import { CompletionContext, worksheetCompletions } from './autocomplete';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from './sketch/context';
-import { CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
+import { answerKernelPorts, CadOpenContext, openCadWindow, openChannel, SESSION, type CadChannel } from './cad/cadWindow';
+import { forgetRegions } from './cad/kernelClient';
+import { MemoryStatus } from './MemoryStatus';
 import { CadWorkspace } from './cad/CadWorkspace';
 import { exportPart } from './cad/exportPart';
 import type { CadResult, Frame3DResult, MathResult } from '../engine/evaluator';
@@ -44,7 +46,7 @@ import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
 import { AREA_BAR, AREA_X, areasOf, evaluationOrder, hiddenIds, isArea, withContents } from '../model/areas';
 import { canAddAt, canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
-import { regionOwnsKey } from './sheetKeys';
+import { regionOwnsKey, regionsToDelete } from './sheetKeys';
 import { ProtectDialog } from './ProtectDialog';
 import { askXlsxTable } from './sheet/XlsxTableDialog';
 import { XLSX_MIME } from '../sheet/xlsx';
@@ -111,11 +113,14 @@ export function App() {
   const [cadOverlay, setCadOverlay] = useState<string | null>(null);
   const cadOverlayRef = useRef(cadOverlay);
   cadOverlayRef.current = cadOverlay;
-  const cadWins = useRef(new Map<string, { seen: number; ack: number }>());
+  /** Open CAD windows: when each was last heard of, the edit it sent last, and what it was sent last. */
+  const cadWins = useRef(new Map<string, { seen: number; ack: number; sent?: { region: Region; result: unknown; ack: number } }>());
   const cadChannel = useRef<CadChannel | null>(null);
-  const pushCad = useRef<(id: string) => void>(() => {});
-  const evaluation = useEvaluation(ws, ws.settings.autoCalc);
-  pushCad.current = (id: string) => {
+  /** Send a window its part (`force`: even when it has it already); a heartbeat with nothing new gets a few bytes. */
+  const pushCad = useRef<(id: string, mode: 'beat' | 'change' | 'force') => void>(() => {});
+  // the calculation worker was restarted: CAD windows using its kernel ask for a new port
+  const evaluation = useEvaluation(ws, ws.settings.autoCalc, () => cadChannel.current?.post({ t: 'kernel', s: SESSION }));
+  pushCad.current = (id, mode) => {
     const ch = cadChannel.current;
     if (!ch) return;
     const r = ws.regions.find((q) => q.id === id);
@@ -124,31 +129,51 @@ export function App() {
       cadWins.current.delete(id);
       return;
     }
-    ch.post({ t: 'state', s: SESSION, id, ack: cadWins.current.get(id)?.ack ?? 0, region: r, result: evaluation.results.get(id) as CadResult | undefined });
+    const w = cadWins.current.get(id);
+    const result = evaluation.results.get(id) as CadResult | undefined, ack = w?.ack ?? 0;
+    if (mode !== 'force' && w?.sent && w.sent.region === r && w.sent.result === result && w.sent.ack === ack) {
+      if (mode === 'beat') ch.post({ t: 'alive', s: SESSION, id });
+      return;
+    }
+    ch.post({ t: 'state', s: SESSION, id, ack, region: r, result });
+    if (w) w.sent = { region: r, result, ack };
   };
   useEffect(() => {
     const ch = openChannel((m) => {
-      if (m.s !== SESSION) return;
+      if (m.s !== SESSION || m.t === 'kernel') return;
       const wins = cadWins.current;
       if (m.t === 'hello') {
-        wins.set(m.id, { seen: Date.now(), ack: wins.get(m.id)?.ack ?? m.seq });
-        pushCad.current(m.id);
+        const w = wins.get(m.id);
+        wins.set(m.id, { seen: Date.now(), ack: w?.ack ?? m.seq, sent: w?.sent });
+        pushCad.current(m.id, m.have ? 'beat' : 'force');
       } else if (m.t === 'patch') {
-        wins.set(m.id, { seen: Date.now(), ack: m.seq });
+        const w = wins.get(m.id);
+        wins.set(m.id, { seen: Date.now(), ack: m.seq, sent: w?.sent });
         dispatch({ type: 'update', id: m.id, patch: m.patch, coalesce: m.coalesce, ...(m.history === false ? { history: false as const } : {}) });
       } else if (m.t === 'bye') wins.delete(m.id);
     });
     cadChannel.current = ch;
-    return () => ch.close();
-  }, [dispatch]);
+    // browser CAD windows use this window's calculation worker for their kernel requests
+    const stop = answerKernelPorts(evaluation.connectKernel);
+    return () => {
+      stop();
+      ch.close();
+    };
+  }, [dispatch, evaluation.connectKernel]);
   // every change reaches the open CAD windows
   useEffect(() => {
     const now = Date.now();
     for (const [id, w] of cadWins.current) {
       if (now - w.seen > 10000) cadWins.current.delete(id);
-      else pushCad.current(id);
+      else pushCad.current(id, 'change');
     }
   }, [ws, evaluation.results]);
+  // the display data of parts no longer on the worksheet (another document, deleted regions) goes
+  const cadIds = ws.regions.filter((r) => r.kind === 'cad').map((r) => r.id).join(' ');
+  useEffect(() => {
+    forgetRegions(new Set(cadIds.split(' ')));
+  }, [cadIds]);
+  const freeMemory = useCallback(() => evaluation.release(true), [evaluation.release]); // eslint-disable-line react-hooks/exhaustive-deps
   const openCad = useCallback((id: string) => {
     const r = ws.regions.find((q) => q.id === id);
     const title = `${(r && r.kind === 'cad' && r.name) || 'Part'} — mathstudii CAD`;
@@ -987,7 +1012,8 @@ export function App() {
       if (mod && k === 'd' && selected.size) { e.preventDefault(); pasteRegions(blockOf(selected)); return; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size) {
         e.preventDefault();
-        deleteRegions([...selected]);
+        const ids = regionsToDelete(selected, editingId);
+        if (ids.length) deleteRegions(ids);
         return;
       }
       if (e.key === 'Escape') { setSelected(new Set()); return; }
@@ -1311,6 +1337,7 @@ export function App() {
         {!s.autoCalc && <span className="status-item">Auto calculation off</span>}
         {cursorMm && <span className="status-item">{cursorMm}</span>}
         <span className="status-item">{ws.regions.length} regions</span>
+        <MemoryStatus query={evaluation.queryMemory} free={freeMemory} />
         <span className="status-item">{isTauri ? 'Desktop' : 'Web'}</span>
       </footer>
 

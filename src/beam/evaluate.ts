@@ -52,6 +52,8 @@ export interface BeamResult {
   /** The loads' own solution and buckling while `solution` shows a moving load's envelope. */
   staticSolution?: BeamSolution;
   staticBuckling?: BucklingResult;
+  /** Expressions (loads, springs, moving loads) that came out as plain numbers and so took the region's units. */
+  bare?: string[];
   error?: string;
 }
 
@@ -68,9 +70,10 @@ const LENGTH_TO_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3
 
 type Eval = (src: string) => unknown;
 
-/** An expression in the given dimension; bare numbers take the default unit. */
-export function quantity(evalExpr: Eval, src: string, base: string, fallback: string, what: string): number {
+/** An expression in the given dimension; bare numbers take the default unit (and `onBare` hears of it). */
+export function quantity(evalExpr: Eval, src: string, base: string, fallback: string, what: string, onBare?: () => void): number {
   const v = evalExpr(src.trim() || '0');
+  if (typeof v === 'number') onBare?.();
   const u = typeof v === 'number' ? math.unit(v, fallback) : isUnit(v) ? (v as Unit) : null;
   if (!u) throw new Error(`${what}: expected a number`);
   if (!u.equalBase(math.unit(base))) throw new Error(`${what}: expected units like ${fallback}, got ${u.formatUnits()}`);
@@ -106,6 +109,12 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
   const res: BeamResult = { kind: 'beam', values: {}, errors: {} };
   const k = LENGTH_TO_M[r.lengthUnit] ?? 1;
   const F = r.forceUnit;
+  // what took the region's units: a change of units keeps those meaning the old ones
+  const bare: string[] = (res.bare = []);
+  const inUnits = (src: string, base: string, fallback: string, what: string, ev: Eval = evalExpr) => quantity(ev, src, base, fallback, what, () => {
+    const t = src.trim();
+    if (t && !bare.includes(t)) bare.push(t);
+  });
   const an = r.analysis ?? {};
   const withShear = !!an.shear, second = !!an.secondOrder, wantBuckling = !!an.buckling || second;
   if (r.analysis) res.analysis = { shear: withShear, secondOrder: second, buckling: wantBuckling };
@@ -134,17 +143,17 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     const tag = cases ? { case: loadCase(l, cases) } : {};
     try {
       if (l.type === 'force') {
-        const P = quantity(evalExpr, l.value, 'N', F, 'Force');
+        const P = inUnits(l.value, 'N', F, 'Force');
         const a = (l.angle * Math.PI) / 180;
         res.values[l.id] = [P];
         loads.push({ id: l.id, type: 'force', at: l.at, Fx: P * Math.cos(a), Fy: P * Math.sin(a), ...tag });
       } else if (l.type === 'moment') {
-        const M = quantity(evalExpr, l.value, 'N m', `${F} ${r.lengthUnit}`, 'Moment');
+        const M = inUnits(l.value, 'N m', `${F} ${r.lengthUnit}`, 'Moment');
         res.values[l.id] = [M];
         loads.push({ id: l.id, type: 'moment', at: l.at, M, ...tag });
       } else {
-        const q1 = quantity(evalExpr, l.q1, 'N/m', `${F}/${r.lengthUnit}`, 'Line load');
-        const q2 = l.q2?.trim() ? quantity(evalExpr, l.q2, 'N/m', `${F}/${r.lengthUnit}`, 'Line load (end)') : q1;
+        const q1 = inUnits(l.q1, 'N/m', `${F}/${r.lengthUnit}`, 'Line load');
+        const q2 = l.q2?.trim() ? inUnits(l.q2, 'N/m', `${F}/${r.lengthUnit}`, 'Line load (end)') : q1;
         res.values[l.id] = [q1, q2];
         loads.push({ id: l.id, type: 'line', member: l.member, t1: l.t1 ?? 0, t2: l.t2 ?? 1, q1, q2, dir: l.dir, ...tag });
       }
@@ -164,13 +173,13 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
     supports: r.supports.map((s) => {
       const extra: { k?: number; kr?: number; settle?: number } = {};
       try {
-        if (s.k?.trim()) extra.k = quantity(evalExpr, s.k, 'N/m', `${F}/${r.lengthUnit}`, `Spring at ${s.label}`);
+        if (s.k?.trim()) extra.k = inUnits(s.k, 'N/m', `${F}/${r.lengthUnit}`, `Spring at ${s.label}`);
         // kN·m/rad: the radian carries no dimension here
         const perRad: Eval = (src) => {
           const v = evalExpr(src);
           return isUnit(v) && (v as unknown as { dimensions: number[] }).dimensions[7] === -1 ? math.multiply(v as Unit, math.unit(1, 'rad')) : v;
         };
-        if (s.kr?.trim() && s.type === 'fixed') extra.kr = quantity(perRad, s.kr, 'N m', `${F} ${r.lengthUnit}`, `Rotational spring at ${s.label}`);
+        if (s.kr?.trim() && s.type === 'fixed') extra.kr = inUnits(s.kr, 'N m', `${F} ${r.lengthUnit}`, `Rotational spring at ${s.label}`, perRad);
         if (s.settle?.trim()) extra.settle = quantity(evalExpr, s.settle, 'm', 'mm', `Settlement at ${s.label}`);
         if ((extra.k !== undefined && !(extra.k > 0)) || (extra.kr !== undefined && !(extra.kr > 0))) throw new Error(`Spring at ${s.label}: the stiffness must be positive`);
       } catch (e) {
@@ -186,7 +195,8 @@ export function solveBeam(r: BeamRegion, evalExpr: Eval): BeamResult {
   }
   // influence lines and moving loads (linear, along the load path)
   try {
-    res.traffic = solveTraffic(r, base, (src, b, fb, what) => quantity(evalExpr, src, b, fb, what), evalExpr, res.errors);
+    // (the lane width of LM1 is read in m whatever the units: not one of the region's numbers)
+    res.traffic = solveTraffic(r, base, (src, b, fb, what) => (what.endsWith('lane width w') ? quantity(evalExpr, src, b, fb, what) : inUnits(src, b, fb, what)), evalExpr, res.errors);
     // on the region too: the combinations go on without the moving loads
     if (res.traffic?.error) res.errors.traffic = `Moving loads: ${res.traffic.error}`;
   } catch (e) {

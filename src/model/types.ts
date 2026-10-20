@@ -191,6 +191,8 @@ export interface BeamRegion extends RegionBase, BeamData {
   analysis?: BeamAnalysis;
   /** Influence lines and moving loads (absent: none). */
   traffic?: import('../beam/model').BeamTraffic;
+  /** Units the results are shown in (absent: the region's own, deflection in mm, stress in MPa). */
+  display?: import('../beam/units').BeamDisplayUnits;
 }
 
 /** Python code that reads the worksheet variables above it and exports what it assigns. */

@@ -18,6 +18,7 @@ import { minimumSteel, principal, rebarProps, steelArea, surfaceStress, woodArme
 import { PlateSampler } from './sample';
 import { edgeName } from './model';
 import type { Pt } from './cdt';
+import { ByteLru } from '../model/lru';
 
 type Eval = (src: string) => unknown;
 
@@ -154,21 +155,16 @@ export function autoSize(area: number): number {
 
 // ---------------------------------------------------------------- the solve, cached
 
-const cache = new Map<string, { mesh: PlateMesh; sol: PlateSolution }>();
+/** A few solutions, within a byte budget (a fine mesh is megabytes of nodes and results). */
+const cache = new ByteLru<string, { mesh: PlateMesh; sol: PlateSolution }>(48 * 2 ** 20, 6);
 
 function solveCached(features: MeshFeatures, p: Omit<NumPlate, 'mesh'>): { mesh: PlateMesh; sol: PlateSolution; cached: boolean } {
   const key = JSON.stringify([features, p]);
   const hit = cache.get(key);
-  if (hit) {
-    // most recently used last
-    cache.delete(key);
-    cache.set(key, hit);
-    return { ...hit, cached: true };
-  }
+  if (hit) return { ...hit, cached: true };
   const mesh = meshPlate(features);
   const sol = solvePlate({ ...p, mesh });
   cache.set(key, { mesh, sol });
-  while (cache.size > 6) cache.delete(cache.keys().next().value!);
   return { mesh, sol, cached: false };
 }
 

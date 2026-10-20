@@ -11,6 +11,8 @@ import { checkDimensions, hasUnitSymbols, unitNamesIn, unitNode, unitResultTex, 
 type Nerdamer = ((expr: string) => NerdExpr) & {
   setFunction(name: string, params: string[], body: string): void;
   clearFunctions?(): void;
+  /** Forget the expressions it keeps (every call is kept, numbered, until cleared). */
+  clear?(which: 'all'): void;
 };
 interface NerdExpr {
   toString(): string;
@@ -225,7 +227,16 @@ function texOut(e: { toTeX(): string }): string {
 /** Evaluate `expr → keywords` symbolically. Returns TeX of the result. */
 export function symbolicEval(exprSrc: string, keywords: string, ctx: SymContext): string {
   if (!cas) throw new Error('Loading the symbolic engine…');
-  const nerd = cas;
+  try {
+    return evalWith(cas, exprSrc, keywords, ctx);
+  } finally {
+    // nerdamer keeps every expression it parsed (its numbered history, which nothing here
+    // uses): a few kB per call, for as long as the worker lives
+    cas.clear?.('all');
+  }
+}
+
+function evalWith(nerd: Nerdamer, exprSrc: string, keywords: string, ctx: SymContext): string {
   // Mathcad allows "x^2 = 4 → solve, x": treat a single top-level = as an equation
   let src = exprSrc;
   const eq = findEvalEquals(src);

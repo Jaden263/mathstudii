@@ -116,6 +116,8 @@ export interface BeamView {
   cy: number;
   /** Pixels per length unit. */
   zoom: number;
+  /** Zoomed or panned by hand while editing (absent: the editor frames the structure itself). */
+  manual?: boolean;
 }
 
 export interface BeamData {

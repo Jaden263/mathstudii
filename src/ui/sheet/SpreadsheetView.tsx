@@ -59,7 +59,9 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
   const [edit, setEdit] = useState<{ r: number; c: number; text: string; caret: boolean; bar?: boolean } | null>(null);
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
   const [note, setNote] = useState<string | null>(null);
-  const [linkIssue, setLinkIssue] = useState<{ why: string; message: string } | null>(null);
+  const [linkIssue, setIssue] = useState<{ why: string; message: string } | null>(null);
+  // the same problem again (the live link polls) keeps the same object: no re-render
+  const setLinkIssue = (v: { why: string; message: string } | null) => setIssue((o) => (o === v || (o && v && o.why === v.why && o.message === v.message) ? o : v));
   const [renaming, setRenaming] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const keysRef = useRef<HTMLTextAreaElement>(null);
@@ -325,10 +327,10 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
 
   // ------------------------------------------------------------ files and the live link
 
-  const applyFile = (bytes: Uint8Array, file: string, extra: Partial<SpreadsheetRegion> = {}) => {
+  const applyFile = (bytes: Uint8Array, file: string, extra: Partial<SpreadsheetRegion> = {}, coalesce?: string) => {
     try {
       const patch = importWorkbook(bytes, file);
-      set({ ...patch, active: 0, ...extra });
+      set({ ...patch, active: 0, ...extra }, coalesce);
       setSel({ r: 0, c: 0, r2: 0, c2: 0 });
       return true;
     } catch (e) {
@@ -358,7 +360,8 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
       return;
     }
     setLinkIssue(null);
-    applyFile(got.bytes, link.file, { link: { ...link, modified: got.modified } });
+    // a watched file that keeps changing is one undo step, not a copy of the workbook per change
+    applyFile(got.bytes, link.file, { link: { ...link, modified: got.modified } }, ask ? undefined : `link:${region.id}`);
   };
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
@@ -366,8 +369,11 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
   const tried = useRef(0);
   // a watched link reads the file again when it changes (checked every 2 s while the page is shown)
   const link = region.link;
+  // (not while the browser waits for permission or the link cannot work here: Reconnect, or
+  // linking the file again, starts it again)
+  const blocked = linkIssue?.why === 'permission' || linkIssue?.why === 'missing';
   useEffect(() => {
-    if (!link?.watch) return;
+    if (!link?.watch || blocked) return;
     let stopped = false;
     const tick = async () => {
       if (document.hidden) return;
@@ -386,7 +392,7 @@ export function SpreadsheetView({ region, result, editing, dispatch, onDone, zoo
       stopped = true;
       window.clearInterval(t);
     };
-  }, [link]);
+  }, [link, blocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const exportXlsx = () => {
     const wb = new Workbook(region);

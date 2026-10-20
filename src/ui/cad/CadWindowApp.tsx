@@ -7,15 +7,17 @@ import type { CadResult } from '../../cad/evaluate';
 import type { Action } from '../store';
 import { SketchContext, INITIAL_SKETCH_UI, type SketchUI } from '../sketch/context';
 import { loadPref } from '../../platform/files';
-import { closeThisWindow, openChannel, type CadChannel, type CadMsg } from './cadWindow';
+import { askKernelPort, closeThisWindow, openChannel, type CadChannel, type CadMsg } from './cadWindow';
+import { kernelRemoteStopped, setKernelPortSource } from './kernelClient';
 import { CadWorkspace } from './CadWorkspace';
 
 export function CadWindowApp({ id, session }: { id: string; session: string }) {
   const [region, setRegion] = useState<CadRegion | null>(null);
   const [result, setResult] = useState<CadResult | undefined>(undefined);
-  const [lastSeen, setLastSeen] = useState(0);
-  const [now, setNow] = useState(() => Date.now());
+  const lastSeen = useRef(0);
+  const [connected, setConnected] = useState(false);
   const [gone, setGone] = useState(false);
+  const has = useRef(false);
   const [ui, setUiState] = useState<SketchUI>({ ...INITIAL_SKETCH_UI, regionId: id });
   const channel = useRef<CadChannel | null>(null);
   const seq = useRef(0);
@@ -32,25 +34,47 @@ export function CadWindowApp({ id, session }: { id: string; session: string }) {
     return () => window.removeEventListener('storage', apply);
   }, []);
 
+  // the kernel requests go to the worksheet's calculation worker where the browser lets
+  // the worksheet window hand a port over (one OpenCascade for both windows)
   useEffect(() => {
+    setKernelPortSource(() => askKernelPort(session));
+    return () => setKernelPortSource(null);
+  }, [session]);
+
+  useEffect(() => {
+    const seen = () => {
+      lastSeen.current = Date.now();
+      setConnected(true);
+    };
     const ch = openChannel((m: CadMsg) => {
-      if (m.s !== session || m.id !== id) return;
+      if (m.s !== session) return;
+      // the worksheet restarted its calculation: the port to it is dead, the next request asks again
+      if (m.t === 'kernel') return kernelRemoteStopped();
+      if (m.id !== id) return;
       if (m.t === 'state') {
-        setLastSeen(Date.now());
+        seen();
+        has.current = true;
         setResult(m.result);
         // an echo of an older edit must not undo a newer local one
         if (m.ack >= seq.current) setRegion(m.region);
-      } else if (m.t === 'gone') {
+      } else if (m.t === 'alive') seen();
+      else if (m.t === 'gone') {
         setGone(true);
         window.setTimeout(() => void closeThisWindow(), 1500);
       }
     });
     channel.current = ch;
-    const hello = () => ch.post({ t: 'hello', s: session, id, seq: seq.current });
+    // the heartbeat: the worksheet answers with a few bytes unless the part changed
+    const hello = () => ch.post({ t: 'hello', s: session, id, seq: seq.current, have: has.current });
     hello();
+    let wasUp = false;
     const beat = window.setInterval(() => {
       hello();
-      setNow(Date.now());
+      const up = Date.now() - lastSeen.current < 6000;
+      setConnected(up);
+      // the worksheet window went away (or reloaded): kernel requests no longer reach it
+      if (wasUp && !up) kernelRemoteStopped('the worksheet window does not answer', false);
+      wasUp = up;
     }, 2000);
     const bye = () => ch.post({ t: 'bye', s: session, id });
     window.addEventListener('beforeunload', bye);
@@ -81,7 +105,6 @@ export function CadWindowApp({ id, session }: { id: string; session: string }) {
     separate: () => {},
   }), [ui, region]);
 
-  const connected = now - lastSeen < 6000;
   if (gone) return <div className="cadw-wait">This part was removed from the worksheet. Closing…</div>;
   if (!region) {
     return (
