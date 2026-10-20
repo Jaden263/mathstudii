@@ -13,6 +13,7 @@ import { baseName, type TopoRef } from './topology';
 import { MATERIALS } from './model';
 import { parseThread } from './threads';
 import { fitDeviations, parseFit } from './fits';
+import { materialOfBody } from './materials';
 
 /** A view-coordinate point. */
 export type XY = [number, number];
@@ -440,6 +441,10 @@ export interface BomRow {
 /** A material's name from a density written as the material list writes it ("7850 kg/m^3": Steel). */
 export const materialOf = (density: string | undefined) => MATERIALS.find((m) => m.density === density?.trim())?.name ?? '';
 
+/** A component's material for a parts list or title block: its library material, else the one its density names. */
+export const componentMaterial = (design: CadDesign, c: CadComponent, partDensity?: string) =>
+  materialOfBody(design, c)?.id ?? materialOf(c.density?.trim() ? c.density : partDensity);
+
 /**
  * The parts list of an assembly (ISO 7573): one item per component that has visible
  * occurrences, numbered in the order they first occur, with how many times it occurs, its
@@ -459,7 +464,7 @@ export function bomRows(design: CadDesign, o: { masses?: Record<string, number |
     const own = o.rows?.[c.id];
     out.push({
       item: out.length + 1, component: c.id, name: own?.name?.trim() || c.name, qty: 1,
-      material: own?.material?.trim() || materialOf(c.density?.trim() ? c.density : o.density),
+      material: own?.material?.trim() || componentMaterial(design, c, o.density),
       ...(o.masses?.[c.id] !== undefined ? { mass: o.masses[c.id] } : {}),
     });
   }

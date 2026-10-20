@@ -22,7 +22,7 @@ import {
   type Layer, type PlacedView, type Sheet, type SheetInfo,
 } from '../../cad/drawingSheet';
 import { sheetDxf } from '../../cad/drawingDxf';
-import { bomMass, bomRows, materialOf, MM, threadOn, type Annotation, type DrawPick, type XY } from '../../cad/annotations';
+import { bomMass, bomRows, componentMaterial, MM, threadOn, type Annotation, type DrawPick, type XY } from '../../cad/annotations';
 import { annotateSheet, annotationAt, annotationParts, autoBalloons, pictorialView, viewPicks, type PlacedAnnotation, type ViewPicks } from '../../cad/drawingAnnotate';
 import { autoDimensions } from '../../cad/autoDims';
 import { continueDimension, movedAnnotation, newDimension, nextDatumLetter } from '../../cad/annotationTools';
@@ -312,7 +312,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const info = useMemo<SheetInfo>(() => {
     const name = cad?.design?.components[0]?.name || cad?.name || 'Part';
     const comps = design.components.filter((c) => design.occurrences.some((o) => o.component === c.id && !o.hidden));
-    const material = comps.length === 1 ? materialOf(comps[0].density?.trim() ? comps[0].density : cad?.density) : '';
+    const material = comps.length === 1 ? componentMaterial(design, comps[0], cad?.density) : '';
     // the mass of what is drawn: the parts list's (hidden occurrences are in the worksheet's total)
     return { unit, name, date: new Date().toISOString().slice(0, 10), mass: bomMass(bom) ?? cadResult?.mass?.m, material, bom, assembly, overall: !parts };
   }, [cad?.design, cad?.name, cad?.density, design, unit, cadResult?.mass?.m, bom, assembly, parts]);

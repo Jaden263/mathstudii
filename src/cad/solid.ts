@@ -391,6 +391,8 @@ export interface Mass3 {
   V: number;
   c: Vec3;
   C: number[];
+  /** Surface area, where it was measured. */
+  A?: number;
 }
 
 /** Exact divergence-theorem integrals over the closed triangle mesh. */
@@ -399,7 +401,7 @@ export function solidMass(m: Manifold): Mass3 {
   const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts;
   const bb = m.boundingBox();
   const r: Vec3 = [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2];
-  let V = 0;
+  let V = 0, A = 0;
   const F = [0, 0, 0];
   const S = new Array<number>(9).fill(0);
   for (let t = 0; t < tv.length; t += 3) {
@@ -408,6 +410,7 @@ export function solidMass(m: Manifold): Mass3 {
       return [vp[i] - r[0], vp[i + 1] - r[1], vp[i + 2] - r[2]];
     });
     const [a, b, c] = v;
+    A += Math.hypot(...cross3(sub3(b as Vec3, a as Vec3), sub3(c as Vec3, a as Vec3))) / 2;
     const det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
     V += det / 6;
     const sum = [a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]];
@@ -419,7 +422,7 @@ export function solidMass(m: Manifold): Mass3 {
   if (!(Math.abs(V) > 0)) return { V: 0, c: r, C: new Array(9).fill(0) };
   const g = [F[0] / V, F[1] / V, F[2] / V];
   const C = S.map((s, k) => s - V * g[(k / 3) | 0] * g[k % 3]);
-  return { V, c: [r[0] + g[0], r[1] + g[1], r[2] + g[2]], C };
+  return { V, c: [r[0] + g[0], r[1] + g[1], r[2] + g[2]], C, A };
 }
 
 export function massFromProps(p: MassProps): Mass3 {
@@ -446,7 +449,8 @@ export function transformMass(m: Mass3, M: M4): Mass3 {
   const AC = new Array<number>(9).fill(0), out = new Array<number>(9).fill(0);
   for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) AC[3 * i + j] += A[3 * i + k] * C[3 * k + j];
   for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) out[3 * i + j] += AC[3 * i + k] * A[3 * j + k];
-  return { V: m.V, c: m4Point(M, m.c), C: out };
+  // a rigid move keeps the area
+  return { V: m.V, c: m4Point(M, m.c), C: out, ...(m.A !== undefined ? { A: m.A } : {}) };
 }
 
 /** Combined properties of several solids; `w` weights each (density) — 1 for volume properties. */

@@ -23,6 +23,8 @@ import type { MotionResult } from './motion';
 import { studyResult } from './occ/motion';
 import { assemblyParams, jointExport, jointParams, motionValue } from './assemblyParams';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
+import { componentDensities, materialOfBody, materialValue } from './materials';
+import { massReport } from './massProps';
 
 export interface CadResult {
   kind: 'cad';
@@ -163,17 +165,17 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
     const s = threadIn(parseThread(size), unit);
     return { P: s.P, dM: s.d, d2: s.d2, d1: s.d1, d3: s.d3, As: s.As, drill: s.drill };
   };
+  /** A density expression in kg per part unit³. */
+  const density = (src: string) => {
+    const rho = evalExpr(src);
+    if (!isUnit(rho) || !(rho as Unit).equalBase(math.unit('kg/m^3'))) throw new Error('the density needs a unit such as kg/m^3');
+    return (rho as Unit).toNumeric(`kg/${unit}^3`) as number;
+  };
   for (const comp of design.components) {
-    try {
-      const src = comp.density?.trim() || partDensity.trim();
-      if (src) {
-        const rho = evalExpr(src);
-        if (!isUnit(rho) || !(rho as Unit).equalBase(math.unit('kg/m^3'))) throw new Error('the density needs a unit such as kg/m^3');
-        params[comp.id] = { density: (rho as Unit).toNumeric(`kg/${unit}^3`) as number };
-      }
-    } catch (e) {
-      errors[comp.id] = msg(e);
-    }
+    // the density of the component's material or expression, and of bodies of a material of their own
+    const dens = componentDensities(design, comp, partDensity, unit, density);
+    if (Object.keys(dens.params).length) params[comp.id] = dens.params;
+    if (dens.error) errors[comp.id] = dens.error;
     for (const item of comp.items) {
       const p: Record<string, number> = {};
       try {
@@ -457,16 +459,18 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     dr.motions = {};
     for (const st of design.motions) if (!numbers.errors[st.id]) dr.motions[st.id] = studyResult(m ? oc : null, design, numbers, st, dr.kin);
   }
+  // bodies of a material of their own weigh with its density
+  const rhoOf = bodyDensities(design, dr, compMass, numbers.params);
   // the part's own sketch readouts: the first sketch as the build solved it
   if (first && dr.rebuilt?.[first.id]) {
     Object.assign(result, dr.sketches[first.id], { dof: Object.values(dr.sketches).reduce((s, x) => s + x.dof, 0), ok: Object.values(dr.sketches).every((x) => x.ok) });
   }
-  for (const c of design.components) dr.components[c.id] = massOut((compMass.get(c.id) ?? []).map((m) => ({ m, rho: density(c.id) })));
+  for (const c of design.components) dr.components[c.id] = massOut((compMass.get(c.id) ?? []).map((m, k) => ({ m, rho: rhoOf(c.id, k) })));
   const all: { m: Mass3; rho?: number }[] = [];
   for (const o of design.occurrences) {
     const M = dr.placements[o.id]?.matrix;
     if (!M) continue;
-    for (const m of compMass.get(o.component) ?? []) all.push({ m: transformMass(m, M), rho: density(o.component) });
+    (compMass.get(o.component) ?? []).forEach((m, k) => all.push({ m: transformMass(m, M), rho: rhoOf(o.component, k) }));
   }
   const total = massOut(all);
   if (total) {
@@ -487,6 +491,28 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
   return { result };
 }
 
+/**
+ * The density each measured body weighs with (kg per part unit³), by component and the
+ * body's place among the measured ones: a body of a material of its own (`rho:${body}`)
+ * has its masses made again with it; the others keep the component's.
+ */
+function bodyDensities(design: CadDesign, dr: DesignResult, measured: Map<string, Mass3[]>, params: DesignNumbers['params']): (cid: string, k: number) => number | undefined {
+  const own = new Map<string, (number | undefined)[]>();
+  for (const c of design.components) {
+    const p = params[c.id];
+    // the bodies that were measured, in the order their masses were
+    const bodies = (dr.bodies[c.id] ?? []).filter((b) => !b.empty);
+    const ms = measured.get(c.id) ?? [];
+    own.set(c.id, ms.map((m, k) => {
+      const b = bodies[k], rho = b && p?.[`rho:${b.id}`];
+      if (rho === undefined) return p?.density;
+      b.mass = massOut([{ m, rho }]) ?? undefined;
+      return rho;
+    }));
+  }
+  return (cid, k) => own.get(cid)?.[k];
+}
+
 /** Worksheet value of a part: totals, components, sketches, joints and named dimensions with units. */
 export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> {
   const u = r.unit;
@@ -500,9 +526,20 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
   });
   const solid = (m: MassOut) => {
     const o: Record<string, unknown> = { V: L(m.V, 3), xg: L(m.xg), yg: L(m.yg), zg: L(m.zg) };
+    if (m.A !== undefined) o.S = L(m.A, 2);
     if (m.m !== undefined && m.Im) {
       const kg = (v: number) => math.unit(v, `kg ${u}^2`);
       Object.assign(o, { m: math.unit(m.m, 'kg'), Imx: kg(m.Im[0]), Imy: kg(m.Im[1]), Imz: kg(m.Im[2]), Imxy: kg(m.Im[3]), Imxz: kg(m.Im[4]), Imyz: kg(m.Im[5]) });
+      // principal moments and axes, radii of gyration, and the moments about the origin (products as Imxy: +∫xy dm)
+      const r = massReport(m);
+      if (r) {
+        const [J1, J2, J3] = r.moments, JO = r.JO;
+        Object.assign(o, {
+          Im1: kg(J1), Im2: kg(J2), Im3: kg(J3), e1: math.matrix(r.axes[0]), e2: math.matrix(r.axes[1]), e3: math.matrix(r.axes[2]),
+          kx: L(r.k[0]), ky: L(r.k[1]), kz: L(r.k[2]), k1: L(r.kp[0]), k2: L(r.kp[1]), k3: L(r.kp[2]),
+          ImOx: kg(JO[0]), ImOy: kg(JO[4]), ImOz: kg(JO[8]), ImOxy: kg(-JO[1]), ImOxz: kg(-JO[2]), ImOyz: kg(-JO[5]),
+        });
+      }
     }
     return o;
   };
@@ -526,6 +563,13 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
         if ((i.kind === 'thread' || (i.kind === 'hole' && i.tap)) && t?.P && identifier(i.name)) {
           sub[identifier(i.name)] = { d: L(t.dM), P: L(t.P), d2: L(t.d2), d1: L(t.d1), D1: L(t.d1), d3: L(t.d3), As: L(t.As, 2), drill: L(t.drill) };
         }
+      }
+      // the material: its properties for the worksheet, with the density the mass was made with
+      const cm = materialOfBody(design, c);
+      if (cm) sub.material = materialValue(cm, d.params[c.id]?.density, u);
+      for (const b of d.bodies[c.id] ?? []) {
+        const bm = materialOfBody(design, c, b.id), bs = identifier(b.name) ? sub[identifier(b.name)] : undefined;
+        if (bm && bs && typeof bs === 'object') (bs as Record<string, unknown>).material = materialValue(bm, d.params[c.id]?.[`rho:${b.id}`] ?? d.params[c.id]?.density, u);
       }
       if (id && design.components.length > 1 && !(id in value)) value[id] = sub;
       else if (id && design.components.length === 1) {
