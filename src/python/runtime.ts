@@ -40,6 +40,12 @@ export function pythonReady(): boolean {
   return py !== null;
 }
 
+/** Size of Python's WASM heap (bytes), 0 before it started. */
+export function pythonHeapBytes(): number {
+  const m = (py as unknown as { _module?: { HEAPU8?: Uint8Array } } | null)?._module;
+  return m?.HEAPU8?.buffer.byteLength ?? 0;
+}
+
 /** Start Python (once). Later calls wait for the same start. */
 export function initPython(load: PythonLoader): Promise<void> {
   starting ??= (async () => {

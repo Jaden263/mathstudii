@@ -1,10 +1,13 @@
 // The UI's side of the 3-D kernel. Nothing here touches a kernel: requests go to a kernel
 // worker (in the worksheet window the calculation worker, which already has the solids
-// it built for the worksheet; a separate CAD window starts a worker of its own) and come
-// back as promises. Display data of built designs arrives from the calculation worker
-// after the results it belongs to, once per design key, and is kept here for the views.
+// it built for the worksheet; a separate CAD window asks the worksheet window for a port
+// to that same worker, and starts a worker of its own only where it cannot, as in the
+// desktop app) and come back as promises. Display data of built designs arrives from the
+// calculation worker after the results it belongs to, once per design key, and is kept
+// here for the views.
 import { useEffect, useSyncExternalStore } from 'react';
 import type { BuildResult } from '../../cad/buildResult';
+import { ByteLru } from '../../model/lru';
 import { hasFeatures, type CadDesign, type DesignNumbers } from '../../cad/design';
 import type { CadResult } from '../../cad/evaluate';
 import { designKey, designNumbers } from '../../cad/keys';
@@ -21,13 +24,39 @@ export const isSuperseded = (e: unknown) => e instanceof Superseded;
 
 let host: (() => Worker) | null = null;
 let own: Worker | null = null;
-let link: { worker: Worker; port: MessagePort } | null = null;
+/** Where requests go now: a worker (the host or our own) or a port handed over by another window. */
+let link: { worker: Worker | 'remote'; port: MessagePort } | null = null;
 const waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 let nextId = 0;
 
 /** The worksheet window's calculation worker answers kernel requests (null: start a worker of our own). */
 export function setKernelHost(h: (() => Worker) | null) {
   host = h;
+}
+
+/**
+ * A CAD window asks the worksheet window for a port to its calculation worker (one kernel
+ * for both, and the solids the worksheet built serve the window too). Null: no such port
+ * (the worksheet window is gone, or a desktop window, which is a process of its own).
+ */
+let remote: (() => Promise<MessagePort | null>) | null = null;
+let remoteAsking: Promise<MessagePort | null> | null = null;
+/** The worksheet window did not hand a port over: a worker of our own answers from now on. */
+let remoteFailed = false;
+
+export function setKernelPortSource(src: (() => Promise<MessagePort | null>) | null) {
+  remote = src;
+  remoteFailed = false;
+}
+
+/**
+ * The worker behind the remote port stopped (the worksheet restarted its calculation, or
+ * stopped answering): what it was asked fails, and the next request asks for a new port
+ * (`retry`: also when the worksheet did not hand one over before).
+ */
+export function kernelRemoteStopped(why = 'the calculation was restarted — try again', retry = true) {
+  if (link?.worker === 'remote') unlink(why);
+  if (retry) remoteFailed = false;
 }
 
 const startWorker = () => new Worker(new URL('../../cad/kernel/worker.ts', import.meta.url), { type: 'module' });
@@ -51,7 +80,7 @@ function unlink(why = 'the calculation was interrupted — try again') {
  * fail what it was asked now, not at the next request, so a lane waiting on it moves on.
  */
 export function kernelHostStopped(why?: string) {
-  if (link && link.worker !== own) unlink(why);
+  if (link && link.worker !== own && link.worker !== 'remote') unlink(why);
 }
 
 /** The worker of our own has answered: it loads OpenCascade before its first answer. */
@@ -79,41 +108,92 @@ function ownWorker(): Worker {
   return w;
 }
 
-function port(): MessagePort {
-  const w = host ? host() : (own ??= ownWorker());
-  if (link?.worker === w) return link.port;
-  // a new worker (the calculation was interrupted): what the old one was asked is lost
-  unlink();
-  const ch = new MessageChannel();
-  ch.port1.onmessage = (e: MessageEvent<KernelReply>) => {
-    if (w === own && !ownUp) {
+/**
+ * A worker of our own holds a whole kernel (OpenCascade's heap is 100 MB at least, and
+ * grows): stopped after this long without requests, started again by the next one.
+ */
+export const OWN_IDLE_MS = 2 * 60_000;
+let ownIdle: ReturnType<typeof setTimeout> | undefined;
+
+function ownIdleCheck() {
+  clearTimeout(ownIdle);
+  if (!own || waiting.size) return;
+  ownIdle = setTimeout(() => {
+    if (!own || waiting.size) return;
+    const w = own;
+    own = null;
+    if (link?.worker === w) unlink();
+    w.terminate();
+  }, OWN_IDLE_MS);
+}
+
+function listen(port: MessagePort, w: Worker | 'remote') {
+  // a kernel not the worksheet's own (a worker of ours, or the worksheet window's) is up once it answers
+  const away = w === own || w === 'remote';
+  port.onmessage = (e: MessageEvent<KernelReply>) => {
+    if (away && !ownUp) {
       ownUp = true;
       changed();
     }
     const r = e.data, p = waiting.get(r.rid);
     if (!p) return;
     waiting.delete(r.rid);
+    if (w === own) ownIdleCheck();
     if (r.ok) p.resolve(r.value);
     else {
       // our own worker has no kernel at all: the views say so instead of waiting
-      if (w === own && r.error === NO_KERNEL && !ownDown) {
+      if (away && r.error === NO_KERNEL && !ownDown) {
         ownDown = true;
         changed();
       }
       p.reject(new Error(r.error));
     }
   };
+}
+
+function workerPort(w: Worker): MessagePort {
+  if (link?.worker === w) return link.port;
+  // a new worker (the calculation was interrupted): what the old one was asked is lost
+  unlink();
+  const ch = new MessageChannel();
+  listen(ch.port1, w);
   w.postMessage({ kernelPort: ch.port2 }, [ch.port2]);
   link = { worker: w, port: ch.port1 };
   return ch.port1;
 }
 
+function port(): MessagePort | Promise<MessagePort> {
+  if (host) return workerPort(host());
+  if (remote && !remoteFailed) {
+    if (link?.worker === 'remote') return link.port;
+    // one question for every request that comes meanwhile
+    remoteAsking ??= remote().catch(() => null).then((p) => {
+      remoteAsking = null;
+      if (!p) {
+        remoteFailed = true;
+        return null;
+      }
+      unlink();
+      listen(p, 'remote');
+      link = { worker: 'remote', port: p };
+      return p;
+    });
+    return remoteAsking.then((p) => p ?? port());
+  }
+  return workerPort((own ??= ownWorker()));
+}
+
 function send(req: KernelRequest): Promise<unknown> {
+  clearTimeout(ownIdle);
   return new Promise((resolve, reject) => {
+    const post = (p: MessagePort) => {
+      const rid = ++nextId;
+      waiting.set(rid, { resolve, reject });
+      p.postMessage({ rid, req } satisfies KernelCall);
+    };
     const p = port();
-    const rid = ++nextId;
-    waiting.set(rid, { resolve, reject });
-    p.postMessage({ rid, req } satisfies KernelCall);
+    if (p instanceof MessagePort) post(p);
+    else p.then(post, reject);
   });
 }
 
@@ -164,8 +244,19 @@ export function warmKernel() {
 
 // ------------------------------------------------------------ display data
 
-const shown = new Map<string, BuildResult>();
-const SHOWN = 24;
+/**
+ * Display data by design key, for the views (and the parts they showed last): a dozen
+ * designs within a byte budget; a view going back to one that was dropped asks again.
+ */
+const shown = new ByteLru<string, BuildResult>(64 * 2 ** 20, 12, {
+  onEvict: (key) => {
+    dropped.add(key);
+    for (const k of dropped) if (dropped.size > 256) dropped.delete(k);
+  },
+  // what a view shows now stays (with more parts on the page than the budget holds they
+  // would otherwise push each other out and ask again forever)
+  keep: (_, b) => [...lastShown.values()].includes(b),
+});
 /** Designs the kernel answered without display data (nothing could build them): nobody waits for it. */
 const missing = new Set<string>();
 /** Display requests that failed (the kernel stopped while building them), by design key, and how often. */
@@ -180,16 +271,42 @@ let version = 0;
 const dropped = new Set<string>();
 
 function put(key: string, b: BuildResult) {
-  shown.delete(key);
   dropped.delete(key);
   failures.delete(key);
   shown.set(key, b);
-  while (shown.size > SHOWN) {
-    const old = shown.keys().next().value!;
-    shown.delete(old);
-    dropped.add(old);
+}
+
+/** Display data made by OpenCascade that is here (a restarted calculation worker need not send it again). */
+export const shownKeys = () => [...shown.keys()].filter((k) => shown.peek(k)!.kernel === 'brep');
+
+/** Bytes of display data kept for the views. */
+export const displayBytes = () => shown.bytes;
+
+/**
+ * Forget what the views no longer show: display data of other designs, and the parts of
+ * regions that are gone (`regions`: the CAD regions there are; all, when omitted).
+ */
+export function dropHiddenDisplays(regions?: Set<string>) {
+  if (regions) forgetRegions(regions);
+  const onScreen = new Set(lastShown.values());
+  for (const k of [...shown.keys()]) {
+    if (onScreen.has(shown.peek(k)!)) continue;
+    shown.delete(k);
+    dropped.add(k);
   }
-  for (const k of dropped) if (dropped.size > 256) dropped.delete(k);
+  changed();
+}
+
+/** Forget the parts of regions that are gone (another document was opened, regions were deleted). */
+export function forgetRegions(regions: Set<string>) {
+  let gone = false;
+  for (const id of [...lastShown.keys()]) {
+    if (regions.has(id)) continue;
+    lastShown.delete(id);
+    gone = true;
+  }
+  for (const k of [...lanes.keys()]) if (k.startsWith('display:') && !regions.has(k.slice(8)) && !lanes.get(k)!.busy) lanes.delete(k);
+  if (gone) changed();
 }
 
 /**

@@ -14,7 +14,7 @@ import {
 import { stepKey } from '../keys';
 import { Arena } from '../solid';
 import type { OccBuiltDesign, OccComponentBuild } from './build';
-import { hasSolid, type OC } from './kernel';
+import { hasSolid, onOccRenewed, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
 import { topologyOcc } from './topology';
 
@@ -29,10 +29,16 @@ interface Step {
   used: number;
 }
 
-/** Steps kept across builds. */
-const MAX_STEPS = 240;
-/** Past this heap size only the steps of the latest build are kept (renewOcc takes over at 768 MB). */
-const HEAP_SOFT = 512 * 2 ** 20;
+/**
+ * Steps kept across builds: a few branches of a long timeline (each step holds its solids
+ * and their tessellation in the WASM heap, which never gives memory back).
+ */
+const MAX_STEPS = 64;
+/**
+ * Past this heap size only the steps of the latest build are kept (a fresh kernel takes
+ * 100 MB; renewOcc takes over at RENEW_BYTES).
+ */
+const HEAP_SOFT = 192 * 2 ** 20;
 
 /** The operations' arena: hands everything to the arena of the step being built. */
 class StepArena extends Arena {
@@ -163,7 +169,20 @@ export class TimelineCache {
     this.steps.clear();
     this.root = TimelineCache.rootStep();
   }
+
+  /**
+   * Let go of a kernel instance that was replaced: its objects die with its heap, so
+   * nothing is freed one by one, and nothing here may keep the old instance reachable.
+   */
+  forget() {
+    this.steps.clear();
+    this.root = TimelineCache.rootStep();
+    this.sink = new StepArena();
+    this.oc = null;
+    this.ops = null;
+  }
 }
 
 /** The cache the worksheet and the kernel requests share (one per worker). */
 export const timelineCache = new TimelineCache();
+onOccRenewed(() => timelineCache.forget());

@@ -18,7 +18,8 @@ export function renderTex(tex: string, display = true): string {
     } catch (e) {
       html = `<span class="tex-error">${String((e as Error).message)}</span>`;
     }
-    if (cache.size > 4000) cache.clear();
+    // the formulas of a few worksheets (the oldest go first)
+    if (cache.size >= 1500) cache.delete(cache.keys().next().value!);
     cache.set(key, html);
   }
   return html;

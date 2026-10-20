@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { checkPassword, makeProtection, sha256Bytes, sha256Hex } from './protect';
+import { checkPassword, makeProtection, sameForEvaluation, sha256Bytes, sha256Hex } from './protect';
+import { createRegion, emptyWorksheet, type CadRegion, type MathRegion, type Region, type Worksheet } from './types';
 
 describe('password hash', () => {
   it('is SHA-256 (FIPS 180-2 test vectors)', async () => {
@@ -41,5 +42,29 @@ describe('SHA-256 without WebCrypto (pages served over plain http)', () => {
       const msg = 'ü'.repeat(n % 7) + 'x'.repeat(n);
       expect(hex(sha256Bytes(enc(msg)))).toBe(await sha256Hex(msg));
     }
+  });
+});
+
+describe('what a calculation depends on', () => {
+  const ws = (): Worksheet => ({ ...emptyWorksheet(), regions: [{ ...createRegion('cad', 80, 40), id: 'c' } as Region, { ...createRegion('math', 80, 400, { source: 'a := 1' }), id: 'm' } as Region] });
+
+  it('turning a view or zooming is not a change to calculate', () => {
+    const a = ws();
+    const c = a.regions[0] as CadRegion;
+    const turned = { ...a, regions: [{ ...c, view3d: { yaw: 10, pitch: 20 }, view3dW: { yaw: 1, pitch: 2, zoom: 3 } }, a.regions[1]] };
+    expect(sameForEvaluation(a, turned)).toBe(true);
+    expect(sameForEvaluation(a, a)).toBe(true);
+  });
+
+  it('anything else is', () => {
+    const a = ws();
+    const m = a.regions[1] as MathRegion;
+    expect(sameForEvaluation(a, { ...a, regions: [a.regions[0], { ...m, source: 'a := 2' }] })).toBe(false);
+    expect(sameForEvaluation(a, { ...a, regions: [a.regions[0], { ...m, y: 410 }] })).toBe(false);
+    expect(sameForEvaluation(a, { ...a, regions: [a.regions[0]] })).toBe(false);
+    expect(sameForEvaluation(a, { ...a, settings: { ...a.settings } })).toBe(false);
+    expect(sameForEvaluation(a, { ...a, title: 'Other' })).toBe(false);
+    // a field added that is not about the view
+    expect(sameForEvaluation(a, { ...a, regions: [a.regions[0], { ...m, disabled: true }] })).toBe(false);
   });
 });

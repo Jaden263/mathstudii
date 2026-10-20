@@ -34,8 +34,10 @@ export function PlotView({ region, data, selected, dispatch, zoom = 1 }: { regio
   useEffect(() => {
     const c = canvas.current;
     if (!c) return;
-    // render at screen resolution: the page is CSS-scaled by the zoom
-    const dpr = (window.devicePixelRatio || 1) * Math.max(1, zoom);
+    // render at screen resolution: the page is CSS-scaled by the zoom (up to 4 Mpx a plot:
+    // at 400 % on a high-density screen a plot would otherwise take tens of MB)
+    const want = (window.devicePixelRatio || 1) * Math.max(1, zoom);
+    const dpr = Math.min(want, Math.sqrt(4e6 / Math.max(1, region.width * region.height)));
     c.width = Math.round(region.width * dpr);
     c.height = Math.round(region.height * dpr);
     const ctx = c.getContext('2d');
