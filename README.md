@@ -1745,8 +1745,9 @@ What it is not, honestly:
     (within about 1–2 % on a sphere's mesh), so sharp changes inside a face are smoothed
     over a triangle. Zebra stripes are tied to the view and drawn on the display mesh, so
     a coarse mesh can ripple them a little.
-  - The physically based shading costs more than the old flat lighting: about 30 % more
-    time per frame in software rendering (SwiftShader); on a GPU it does not show.
+  - The physically based shading costs more than the old flat lighting: about a third more
+    time per frame in software rendering (SwiftShader, orbiting the flange assembly: some
+    52 against 39 ms); not measured on a GPU.
 
 It covers parametric plates, brackets, flanges, shafts and small mechanisms tied to a
 calculation. It is not a replacement for Fusion, SolidWorks or FreeCAD.
