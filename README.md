@@ -516,7 +516,8 @@ Press **Beam** for a structural analysis region: draw a beam, a continuous beam,
 truss or a plane frame, put supports and loads on it, and read the reactions and the
 N, V, M and deflection diagrams right on the drawing.
 
-**Drawing** (double-click the region to edit; the toolbar sits above it):
+**Drawing** (click the region to edit; the toolbar sits above it — a structure that is
+already there opens with the Select tool, an empty one with Member):
 
 - **Member (B):** click point after point; a chain continues until Esc or a right-click.
   Points snap to the grid, to existing nodes, and onto members, which are split there.
@@ -531,8 +532,43 @@ N, V, M and deflection diagrams right on the drawing.
 - **Line load (Q):** click a member for a full-length load, or drag along it for part of
   it. Loads can be uniform or linearly varying, and act downwards (gravity, per length of
   member) or perpendicular to the member.
-- **Select (V):** drag nodes, and double-click a load to change its value. Delete removes
-  the selection.
+- **Select (V):** click anything to pick it — a load anywhere on its glyph (the arrow's
+  shaft or head, a line load's band, arrows, outline or label, a moment's arc), on
+  inclined and vertical members, stacked G and Q loads each where it is drawn. A load
+  wins over the member under it unless you click right on the member's line; what a click
+  would pick is highlighted under the pointer. **Shift+click** adds or removes,
+  **Shift+drag** a box selects several (left to right: what is inside; right to left: what
+  it touches), **Ctrl+A** all.
+- **Changing loads:** double-click a load (or right-click → *Edit value…*) for a value box
+  at the glyph: the value and the direction angle of a force, q₁ and q₂ of a line load (q₂
+  empty: uniform), with its load case; Enter or a click elsewhere confirms, Esc cancels.
+  Drag a point load or moment along its member (it snaps to the grid, or onto another
+  node or member), and the square grips at the ends of a selected line load to change
+  where it starts and ends. The side panel edits the selection as well.
+- **Deleting:** Delete or Backspace, the toolbar's bin or right-click → *Delete* remove
+  what is selected (with the focus in the side panel too) — never the region itself;
+  **Ctrl+Z** brings it back. **Esc** clears the selection, a second Esc ends editing.
+  Right-clicking a load also offers its direction and load case.
+
+**Moving about** (while editing): the **wheel** zooms about the pointer and a trackpad
+**pinch** (or two fingers on a touch screen) zooms the drawing, not the page; on the page
+(not editing) the wheel just scrolls. Pan by dragging empty space, with the **middle
+button**, **Space + drag** or the arrow keys. **+ / −** zoom, **0** fits the structure
+(the toolbar's zoom and Fit buttons do the same). Symbols, text and the grid keep their
+size at every zoom (the grid thins out when zoomed out); the diagrams under a straight
+beam follow the zoom, aligned with it. The view is kept with the region without undo
+steps; the page always shows the whole structure.
+
+**Units:** the toolbar's units button (**m, kN**) and the top of the side panel set the
+length and force units. A change converts every number stored in them — coordinates,
+grid, loads, springs, moving loads — so the structure and its results stay the same
+(6 m becomes 6000 mm, 12 kN 12000 N; one Ctrl+Z undoes it), or, if you choose, keeps
+the numbers, which then mean the new unit. Values with a unit of their own (`5 kN/m`,
+`q_k`) are left alone. Every field takes a unit (`250 mm`, `7.5 kN/m`, `12 kN·m`,
+`1.35*q_k`) and shows the unit a bare number is in. **Results shown in** chooses the units
+of forces, moments, line loads, deflection and stress in the drawing, the diagrams and the
+panel (automatic: from the region's units, deflection in mm, stress in MPa); the values
+given to the worksheet keep their units whatever is shown.
 
 **Results:** the diagrams are drawn neatly **under the beam**, textbook style, one panel
 each for N (only when there is axial force), V, M and δ. They share the beam's horizontal

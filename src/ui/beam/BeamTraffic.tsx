@@ -11,6 +11,7 @@ import { beamId, movingLoad, type BeamCombo, type BeamInfluenceLine, type BeamMo
 import { identifierOf } from '../../beam/traffic';
 import { LazyInput } from '../sketch/SketchProps';
 import { LENGTH_M, fmt, units } from './beamDraw';
+import { QtyInput } from './BeamUnits';
 
 const QUANTITIES: { q: InfluenceQuantity; label: string }[] = [
   { q: 'Ry', label: 'Reaction R_y' },
@@ -172,8 +173,8 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
               </label>
             ) : straight ? (
               <div className="row2">
-                <label className="field"><span>Section x ({region.lengthUnit})</span>
-                  <input type="number" step="any" value={l.at?.x ?? 0} onChange={(e) => setLine(l.id, { at: { x: Number(e.target.value) || 0, y: N.get(region.members[0].a)?.y ?? 0 }, member: undefined })} />
+                <label className="field"><span>Section x</span>
+                  <QtyInput label="Section x" value={l.at?.x ?? 0} unit={region.lengthUnit} onCommit={(v) => setLine(l.id, { at: { x: v, y: N.get(region.members[0].a)?.y ?? 0 }, member: undefined })} />
                 </label>
                 {atNode && (l.quantity === 'V' || l.quantity === 'N') && (
                   <label className="field" title="At a joint: the member just left or just right of it"><span>Side</span>
@@ -194,10 +195,10 @@ export function TrafficProps({ region, result, onChange }: { region: BeamRegion;
                     {region.members.map((q, i) => <option key={q.id} value={q.id}>{i + 1}{q.deck ? ' (deck)' : ''}</option>)}
                   </select>
                 </label>
-                <label className="field"><span>From its start ({region.lengthUnit})</span>
-                  <input type="number" step="any" min={0} max={Lmem} value={+dist.toFixed(6)} onChange={(e) => {
+                <label className="field"><span>From its start</span>
+                  <QtyInput label="From its start" value={dist} unit={region.lengthUnit} onCommit={(v) => {
                     if (!a || !b || !(Lmem > 0)) return;
-                    const t = Math.min(1, Math.max(0, Number(e.target.value) / Lmem));
+                    const t = Math.min(1, Math.max(0, v / Lmem));
                     setLine(l.id, { member: m.id, at: { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t } });
                   }} />
                 </label>

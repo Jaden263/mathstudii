@@ -73,6 +73,8 @@ export function InfluencePanels({ r, d, res, vp, top, h, width, train }: {
         const kept: { x: number; y: number; t: string; i: number }[] = [];
         for (const c of cands) {
           const v = vals[c.i];
+          // zoomed in: ordinates off the side are not labelled at the edge
+          if (pts[c.i].x < -1 || pts[c.i].x > width + 1) continue;
           const t = fmt(v);
           const lx = Math.min(Math.max(pts[c.i].x, 30), width - 30);
           const ly = v >= 0 ? pts[c.i].y - 5 : pts[c.i].y + 13;
