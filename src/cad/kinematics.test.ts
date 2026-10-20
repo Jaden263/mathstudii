@@ -414,6 +414,33 @@ describe('planar, pin-slot and ball joints', () => {
     expect(Math.hypot(...end.map((v, i) => v - far[i]))).toBeLessThan(1e-8);
     expect(sol.mobility).toBe(1);
   });
+
+  it('a spatial RSSR linkage follows its closure equation P·cos θ4 + Q·sin θ4 = R', () => {
+    // input crank a about Z at the origin, output crank c about the world X at O4 = (d, 0, h),
+    // coupler b on balls. |B − A| = b with A = a(cos θ2, sin θ2, 0), B = O4 + c(0, cos θ4, sin θ4):
+    // P = −2ac·sin θ2, Q = 2hc, R = b² − (d − a cos θ2)² − a² sin² θ2 − h² − c²
+    const [a, b, c, d, h] = [10, 93, 70, 60, 10];
+    const theta = (t2: number) => {
+      const P = -2 * a * c * Math.sin(t2), Q = 2 * h * c, R = b * b - (d - a * Math.cos(t2)) ** 2 - (a * Math.sin(t2)) ** 2 - h * h - c * c;
+      return Math.atan2(Q, P) + Math.acos(R / Math.hypot(P, Q));
+    };
+    const balls = { type: 'ball' as const, free: ['angle', 'angle2', 'angle3'] as DofKey[] };
+    const m = model(['g', 'crank', 'rod', 'rocker'], [
+      joint('J1', 'g', 'crank', IDENTITY, IDENTITY),
+      joint('S1', 'crank', 'rod', T(a), IDENTITY, balls),
+      joint('S2', 'rod', 'rocker', T(b), T(c), balls),
+      joint('J4', 'g', 'rocker', m4Frame([d, 0, h], [0, 1, 0], [0, 0, 1], [1, 0, 0]), IDENTITY, { free: ['angle'], rest: { angle: theta(0) } }),
+    ]);
+    let from: Record<string, Partial<Record<DofKey, number>>> | undefined;
+    for (let deg = 0; deg <= 360; deg += 30) {
+      const sol = solveKinematics(m, { drive: { J1: { angle: deg * D } }, ...(from ? { from } : {}) });
+      from = sol.values;
+      expect(sol.errors).toEqual({});
+      expect(Math.abs(wrap(sol.values.J4.angle! - theta(deg * D)))).toBeLessThan(1e-8);
+      // the coupler's spin about its own axis is the one DOF left
+      expect(sol.mobility).toBe(1);
+    }
+  });
 });
 
 // ------------------------------------------------------------ a study's results
