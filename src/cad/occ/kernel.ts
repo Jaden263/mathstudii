@@ -108,16 +108,30 @@ export function onOccRenewed(f: () => void): () => void {
   return () => renewedListeners.delete(f);
 }
 
+let bloated: (() => boolean) | null = null;
+
+/**
+ * Who deals with a heap past RENEW_BYTES: a handler that returns true takes care of it
+ * (the calculation worker has the page start a fresh worker, which frees the old heap at
+ * once, where a replaced instance waits for a garbage collection, a minute or more in an
+ * idle worker); otherwise renewOcc replaces the instance here. Null: always here.
+ */
+export function onOccBloated(f: (() => boolean) | null) {
+  bloated = f;
+}
+
 /**
  * OCCT itself leaks a little inside some algorithms (in this build about 10 kB per
  * boolean and 50 kB per fillet, with every handle deleted), so a long session slowly
  * fills the WASM heap. Call this between builds: once the heap is past `limit` a fresh
  * instance loads in the background and takes over when it is ready (never in the middle
  * of a build, which is synchronous), and the old one goes with the garbage (onOccRenewed
- * tells the caches to let go of it). Returns the pending renewal, if any.
+ * tells the caches to let go of it). A trap (`limit` 0) always renews here. Returns the
+ * pending renewal, if any.
  */
 export function renewOcc(limit = RENEW_BYTES): Promise<OC> | null {
   if (!K || renewing || K.wasmMemory.buffer.byteLength < limit) return renewing;
+  if (limit > 0 && bloated?.()) return null;
   renewing = instantiate().then(
     (m) => {
       K = m;

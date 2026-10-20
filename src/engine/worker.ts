@@ -6,7 +6,7 @@ import { casReady, loadCas } from './symbolic';
 import type { Worksheet } from '../model/types';
 import { loadKernel } from '../cad/kernelBrowser';
 import { loadOcc } from '../cad/occ/browser';
-import { occ, occHeapBytes, occStaleBytes } from '../cad/occ/kernel';
+import { occ, occHeapBytes, occStaleBytes, onOccBloated } from '../cad/occ/kernel';
 import { kernel } from '../cad/solid';
 import { displayFor, ensureBrep, ensureMesh, kernelActivity, kernelCacheBytes, serveKernel, setKernelLoaders } from '../cad/kernel/service';
 import { buffersOf, isKernelPortMessage, type DisplayMessage } from '../cad/kernel/protocol';
@@ -42,6 +42,8 @@ export interface EvalResponse {
   millis: number;
   /** More results will follow (symbolic engine or Python still loading). */
   partial: boolean;
+  /** The B-rep heap is past its limit: a fresh worker frees it at once (start one between calculations). */
+  restart?: boolean;
 }
 
 /** Python code of the regions that will run. */
@@ -75,6 +77,15 @@ const waitsForKernel = (out: ReturnType<typeof evaluateWorksheet>) => [...out.re
 // the B-rep kernel is large: it loads for the first worksheet with a CAD part, whose
 // results then follow again with exact values
 setKernelLoaders(loadOcc, loadKernel);
+
+// past its limit the B-rep heap goes with the whole worker (the page starts a fresh one
+// between calculations); with Python loaded (seconds to start again) it is renewed here
+let restartWanted = false;
+onOccBloated(() => {
+  if (pythonReady()) return false;
+  restartWanted = true;
+  return true;
+});
 let latest = 0;
 const needsBrep = (out: ReturnType<typeof evaluateWorksheet>) => [...out.results.values()].some((r) => r.kind === 'cad' && r.needsBrep);
 
@@ -160,7 +171,7 @@ async function handle(e: MessageEvent<EvalRequest>) {
   const post = (out: ReturnType<typeof evaluateWorksheet>, partial: boolean) => {
     let results = [...out.results.entries()];
     if (only) results = results.filter(([rid]) => only.includes(rid));
-    const msg: EvalResponse = { id, results, errorCount: out.errorCount, millis: out.millis, partial };
+    const msg: EvalResponse = { id, results, errorCount: out.errorCount, millis: out.millis, partial, ...(restartWanted && !partial ? { restart: true } : {}) };
     ctx.postMessage(msg);
   };
   await meshIfNeeded(ws);

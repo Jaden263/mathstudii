@@ -65,6 +65,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
   busy.current = state.busy;
   // set below, used by the worker's message handler
   const armIdle = useRef(() => {});
+  const restartNow = useRef(() => {});
 
   const attach = useCallback((w: Worker) => {
     w.onmessage = (e: MessageEvent<EvalResponse | DisplayMessage | ExportResponse>) => {
@@ -87,9 +88,12 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
       }
       const msg = e.data;
       if (msg.id !== reqId.current) return;
+      busy.current = msg.partial;
       if (!msg.partial) {
         window.clearTimeout(slowTimer.current);
         armIdle.current();
+        // the B-rep heap is past its limit: a fresh worker gives it all back at once
+        if (msg.restart) window.setTimeout(() => restartNow.current(), 0);
       }
       setState({
         results: new Map(msg.results),
@@ -185,6 +189,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
       if (keys.length) req.shown = keys;
     }
     fresh.current = false;
+    busy.current = true;
     w.postMessage(req);
     window.clearTimeout(idleTimer.current);
     setState((s) => ({ ...s, busy: true }));
@@ -193,6 +198,14 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
       if (reqId.current === id) setState((s) => (s.busy ? { ...s, slow: true } : s));
     }, SLOW_MS);
   }, [getWorker]);
+
+  // (between calculations; with auto calculation the fresh worker evaluates the worksheet
+  // again at once, so the next edit does not wait for OpenCascade to load)
+  restartNow.current = () => {
+    if (!workerRef.current || busy.current || exports.current.size || wsExports.current.size) return;
+    stop('restarted to free memory');
+    if (auto) calculate();
+  };
 
   const interrupt = useCallback(() => {
     stop('interrupted');

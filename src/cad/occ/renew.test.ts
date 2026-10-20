@@ -5,7 +5,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import { expect, it } from 'vitest';
 import { circles, rect, single, solve, withCircles } from './fixtures';
-import { initOcc, occ, occHeapBytes, occStaleBytes, renewOcc } from './kernel';
+import { initOcc, occ, occHeapBytes, occStaleBytes, onOccBloated, renewOcc } from './kernel';
 import { measureDesignOcc } from './build';
 import { timelineCache } from './cache';
 import { displayFor, kernelCacheBytes } from '../kernel/service';
@@ -59,4 +59,29 @@ it('lets the replaced instance go, the first one included', async () => {
   expect(secondMem.deref()).toBeUndefined();
   expect(occStaleBytes()).toBe(0);
   expect(occHeapBytes()).toBeGreaterThan(0);
+}, 120_000);
+
+it('a heap past its limit goes to whoever handles it (the calculation worker restarts); a trap renews here', async () => {
+  let asked = 0;
+  const before = new WeakRef(occ()!);
+  onOccBloated(() => {
+    asked++;
+    return true;
+  });
+  try {
+    expect(renewOcc(1)).toBeNull();
+    expect(asked).toBe(1);
+    expect(occ()).toBe(before.deref());
+    // a trap (limit 0) does not wait for anyone
+    await renewOcc(0);
+    expect(asked).toBe(1);
+    expect(occ()).not.toBe(before.deref());
+    // a handler that declines: renewed here
+    onOccBloated(() => false);
+    const now = occ();
+    await renewOcc(1);
+    expect(occ()).not.toBe(now);
+  } finally {
+    onOccBloated(null);
+  }
 }, 120_000);
