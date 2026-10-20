@@ -340,7 +340,7 @@ to give it back:
 
 - **a minute after the worksheet stops needing them**: you opened a worksheet without
   Python or CAD parts, or deleted them;
-- **a minute after OpenCascade's heap has grown** past 256 MB (long CAD editing sessions);
+- **a minute after OpenCascade's heap has grown** past 200 MB (long CAD editing sessions);
 - **after 10 minutes without a calculation** on a CAD worksheet. Python stays: it takes
   seconds to start.
 
@@ -353,7 +353,7 @@ OpenCascade first, so they never turn approximate meanwhile.
 - A CAD window opened from the worksheet uses the worksheet's engine (one OpenCascade
   for both). The desktop app's CAD windows are processes of their own: each has a kernel
   worker, stopped after two minutes without requests.
-- OpenCascade itself leaks a little with every boolean. Past 384 MB a fresh instance takes
+- OpenCascade itself leaks a little with every boolean. Past 256 MB a fresh instance takes
   over between builds, and the old one is freed whole.
 - Undo keeps 200 steps within about 64 MB, so a large table or a linked workbook read
   again many times keeps fewer steps.

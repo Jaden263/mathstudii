@@ -24,8 +24,8 @@ describe('idle release of the calculation worker', () => {
   });
 
   it('gives back a B-rep heap that grew, counting replaced instances not collected yet', () => {
-    expect(releaseReason(mem({ occt: 200 * MB }), cad)).toBeNull();
-    expect(releaseReason(mem({ occt: BLOATED_OCCT + MB }), cad)).toMatch(/grew to 257 MB/);
+    expect(releaseReason(mem({ occt: 163 * MB }), cad)).toBeNull();
+    expect(releaseReason(mem({ occt: BLOATED_OCCT + MB }), cad)).toMatch(/grew to 201 MB/);
     expect(releaseReason(mem({ occt: 100 * MB, occtStale: 200 * MB }), cad)).toMatch(/grew/);
     expect(releaseReason(mem({ jsHeap: 500 * MB }), cad)).toMatch(/calculation heap/);
     expect(releaseReason(mem({ python: 600 * MB }), py)).toMatch(/Python's heap grew to 600 MB/);

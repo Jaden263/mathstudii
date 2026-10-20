@@ -90,7 +90,7 @@ export function occStaleBytes(): number {
  * Heap size past which the kernel is renewed (see renewOcc). A fresh instance takes 100 MB;
  * WASM memory never shrinks, so whatever a heap grows to stays taken until it is renewed.
  */
-export const RENEW_BYTES = 384 * 2 ** 20;
+export const RENEW_BYTES = 256 * 2 ** 20;
 
 /** Size of the kernel's heap (bytes), or 0 when it is not loaded. */
 export function occHeapBytes(): number {

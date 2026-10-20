@@ -12,7 +12,7 @@ export const IDLE_RELEASE_MS = 60_000;
 /** After this long without any calculation even kernels the worksheet uses are let go (they load again on the next change). */
 export const LONG_IDLE_MS = 10 * 60_000;
 /** A B-rep heap (with replaced ones not collected yet) past this is given back once idle: a fresh one is 100 MB. */
-export const BLOATED_OCCT = 256 * 2 ** 20;
+export const BLOATED_OCCT = 200 * 2 ** 20;
 /** The same for the worker's JavaScript heap, where the browser tells it … */
 export const BLOATED_JS = 384 * 2 ** 20;
 /** … and for Python's (30 MB fresh; big arrays grow it, and it keeps its peak). */
