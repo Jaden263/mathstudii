@@ -44,7 +44,7 @@ import { findEvalEquals } from '../engine/syntax';
 import { parseDelimited, toTableData, toTsv } from '../model/tableData';
 import { AREA_BAR, AREA_X, areasOf, evaluationOrder, hiddenIds, isArea, withContents } from '../model/areas';
 import { canAddAt, canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
-import { regionOwnsKey } from './sheetKeys';
+import { regionOwnsKey, regionsToDelete } from './sheetKeys';
 import { ProtectDialog } from './ProtectDialog';
 import { askXlsxTable } from './sheet/XlsxTableDialog';
 import { XLSX_MIME } from '../sheet/xlsx';
@@ -987,7 +987,8 @@ export function App() {
       if (mod && k === 'd' && selected.size) { e.preventDefault(); pasteRegions(blockOf(selected)); return; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size) {
         e.preventDefault();
-        deleteRegions([...selected]);
+        const ids = regionsToDelete(selected, editingId);
+        if (ids.length) deleteRegions(ids);
         return;
       }
       if (e.key === 'Escape') { setSelected(new Set()); return; }

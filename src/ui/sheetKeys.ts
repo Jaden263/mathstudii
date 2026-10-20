@@ -23,3 +23,12 @@ export function regionOwnsKey(e: KeyLike, editingId: string | null): boolean {
   if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'y')) return false;
   return true;
 }
+
+/**
+ * The regions Delete removes: the selected ones, but never the one being edited. Its
+ * editor's Delete is about what is picked in it, even with the focus gone elsewhere (a
+ * button of the side panel), so the beam or frame being worked on cannot vanish by it.
+ */
+export function regionsToDelete(selected: Iterable<string>, editingId: string | null): string[] {
+  return [...selected].filter((id) => id !== editingId);
+}

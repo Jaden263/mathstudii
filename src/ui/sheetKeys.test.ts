@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { regionOwnsKey, type KeyLike } from './sheetKeys';
+import { regionOwnsKey, regionsToDelete, type KeyLike } from './sheetKeys';
 
 /** An element inside the region with this id (or on the bare sheet when null). */
 function inRegion(id: string | null) {
@@ -32,5 +32,13 @@ describe('worksheet shortcuts and region editors', () => {
     // focus in another region than the one being edited
     expect(regionOwnsKey(key('Delete', inRegion('m2')), 'f1')).toBe(false);
     expect(regionOwnsKey(key('Delete', null), 'f1')).toBe(false);
+  });
+});
+
+describe('Delete and the region being edited', () => {
+  it('never deletes the region being edited, only other selected ones', () => {
+    expect(regionsToDelete(new Set(['b1']), 'b1')).toEqual([]);
+    expect(regionsToDelete(['b1', 'm2'], 'b1')).toEqual(['m2']);
+    expect(regionsToDelete(['b1'], null)).toEqual(['b1']);
   });
 });
