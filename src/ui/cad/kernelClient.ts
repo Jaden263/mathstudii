@@ -34,6 +34,9 @@ export function setKernelHost(h: (() => Worker) | null) {
   host = h;
 }
 
+/** Kernel requests sent and not answered yet (stopping the worker now would fail them). */
+export const kernelPending = () => waiting.size;
+
 /**
  * A CAD window asks the worksheet window for a port to its calculation worker (one kernel
  * for both, and the solids the worksheet built serve the window too). Null: no such port
@@ -122,6 +125,8 @@ function ownIdleCheck() {
     if (!own || waiting.size) return;
     const w = own;
     own = null;
+    // the next one loads OpenCascade again before its first answer
+    ownUp = false;
     if (link?.worker === w) unlink();
     w.terminate();
   }, OWN_IDLE_MS);

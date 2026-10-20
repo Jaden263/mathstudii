@@ -6,7 +6,7 @@ import { casReady, loadCas } from './symbolic';
 import type { Worksheet } from '../model/types';
 import { loadKernel } from '../cad/kernelBrowser';
 import { loadOcc } from '../cad/occ/browser';
-import { occ, occHeapBytes, occStaleBytes, onOccBloated } from '../cad/occ/kernel';
+import { occ, occHeapBytes, occStaleBytes, onOccBloated, RENEW_BYTES } from '../cad/occ/kernel';
 import { kernel } from '../cad/solid';
 import { displayFor, ensureBrep, ensureMesh, kernelActivity, kernelCacheBytes, serveKernel, setKernelLoaders } from '../cad/kernel/service';
 import { buffersOf, isKernelPortMessage, type DisplayMessage } from '../cad/kernel/protocol';
@@ -79,10 +79,12 @@ const waitsForKernel = (out: ReturnType<typeof evaluateWorksheet>) => [...out.re
 setKernelLoaders(loadOcc, loadKernel);
 
 // past its limit the B-rep heap goes with the whole worker (the page starts a fresh one
-// between calculations); with Python loaded (seconds to start again) it is renewed here
+// between calculations); with Python loaded (seconds to start again) it is renewed here,
+// and so it is at twice the limit (kernel requests alone, a CAD window's sections and
+// drawings, calculate nothing that would carry the restart to the page)
 let restartWanted = false;
 onOccBloated(() => {
-  if (pythonReady()) return false;
+  if (pythonReady() || occHeapBytes() > 2 * RENEW_BYTES) return false;
   restartWanted = true;
   return true;
 });

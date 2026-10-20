@@ -4,12 +4,12 @@ import type { RegionResult } from '../engine/evaluator';
 import type { EvalRequest, EvalResponse } from '../engine/worker';
 import { isMemoryReply, type MemoryQuery, type WorkerMemory } from '../engine/memoryProtocol';
 import { isDisplayMessage, type DisplayMessage } from '../cad/kernel/protocol';
-import { kernelHostStopped, receiveDisplay, setKernelHost, shownKeys } from './cad/kernelClient';
+import { kernelHostStopped, kernelPending, receiveDisplay, setKernelHost, shownKeys } from './cad/kernelClient';
 import { isExportResponse, type ExportRequest, type ExportResponse } from '../sheet/exportWorker';
 import { isWorksheetExportResponse, type WorksheetExportRequest, type WorksheetExportResponse } from '../exporters/exportWorker';
 import type { Format, Picture } from '../exporters';
 import { sameForEvaluation } from '../model/protect';
-import { IDLE_RELEASE_MS, needsOf, nextCheck, releaseReason } from './idleRelease';
+import { canStop, IDLE_RELEASE_MS, needsOf, nextCheck, releaseReason, type PageWaits } from './idleRelease';
 
 export interface EvaluationState {
   results: Map<string, RegionResult>;
@@ -61,11 +61,12 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
   /** The worker has not been asked to evaluate yet (it was just started). */
   const fresh = useRef(true);
   const idleTimer = useRef<number | undefined>(undefined);
+  const restartTimer = useRef<number | undefined>(undefined);
   const busy = useRef(false);
   busy.current = state.busy;
   // set below, used by the worker's message handler
   const armIdle = useRef(() => {});
-  const restartNow = useRef(() => {});
+  const restartNow = useRef(async () => {});
 
   const attach = useCallback((w: Worker) => {
     w.onmessage = (e: MessageEvent<EvalResponse | DisplayMessage | ExportResponse>) => {
@@ -93,7 +94,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
         window.clearTimeout(slowTimer.current);
         armIdle.current();
         // the B-rep heap is past its limit: a fresh worker gives it all back at once
-        if (msg.restart) window.setTimeout(() => restartNow.current(), 0);
+        if (msg.restart) void restartNow.current();
       }
       setState({
         results: new Map(msg.results),
@@ -129,6 +130,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
     w.terminate();
     workerRef.current = null;
     window.clearTimeout(idleTimer.current);
+    window.clearTimeout(restartTimer.current);
     for (const done of exports.current.values()) done({ xlsxExport: 0, error: `The calculation was ${why}` });
     exports.current.clear();
     for (const done of wsExports.current.values()) done({ worksheetExport: 0, error: `The calculation was ${why}` });
@@ -138,6 +140,9 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
     kernelHostStopped(`the calculation was ${why} — try again`);
     restarted.current?.();
   }, []);
+
+  /** What the page waits for from the worker (stopping it would fail these). */
+  const waits = (): PageWaits => ({ busy: busy.current, exports: exports.current.size + wsExports.current.size, kernelRequests: kernelPending() });
 
   /** What the worker holds now (null: there is none, or it did not answer). */
   const queryMemory = useCallback((): Promise<WorkerMemory | null> => {
@@ -159,9 +164,15 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
    */
   const release = useCallback(async (force = false): Promise<boolean> => {
     const m = await queryMemory();
-    if (!m || !workerRef.current) return false;
+    if (!workerRef.current) return false;
+    if (!m) {
+      // no answer: a long build holds it (look again later; stopped, it was answered with null)
+      window.clearTimeout(idleTimer.current);
+      idleTimer.current = window.setTimeout(() => void release(), IDLE_RELEASE_MS);
+      return false;
+    }
     const needs = needsOf(latest.current);
-    const pending = exports.current.size > 0 || wsExports.current.size > 0 || busy.current || m.busy;
+    const pending = !canStop(m, waits());
     if (!pending && (force || releaseReason(m, needs))) {
       stop('restarted to free memory');
       return true;
@@ -199,10 +210,22 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
     }, SLOW_MS);
   }, [getWorker]);
 
-  // (between calculations; with auto calculation the fresh worker evaluates the worksheet
-  // again at once, so the next edit does not wait for OpenCascade to load)
-  restartNow.current = () => {
-    if (!workerRef.current || busy.current || exports.current.size || wsExports.current.size) return;
+  // Between calculations, once the worker has sent what follows the results (display data
+  // comes after them, and before its answer to the query) and no kernel request is on its
+  // way (a drawing whose views fail does not ask again). A calculation running asks again
+  // with its results; a kernel request is waited for. With auto calculation the fresh
+  // worker evaluates the worksheet again at once, so the next edit does not wait for
+  // OpenCascade to load.
+  restartNow.current = async () => {
+    window.clearTimeout(restartTimer.current);
+    const w = workerRef.current;
+    if (!w || busy.current) return;
+    const m = await queryMemory();
+    if (workerRef.current !== w || busy.current) return;
+    if (!canStop(m, waits())) {
+      restartTimer.current = window.setTimeout(() => void restartNow.current(), 1000);
+      return;
+    }
     stop('restarted to free memory');
     if (auto) calculate();
   };
@@ -245,6 +268,7 @@ export function useEvaluation(ws: Worksheet, auto: boolean, onRestart?: () => vo
 
   useEffect(() => () => {
     window.clearTimeout(idleTimer.current);
+    window.clearTimeout(restartTimer.current);
     workerRef.current?.terminate();
   }, []);
   // the calculation worker also answers the CAD views' kernel requests (set while rendering:

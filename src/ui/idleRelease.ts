@@ -51,6 +51,24 @@ export function releaseReason(m: WorkerMemory, needs: WorksheetNeeds): string | 
   return null;
 }
 
+/** What the page itself waits for from the worker. */
+export interface PageWaits {
+  /** A calculation is on its way. */
+  busy: boolean;
+  /** Exports (.xlsx, Mathcad, SMath) asked and not answered. */
+  exports: number;
+  /** Kernel requests sent and not answered (a drawing whose views fail does not ask again). */
+  kernelRequests: number;
+}
+
+/**
+ * Stopping the worker now loses nothing: it answered the query (so what follows the last
+ * results, the display data, has arrived before), runs nothing, and nobody waits for it.
+ */
+export function canStop(m: WorkerMemory | null, page: PageWaits): m is WorkerMemory {
+  return !!m && !m.busy && !page.busy && page.exports === 0 && page.kernelRequests === 0;
+}
+
 /** When to look again (ms from now), or null when nothing can be let go before the worker is used again. */
 export function nextCheck(m: WorkerMemory, needs: WorksheetNeeds): number | null {
   if (m.busy) return IDLE_RELEASE_MS;

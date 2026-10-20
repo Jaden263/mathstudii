@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkerMemory } from '../engine/memoryProtocol';
 import { emptyWorksheet, type Region } from '../model/types';
-import { BLOATED_OCCT, IDLE_RELEASE_MS, LONG_IDLE_MS, needsOf, nextCheck, releaseReason } from './idleRelease';
+import { BLOATED_OCCT, canStop, IDLE_RELEASE_MS, LONG_IDLE_MS, needsOf, nextCheck, releaseReason } from './idleRelease';
 
 const MB = 2 ** 20;
 const mem = (m: Partial<WorkerMemory> = {}): WorkerMemory => ({ occt: 0, occtStale: 0, manifold: false, python: 0, cas: false, caches: 0, idleMs: IDLE_RELEASE_MS, busy: false, ...m });
@@ -44,6 +44,18 @@ describe('idle release of the calculation worker', () => {
     expect(nextCheck(mem({ occt: 100 * MB, idleMs: 2 * IDLE_RELEASE_MS }), cad)).toBe(LONG_IDLE_MS - 2 * IDLE_RELEASE_MS);
     expect(nextCheck(mem({ occt: 100 * MB, python: 30 * MB, idleMs: 2 * IDLE_RELEASE_MS }), { cad: true, python: true })).toBeNull();
     expect(nextCheck(mem({ cas: true, idleMs: 2 * IDLE_RELEASE_MS }), none)).toBeNull();
+  });
+
+  it('stops the worker only when nothing would be lost', () => {
+    const idle = { busy: false, exports: 0, kernelRequests: 0 };
+    expect(canStop(mem(), idle)).toBe(true);
+    // no answer (a long build holds it), or it works
+    expect(canStop(null, idle)).toBe(false);
+    expect(canStop(mem({ busy: true }), idle)).toBe(false);
+    // the page waits for a calculation, an export, or a kernel request (a drawing's views)
+    expect(canStop(mem(), { ...idle, busy: true })).toBe(false);
+    expect(canStop(mem(), { ...idle, exports: 1 })).toBe(false);
+    expect(canStop(mem(), { ...idle, kernelRequests: 1 })).toBe(false);
   });
 
   it('reads what a worksheet needs from its regions', () => {
