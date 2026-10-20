@@ -349,7 +349,8 @@ export function Worksheet(p: Props) {
           );
         })}
         {p.cursor && !p.editingId && (
-          <div className="crosshair" style={{ left: p.cursor.x, top: p.cursor.y }} aria-hidden>
+          // a new place pulses again
+          <div key={`${p.cursor.x},${p.cursor.y}`} className="crosshair" style={{ left: p.cursor.x, top: p.cursor.y }} aria-hidden>
             <span />
           </div>
         )}

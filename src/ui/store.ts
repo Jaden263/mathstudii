@@ -2,6 +2,7 @@ import { useReducer } from 'react';
 import type { AreaRegion, Region, Worksheet, WorksheetProtection, WorksheetSettings } from '../model/types';
 import { collapseArea, expandArea, fitArea, groupIntoArea, insertArea, isArea, makeRoom, nestBands, ungroupArea, withContents } from '../model/areas';
 import { canAddAt, canEdit, canMove, isProtected, isViewPatch, lockedIds, movableIds, respectLocks } from '../model/protect';
+import { approxBytes } from '../model/lru';
 
 export type Action =
   | { type: 'load'; ws: Worksheet }
@@ -37,6 +38,8 @@ export type Action =
 export interface State {
   ws: Worksheet;
   past: Worksheet[];
+  /** What each step of `past` holds that the state after it does not share (bytes, see stepBytes). */
+  pastBytes: number[];
   future: Worksheet[];
   lastCoalesce: string | null;
   lastTime: number;
@@ -45,7 +48,38 @@ export interface State {
   savedVersion: number;
 }
 
+/** Undo steps kept … */
 const HISTORY = 200;
+/** … within about this much memory of their own (a spreadsheet's cells, a workbook read again). */
+export const HISTORY_BYTES = 64 * 2 ** 20;
+
+/**
+ * Roughly what a snapshot holds that the state after it does not: the fields of the
+ * regions that changed (what did not change is shared, pictures included).
+ */
+export function stepBytes(prev: Worksheet, next: Worksheet): number {
+  let n = 256;
+  if (prev.regions === next.regions) return n;
+  const kept = new Set(next.regions);
+  const byId = new Map(next.regions.map((r) => [r.id, r]));
+  for (const r of prev.regions) {
+    if (kept.has(r)) continue;
+    const now = byId.get(r.id) as Record<string, unknown> | undefined;
+    for (const [k, v] of Object.entries(r)) if (!now || now[k] !== v) n += 16 + approxBytes(v);
+  }
+  return n;
+}
+
+/** The newest steps that fit `max` steps and `maxBytes` (the newest step always stays). */
+export function trimHistory<T>(past: T[], bytes: number[], max = HISTORY, maxBytes = HISTORY_BYTES): { past: T[]; bytes: number[] } {
+  let keep = 0, total = 0;
+  for (let i = past.length - 1; i >= 0 && keep < max; i--) {
+    total += bytes[i] ?? 0;
+    if (keep > 0 && total > maxBytes) break;
+    keep++;
+  }
+  return keep === past.length ? { past, bytes } : { past: past.slice(past.length - keep), bytes: bytes.slice(bytes.length - keep) };
+}
 
 /** Changes kept out of the undo history. */
 const NO_HISTORY = new Set<Action['type']>(['areaFit', 'lock', 'input', 'protect']);
@@ -156,19 +190,20 @@ export const moveResult = (ws: Worksheet, ids: string[], dx: number, dy: number)
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'load':
-      return { ws: a.ws, past: [], future: [], lastCoalesce: null, lastTime: 0, version: s.version + 1, savedVersion: s.version + 1 };
+      return { ws: a.ws, past: [], pastBytes: [], future: [], lastCoalesce: null, lastTime: 0, version: s.version + 1, savedVersion: s.version + 1 };
     case 'markSaved':
       return { ...s, savedVersion: Math.max(s.savedVersion, Math.min(a.version ?? s.version, s.version)) };
     // undo and redo never touch what is locked or protected now
     case 'undo': {
       if (!s.past.length) return s;
       const prev = respectLocks(s.past[s.past.length - 1], s.ws);
-      return { ...s, ws: prev, past: s.past.slice(0, -1), future: [s.ws, ...s.future], lastCoalesce: null, version: s.version + 1 };
+      return { ...s, ws: prev, past: s.past.slice(0, -1), pastBytes: s.pastBytes.slice(0, -1), future: [s.ws, ...s.future], lastCoalesce: null, version: s.version + 1 };
     }
     case 'redo': {
       if (!s.future.length) return s;
       const [next, ...rest] = s.future;
-      return { ...s, ws: respectLocks(next, s.ws), past: [...s.past, s.ws], future: rest, lastCoalesce: null, version: s.version + 1 };
+      const ws = respectLocks(next, s.ws);
+      return { ...s, ws, past: [...s.past, s.ws], pastBytes: [...s.pastBytes, stepBytes(s.ws, ws)], future: rest, lastCoalesce: null, version: s.version + 1 };
     }
     default: {
       const ws = apply(s.ws, a);
@@ -178,14 +213,14 @@ export function reducer(s: State, a: Action): State {
       const now = Date.now();
       // typing into the same field within 1.5 s merges into one undo step
       const merge = key !== null && key === s.lastCoalesce && now - s.lastTime < 1500;
-      const past = merge ? s.past : [...s.past, s.ws].slice(-HISTORY);
-      return { ws, past, future: [], lastCoalesce: key, lastTime: now, version: s.version + 1, savedVersion: s.savedVersion };
+      const { past, bytes } = merge ? { past: s.past, bytes: s.pastBytes } : trimHistory([...s.past, s.ws], [...s.pastBytes, stepBytes(s.ws, ws)]);
+      return { ws, past, pastBytes: bytes, future: [], lastCoalesce: key, lastTime: now, version: s.version + 1, savedVersion: s.savedVersion };
     }
   }
 }
 
 export function initialState(ws: Worksheet): State {
-  return { ws, past: [], future: [], lastCoalesce: null, lastTime: 0, version: 0, savedVersion: 0 };
+  return { ws, past: [], pastBytes: [], future: [], lastCoalesce: null, lastTime: 0, version: 0, savedVersion: 0 };
 }
 
 export function useWorksheetStore(initial: () => Worksheet) {

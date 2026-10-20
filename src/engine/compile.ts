@@ -38,6 +38,13 @@ export const BINDERS = new Set(['integral', 'sum', 'prod', 'product', 'diff', 'd
 
 const parseCache = new Map<string, MathNode>();
 const compileCache = new Map<string, EvalFunction>();
+/** Entries each cache keeps: the expressions of a few worksheets (the oldest go first). */
+const CACHED = 2000;
+
+function remember<T>(cache: Map<string, T>, key: string, v: T) {
+  if (cache.size >= CACHED) cache.delete(cache.keys().next().value!);
+  cache.set(key, v);
+}
 
 /** Parse user text (after Mathcad→mathjs translation) without engine transforms. Used for display. */
 export function parseExpr(src: string): MathNode {
@@ -45,8 +52,7 @@ export function parseExpr(src: string): MathNode {
   let node = parseCache.get(pre);
   if (!node) {
     node = math.parse(pre);
-    if (parseCache.size > 5000) parseCache.clear();
-    parseCache.set(pre, node);
+    remember(parseCache, pre, node);
   }
   return node;
 }
@@ -126,8 +132,7 @@ export function compileExpr(src: string): EvalFunction {
   let c = compileCache.get(src);
   if (!c) {
     c = transformForEval(parseExpr(src)).compile();
-    if (compileCache.size > 5000) compileCache.clear();
-    compileCache.set(src, c);
+    remember(compileCache, src, c);
   }
   return c;
 }

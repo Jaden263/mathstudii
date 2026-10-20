@@ -11,13 +11,17 @@ import type { CadResult } from '../../cad/evaluate';
 import { isTauri } from '../../platform/files';
 
 export type CadMsg =
-  /** window → worksheet, also the heartbeat */
-  | { t: 'hello'; s: string; id: string; seq: number }
+  /** window → worksheet, also the heartbeat (`have`: the window has the part already, answer with 'alive' unless it changed) */
+  | { t: 'hello'; s: string; id: string; seq: number; have?: boolean }
   | { t: 'patch'; s: string; id: string; seq: number; patch: Partial<CadRegion>; coalesce?: string; history?: false }
   | { t: 'bye'; s: string; id: string }
-  /** worksheet → window */
+  /** worksheet → window: the part and its result, sent when they change (or the window has none) */
   | { t: 'state'; s: string; id: string; ack: number; region: CadRegion; result?: CadResult }
-  | { t: 'gone'; s: string; id: string };
+  /** worksheet → window: the answer to a heartbeat when nothing changed */
+  | { t: 'alive'; s: string; id: string }
+  | { t: 'gone'; s: string; id: string }
+  /** worksheet → every window: its calculation worker was restarted (a kernel port to it is dead) */
+  | { t: 'kernel'; s: string };
 
 export interface CadChannel {
   post(m: CadMsg): void;
@@ -87,6 +91,60 @@ export async function openCadWindow(id: string, title: string): Promise<boolean>
   if (!w) return false;
   w.focus();
   return true;
+}
+
+// ------------------------------------------------------------ one kernel for both windows
+
+/**
+ * A browser CAD window asks the worksheet window that opened it for a port to the
+ * worksheet's calculation worker, so both use one OpenCascade (and the window finds the
+ * solids the worksheet built). Desktop windows are processes of their own: no opener.
+ */
+const KERNEL_ASK = 'mathstudii:kernel-port';
+
+interface KernelAsk {
+  t: typeof KERNEL_ASK;
+  s: string;
+  nonce: string;
+}
+
+const isKernelAsk = (m: unknown): m is KernelAsk => !!m && typeof m === 'object' && (m as KernelAsk).t === KERNEL_ASK;
+
+/** In a CAD window: a port to the worksheet's kernel, or null (no worksheet window answered). */
+export function askKernelPort(session: string, timeout = 3000): Promise<MessagePort | null> {
+  const opener = typeof window !== 'undefined' ? (window.opener as Window | null) : null;
+  if (isTauri || !opener || opener.closed) return Promise.resolve(null);
+  const nonce = Math.random().toString(36).slice(2);
+  return new Promise((resolve) => {
+    const done = (p: MessagePort | null) => {
+      window.removeEventListener('message', onMsg);
+      clearTimeout(t);
+      resolve(p);
+    };
+    const onMsg = (e: MessageEvent) => {
+      if (e.source !== opener || e.origin !== location.origin || !isKernelAsk(e.data) || e.data.nonce !== nonce) return;
+      done(e.ports[0] ?? null);
+    };
+    const t = setTimeout(() => done(null), timeout);
+    window.addEventListener('message', onMsg);
+    try {
+      opener.postMessage({ t: KERNEL_ASK, s: session, nonce } satisfies KernelAsk, location.origin);
+    } catch {
+      done(null);
+    }
+  });
+}
+
+/** In the worksheet window: hand each of its CAD windows that asks a port made by `connect`. */
+export function answerKernelPorts(connect: (port: MessagePort) => void): () => void {
+  const onMsg = (e: MessageEvent) => {
+    if (e.origin !== location.origin || !isKernelAsk(e.data) || e.data.s !== SESSION || !e.source) return;
+    const ch = new MessageChannel();
+    connect(ch.port2);
+    (e.source as Window).postMessage({ t: KERNEL_ASK, s: SESSION, nonce: e.data.nonce } satisfies KernelAsk, location.origin, [ch.port1]);
+  };
+  window.addEventListener('message', onMsg);
+  return () => window.removeEventListener('message', onMsg);
 }
 
 /** Close this CAD window (Tauri windows need their own API). */

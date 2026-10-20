@@ -472,8 +472,16 @@ select {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  animation: pulse 1.6s ease-in-out infinite;
+  /* a few pulses where the cursor lands, then still: an endless animation keeps the page
+     drawing frames forever (CPU and GPU busy on an idle worksheet) */
+  animation: pulse 1.6s ease-in-out 3;
   background: var(--accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crosshair span {
+    animation: none;
+  }
 }
 
 @keyframes pulse {
@@ -2966,8 +2974,7 @@ kbd {
 }
 
 .bm-toolbar {
-  max-width: min(860px, 96vw);
-  flex-wrap: nowrap;
+  max-width: min(940px, 96vw);
 }
 
 .bm-tool {
@@ -3361,6 +3368,180 @@ kbd {
   flex-wrap: nowrap;
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* beams: picking, navigation and units in the editor */
+.beam-region.editing .bm-svg {
+  /* pinch and pan belong to the drawing while it is edited */
+  touch-action: none;
+}
+
+.bm-grid.major {
+  stroke: color-mix(in srgb, var(--text) 13%, transparent);
+}
+
+.bm-load.hover {
+  color: color-mix(in srgb, var(--accent) 65%, var(--bm-load));
+  filter: drop-shadow(0 0 1.5px color-mix(in srgb, var(--accent) 60%, transparent));
+}
+
+.bm-svg .bm-load.hover .bm-label {
+  fill: color-mix(in srgb, var(--accent) 65%, var(--bm-load));
+}
+
+.bm-load.hover > line,
+.bm-load.sel > line {
+  stroke: currentColor;
+}
+
+.bm-load.sel .bm-load-area {
+  fill: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.bm-load.hover .bm-load-area {
+  fill: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.bm-member.hover line {
+  stroke: color-mix(in srgb, var(--accent) 60%, var(--text));
+}
+
+.bm-support.hover .bm-tri,
+.bm-support.hover .bm-ground {
+  stroke: color-mix(in srgb, var(--accent) 60%, var(--text));
+}
+
+.bm-node.hover {
+  fill: var(--accent);
+  r: 4.5;
+}
+
+.bm-grip {
+  fill: var(--page);
+  stroke: var(--accent);
+  stroke-width: calc(1.5px * var(--lw, 1));
+}
+
+.bm-band {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.bm-band.crossing {
+  stroke-dasharray: 5 4;
+  fill: color-mix(in srgb, var(--ok) 10%, transparent);
+  stroke: var(--ok);
+}
+
+/* the status (coordinates, zoom, notes) sits top left, clear of the strip and its summary;
+   loads under it are still picked and the wheel still zooms there */
+.bm-chrome > .bm-status {
+  pointer-events: none;
+  left: 6px;
+  right: auto;
+  top: 4px;
+  bottom: auto;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-units-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.bm-units-btn span {
+  font-variant-numeric: tabular-nums;
+}
+
+.bm-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 300px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.bm-pop.to-right {
+  right: auto;
+  left: 0;
+  max-width: calc(100vw - 16px);
+}
+
+.bm-units {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bm-units .hint {
+  margin: 0;
+}
+
+.bm-units-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bm-units-mode .check {
+  white-space: normal;
+}
+
+.bm-units-sub {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.bm-units-display {
+  row-gap: 6px;
+}
+
+.bm-qty {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bm-qty input {
+  flex: 1;
+}
+
+.bm-qty-unit {
+  min-width: 18px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.bm-qty.bad input {
+  border-color: var(--error);
+}
+
+.field .bm-unit-of {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.bm-edit .bm-angle {
+  width: 52px;
+}
+
+.bm-edit input + span {
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------- saving */
@@ -3949,6 +4130,63 @@ kbd {
 
 .status-btn:hover {
   background: var(--accent-soft);
+}
+
+/* the memory readout: its panel opens above the status bar (which clips what overflows it) */
+.memory-status {
+  display: inline-flex;
+}
+
+.memory-pop {
+  position: fixed;
+  right: 12px;
+  bottom: 30px;
+  z-index: 60;
+  width: min(360px, calc(100vw - 24px));
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  white-space: normal;
+  font-size: 12.5px;
+}
+
+.memory-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.memory-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.memory-row span:last-child {
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-row.muted,
+.memory-note,
+.memory-done {
+  color: var(--text-muted);
+}
+
+.memory-note {
+  margin: 8px 0;
+  font-size: 11.5px;
+}
+
+.memory-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 @media print {

@@ -5,7 +5,8 @@ import { NO_KERNEL_NOTICE, type KernelCall, type KernelReply } from '../../cad/k
 import type { CadResult } from '../../cad/evaluate';
 import type { BuildResult } from '../../cad/buildResult';
 import {
-  displayDelay, displayGaveUp, isSuperseded, kernelHostStopped, kernelNotice, kernelRequest, receiveDisplay, requestDisplay, setKernelHost, setKernelWorkerFactory, waitingFor,
+  displayDelay, displayGaveUp, isSuperseded, kernelHostStopped, kernelNotice, kernelRemoteStopped, kernelRequest, receiveDisplay, requestDisplay, setKernelHost, setKernelPortSource,
+  setKernelWorkerFactory, waitingFor,
 } from './kernelClient';
 
 /** A stand-in worker that answers section requests with their offset after `ms`. */
@@ -173,7 +174,7 @@ describe('kernel requests from the UI', () => {
 
   it('display data dropped from the cache is asked for at once, not waited for', () => {
     const b = (): BuildResult => ({ kernel: 'brep', components: {}, placements: {}, errors: {} });
-    // the cache keeps 24 designs: the 25th that arrives drops the oldest
+    // the cache keeps 12 designs: the 13th that arrives drops the oldest
     for (let i = 0; i < 25; i++) receiveDisplay({ display: [[`k${i}`, b()]] });
     // the calculation worker sent k0 once and will not again; k24 it may still be sending
     expect(displayDelay('k0', true)).toBe(0);
@@ -181,9 +182,52 @@ describe('kernel requests from the UI', () => {
     expect(displayDelay('new', true)).toBe(1500);
     // a CAD window's own worker sends nothing by itself: it is always asked at once
     expect(displayDelay('k24', false)).toBe(0);
-    // back in the cache, k0 is no longer missing; k1 was dropped for it
+    // back in the cache, k0 is no longer missing; k13, the oldest left, was dropped for it
     receiveDisplay({ display: [['k0', b()]] });
     expect(displayDelay('k0', true)).toBe(1500);
-    expect(displayDelay('k1', true)).toBe(0);
+    expect(displayDelay('k13', true)).toBe(0);
+    expect(displayDelay('k14', true)).toBe(1500);
+  });
+
+  it('a CAD window uses the port the worksheet window hands over, asked once for every request meanwhile', async () => {
+    let asked = 0;
+    const served: number[] = [];
+    const source = async () => {
+      asked++;
+      const ch = new MessageChannel();
+      ch.port2.onmessage = (e: MessageEvent<KernelCall>) => {
+        const { rid, req } = e.data;
+        if (req.op !== 'section') return;
+        served.push(req.plane.offset);
+        ch.port2.postMessage({ rid, ok: true, value: req.plane.offset * 10, kernel: 'brep' } satisfies KernelReply);
+      };
+      return ch.port1;
+    };
+    setKernelWorkerFactory(() => new OwnWorker(true) as unknown as Worker);
+    setKernelPortSource(source);
+    try {
+      expect(await Promise.all([kernelRequest(section(1)), kernelRequest(section(2))])).toEqual([10, 20]);
+      expect(asked).toBe(1);
+      expect(await kernelRequest(section(3))).toBe(30);
+      expect(asked).toBe(1);
+      // the worksheet restarted its calculation: the next request asks for a new port
+      kernelRemoteStopped();
+      expect(await kernelRequest(section(4))).toBe(40);
+      expect(asked).toBe(2);
+      // no worksheet window answers: a worker of our own does, and the window is not asked again
+      let nobody = 0;
+      setKernelPortSource(async () => {
+        nobody++;
+        return null;
+      });
+      kernelRemoteStopped();
+      expect(await kernelRequest(section(5))).toBe(5);
+      expect(await kernelRequest(section(6))).toBe(6);
+      expect(nobody).toBe(1);
+      expect(served).toEqual([1, 2, 3, 4]);
+    } finally {
+      setKernelPortSource(null);
+      setKernelWorkerFactory(null);
+    }
   });
 });

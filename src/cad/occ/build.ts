@@ -10,7 +10,7 @@ import { meshBodyResult } from '../meshBody';
 import { designKey } from '../keys';
 import { Arena, type Frame, type Mass3, type Vec3 } from '../solid';
 import { failedComponent, placeBuilt, timelineCache } from './cache';
-import { hasSolid, occBox, renewOcc, scratch, trsf, volumeProperties, xyz, type OC } from './kernel';
+import { hasSolid, occBox, onOccRenewed, renewOcc, scratch, trsf, volumeProperties, xyz, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
 
 export { occBox };
@@ -162,6 +162,11 @@ export interface MeasuredDesign {
 const cache = new Map<string, MeasuredDesign>();
 const CACHE_SIZE = 16;
 let cachedBy: OC | null = null;
+// a renewed kernel measures afresh, and the old instance must not stay reachable from here
+onOccRenewed(() => {
+  cache.clear();
+  cachedBy = null;
+});
 
 /** Exact properties of every body, measured once per design and numbers (results are plain data). */
 export function measureDesignOcc(oc: OC, design: CadDesign, numbers: DesignNumbers): MeasuredDesign {

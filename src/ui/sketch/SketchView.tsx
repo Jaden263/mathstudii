@@ -3,7 +3,8 @@ import {
   MousePointer2, Hand, Slash, Spline, Square, Circle as CircleIcon, RotateCcw, MoveUpRight, Ruler, Type, PenLine,
   Link2, Anchor, Shapes, Maximize, Magnet, Trash2, Play, Pause, Check,
 } from 'lucide-react';
-import type { SketchRegion } from '../../model/types';
+import type { SketchRegion, Worksheet } from '../../model/types';
+import { evaluationOrder, isArea } from '../../model/areas';
 import {
   newShapeId, defaultSectionParams, shapePoints, translateShape, setField, isBound, SYMBOLS,
   type Shape, type Pt, type SketchView as View,
@@ -472,6 +473,7 @@ export function SketchView({ region, result, editing, dispatch, onDone, selected
   // ------------------------------------------------------------ animation
 
   const playRef = useRef(false);
+  const frameWs = useRef<{ ws: Worksheet; out: Worksheet } | null>(null);
   useEffect(() => {
     playRef.current = playing;
     const anim = region.animation;
@@ -482,9 +484,11 @@ export function SketchView({ region, result, editing, dispatch, onDone, selected
     const request = () => {
       const s = (performance.now() - t0) / 1000 / Math.max(0.2, anim.seconds);
       const t = 1 - Math.abs((s % 2) - 1); // ping-pong 0 → 1 → 0
+      const ws = getWorksheet();
+      if (frameWs.current?.ws !== ws) frameWs.current = { ws, out: frameWorksheet(ws, region.id) };
       const req: EvalRequest = {
         id: ++id,
-        ws: getWorksheet(),
+        ws: frameWs.current.out,
         overrides: { [anim.variable]: `(${anim.from}) + ${t.toFixed(5)} * ((${anim.to}) - (${anim.from}))` },
         only: [region.id],
       };
@@ -642,4 +646,15 @@ export function SketchView({ region, result, editing, dispatch, onDone, selected
       )}
     </div>
   );
+}
+
+/**
+ * What an animation frame evaluates: the regions up to the sketch and the definitions after
+ * it (≡ ones hold everywhere); what comes later cannot change the sketch, and every frame
+ * would otherwise build the worksheet's parts, plates and frames again. Pictures never.
+ */
+function frameWorksheet(ws: Worksheet, id: string): Worksheet {
+  const order = evaluationOrder(ws);
+  const after = new Set(order.slice(order.findIndex((r) => r.id === id) + 1).map((r) => r.id));
+  return { ...ws, regions: ws.regions.filter((r) => r.kind !== 'image' && (!after.has(r.id) || r.kind === 'math' || isArea(r))) };
 }

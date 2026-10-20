@@ -5,6 +5,19 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { Mesh } from '../../cad/mesh';
 
+/**
+ * Give a view's WebGL context back once its canvas has left the page: its multisampled and
+ * preserved buffers (megabytes at full screen) otherwise stay until a garbage collection
+ * finds the canvas. Development's double effects keep the canvas on the page: nothing then.
+ */
+export function releaseContext(c: HTMLCanvasElement, ctx: WebGLRenderingContext) {
+  window.setTimeout(() => {
+    if (c.isConnected) return;
+    ctx.getExtension('WEBGL_lose_context')?.loseContext();
+    c.width = c.height = 1;
+  }, 0);
+}
+
 type Pan = { x: number; y: number };
 /** zoom 1 fits the bounding sphere; pan is a screen offset (x right, y up) in half the shorter side, applied before zoom. */
 export type View = { yaw: number; pitch: number; zoom?: number; pan?: Pan };
@@ -431,6 +444,7 @@ export function Cad3DView(props: {
       c.removeEventListener('webglcontextrestored', init);
       renderer.current?.dispose();
       renderer.current = null;
+      releaseContext(c, ctx);
     };
   }, []);
 

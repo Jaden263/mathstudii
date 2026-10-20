@@ -22,8 +22,11 @@ const DB = 'mathstudii';
 const DOCS = 'docs';
 const LINKS = 'links';
 const VERSIONS = 'versions';
-/** Snapshots kept per document (oldest dropped first). */
+/** Snapshots kept per document (oldest dropped first)… */
 const MAX_VERSIONS = 60;
+/** … and about this much text of them (a document with pictures keeps fewer, at least MIN_VERSIONS). */
+const MAX_VERSION_BYTES = 64 * 2 ** 20;
+const MIN_VERSIONS = 10;
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -86,7 +89,8 @@ export async function listDocs(): Promise<LibraryEntry[]> {
 export async function deleteDoc(id: string): Promise<void> {
   await run(DOCS, 'readwrite', (s) => s.delete(id));
   await run(LINKS, 'readwrite', (s) => s.delete(id));
-  for (const v of await listVersions(id)) await run(VERSIONS, 'readwrite', (s) => s.delete(v.n));
+  for (const n of await versionKeys(id)) await run(VERSIONS, 'readwrite', (s) => s.delete(n));
+  newest.delete(id);
 }
 
 // ---------------------------------------------------------------- version history
@@ -105,7 +109,10 @@ interface StoredVersion extends VersionEntry {
   text: string;
 }
 
-/** Snapshots of a document, newest first (without their text). */
+/** Numbers of a document's snapshots, oldest first (nothing of them is read). */
+const versionKeys = async (docId: string): Promise<number[]> => ((await run<IDBValidKey[]>(VERSIONS, 'readonly', (s) => s.index('doc').getAllKeys(docId))) ?? []).map(Number).sort((a, b) => a - b);
+
+/** Snapshots of a document, newest first (without their text; this reads them all: for the history dialog). */
 export async function listVersions(docId: string): Promise<VersionEntry[]> {
   const all = (await run<StoredVersion[]>(VERSIONS, 'readonly', (s) => s.index('doc').getAll(docId))) ?? [];
   return all.map(({ text: _t, ...v }) => v).sort((a, b) => b.time - a.time);
@@ -115,23 +122,50 @@ export async function getVersion(n: number): Promise<string | null> {
   return (await run<StoredVersion>(VERSIONS, 'readonly', (s) => s.get(n)))?.text ?? null;
 }
 
+/** A fingerprint of a text (two 32-bit FNV-1a hashes and its length): equal texts, equal fingerprints. */
+export function textHash(t: string): string {
+  let a = 0x811c9dc5, b = 0x01000193 ^ t.length;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b ^ c, 0x5bd1e995) ^ (b >>> 15);
+  }
+  return `${t.length}:${(a >>> 0).toString(36)}:${(b >>> 0).toString(36)}`;
+}
+
+/**
+ * The newest snapshot of each document this page knows of: autosave asks about every
+ * pause in typing, and reading the stored texts each time (60 documents' worth) costs
+ * far more than the snapshot.
+ */
+const newest = new Map<string, { time: number; hash: string }>();
+
 /**
  * Keep a snapshot. Without a label it is skipped when the last one is younger than
  * `minGap` ms or identical; labelled snapshots (an explicit save) are always kept
  * unless nothing changed.
  */
 export async function addVersion(docId: string, title: string, text: string, label?: string, minGap = 10 * 60 * 1000): Promise<boolean> {
-  const list = await listVersions(docId);
-  const last = list[0];
-  if (last) {
-    const lastText = await getVersion(last.n);
-    if (lastText === text) return false;
-    if (!label && Date.now() - last.time < minGap) return false;
+  const now = Date.now();
+  let last = newest.get(docId);
+  if (last && !label && now - last.time < minGap) return false;
+  const hash = textHash(text);
+  if (last?.hash === hash) return false;
+  const keys = await versionKeys(docId);
+  if (!last && keys.length) {
+    const v = await run<StoredVersion>(VERSIONS, 'readonly', (s) => s.get(keys[keys.length - 1]));
+    if (v) newest.set(docId, (last = { time: v.time, hash: textHash(v.text) }));
+    if (last?.hash === hash) return false;
+    if (last && !label && now - last.time < minGap) return false;
   }
-  const v = { doc: docId, time: Date.now(), title: title || 'Untitled', size: text.length, text, ...(label ? { label } : {}) };
-  const ok = (await run(VERSIONS, 'readwrite', (s) => s.add(v))) !== undefined;
-  for (const old of list.slice(MAX_VERSIONS - 1)) await run(VERSIONS, 'readwrite', (s) => s.delete(old.n));
-  return ok;
+  const v = { doc: docId, time: now, title: title || 'Untitled', size: text.length, text, ...(label ? { label } : {}) };
+  const n = await run(VERSIONS, 'readwrite', (s) => s.add(v));
+  if (n === undefined) return false;
+  newest.set(docId, { time: now, hash });
+  const keep = Math.max(MIN_VERSIONS, Math.min(MAX_VERSIONS, Math.floor(MAX_VERSION_BYTES / Math.max(1, text.length))));
+  const all = [...keys, Number(n)];
+  for (const old of all.slice(0, Math.max(0, all.length - keep))) await run(VERSIONS, 'readwrite', (s) => s.delete(old));
+  return true;
 }
 
 /** Remember (or forget) the file a document is linked to. Handles are stored as they are. */

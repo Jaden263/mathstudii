@@ -5,23 +5,12 @@ import type { BeamRegion } from '../../model/types';
 import type { BeamResult } from '../../beam/evaluate';
 import type { BeamSolution, Extreme } from '../../beam/solve';
 import { loadPoint, type BeamData, type BeamDiagram, type BeamLoad, type BeamPanel, type BeamView } from '../../beam/model';
+import { FORCE_N, LENGTH_M, displayUnits, type BeamDisplayUnits } from '../../beam/units';
+import { toS, type P2, type Vp } from './beamGeom';
+import { loadShape, type LoadShape } from './beamPick';
 
-export const LENGTH_M: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
-export const FORCE_N: Record<string, number> = { kN: 1e3, N: 1, MN: 1e6, kip: 4448.2216152605, lbf: 4.4482216152605 };
-
-export interface Vp {
-  view: BeamView;
-  width: number;
-  height: number;
-}
-
-export interface P2 {
-  x: number;
-  y: number;
-}
-
-export const toS = (vp: Vp, p: P2): P2 => ({ x: (p.x - vp.view.cx) * vp.view.zoom + vp.width / 2, y: vp.height / 2 - (p.y - vp.view.cy) * vp.view.zoom });
-export const toW = (vp: Vp, s: P2): P2 => ({ x: (s.x - vp.width / 2) / vp.view.zoom + vp.view.cx, y: (vp.height / 2 - s.y) / vp.view.zoom + vp.view.cy });
+export { FORCE_N, LENGTH_M };
+export { toS, toW, type P2, type Vp } from './beamGeom';
 
 /** α_cr to three significant figures. */
 export const fmtAlpha = (a: number) => (Number.isFinite(a) ? (a >= 100 ? a.toFixed(0) : a.toPrecision(3)) : '∞');
@@ -58,19 +47,25 @@ export function fmt(v: number): string {
   return s.includes('.') && !s.includes('e') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
 }
 
-/** Display conversions from SI. */
-export function units(r: Pick<BeamRegion, 'forceUnit' | 'lengthUnit'>) {
-  const F = FORCE_N[r.forceUnit] ?? 1e3, L = LENGTH_M[r.lengthUnit] ?? 1;
-  const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
+/** Display conversions from SI, in the units the results are shown in. */
+export function units(r: Pick<BeamRegion, 'forceUnit' | 'lengthUnit'> & { display?: BeamDisplayUnits }) {
+  const F = FORCE_N[r.forceUnit] ?? 1e3;
+  const d = displayUnits(r);
+  // (millimetres times 1000, to the last digit as they always were)
+  const per = (v: number, f: number) => (f === 1e-3 ? v * 1000 : v / f);
   return {
-    force: (v: number) => `${fmt(v / F)} ${r.forceUnit}`,
-    moment: (v: number) => `${fmt(v / (F * L))} ${r.forceUnit}·${r.lengthUnit}`,
-    line: (v: number) => `${fmt(v / (F / L))} ${r.forceUnit}/${r.lengthUnit}`,
-    defl: (v: number) => (metric ? `${fmt(v * 1000)} mm` : `${fmt(v / 0.0254)} in`),
-    stress: (v: number) => `${fmt(v / 1e6)} MPa`,
+    force: (v: number) => `${fmt(per(v, d.force[1]))} ${d.force[0]}`,
+    moment: (v: number) => `${fmt(per(v, d.moment[1]))} ${d.moment[0]}`,
+    line: (v: number) => `${fmt(per(v, d.line[1]))} ${d.line[0]}`,
+    defl: (v: number) => `${fmt(per(v, d.defl[1]))} ${d.defl[0]}`,
+    stress: (v: number) => `${fmt(per(v, d.stress[1]))} ${d.stress[0]}`,
     length: (v: number) => `${fmt(v)} ${r.lengthUnit}`,
-    /** Newtons per force unit. */
+    /** Names of the units shown. */
+    names: { force: d.force[0], moment: d.moment[0], line: d.line[0], defl: d.defl[0], stress: d.stress[0] },
+    /** Newtons per force unit (of the region). */
     forceN: F,
+    /** Newtons per force unit shown. */
+    forceShownN: d.force[1],
   };
 }
 
@@ -206,8 +201,23 @@ export function MomentArrow({ at, positive, cls = '', r = 15 }: { at: P2; positi
 
 // ------------------------------------------------------------ loads
 
-export function LoadGlyph({ r, d, l, vp, res, sel, label, faded = false, tag, stack = 0 }: {
+/** The text of a load's label: its value in the units shown, or its expression before it is evaluated. */
+export function loadText(r: BeamRegion, l: BeamLoad, vals: number[] | undefined, tag?: string): string {
+  const u = units(r);
+  const pre = tag ? `${tag}: ` : '';
+  if (l.type === 'line') {
+    if (!vals) return pre + l.q1;
+    const q1 = vals[0], q2 = vals[1] ?? q1, qmax = Math.max(Math.abs(q1), Math.abs(q2), 1e-12);
+    return pre + (Math.abs(q1 - q2) < 1e-9 * qmax ? u.line(q1) : `${u.line(q1)} → ${u.line(q2)}`);
+  }
+  if (l.type === 'moment') return pre + (vals ? u.moment(Math.abs(vals[0])) : l.value);
+  return pre + (vals ? u.force(Math.abs(vals[0])) : l.value);
+}
+
+export function LoadGlyph({ r, d, l, vp, res, sel, hover = false, label, faded = false, tag, stack = 0 }: {
   r: BeamRegion; d: BeamData; l: BeamLoad; vp: Vp; res?: BeamResult; sel: boolean; label: boolean;
+  /** Under the pointer: what a click would pick. */
+  hover?: boolean;
   /** Line loads already drawn on this stretch of member: this one sits above them. */
   stack?: number;
   /** Not acting in the case or combination shown. */
@@ -215,80 +225,41 @@ export function LoadGlyph({ r, d, l, vp, res, sel, label, faded = false, tag, st
   /** Load case name shown before the value. */
   tag?: string;
 }) {
-  const u = units(r);
   const err = !!res?.errors[l.id];
-  const cls = `bm-load${sel ? ' sel' : ''}${err ? ' err' : ''}${faded ? ' faded' : ''}`;
-  const pre = tag ? `${tag}: ` : '';
   const vals = res?.values[l.id];
-  if (l.type === 'line') {
-    const m = d.members.find((q) => q.id === l.member);
-    if (!m) return null;
-    const N = new Map(d.nodes.map((q) => [q.id, q]));
-    const a = toS(vp, N.get(m.a)!), b = toS(vp, N.get(m.b)!);
-    const t1 = l.t1 ?? 0, t2 = l.t2 ?? 1;
-    let p1 = { x: a.x + (b.x - a.x) * t1, y: a.y + (b.y - a.y) * t1 };
-    let p2 = { x: a.x + (b.x - a.x) * t2, y: a.y + (b.y - a.y) * t2 };
-    const q1 = vals?.[0] ?? 1, q2 = vals?.[1] ?? q1;
-    const qmax = Math.max(Math.abs(q1), Math.abs(q2), 1e-12);
-    const H = 30;
-    // arrows come from above (global) or from the member's left side (local)
-    let nx = 0, ny = -1;
-    if (l.dir === 'local') {
-      const L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-      nx = (b.y - a.y) / L; ny = -(b.x - a.x) / L; // screen-left of travel = member's +y side
-    }
-    if (stack) {
-      // stacked above the loads below it (each block is H high plus a gap for its label)
-      const off = stack * (H + 16);
-      p1 = { x: p1.x + nx * off, y: p1.y + ny * off };
-      p2 = { x: p2.x + nx * off, y: p2.y + ny * off };
-    }
-    const h1 = (H * q1) / qmax, h2 = (H * q2) / qmax;
-    const top1 = { x: p1.x + nx * h1, y: p1.y + ny * h1 }, top2 = { x: p2.x + nx * h2, y: p2.y + ny * h2 };
-    const len = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    const n = Math.max(2, Math.min(14, Math.round(len / 22) + 1));
-    const arrows: JSX.Element[] = [];
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const base = { x: p1.x + (p2.x - p1.x) * t, y: p1.y + (p2.y - p1.y) * t };
-      const h = h1 + (h2 - h1) * t;
-      if (Math.abs(h) < 4) continue;
-      arrows.push(<Arrow key={i} from={{ x: base.x + nx * h, y: base.y + ny * h }} to={base} head={5} />);
-    }
-    const text = vals ? (Math.abs(q1 - q2) < 1e-9 * qmax ? u.line(q1) : `${u.line(q1)} → ${u.line(q2)}`) : l.q1;
-    // the label sits at the start of the load, clear of point loads in the middle
-    const mid = { x: top1.x + nx * 8, y: top1.y + ny * 8 };
+  const sh = loadShape(d, l, vp, { vals, stack, text: label ? loadText(r, l, vals, tag) : '' });
+  if (!sh) return null;
+  return <LoadShapeGlyph sh={sh} cls={`bm-load${sel ? ' sel' : ''}${hover && !sel ? ' hover' : ''}${err ? ' err' : ''}${faded ? ' faded' : ''}`} grips={sel} />;
+}
+
+/** A load drawn from its shape (the same one clicks are picked by). */
+function LoadShapeGlyph({ sh, cls, grips }: { sh: LoadShape; cls: string; grips: boolean }) {
+  const text = sh.label.text && <text x={sh.label.x} y={sh.label.y} className="bm-label" textAnchor={sh.label.anchor}>{sh.label.text}</text>;
+  if (sh.kind === 'line') {
+    const [p1, top1, top2, p2] = sh.area;
     return (
-      <g className={cls} data-item={l.id}>
+      <g className={cls} data-item={sh.id}>
         <path d={`M${p1.x} ${p1.y} L${top1.x} ${top1.y} L${top2.x} ${top2.y} L${p2.x} ${p2.y} Z`} className="bm-load-area" />
-        {arrows}
+        {sh.arrows.map((a, i) => <Arrow key={i} from={a.from} to={a.to} head={a.head} />)}
         <line x1={top1.x} y1={top1.y} x2={top2.x} y2={top2.y} />
-        {label && <text x={mid.x} y={mid.y} className="bm-label" textAnchor="start">{pre}{text}</text>}
+        {text}
+        {/* the ends of a selected line load can be dragged along the member */}
+        {grips && sh.ends.map((e, i) => <rect key={i} x={e.x - 3.5} y={e.y - 3.5} width={7} height={7} className="bm-grip" />)}
       </g>
     );
   }
-  const p = loadPoint(d, l.at);
-  if (!p) return null;
-  const s = toS(vp, p);
-  if (l.type === 'moment') {
-    const M = vals?.[0] ?? 1;
+  if (sh.kind === 'moment') {
     return (
-      <g className={cls} data-item={l.id}>
-        <MomentArrow at={s} positive={M >= 0} r={16} />
-        {label && <text x={s.x + 19} y={s.y - 16} className="bm-label">{pre}{vals ? u.moment(Math.abs(M)) : l.value}</text>}
+      <g className={cls} data-item={sh.id}>
+        <MomentArrow at={sh.at} positive={sh.positive} r={sh.r} />
+        {text}
       </g>
     );
   }
-  const P = vals?.[0] ?? 1;
-  const ang = ((l.angle + (P < 0 ? 180 : 0)) * Math.PI) / 180;
-  const dir = { x: Math.cos(ang), y: -Math.sin(ang) }; // screen
-  const L = 44;
-  const from = { x: s.x - dir.x * L, y: s.y - dir.y * L };
   return (
-    <g className={cls} data-item={l.id}>
-      <Arrow from={from} to={{ x: s.x - dir.x * 2, y: s.y - dir.y * 2 }} />
-      {label && <text x={from.x - dir.x * 6 + (Math.abs(dir.y) > 0.7 ? 6 : 0)} y={from.y - dir.y * 6 + (dir.y > 0.7 ? -2 : dir.y < -0.7 ? 10 : 4)}
-        className="bm-label" textAnchor={Math.abs(dir.y) > 0.7 ? 'start' : dir.x > 0 ? 'end' : 'start'}>{pre}{vals ? u.force(Math.abs(P)) : l.value}</text>}
+    <g className={cls} data-item={sh.id}>
+      <Arrow from={sh.arrow.from} to={sh.arrow.to} head={sh.arrow.head} />
+      {text}
     </g>
   );
 }
@@ -535,14 +506,14 @@ function noMode(res?: BeamResult): string {
 }
 
 function panelUnit(r: BeamRegion, k: BeamPanel, res?: BeamResult): string {
-  const metric = r.lengthUnit === 'm' || r.lengthUnit === 'cm' || r.lengthUnit === 'mm';
   if (k === 'mode') {
     const m = modeShown(r, res);
     return m ? `${m.index + 1}: α_cr = ${fmtAlpha(m.alpha)}` : noMode(res);
   }
   // only the buckling mode is drawn above the critical load
   if (res && !res.solution) return 'none: above the critical load';
-  return k === 'M' ? `${r.forceUnit}·${r.lengthUnit}` : k === 'deflection' ? (metric ? 'mm' : 'in') : r.forceUnit;
+  const u = units(r).names;
+  return k === 'M' ? u.moment : k === 'deflection' ? u.defl : u.force;
 }
 
 interface Station {
@@ -669,6 +640,8 @@ export function StackedDiagrams({ r, d, res, vp, top, layout, kinds, segs, width
         const kept: { x: number; y: number; t: string; i: number }[] = [];
         for (const c of cands) {
           const p = all[c.i];
+          // zoomed in: values off the side are not labelled at the edge
+          if (p.x < -1 || p.x > width + 1) continue;
           const up = pv(p.v) >= 0;
           const t = text(k, p.v);
           const lx = Math.min(Math.max(p.x, 34), width - 34);
