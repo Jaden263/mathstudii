@@ -234,3 +234,36 @@ describe('Mathcad import: what writing files for Mathcad showed', () => {
     expect(ws.regions.map((r) => (r as { source: string }).source)).toContain('q := 12 N = N/m');
   });
 });
+
+// ---------------------------------------------------------------- constructs met in public worksheets
+
+/** A Prime worksheet of the given regions (built with math(), solve blocks …). */
+function primeOf(...regions: string[]) {
+  top = 0;
+  const ws = `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>${regions.join('')}</regions></worksheet>`;
+  return importMathcad(zipSync({ 'mathcad/worksheet.xml': strToU8(ws) }), 'x.mcdx');
+}
+const sources = (ws: Worksheet) => ws.regions.map((r) => (r.kind === 'math' ? r.source : r.kind === 'solve' ? `${r.guesses} | ${r.constraints} | ${r.solver}` : r.kind));
+const fd = (name: string) => ap('<ml:functionDerivative/>', id(name));
+
+describe('Mathcad import: constructs met in public worksheets', () => {
+  beforeAll(async () => {
+    await loadCas();
+  });
+
+  it('prime notation h′(0) written with <functionDerivative/>, and odesolve(h(t), b)', () => {
+    const { ws, warnings } = primeOf(
+      `<region region-id="sb" left="40" top="40"><solveblock><regions>
+        <region solve-block-category="constraint"><math>${ap('<ml:equal/>', ap('<ml:derivative/>', lambda('t', ap(id('h'), id('t'))), `<ml:degree>${real(2)}</ml:degree>`), ap('<ml:neg/>', real(9.81)))}</math></region>
+        <region solve-block-category="constraint"><math>${ap('<ml:equal/>', ap(id('h'), real(0)), real(0))}</math></region>
+        <region solve-block-category="constraint"><math>${ap('<ml:equal/>', ap(fd('h'), real(0)), real(10))}</math></region>
+        <region solve-block-category="solver"><math>${define(id('h'), ap(id('odesolve', 'KEYWORD'), `<ml:sequence>${ap(id('h'), id('t'))}${real(3)}</ml:sequence>`))}</math></region>
+      </regions></solveblock></region>`,
+      math(evalOf(ap(fd('h'), real(1)))),
+    );
+    expect(warnings).toEqual([]);
+    expect(sources(ws)).toEqual([" | diff(h(t), t, 2) = -9.81\nh(0) = 0\nh'(0) = 10 | h := odesolve(h(t), 3)", "h'(1) ="]);
+    const { by } = results(ws);
+    expect(by("h'(1) =").tex).toMatch(/= 0\.19$/); // 10 − 9.81
+  });
+});

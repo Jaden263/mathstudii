@@ -231,6 +231,13 @@ class Converter {
     const h = local(head);
     const e = (i: number) => this.expr(rest[i]);
     if (h === 'id') return this.call(head, rest);
+    // f′(x): Prime's prime notation applies <functionDerivative/> to the function's name
+    if (h === 'apply') {
+      const d = this.primes(head);
+      if (!d) throw new Unsupported('a call of a value that is itself a call (f(a)(b))');
+      return { s: `${d.name}${"'".repeat(d.n)}(${this.args(rest).join(', ')})`, p: P.ATOM };
+    }
+    if (h === 'functionDerivative') throw new Unsupported('a derivative f′ written without its argument');
     // Mathcad 15 writes the solve block functions as operators: <ml:Find/>, <ml:Minerr/> …
     if (/^(find|minerr|minimize|maximize|odesolve)$/i.test(h)) return { s: `${h.toLowerCase()}(${this.args(rest).join(', ')})`, p: P.ATOM };
     if (BINOPS[h] && rest.length === 2) {
@@ -308,6 +315,15 @@ class Converter {
       default:
         throw new Unsupported(`the "${h}" operator`);
     }
+  }
+
+  /** <apply><functionDerivative/>f</apply>, nested once per prime: the function and the order. */
+  primes(el: El): { name: string; n: number } | null {
+    const [head, arg] = kids(el);
+    if (local(el) !== 'apply' || !head || local(head) !== 'functionDerivative' || !arg) return null;
+    if (local(arg) === 'id') return { name: sanitize(rawName(arg)), n: 1 };
+    const inner = this.primes(arg);
+    return inner && { name: inner.name, n: inner.n + 1 };
   }
 
   call(head: El, rest: El[]): Ex {

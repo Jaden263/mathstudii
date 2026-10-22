@@ -34,7 +34,7 @@ export function makeEditorHandle(get: () => HTMLTextAreaElement | null): EditorH
   };
 }
 
-const LHS_BEFORE_COLON = /^\s*[A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ']*\s*(\([^()]*\)|\[[^\]]*\])?\s*$/;
+const LHS_BEFORE_COLON = /^\s*[\p{L}_Ͱ-Ͽ][\p{L}\wͰ-Ͽ']*\s*(\([^()]*\)|\[[^\]]*\])?\s*$/u;
 
 export interface MathKeyOptions {
   /** Called on plain Enter (commit). Return true if handled. */

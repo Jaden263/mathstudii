@@ -135,7 +135,8 @@ export function splitChain(src: string): { terms: string[]; ops: string[] } | nu
   return { terms: terms.map((t) => t.trim()), ops: found };
 }
 
-const IDENT = /^[A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ']*$/;
+// names in any alphabet (Cyrillic, Latin with accents, Greek …), as Mathcad and SMath allow
+const IDENT = /^[\p{L}_Ͱ-Ͽ][\p{L}0-9_Ͱ-Ͽ']*$/u;
 
 export function isIdentifier(s: string): boolean {
   return IDENT.test(s.trim());
@@ -251,9 +252,9 @@ const UNICODE: [RegExp, string][] = [
 ];
 
 // y''(t) is the second derivative of y at t (Mathcad prime notation), not a transpose
-const PRIME_CALL = /(?<![A-Za-z0-9_Ͱ-ϿÀ-ɏ.])([A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ]*(?:\.[A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ]*)*)('+)\s*\(/g;
+const PRIME_CALL = /(?<![\p{L}0-9_Ͱ-Ͽ.])([\p{L}_Ͱ-Ͽ][\p{L}0-9_Ͱ-Ͽ]*(?:\.[\p{L}_Ͱ-Ͽ][\p{L}0-9_Ͱ-Ͽ]*)*)('+)\s*\(/gu;
 
-const IMAG = /(?<![A-Za-z_\d.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[ij](?![A-Za-z0-9_Ͱ-Ͽ])/g;
+const IMAG = /(?<![\p{L}_\d.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[ij](?![\p{L}0-9_Ͱ-Ͽ])/gu;
 
 /** Translate Mathcad-flavoured input into mathjs syntax (outside string literals). */
 export function preprocess(src: string): string {

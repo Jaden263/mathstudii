@@ -3,6 +3,14 @@ import { create, all, type MathJsInstance, type Unit } from 'mathjs';
 /** The single mathjs instance used by the engine. */
 export const math: MathJsInstance = create(all, { number: 'number', precision: 64 });
 
+// Names may be written in any alphabet (Длина, Höhe), as in Mathcad and SMath; mathjs itself
+// takes Latin and Greek letters only.
+{
+  const parse = math.parse as unknown as { isAlpha: (c: string, prev: string, next: string) => boolean };
+  const latinOrGreek = parse.isAlpha;
+  parse.isAlpha = (c, prev, next) => latinOrGreek(c, prev, next) || /^\p{L}$/u.test(c);
+}
+
 // Units engineers expect that mathjs lacks. Mathcad spells gram "gm" because
 // "g" is the standard acceleration of gravity.
 const extraUnits: Record<string, string> = {

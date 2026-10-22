@@ -57,7 +57,7 @@ type ThemePref = 'system' | 'light' | 'dark';
 /** Replace a whole name in a math source ("kn" → "kN", not inside "knot"). */
 function replaceWord(src: string, from: string, to: string): string {
   const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return src.replace(new RegExp(`(?<![\\wͰ-Ͽ])${esc}(?![\\wͰ-Ͽ])`, 'g'), to);
+  return src.replace(new RegExp(`(?<![\\p{L}\\wͰ-Ͽ])${esc}(?![\\p{L}\\wͰ-Ͽ])`, 'gu'), to);
 }
 
 /** A beam on two supports. */
