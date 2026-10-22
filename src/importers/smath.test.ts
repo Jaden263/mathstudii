@@ -893,3 +893,26 @@ describe('SMath import: several names defined at once', () => {
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
   });
 });
+
+describe('SMath import: the Maxima plugin’s Assign(Solve(…))', () => {
+  it('becomes a solve block started from the solution SMath showed; of several roots, the last (the one Assign assigns)', () => {
+    id = 0;
+    top = 0;
+    const sys = (...xs: string[]) => xs.join('') + v(String(xs.length)) + v('1') + fn('sys', xs.length + 2);
+    const shown = (input: string, saved: string, unit = '') => region(`<math><input>${input}</input>${unit ? `<contract>${unit}</contract>` : ''}<result action="numeric">${saved}</result></math>`);
+    // Assign(Solve({a + b = 3 N; a − b = 1 N}, {a; b})) = N  → [2; 1]; Assign(Solve(x² = 4 m², x)) → [−2 m; 2 m]
+    const { ws, saved, warnings } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      shown(sys(v('a') + v('b') + op('+') + v('3') + u('N') + op('*') + op('≡'), v('a') + v('b') + op('-') + v('1') + u('N') + op('*') + op('≡')) + sys(v('a'), v('b')) + fn('Solve', 2) + fn('Assign', 1),
+        v('2') + v('1') + v('2') + v('1') + fn('mat', 4), u('N'))}${
+      shown(v('x') + v('2') + op('^') + v('4') + u('m') + v('2') + op('^') + op('*') + op('≡') + v('x') + fn('Solve', 2) + fn('Assign', 1),
+        v('2') + u('m') + op('*') + op('-', 1) + v('2') + u('m') + op('*') + v('2') + v('1') + fn('mat', 4))}${
+      shown(v('a') + v('b') + op('*') + v('x') + op('*'), v('4') + u('N') + v('2') + op('^') + op('*') + u('m') + op('*'))}</regions></worksheet>`), 'x.sm');
+    const blocks = ws.regions.filter((r) => r.kind === 'solve');
+    expect(blocks[0]).toMatchObject({ guesses: 'a := (2)*(N)\nb := (1)*(N)', constraints: 'a + b = 3 N\na - b = 1 N', solver: '[a; b] := find(a, b) = N' });
+    expect(blocks[1]).toMatchObject({ guesses: 'x := 2 m', constraints: 'x^2 = 4 m^2', solver: 'x := find(x) =' });
+    expect(warnings.some((w) => /Assign\(Solve\(…\)\) at \d+ px \(the Maxima plugin's symbolic solution\): a solve block here solves the equations numerically for x, started from the solution SMath showed \(the last of its 2 roots/.test(w))).toBe(true);
+    expect(warnings.some((w) => /Maxima plugin \(computer algebra\)/.test(w))).toBe(false);
+    // a·b·x = 4 N²·m; the second block's value is one root, where SMath showed both
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 2 });
+  });
+});

@@ -98,6 +98,17 @@ function destructured(t: Tok): string[] | null {
   return items.length > 1 && items.every(isVar) ? items.map((a) => smName(a.text)) : null;
 }
 
+/**
+ * Assign(Solve(equations, unknowns)) of the Maxima plugin: solve the equations symbolically and
+ * assign each unknown its solution. Its equations (a ≡ b) and unknowns, or null.
+ */
+function assignSolve(t: Tok): { eqs: Tok[]; vars: Tok[] } | null {
+  if (!isFn(t, 'Assign') || t.args.length !== 1 || !isFn(t.args[0], 'Solve') || t.args[0].args.length !== 2) return null;
+  const list = (x: Tok) => (isFn(x, 'sys', 'mat') ? listItems(x) : [x]);
+  const eqs = list(t.args[0].args[0]), vars = list(t.args[0].args[1]);
+  return eqs.length && eqs.every((e) => isOp(e, '≡')) && vars.length && vars.every(isVar) ? { eqs, vars } : null;
+}
+
 /** The left side of f(x, y) := …: a function definition (not x[i] := … nor [a; b] := …). */
 const isFunctionDef = (t: Tok) => t.type === 'function' && !isFn(t, 'el') && !destructured(t);
 
@@ -136,6 +147,8 @@ const ELSEWHERE: { test: RegExp; what: string }[] = [
 /** Names a top-level formula defines on the worksheet: x := …, x[i] := …, a unit of its own, a loop's variables. */
 function worksheetDefines(t: Tok): string[] {
   if (isOp(t, ':') && destructured(t.args[0])) return destructured(t.args[0])!;
+  const solved = assignSolve(t);
+  if (solved) return solved.vars.map((v) => smName(v.text));
   if (isOp(t, ':')) {
     const n = targetName(t.args[0]);
     return n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el')) ? [n] : [];
@@ -1170,8 +1183,10 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
     for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isFunctionDef(t.args[0])) defined.add(t.args[0].text);
     const hits = ELSEWHERE.map(() => ({ names: new Set<string>(), regions: 0 }));
     inputs.forEach((toks, i) => {
-      // an include(…) of a worksheet is reported where it is
+      // an include(…) of a worksheet is reported where it is; Assign(Solve(…)) SMath showed is a solve block
       if (includes.has(i)) return;
+      const body = regionKinds(placed[i].region)[0];
+      if (toks.length === 1 && assignSolve(toks[0]) && body && child(body, 'result')?.getAttribute('action') === 'numeric') return;
       const seen = new Set<number>();
       for (const t of toks) walk(t, (n) => {
         if (n.type !== 'function' || defined.has(n.text)) return;
@@ -1355,6 +1370,8 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
             if (!(e instanceof Placeholder)) throw e;
             regions.push(createRegion('text', at.x, at.y, { markdown: '*(formula with “…” placeholders, shown in SMath only)*', width: Math.max(160, width) }));
           }
+        } else if (assignSolve(t) && result && action === 'numeric') {
+          regions.push(...solvedBlock(conv, assignSolve(t)!, parseRpn(result)[0], contract, at));
         } else if (isFn(t, 'solve') && t.args.length === 2 && action !== 'numeric') {
           const eq = isOp(t.args[0], '≡') ? `${conv.expr(t.args[0].args[0]).s} = ${conv.expr(t.args[0].args[1]).s}` : conv.expr(t.args[0]).s;
           regions.push(createRegion('math', at.x, at.y, { source: `${eq} → solve, ${conv.expr(t.args[1]).s}` }));
@@ -1363,7 +1380,8 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
         }
         // the value SMath showed, in the region's display unit, rounded as it was shown
         const last = regions[regions.length - 1];
-        if (result && action !== 'symbolic' && last?.kind === 'math' && / =( |$)/.test(last.source.split('\n')[0])) {
+        const shownLine = last?.kind === 'math' ? last.source.split('\n')[0] : last?.kind === 'solve' ? last.solver : '';
+        if (result && action !== 'symbolic' && last && / =( |$)/.test(shownLine)) {
           try {
             const tok = parseRpn(result)[0];
             const value = conv.shownValue(tok);
@@ -1611,6 +1629,34 @@ function matrixShape(t: Tok): { rows: number; cols: number } | null {
   if (isFn(t, 'mat') && t.args.length >= 3) return { rows: Number(t.args[t.args.length - 2].text), cols: Number(t.args[t.args.length - 1].text) };
   if (isFn(t, 'Zeros', 'Ones', 'matrix') && t.args.length === 2 && t.args.every((a) => a.type === 'operand' && NUMBER.test(a.text))) return { rows: Number(t.args[0].text), cols: Number(t.args[1].text) };
   return null;
+}
+
+/**
+ * Assign(Solve(equations, unknowns)) with the solution SMath showed: a solve block (find) that
+ * solves the equations numerically, started from that solution (of several, the last, which
+ * Assign assigns), so that it is solved again when the values it reads change.
+ */
+function solvedBlock(conv: Converter, { eqs, vars }: { eqs: Tok[]; vars: Tok[] }, shown: Tok | undefined, contract: Tok | undefined, at: Placed): Region[] {
+  if (!shown) throw new Error('Assign(Solve(…)): SMath showed no solution');
+  const values = isFn(shown, 'mat', 'sys') ? listItems(shown) : [shown];
+  if (values.length < vars.length || (vars.length > 1 && values.length !== vars.length)) throw new Unsupported('Assign(Solve(…)) whose solution SMath showed does not give each unknown one value');
+  const picked = vars.length === 1 ? [values[values.length - 1]] : values;
+  const unit = contract ? conv.displayUnit(contract, true) : '';
+  const guesses = vars.map((v, k) => {
+    let hasUnit = false;
+    walk(picked[k], (n) => { if (n.style === 'unit') hasUnit = true; });
+    const value = conv.shownValue(picked[k]);
+    return `${conv.name(v.text)} := ${unit && !hasUnit ? `(${value})*(${unit})` : value}`;
+  });
+  const names = vars.map((v) => conv.name(v.text));
+  const lhs = names.length === 1 ? names[0] : `[${names.join('; ')}]`;
+  const show = contract ? ` = ${conv.displayUnit(contract)}` : ' =';
+  conv.warnings.push(`Assign(Solve(…)) at ${Math.round(at.y)} px (the Maxima plugin's symbolic solution): a solve block here solves the equations numerically for ${names.join(', ')}, started from the solution SMath showed${values.length > picked.length ? ` (the last of its ${values.length} roots, the one Assign assigns)` : ''}`);
+  return [createRegion('solve', at.x, at.y, {
+    guesses: guesses.join('\n'),
+    constraints: eqs.map((e) => `${conv.expr(e.args[0]).s} = ${conv.expr(e.args[1]).s}`).join('\n'),
+    solver: `${lhs} := find(${names.join(', ')})${show}`,
+  })];
 }
 
 /** A function the worksheet defines: f(x, y) := body. */
