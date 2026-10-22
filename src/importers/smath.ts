@@ -909,9 +909,13 @@ function flatten(container: El): Placed[] {
 
 const regionKinds = (r: El) => kids(r).filter((c) => local(c) !== 'region');
 
+/** Options of an import. */
 export interface SmathImportOptions {
-  /** Another file the worksheet reads (include(…)) by its file name: its bytes, when at hand. */
-  file?: (name: string) => Uint8Array | undefined;
+  /**
+   * Worksheets the file includes (include(…)), by file name, as the user picked them: their
+   * regions are imported where the include is, in a locked, collapsed area.
+   */
+  references?: Record<string, Uint8Array>;
 }
 
 /** What an imported worksheet defines, for a worksheet that includes it. */
@@ -926,17 +930,19 @@ type Imported = ImportResult & { defines: Defines };
 
 /**
  * Import an SMath Studio worksheet. A worksheet it includes (include(…)) comes in where it is,
- * in a collapsed area, when `opts.file` has it; `references` says which it reads and whether
- * they were at hand.
+ * in a locked, collapsed area, when `opts.references` has it; `references` of the result names
+ * those that were not at hand.
  */
 export function importSmath(data: Uint8Array, fileName = 'worksheet', opts: SmathImportOptions = {}): ImportResult {
-  const { defines: _, ...result } = importSheet(data, fileName, opts, [baseName(fileName).toLowerCase()]);
+  const given = new Map(Object.entries(opts.references ?? {}).map(([k, v]) => [baseName(k).toLowerCase(), v]));
+  const { defines: _, ...result } = importSheet(data, fileName, (name) => given.get(name.toLowerCase()), [baseName(fileName).toLowerCase()]);
   return result;
 }
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-function importSheet(data: Uint8Array, fileName: string, opts: SmathImportOptions, chain: string[]): Imported {
+/** `file(name)`: the bytes of a worksheet it includes, when at hand; `chain`: the files including this one. */
+function importSheet(data: Uint8Array, fileName: string, file: (name: string) => Uint8Array | undefined, chain: string[]): Imported {
   const xml = readXml(data);
   if (!/smath\.info\/schemas\/worksheet|<\?application progid="SMath/i.test(xml)) throw new Error('Not an SMath Studio worksheet (.sm or .smz)');
   const doc = new DOMParser({ onError: () => {} }).parseFromString(xml, 'text/xml');
@@ -1016,10 +1022,10 @@ function importSheet(data: Uint8Array, fileName: string, opts: SmathImportOption
     });
     if (!name) return;
     let sheet: Imported | undefined;
-    const bytes = chain.includes(name.toLowerCase()) ? undefined : opts.file?.(name);
+    const bytes = chain.includes(name.toLowerCase()) ? undefined : file(name);
     if (bytes) {
       try {
-        sheet = importSheet(bytes, name, opts, [...chain, name.toLowerCase()]);
+        sheet = importSheet(bytes, name, file, [...chain, name.toLowerCase()]);
       } catch (e) {
         warnings.push(`include(“${name}”): ${(e as Error).message}`);
       }
@@ -1229,12 +1235,13 @@ function importSheet(data: Uint8Array, fileName: string, opts: SmathImportOption
         const sub = inc.sheet.ws.regions;
         const top = Math.min(...sub.map((q) => q.y));
         const height = AREA_BAR + Math.max(...sub.map((q) => q.y - top)) + 40;
-        const area = createRegion('area', at.x, at.y, { title: `Included from ${inc.name}`, height });
-        regions.push(area, ...sub.map((q) => ({ ...q, y: at.y + AREA_BAR + (q.y - top) })));
+        // locked: SMath reads the included file as it is (edited there, not here)
+        const area = createRegion('area', at.x, at.y, { title: `Included from ${inc.name}`, height, locked: true });
+        regions.push(area, ...sub.map((q) => ({ ...q, y: at.y + AREA_BAR + (q.y - top), locked: true })));
         areas.push({ area, collapsed: true });
         includeAreas.push({ y: at.y, height, ids: new Set([area.id, ...sub.map((q) => q.id)]) });
         for (const w of inc.sheet.warnings) warnings.push(`In ${inc.name}: ${w}`);
-        warnings.push(`include(“${inc.name}”) at ${Math.round(at.y)} px: its ${sub.length} regions are in the collapsed area “Included from ${inc.name}”, kept in this worksheet`);
+        warnings.push(`include(“${inc.name}”) at ${Math.round(at.y)} px: its ${sub.length} regions are in the collapsed area “Included from ${inc.name}”, kept in this worksheet (locked; they do not change when ${inc.name} does)`);
         for (const n of inc.sheet.defines.variables) definedBefore.add(n);
         for (const f of inc.sheet.defines.functions.keys()) definedBefore.add(smName(f));
         return;
@@ -1484,7 +1491,7 @@ function importSheet(data: Uint8Array, fileName: string, opts: SmathImportOption
     }
     for (const n of sheet.defines.variables) defines.variables.add(n);
   }
-  const references = [...includes.values()].map(({ name, sheet }) => ({ name, found: !!sheet }));
+  const references = [...new Set([...includes.values()].filter((x) => !x.sheet).map((x) => x.name))];
   return { ws: out, warnings, format: 'SMath Studio (.sm)', saved, ...(references.length ? { references } : {}), defines };
 }
 

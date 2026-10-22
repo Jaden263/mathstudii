@@ -1,24 +1,24 @@
 import { useEffect, useRef } from 'react';
-import { X, CheckCircle2, AlertTriangle, FileUp } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export interface ImportReport {
   name: string;
   format: string;
   warnings: string[];
   count: number;
-  /** Other worksheets the file reads (SMath's include(…)) and whether they came in. */
-  references?: { name: string; found: boolean }[];
+  /** Worksheets it references whose definitions the file does not keep. */
+  references?: string[];
 }
 
-/** onPickReference: the user picked the file of a worksheet the import did not have (import again with it). */
-export function ImportReportDialog({ report, onClose, onPickReference }: { report: ImportReport; onClose: () => void; onPickReference?: (name: string, file: File) => void }) {
+export function ImportReportDialog({ report, onClose, onReferences }: { report: ImportReport; onClose: () => void; onReferences?: (files: File[]) => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const pick = useRef<HTMLInputElement>(null);
+  const refs = report.references ?? [];
   useEffect(() => {
     const d = ref.current;
     if (d && !d.open) d.showModal();
   }, []);
   const ok = report.warnings.length === 0;
-  const missing = (report.references ?? []).filter((r) => !r.found);
   return (
     <dialog ref={ref} className="dialog" onClose={onClose} onClick={(e) => e.target === ref.current && onClose()} aria-labelledby="imp-title">
       <div className="dialog-head">
@@ -30,19 +30,19 @@ export function ImportReportDialog({ report, onClose, onPickReference }: { repor
           {ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
           {report.format}: {report.count} regions imported{ok ? ' with no problems.' : `, ${report.warnings.length} need attention.`}
         </p>
-        {missing.length > 0 && onPickReference && (
-          <div className="import-references">
-            <p>
-              It includes {missing.length === 1 ? 'another worksheet' : `${missing.length} other worksheets`} that {missing.length === 1 ? 'is' : 'are'} not part of the file.
-              Pick {missing.length === 1 ? 'it' : 'them'} to bring {missing.length === 1 ? 'its' : 'their'} definitions in: they are kept in this worksheet, in a collapsed area.
-            </p>
-            {missing.map((r) => (
-              <label key={r.name} className="btn">
-                <FileUp size={14} /> Pick {r.name}…
-                <input type="file" accept=".sm,.smz" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onPickReference(r.name, f); }} />
-              </label>
-            ))}
-          </div>
+        {!!refs.length && (
+          <p className="import-files">
+            It references {refs.length === 1 ? 'a worksheet' : `${refs.length} worksheets`} whose definitions it does not keep: {refs.join(', ')}. Pick {refs.length === 1 ? 'it' : 'them'} to import {refs.length === 1 ? 'its' : 'their'} definitions where the references are (in a locked, collapsed area; the worksheet keeps them).{' '}
+            {onReferences && (
+              <>
+                <button className="btn" onClick={() => pick.current?.click()}>Pick referenced worksheets…</button>
+                <input ref={pick} type="file" accept=".mcdx,.xmcd,.sm,.smz" multiple hidden onChange={(e) => {
+                  const files = [...(e.target.files ?? [])];
+                  if (files.length) onReferences(files);
+                }} />
+              </>
+            )}
+          </p>
         )}
         {!ok && (
           <ul className="import-warnings">

@@ -1676,6 +1676,10 @@ kbd {
   color: var(--warn);
 }
 
+.import-files {
+  font-size: 13px;
+}
+
 .import-warnings {
   max-height: 40vh;
   overflow-y: auto;
@@ -7074,16 +7078,4 @@ div.pl-cutplot {
   color: var(--accent);
   font: inherit;
   cursor: pointer;
-}
-
-.import-references {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.import-references p {
-  flex-basis: 100%;
-  margin: 0;
 }

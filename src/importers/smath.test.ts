@@ -828,8 +828,9 @@ describe('SMath import: include(…) of another worksheet', () => {
       at(9, 70, shown(v('3') + v('4') + fn('area', 2), v('12'))),
       at(9, 100, shown(v('2') + v('g') + op('*'), v('19.62'))),
     );
-    const { ws, saved, warnings, references } = importSmath(main, 'main.sm', { file: (name) => (name === 'lib.sm' ? lib : undefined) });
-    expect(references).toEqual([{ name: 'lib.sm', found: true }]);
+    const { ws, saved, warnings, references } = importSmath(main, 'main.sm', { references: { 'LIB.sm': lib } });
+    expect(references).toBeUndefined();
+    expect(ws.regions.filter((r) => r.locked).length).toBe(4);
     const area = ws.regions.find((r) => r.kind === 'area') as { title: string; collapsed?: boolean };
     expect(area).toMatchObject({ title: 'Included from lib.sm', collapsed: true });
     expect(sources(ws)).toEqual(['area(a) := a^2', 'area_2(a, b) := a*b', 'g := 9.81', 'area(3) =', 'area_2(3, 4) =', '2*g =']);
@@ -842,7 +843,7 @@ describe('SMath import: include(…) of another worksheet', () => {
     id = 0;
     const main = sheet(at(9, 10, plain(s('C:\\calc\\lib.sm') + fn('include', 1))), at(9, 40, shown(v('3') + fn('area', 1), v('9'))));
     const { ws, warnings, references } = importSmath(main, 'main.sm');
-    expect(references).toEqual([{ name: 'lib.sm', found: false }]);
+    expect(references).toEqual(['lib.sm']);
     expect(ws.regions[0]).toMatchObject({ kind: 'text' });
     expect(warnings.some((w) => /include\(“lib\.sm”\) at 10 px reads another SMath worksheet, lib\.sm, which is not part of this file: pick it in the import report/.test(w))).toBe(true);
   });

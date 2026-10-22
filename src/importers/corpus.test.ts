@@ -728,10 +728,7 @@ function fileReport(file: string): { rep: FileReport; src: SrcRegion[]; bytes: U
   return { rep, src, bytes };
 }
 
-/**
- * A file another one reads (SMath's include(…)), found in the corpus folder as the user would pick
- * it: the file of that name (saved as path__name) from the closest folder.
- */
+/** A worksheet another one includes, found in the corpus folder: the file of that name (saved as path__name) from the closest folder. */
 function sibling(file: string, name: string): Uint8Array | undefined {
   const want = name.replace(/ /g, '__').toLowerCase();
   const common = (a: string, b: string) => {
@@ -751,7 +748,16 @@ function analyse(file: string): FileReport {
   let res: ImportResult;
   const t0 = performance.now();
   try {
-    res = format === 'sm' ? importSmath(bytes, file, { file: (name) => sibling(file, name) }) : importMathcad(bytes, file);
+    res = format === 'sm' ? importSmath(bytes, file) : importMathcad(bytes, file);
+    // the worksheets it includes, picked from the corpus folder as a user would
+    if (format === 'sm' && res.references?.length) {
+      const references: Record<string, Uint8Array> = {};
+      for (const name of res.references) {
+        const b = sibling(file, name);
+        if (b) references[name] = b;
+      }
+      if (Object.keys(references).length) res = importSmath(bytes, file, { references });
+    }
   } catch (e) {
     rep.importError = (e as Error).message;
     rep.ms.import = performance.now() - t0;
