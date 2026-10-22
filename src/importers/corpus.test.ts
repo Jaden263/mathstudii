@@ -7,7 +7,7 @@
 //
 // CORPUS_OUT is a path prefix: <prefix>.json (every file, every saved result, every warning) and
 // <prefix>.txt (totals per format, one line per file, the most common causes). CORPUS_FILTER is a
-// regular expression on the file name to run a few files only.
+// regular expression on the file name to run a few files only; CORPUS_JOBS the number of processes.
 //
 // What it records, per file:
 //   - what the file holds, read here independently of the importers: region kinds, results the
@@ -17,15 +17,19 @@
 //     saved results the importer did not keep, and why when a warning says so
 //   - layout: regions not at their place, calculation order changed against the program's,
 //     overlaps (with region sizes estimated from their content, as no layout engine runs here)
-import { describe, it, beforeAll, afterAll } from 'vitest';
-import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { readdirSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, statSync, existsSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { availableParallelism, tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { unzipSync, gunzipSync, decompressSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import { importMathcad } from './mathcad';
 import { importSmath } from './smath';
 import { compareSaved } from './saved';
-import type { ImportResult } from './common';
+import { sanitize, type ImportResult } from './common';
 import { compileExpr } from '../engine/compile';
 import { ChainScope } from '../engine/scope';
 import { evaluateWithScope, type PlotResult, type RegionResult } from '../engine/evaluator';
@@ -92,6 +96,8 @@ interface SrcRegion {
   /** An implicit (not shown) result that is one number, e.g. 1 for a check that holds. */
   savedScalar?: number;
   traces?: SavedTrace[];
+  /** Names a math region (or a solve block) defines on the worksheet, as the import spells them. */
+  defines?: string[];
 }
 
 interface Inventory {
@@ -102,6 +108,48 @@ interface Inventory {
 }
 
 const text = (e: El | undefined) => (e?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+/** An <ml:id> as Mathcad shows it: Prime's subscript spans and Mathcad 15's subscript attribute become _. */
+function rawName(el: El): string {
+  let s = '';
+  const walk = (n: XNode) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) s += c.nodeValue ?? '';
+      else if (c.nodeType === 1) {
+        if (/subscript$/i.test(local(c))) s += '_';
+        walk(c);
+      }
+    }
+  };
+  walk(el);
+  s = s.trim();
+  const sub = el.getAttribute('subscript');
+  return sub ? `${s}_${sub}` : s;
+}
+
+const PROVENANCE = /^(originRef|parentRef|comment|originComment|contentHash|hash)$/;
+/** The worksheet names the definitions in a Mathcad math element (or a solve block) define. */
+function mathDefines(m: El): string[] {
+  const out: string[] = [];
+  const target = (t: El | undefined) => {
+    if (!t) return;
+    const k = local(t);
+    if (k === 'id') out.push(sanitize(rawName(t)));
+    else if (k === 'function') target(child(t, 'id'));
+    else if (k === 'matrix') elements(t).forEach(target);
+    else if (k === 'apply' && local(elements(t)[0] ?? t) === 'indexer') target(elements(t)[1]);
+  };
+  const visit = (e: El) => {
+    for (const c of elements(e)) {
+      const k = local(c);
+      if (k === 'provenance') visit(c);
+      else if (k === 'define' || k === 'globalDefine') target(elements(c).find((x) => !PROVENANCE.test(local(x))));
+      else if (k === 'regions' || k === 'region' || k === 'math') visit(c);
+    }
+  };
+  visit(m);
+  return out;
+}
 
 function primeInventory(bytes: Uint8Array): Inventory {
   const files = unzipSync(bytes);
@@ -190,6 +238,7 @@ function primeInventory(bytes: Uint8Array): Inventory {
         bump(features, 'math.formattingOverride', elements(body).filter((c) => local(c) === 'formattingOverride').length);
         if (body.getAttribute('disable-calc') === 'true' || body.getAttribute('is-disabled') === 'true') bump(features, 'math.disabled');
       }
+      if (kind === 'math' || kind === 'solveblock') reg.defines = mathDefines(body);
       if (kind === 'text') xamlFeatures(body.getAttribute('item-idref'));
       if (kind === 'picture') bump(features, 'picture');
       if (kind === 'pageBreak') bump(features, 'pageBreak');
@@ -316,6 +365,7 @@ function xmcdInventory(bytes: Uint8Array): Inventory {
         let top: El | undefined = elements(body)[0];
         while (top && local(top) === 'provenance') top = elements(top).filter((c) => !/^(originRef|parentRef|comment|originComment|contentHash|hash)$/.test(local(c))).pop();
         reg.sub = top ? local(top) : '';
+        reg.defines = mathDefines(body);
         bump(features, 'math.provenance', descendants(body, 'provenance').length ? 1 : 0);
         bump(features, 'math.resultFormat', descendants(body, 'resultFormat').length ? 1 : 0);
         if (body.getAttribute('disable-calc') === 'true') bump(features, 'math.disabled');
@@ -556,12 +606,22 @@ function names(src: string): { def: string | null; uses: Set<string> } {
   return { def: m ? m[1] : null, uses };
 }
 
+/** Names an imported region defines: x := …, f(x) := …, [a; b] := …, v[i] := …, a solve block's results. */
+function definedHere(r: Region): string[] {
+  const src = r.kind === 'math' ? r.source : r.kind === 'solve' ? r.solver : '';
+  const m = /^\s*(\[[^\]]*\]|[\p{L}_][\p{L}\p{N}_ʹ]*)\s*(\([^)]*\)|\[[^\]]*\])?\s*(:=|≡)/u.exec(src);
+  if (!m) return [];
+  return m[1].startsWith('[') ? m[1].slice(1, -1).split(/[;,]/).map((x) => x.trim()).filter(Boolean) : [m[1]];
+}
+
 interface FileReport {
   file: string;
   format: Fmt;
   bytes: number;
   importError?: string;
   evalError?: string;
+  /** The import or the calculation did not finish within the time limit (CORPUS_FILE_TIMEOUT). */
+  timedOut?: boolean;
   ms: { import: number; eval: number };
   source: {
     regions: number;
@@ -583,7 +643,7 @@ interface FileReport {
     checked: number;
     agree: number;
     differ: { source: string; ours: string; theirs: string }[];
-    missing: { source: string; theirs: string; error: string }[];
+    missing: { source: string; theirs: string; error: string; root: string }[];
     /** Values in the file the importer did not keep (by place); reason = a warning at that place. */
     lost: { kind: string; y: number; theirs: string; reason: string }[];
     /** Results the program itself saved as an error, and what we give there. */
@@ -592,7 +652,7 @@ interface FileReport {
     implicit: { inFile: number; compared: number; agree: number; differ: { source: string; ours: string; theirs: string }[] };
   };
   plots: { savedTraces: number; compared: number; agree: number; differ: { plot: string; trace: number; why: string }[] };
-  evalErrors: { source: string; error: string }[];
+  evalErrors: { id?: string; source: string; error: string; root: string }[];
   layout: {
     matched: number;
     /** Source regions with no imported region at their place, by kind. */
@@ -629,7 +689,8 @@ function overlapping(boxes: { x: number; y: number; w: number; h: number }[]): n
   return n;
 }
 
-function analyse(file: string): FileReport {
+/** What the file holds, before importing it. */
+function fileReport(file: string): { rep: FileReport; src: SrcRegion[]; bytes: Uint8Array } {
   const bytes = new Uint8Array(readFileSync(join(DIR, file)));
   const format: Fmt = /\.mcdx$/i.test(file) ? 'mcdx' : /\.xmcd$/i.test(file) ? 'xmcd' : 'sm';
   const rep: FileReport = {
@@ -663,7 +724,12 @@ function analyse(file: string): FileReport {
   rep.saved.inFile = rep.source.saved.values;
   rep.plots.savedTraces = rep.source.saved.plotTraces;
   rep.layout.overlapsInFile = overlapping(src.filter((r) => !/^(area|Area|pageBreak)$/.test(r.kind)));
+  return { rep, src, bytes };
+}
 
+function analyse(file: string): FileReport {
+  const { rep, src, bytes } = fileReport(file);
+  const format = rep.format;
   let res: ImportResult;
   const t0 = performance.now();
   try {
@@ -707,11 +773,12 @@ function analyse(file: string): FileReport {
   rep.saved.checked = cmp.checked;
   rep.saved.agree = cmp.agree;
   rep.saved.differ = cmp.differ.map((d) => ({ source: short(d.source), ours: short(d.ours), theirs: short(d.theirs) }));
-  rep.saved.missing = cmp.missing.map((m) => ({ source: short(m.source), theirs: short(m.theirs), error: resultError(ev.results.get(m.regionId)) ?? 'no value' }));
+  const missingIds = cmp.missing.map((m) => m.regionId);
+  rep.saved.missing = cmp.missing.map((m) => ({ source: short(m.source), theirs: short(m.theirs), error: resultError(ev.results.get(m.regionId)) ?? 'no value', root: '' }));
 
   for (const r of ws.regions) {
     const err = resultError(ev.results.get(r.id));
-    if (err && !r.disabled && (r.kind === 'math' || r.kind === 'solve' || r.kind === 'plot')) rep.evalErrors.push({ source: short(regionSource(r)), error: short(err, 200) });
+    if (err && !r.disabled && (r.kind === 'math' || r.kind === 'solve' || r.kind === 'plot')) rep.evalErrors.push({ id: r.id, source: short(regionSource(r)), error: short(err, 200), root: '' });
   }
 
   // match imported regions to the file's by place: same kind of region, top within 2 px
@@ -721,17 +788,29 @@ function analyse(file: string): FileReport {
   const matchOf = new Map<SrcRegion, Region>();
   const matchable = src.filter((s) => !/^(area|Area|pageBreak)$/.test(s.kind));
   // side by side regions pair by their rank from the left (the import scales x to the page)
-  const rankIn = <T extends { x: number }>(all: T[], it: T, y: (t: T) => number) => all.filter((o) => Math.abs(y(o) - y(it)) <= 2 && o.x < it.x).length;
+  // ranks from the left among the regions of a kind on the same line, worked out once (files have thousands)
+  const rowRanks = <T extends { x: number }>(list: T[], y: (t: T) => number, cat: (t: T) => string) => {
+    const out = new Map<T, number>();
+    const sorted = [...list].sort((p, q) => y(p) - y(q));
+    for (let i = 0; i < sorted.length; i++) {
+      let n = 0;
+      for (let j = i - 1; j >= 0 && y(sorted[i]) - y(sorted[j]) <= 2; j--) if (cat(sorted[j]) === cat(sorted[i]) && sorted[j].x < sorted[i].x) n++;
+      for (let j = i + 1; j < sorted.length && y(sorted[j]) - y(sorted[i]) <= 2; j++) if (cat(sorted[j]) === cat(sorted[i]) && sorted[j].x < sorted[i].x) n++;
+      out.set(sorted[i], n);
+    }
+    return out;
+  };
+  const srcRank = rowRanks(matchable, (o) => o.y, (o) => category(o.kind));
+  const poolRank = rowRanks(pool, (o) => o.y, (o) => category(o.kind));
   for (const s of [...matchable].sort((a, b) => a.y - b.y || a.x - b.x)) {
     const cat = category(s.kind);
-    const sameCat = matchable.filter((o) => category(o.kind) === cat);
-    const sRank = rankIn(sameCat, s, (o) => o.y);
+    const sRank = srcRank.get(s)!;
     let best: Region | undefined, bestD = Infinity;
     for (const r of pool) {
       if (used.has(r.id) || category(r.kind) !== cat) continue;
       const d = Math.min(...ys(s).map((y) => Math.abs(Math.max(8, Math.round(y)) - r.y)));
       if (d > 2) continue;
-      const score = d + Math.abs(rankIn(pool.filter((o) => category(o.kind) === cat), r, (o) => o.y) - sRank) * 10 + Math.abs(r.x - s.x) / 1e4;
+      const score = d + Math.abs(poolRank.get(r)! - sRank) * 10 + Math.abs(r.x - s.x) / 1e4;
       if (score < bestD) {
         best = r;
         bestD = score;
@@ -816,6 +895,45 @@ function analyse(file: string): FileReport {
     });
   }
 
+  // root causes: an undefined name leads to the region that should define it, and on to what failed there
+  const order = new Map(evaluationOrder(ws).map((r, i) => [r.id, i]));
+  const definers = new Map<string, Region[]>();
+  for (const r of ws.regions) for (const n of definedHere(r)) definers.set(n, [...(definers.get(n) ?? []), r]);
+  const srcDefiner = new Map<string, SrcRegion>();
+  for (const s of src) for (const n of s.defines ?? []) if (!srcDefiner.has(n)) srcDefiner.set(n, s);
+  const external = src.some((s) => /^(reference|ole|component)$/.test(s.kind) || /component/i.test(s.kind));
+  const sources = ws.regions.map(regionSource).join('\n');
+  const rootCause = (id: string, seen: Set<string>): string => {
+    const err = resultError(ev.results.get(id));
+    if (!err) return 'no value, no error';
+    const m = /"([^"]+)" is not defined/.exec(err) ?? /Undefined (?:symbol|function) ([^\s:]+)/.exec(err);
+    if (!m) return `error: ${errorKey(err)}`;
+    const n = m[1];
+    const defs = (definers.get(n) ?? []).filter((d) => d.id !== id);
+    if (defs.length) {
+      const bad = defs.find((d) => resultError(ev.results.get(d.id)) && !seen.has(d.id));
+      if (bad) {
+        seen.add(bad.id);
+        return rootCause(bad.id, seen);
+      }
+      return defs.every((d) => (order.get(d.id) ?? 0) > (order.get(id) ?? 0)) ? `defined further down here (calculation order): ${n}` : `defined, but not where it is read (scope): ${n}`;
+    }
+    const s = srcDefiner.get(n);
+    if (s) {
+      const w = warnAt(s);
+      return w ? `not imported: ${warningKey(w)}` : `defined in the file, not by the import: ${n} (${s.kind}${s.sub ? ` ${s.sub}` : ''})`;
+    }
+    if (new RegExp(`(^|[^\\p{L}\\p{N}_])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\(`, 'u').test(sources)) return `function not available: ${n}`;
+    return external ? `not defined in the file (it has a reference, component or object): ${n}` : `never defined in the file: ${n}`;
+  };
+  rep.saved.missing.forEach((m, i) => {
+    m.root = short(rootCause(missingIds[i], new Set([missingIds[i]])), 200);
+  });
+  for (const e of rep.evalErrors) {
+    e.root = short(rootCause(e.id!, new Set([e.id!])), 200);
+    delete e.id;
+  }
+
   // calculation order: the program's rule on the matched math regions, against ours
   const calc = [...matchOf.entries()].filter(([s, r]) => category(s.kind) === 'math' && (r.kind === 'math' || r.kind === 'solve'));
   calc.sort((a, b) => a[0].order - b[0].order || a[0].x - b[0].x);
@@ -878,18 +996,25 @@ interface Totals {
   misplaced: number;
   pushedDown: number;
   seconds: number;
+  /** Files whose calculation did not finish in time, and the saved values they show. */
+  timedOut: number;
+  timedOutValues: number;
 }
 
 function totals(list: FileReport[]): Totals {
   const t: Totals = {
     files: 0, imported: 0, importErrors: 0, inFile: 0, captured: 0, checked: 0, agree: 0, differ: 0, missing: 0, unparseable: 0, lost: 0, theirErrors: 0,
     implicit: 0, implicitCompared: 0, implicitAgree: 0, savedTraces: 0, tracesAgree: 0, sourceRegions: 0, importedRegions: 0, notImported: 0, unconverted: 0, warnings: 0, evalErrors: 0, inversions: 0, harmful: 0,
-    misplaced: 0, pushedDown: 0, seconds: 0,
+    misplaced: 0, pushedDown: 0, seconds: 0, timedOut: 0, timedOutValues: 0,
   };
   for (const f of list) {
     t.files++;
     if (f.importError) t.importErrors++;
     else t.imported++;
+    if (f.timedOut) {
+      t.timedOut++;
+      t.timedOutValues += f.saved.inFile;
+    }
     t.inFile += f.saved.inFile;
     t.captured += f.saved.captured;
     t.checked += f.saved.checked;
@@ -936,6 +1061,7 @@ function summary(list: FileReport[]): string {
     if (!t.files) continue;
     out.push(`== ${fmt}: ${t.files} files, ${t.imported} imported, ${t.importErrors} failed to import, ${t.seconds} s`);
     out.push(`   saved results: inFile ${t.inFile}, captured ${t.captured}, agree ${t.agree}, differ ${t.differ}, notEval ${t.missing}, unparseable ${t.unparseable}, lost ${t.lost}; theirErr ${t.theirErrors}`);
+    if (t.timedOut) out.push(`   ${t.timedOut} files did not finish within ${LIMIT / 1000} s; they show ${t.timedOutValues} saved values (counted in inFile only)`);
     out.push(`   agree / inFile = ${t.inFile ? ((100 * t.agree) / t.inFile).toFixed(1) : '-'} %; agree / captured = ${t.captured ? ((100 * t.agree) / t.captured).toFixed(1) : '-'} %`);
     out.push(`   plot traces saved ${t.savedTraces}, agree ${t.tracesAgree}; results kept but not shown (Prime) ${t.implicit}, checks compared ${t.implicitCompared}, agree ${t.implicitAgree}`);
     out.push(`   regions: in file ${t.sourceRegions}, imported ${t.importedRegions}, not imported (⚠️) ${t.notImported}; warnings ${t.warnings} (unconverted ${t.unconverted}); regions with an evaluation error ${t.evalErrors}`);
@@ -950,8 +1076,8 @@ function summary(list: FileReport[]): string {
   }
   out.push('== per file: fmt | regions file→ours (⚠️) | saved inFile/captured: agree differ notEval lost | traces agree/saved | warnings | inversions(harmful) misplaced | ms');
   for (const f of list) {
-    if (f.importError) {
-      out.push(`${f.file} | ${f.format} | IMPORT FAILED: ${f.importError}`);
+    if (f.importError || f.timedOut) {
+      out.push(`${f.file} | ${f.format} | ${f.timedOut ? `DID NOT FINISH: ${f.evalError}` : `IMPORT FAILED: ${f.importError}`} | saved inFile ${f.saved.inFile}`);
       continue;
     }
     const s = f.saved;
@@ -974,7 +1100,14 @@ function summary(list: FileReport[]): string {
       for (const [k, v] of Object.entries(f.layout.unmatched)) unm.set(k, (unm.get(k) ?? 0) + v);
     }
     out.push('', `== ${fmt}: most common warnings`, ...top(warn, 40));
+    const roots = new Map<string, number>(), errRoots = new Map<string, number>();
+    for (const f of files) {
+      for (const m of f.saved.missing) roots.set(m.root, (roots.get(m.root) ?? 0) + 1);
+      for (const e of f.evalErrors) errRoots.set(e.root, (errRoots.get(e.root) ?? 0) + 1);
+    }
     out.push('', `== ${fmt}: why saved results were not evaluated`, ...top(miss, 30));
+    out.push('', `== ${fmt}: root causes of the saved results not evaluated (traced through undefined names)`, ...top(roots, 60));
+    out.push('', `== ${fmt}: root causes of all evaluation errors`, ...top(errRoots, 60));
     out.push('', `== ${fmt}: why saved results were lost`, ...top(lost, 30));
     out.push('', `== ${fmt}: evaluation errors (all regions)`, ...top(errs, 30));
     out.push('', `== ${fmt}: file regions not found at their place`, ...top(unm, 20));
@@ -986,21 +1119,109 @@ function summary(list: FileReport[]): string {
 
 // ------------------------------------------------------------ run
 
-const files = DIR
-  ? readdirSync(DIR).filter((f) => /\.(mcdx|xmcd|smz?)$/i.test(f) && (!FILTER || FILTER.test(f))).sort()
-  : [];
+// The files run in CORPUS_JOBS child processes (default: up to 4 cores), each a vitest run of this
+// file on a list of them (CORPUS_LIST). A file whose import and calculation take longer than
+// CORPUS_FILE_TIMEOUT seconds (default 60; some calculations cannot be interrupted) is reported as
+// not finished, and its process restarts on the files after it.
+const JOBS = Math.max(1, Number(process.env.CORPUS_JOBS ?? Math.min(4, availableParallelism())));
+const LIMIT = Math.max(5, Number(process.env.CORPUS_FILE_TIMEOUT ?? 60)) * 1000;
+const LIST = process.env.CORPUS_LIST ?? '';
+
+const all = DIR ? readdirSync(DIR).filter((f) => /\.(mcdx|xmcd|smz?)$/i.test(f) && (!FILTER || FILTER.test(f))).sort() : [];
+
+/** Lists of about equal work: largest first, each to the least loaded (Prime packages are compressed). */
+function shares(list: string[], n: number): string[][] {
+  const out = Array.from({ length: n }, () => [] as string[]);
+  const load = new Array<number>(n).fill(0);
+  const cost = (f: string) => statSync(join(DIR, f)).size * (/\.mcdx$/i.test(f) ? 5 : /\.xmcd$/i.test(f) ? 0.3 : 1);
+  for (const [f, c] of list.map((f) => [f, cost(f)] as const).sort((a, b) => b[1] - a[1])) {
+    const k = load.indexOf(Math.min(...load));
+    out[k].push(f);
+    load[k] += c;
+  }
+  return out.filter((l) => l.length);
+}
+
+function writeReport(reports: FileReport[]) {
+  if (!OUT || !reports.length) return;
+  mkdirSync(dirname(OUT), { recursive: true });
+  const byFormat = Object.fromEntries((['mcdx', 'xmcd', 'sm'] as Fmt[]).map((f) => [f, totals(reports.filter((r) => r.format === f))]));
+  writeFileSync(`${OUT}.json`, JSON.stringify({ dir: DIR, date: new Date().toISOString(), timeLimit: LIMIT / 1000, totals: byFormat, files: reports }, null, 1));
+  writeFileSync(`${OUT}.txt`, summary(reports));
+}
+
+/** Run a list of files in a child process; restart after a file that runs out of time. */
+async function runList(list: string[], tag: string, results: Map<string, FileReport>): Promise<void> {
+  const cli = join(dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs');
+  let rest = list;
+  while (rest.length) {
+    writeFileSync(`${tag}.list`, rest.join('\n'));
+    for (const ext of ['jsonl', 'progress']) rmSync(`${tag}.${ext}`, { force: true });
+    let stuck = '';
+    let err = '';
+    await new Promise<void>((done) => {
+      const p = spawn(process.execPath, [cli, 'run', fileURLToPath(import.meta.url), '--testTimeout=0'], {
+        env: { ...process.env, CORPUS_LIST: `${tag}.list`, CORPUS_OUT: tag },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      p.stderr.on('data', (d: Buffer) => {
+        err = (err + d.toString()).slice(-2000);
+      });
+      // the file a child is on, and since when
+      const watch = setInterval(() => {
+        if (!existsSync(`${tag}.progress`)) return;
+        const last = readFileSync(`${tag}.progress`, 'utf8').trim().split('\n').pop() ?? '';
+        const [at, file] = last.split('\t');
+        if (file && Date.now() - Date.parse(at) > LIMIT) {
+          stuck = file;
+          p.kill('SIGKILL');
+        }
+      }, 1000);
+      p.on('close', () => {
+        clearInterval(watch);
+        done();
+      });
+    });
+    if (existsSync(`${tag}.jsonl`)) {
+      for (const line of readFileSync(`${tag}.jsonl`, 'utf8').split('\n')) {
+        if (!line) continue;
+        const r = JSON.parse(line) as FileReport;
+        results.set(r.file, r);
+      }
+    }
+    const next = rest.find((f) => !results.has(f));
+    if (next) {
+      // out of time, or the process died on it: report it as not finished and go on with the rest
+      const { rep } = fileReport(next);
+      rep.timedOut = true;
+      rep.evalError = stuck === next ? `import and calculation took longer than ${LIMIT / 1000} s` : `the process ended on this file: ${err.trim().split('\n').pop() ?? ''}`;
+      results.set(next, rep);
+    }
+    rest = rest.filter((f) => !results.has(f));
+  }
+  for (const ext of ['list', 'jsonl', 'progress']) rmSync(`${tag}.${ext}`, { force: true });
+}
+
+const isChild = !!LIST;
+const files = isChild ? readFileSync(LIST, 'utf8').split('\n').filter(Boolean) : all;
 
 describe.skipIf(!DIR)('corpus of real worksheets (CORPUS_DIR)', () => {
-  const reports: FileReport[] = [];
   beforeAll(() => loadCas());
-  afterAll(() => {
-    if (!OUT || !reports.length) return;
-    mkdirSync(dirname(OUT), { recursive: true });
-    const byFormat = Object.fromEntries((['mcdx', 'xmcd', 'sm'] as Fmt[]).map((f) => [f, totals(reports.filter((r) => r.format === f))]));
-    writeFileSync(`${OUT}.json`, JSON.stringify({ dir: DIR, date: new Date().toISOString(), totals: byFormat, files: reports }, null, 1));
-    writeFileSync(`${OUT}.txt`, summary(reports));
-  });
-  it.each(files)('%s', (file) => {
-    reports.push(analyse(file));
-  }, 120000);
+  if (isChild) {
+    // a child: one file at a time, each report written as soon as it is done
+    it.each(files)('%s', (file) => {
+      appendFileSync(`${OUT}.progress`, `${new Date().toISOString()}\t${file}\n`);
+      appendFileSync(`${OUT}.jsonl`, JSON.stringify(analyse(file)) + '\n');
+    });
+  } else {
+    it(`${all.length} files in ${Math.min(JOBS, all.length)} processes`, async () => {
+      const base = OUT || join(tmpdir(), `corpus-${process.pid}`);
+      mkdirSync(dirname(base), { recursive: true });
+      const results = new Map<string, FileReport>();
+      await Promise.all(shares(all, JOBS).map((list, k) => runList(list, `${base}.w${k}`, results)));
+      const reports = all.map((f) => results.get(f)!).filter(Boolean);
+      writeReport(reports);
+      expect(reports.length).toBe(all.length);
+    }, 0);
+  }
 });
