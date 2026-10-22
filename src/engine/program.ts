@@ -178,11 +178,13 @@ function assignColumn(cur: unknown, j: unknown, v: unknown): unknown {
   return math.matrix(out as never);
 }
 
+/** Run statements; the value is that of the last one that gave one (an if none of whose branches ran gives none). */
 function run(stmts: Stmt[], scope: ChainScope): unknown {
   let last: unknown = undefined;
   for (const s of stmts) {
     try {
-      last = exec(s, scope);
+      const v = exec(s, scope);
+      if (v !== undefined) last = v;
     } catch (e) {
       if (e instanceof Signal) throw e;
       const msg = e instanceof Error ? e.message : String(e);

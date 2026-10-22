@@ -419,6 +419,10 @@ export class TreeReader {
         return { k: 'root', n: sub(raw[1]), a: sub(raw[0]) };
       case 'abs':
         return { k: 'abs', a: sub(raw[0]) };
+      // mag is Mathcad's |x| itself (length of a vector, determinant of a square matrix)
+      case 'mag':
+        if (raw.length === 1) return { k: 'abs', a: sub(raw[0]) };
+        break;
       case 'col':
         if (raw.length === 2) return { k: 'col', m: sub(raw[0]), j: sub(raw[1]) };
         break;

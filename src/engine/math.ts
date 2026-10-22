@@ -3,6 +3,32 @@ import { create, all, type MathJsInstance, type Unit } from 'mathjs';
 /** The single mathjs instance used by the engine. */
 export const math: MathJsInstance = create(all, { number: 'number', precision: 64 });
 
+// (First of all: functions made before this, parse among them, keep the addScalar they were made with.)
+// A plain 0 adds to a quantity of any unit, as in Mathcad: [w, 0; 0, l] times a matrix of numbers
+// sums w + 0. Any other number added to a length stays a unit error.
+{
+  const typed = math.typed as unknown as (name: string, ...defs: unknown[]) => unknown;
+  const zeroOr = (op: string) => (u: unknown, n: number) => {
+    if (n === 0) return u;
+    throw new TypeError(`Unexpected type of argument in function ${op} (expected: Unit, actual: number, index: 1)`);
+  };
+  const fns = math as unknown as Record<string, unknown>;
+  const addScalar = fns.addScalar, subtractScalar = fns.subtractScalar;
+  math.import({
+    addScalar: typed('addScalar', addScalar, {
+      'Unit, number': zeroOr('addScalar'),
+      'number, Unit': (n: number, u: unknown) => zeroOr('addScalar')(u, n),
+    }),
+    subtractScalar: typed('subtractScalar', subtractScalar, {
+      'Unit, number': zeroOr('subtractScalar'),
+      'number, Unit': (n: number, u: unknown) => {
+        if (n === 0) return math.unaryMinus(u as never);
+        return zeroOr('subtractScalar')(u, n);
+      },
+    }),
+  }, { override: true });
+}
+
 // Names may be written in any alphabet (Длина, Höhe), as in Mathcad and SMath; mathjs itself
 // takes Latin and Greek letters only.
 {

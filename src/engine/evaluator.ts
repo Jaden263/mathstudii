@@ -7,7 +7,7 @@ import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { compileExpr, parseExpr, freeSymbols, RENAME } from './compile';
 import { parseStatement, parseRange, splitComparison, splitChain, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
-import { engineCtx, toVector, vec, assignIndex, normalize } from './library';
+import { engineCtx, toVector, vec, assignIndex, normalize, int } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, valueText, unitParts, type FormatOptions } from './format';
 import { dimsOf, closestName, unitNames, compatibleUnits, quantityName } from './unitCatalog';
@@ -166,6 +166,8 @@ class Evaluator {
     this.bindAtCall = ws.settings.lateBinding === true;
     const base = new Map<string, unknown>();
     for (const [k, v] of BUILTIN_SCOPE) base.set(k, math.evaluate(v));
+    // Mathcad's built-in variable for the first array index
+    base.set('ORIGIN', ws.settings.origin);
     this.global = new ChainScope(base);
   }
 
@@ -323,7 +325,10 @@ class Evaluator {
       const chain = splitChain(st.expr);
       if (chain) {
         try {
-          this.results.set(r.id, this.evaluateCheck(chain));
+          const res = this.evaluateCheck(chain);
+          this.results.set(r.id, res);
+          // a comparison followed by = has a value, as in Mathcad: 1 when it holds, 0 when not
+          if (st.type === 'eval' && chain.ops.length === 1) this.shown.set(r.id, res.check?.ok ? 1 : 0);
         } catch (e) {
           const res: MathResult = { kind: 'math', tex: exprTex(st.expr), error: friendlyError(e) };
           // an equation with undefined symbols (A·x == d), or a relation of symbols nobody defined,
@@ -521,6 +526,8 @@ class Evaluator {
         }
         const override = scope === this.global ? this.overrides[lhs.name] : undefined;
         const v = this.evalWithRanges(override ?? rhs, scope);
+        // ORIGIN := 1 on the worksheet moves the first array index from there on, as in Mathcad
+        if (lhs.name === 'ORIGIN' && scope === this.global) engineCtx.origin = int(v, 'ORIGIN');
         scope.set(lhs.name, v);
         this.ranges.delete(lhs.name);
         return v;

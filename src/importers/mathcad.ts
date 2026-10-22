@@ -270,7 +270,8 @@ class Converter {
       case 'percent': return { s: `${this.wrap(e(0), P.MUL)}/100`, p: P.MUL };
       case 'matcol': return { s: `col(${e(0).s}, ${e(1).s})`, p: P.ATOM };
       case 'matrow': return { s: `row(${e(0).s}, ${e(1).s})`, p: P.ATOM };
-      case 'absval': return { s: `abs(${e(0).s})`, p: P.ATOM };
+      // |x|: the length of a vector and the determinant of a square matrix, as in Mathcad
+      case 'absval': return { s: `mag(${e(0).s})`, p: P.ATOM };
       case 'determinant': return { s: `mag(${e(0).s})`, p: P.ATOM };
       case 'sqrt': return { s: `sqrt(${e(0).s})`, p: P.ATOM };
       case 'nthRoot': {

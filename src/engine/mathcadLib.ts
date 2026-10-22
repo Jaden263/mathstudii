@@ -309,6 +309,22 @@ const MATHCAD_LIBRARY: Record<string, unknown> = {
   svds: (A: unknown) => vec(singularValues(numericMatrix(A, 'svds'))),
 };
 
+/**
+ * A vector to a power is raised element by element, as in Mathcad (A_s := π d_s²/4 of a vector of
+ * diameters is a vector of areas); a square matrix is still raised as a matrix.
+ */
+const vectorPow = (() => {
+  const old = math.pow as unknown as { signatures: Record<string, (x: unknown, y: unknown) => unknown> };
+  const isVector = (x: unknown) => {
+    const s = math.size(x as never) as unknown as number[];
+    return s.length === 1 || (s.length === 2 && (s[0] === 1 || s[1] === 1) && s[0] !== s[1]);
+  };
+  const wrap = (f: (x: unknown, y: unknown) => unknown) => (x: unknown, y: unknown) => (isVector(x) ? math.dotPow(x as never, y as never) : f(x, y));
+  const sigs = { ...old.signatures };
+  for (const k of ['Array,number', 'Array,BigNumber', 'Matrix,number', 'Matrix,BigNumber']) if (sigs[k]) sigs[k] = wrap(sigs[k]);
+  return math.typed('pow', sigs as never);
+})();
+
 const clashes = Object.keys(MATHCAD_LIBRARY).filter((k) => k in math);
 if (clashes.length) throw new Error(`Mathcad library names clash: ${clashes.join(', ')}`);
 math.import({
@@ -325,6 +341,7 @@ math.import({
     const r = n === undefined ? Math.round(s.value) : Number(f(s.value, n));
     return s.unit && (s.unit as Unit).dimensions.some((d, i) => i !== 7 && d !== 0) ? joinUnit(r, s.unit) : r;
   })(math.round as unknown as (...a: unknown[]) => unknown),
+  pow: vectorPow,
   // Mathcad's acot is π/2 − atan(x), continuous through 0 (acot(−2) = 2.6779 rad)
   acot: ((f) => (x: unknown) => (typeof x === 'number' ? Math.PI / 2 - Math.atan(x) : f(x)))(math.acot as unknown as (x: unknown) => unknown),
 }, { override: true });

@@ -266,4 +266,14 @@ describe('Mathcad import: constructs met in public worksheets', () => {
     const { by } = results(ws);
     expect(by("h'(1) =").tex).toMatch(/= 0\.19$/); // 10 − 9.81
   });
+
+  it('|v| of a vector is its length, of a square matrix its determinant', () => {
+    const vec3 = `<ml:matrix rows="3" cols="1">${real(-36.13)}${real(5.98)}${real(-30.44)}</ml:matrix>`;
+    const { ws } = primeOf(math(evalOf(ap('<ml:absval/>', vec3))), math(evalOf(ap('<ml:absval/>', `<ml:matrix rows="2" cols="2">${real(1)}${real(3)}${real(2)}${real(4)}</ml:matrix>`))));
+    expect(sources(ws)).toEqual(['mag([-36.13; 5.98; -30.44]) =', 'mag([1, 2; 3, 4]) =']);
+    const { by } = results(ws);
+    // Lab01.xmcd saved 47.620698 for this vector
+    expect(by('mag([-36.13; 5.98; -30.44]) =').tex).toMatch(/= 47\.6207$/);
+    expect(by('mag([1, 2; 3, 4]) =').tex).toMatch(/= -2$/);
+  });
 });
