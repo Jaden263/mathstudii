@@ -207,14 +207,16 @@ function primeInventory(bytes: Uint8Array): Inventory {
     bump(features, 'text.inlineObject', descendants(d, 'InlineUIContainer').length + descendants(d, 'BlockUIContainer').length);
   };
 
-  const walk = (container: El, dx: number, dy: number, inArea: boolean) => {
+  // a collapsed area calculates its regions where it is, before what follows it (which the file
+  // places with the area collapsed): their order is the area's, then their own within it
+  const walk = (container: El, dx: number, dy: number, inArea: boolean, hidden: { order: number; scale: number } | null = null) => {
     for (const r of elements(container).filter((c) => local(c) === 'region')) {
       const body = elements(r)[0];
       if (!body) continue;
       const kind = local(body);
       const x = dx + (num(r, 'left') || 0), y = dy + (num(r, 'top') || 0);
       const reg: SrcRegion = {
-        kind, x, y, alt: [], order: y, inArea,
+        kind, x, y, alt: [], order: hidden ? hidden.order + (num(r, 'top') || 0) * hidden.scale : y, inArea,
         w: num(r, 'actualWidth') || num(r, 'width') || 0, h: num(r, 'actualHeight') || num(r, 'height') || 0,
       };
       regions.push(reg);
@@ -223,7 +225,8 @@ function primeInventory(bytes: Uint8Array): Inventory {
         if (body.getAttribute('is-collapsed') === 'true' || body.getAttribute('IsCollapsed') === 'True') bump(features, 'area.collapsed');
         if (/true/i.test(body.getAttribute('is-locked') ?? body.getAttribute('IsLocked') ?? '')) bump(features, 'area.locked');
         const inner = child(body, 'regions');
-        if (inner) walk(inner, x, y, true);
+        const collapsed = /^true$/i.test(body.getAttribute('IsCollapsed') ?? '');
+        if (inner) walk(inner, x, y, true, collapsed ? { order: reg.order, scale: (hidden?.scale ?? 1) * 1e-6 } : hidden && { order: reg.order, scale: hidden.scale });
         continue;
       }
       if (kind === 'math') {
@@ -338,7 +341,10 @@ function xmcdInventory(bytes: Uint8Array): Inventory {
   const features: Record<string, number> = {};
   const settings: Record<string, string> = {};
   const regions: SrcRegion[] = [];
-  const walk = (container: El, ax: number, ay: number, inArea: boolean) => {
+  // An open area keeps its regions on the page, a collapsed one relative to itself (ay is the
+  // page height of that frame). A collapsed area calculates its regions where it is, before what
+  // follows it: their order is the area's, then their own within it.
+  const walk = (container: El, ax: number, ay: number, inArea: boolean, hidden: { order: number; scale: number } | null = null) => {
     for (const r of elements(container).filter((c) => local(c) === 'region')) {
       const parts = elements(r).filter((c) => local(c) !== 'rendering');
       if (parts.some((c) => local(c) === 'link')) bump(features, 'region.hyperlink');
@@ -347,10 +353,11 @@ function xmcdInventory(bytes: Uint8Array): Inventory {
       const kind = local(body);
       const x = num(r, 'left') * PX || 0, y = num(r, 'top') * PX || 0;
       const alignY = r.getAttribute('align-y') !== null ? num(r, 'align-y') * PX : null;
-      // what an import that offsets nested regions by their area's place would give
+      // math placed by its baseline; in a collapsed area, on the page where the area is
       const alt = [alignY !== null ? alignY - 12 : y];
-      if (inArea) alt.push(ay + y, ay + (alignY ?? y) - 12);
-      const reg: SrcRegion = { kind, x, y, alt, order: alignY ?? y, inArea, w: num(r, 'width') * PX || 0, h: num(r, 'height') * PX || 0 };
+      if (ay) alt.push(ay + y, ay + (alignY ?? y) - 12);
+      const order = hidden ? hidden.order + (alignY ?? y) * hidden.scale : alignY ?? y;
+      const reg: SrcRegion = { kind, x, y, alt, order, inArea, w: num(r, 'width') * PX || 0, h: num(r, 'height') * PX || 0 };
       if (r.getAttribute('show-border') === 'true') bump(features, 'region.border');
       if (r.getAttribute('show-highlight') === 'true' || !/^(inherit|#fff|#ffffff|)$/i.test(r.getAttribute('background-color') ?? '')) bump(features, 'region.highlight');
       regions.push(reg);
@@ -358,7 +365,9 @@ function xmcdInventory(bytes: Uint8Array): Inventory {
         bump(features, 'area');
         if (body.getAttribute('is-collapsed') === 'true') bump(features, 'area.collapsed');
         if (body.getAttribute('is-locked') === 'true') bump(features, 'area.locked');
-        walk(body, ax + x, ay + y, true);
+        const collapsed = body.getAttribute('is-collapsed') === 'true';
+        if (collapsed) walk(body, ax + x, ay + y, true, { order, scale: (hidden?.scale ?? 1) * 1e-6 });
+        else walk(body, ax, ay, true, hidden);
         continue;
       }
       if (kind === 'math') {
@@ -832,7 +841,7 @@ function analyse(file: string): FileReport {
   }
   for (const r of pool) if (!used.has(r.id)) bump(rep.layout.extra, r.kind);
   for (const [s, r] of matchOf) {
-    if (Math.abs(Math.max(8, Math.round(s.y)) - r.y) > 2 && Math.abs(Math.max(8, Math.round(s.alt[0] ?? s.y)) - r.y) > 2) rep.layout.misplaced.push({ kind: s.kind, y: Math.round(s.y), ours: r.y });
+    if (ys(s).every((y) => Math.abs(Math.max(8, Math.round(y)) - r.y) > 2)) rep.layout.misplaced.push({ kind: s.kind, y: Math.round(s.y), ours: r.y });
   }
 
   // saved values the importer did not keep: a shown value with no saved entry at its region
