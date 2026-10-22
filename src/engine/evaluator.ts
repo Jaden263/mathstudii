@@ -27,6 +27,7 @@ import './materialsLib';
 import './specialLib';
 import './odeLib';
 import './mathcadLib';
+import './smathLib';
 import { resetRandom } from './random';
 
 export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult, SpreadsheetResult };

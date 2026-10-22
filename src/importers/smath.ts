@@ -109,6 +109,18 @@ function assignments(t: Tok): { all: string[]; element: Set<string>; counters: S
   return { all, element, counters };
 }
 
+/**
+ * Functions only SMath plugins or the computer SMath ran on can provide, so the import report
+ * says why the regions that use them are not calculated.
+ */
+const ELSEWHERE: { test: RegExp; what: string }[] = [
+  { test: /^CoolProp_/, what: 'functions of the CoolProp plugin (fluid properties), which mathstudii does not have' },
+  { test: /^(Maxima|MaximaControl|MaximaTakeover|MaximaLog|MaximaDefine|MaximaFunction|Solve|Assign|Fit|Draw2D|Draw3D|draw2d|draw3d|explicit|implicit|parametric|parametric_surface|cylindrical|spherical|elevation_grid|tube|polygon|quadrilateral|wxdraw2d|wxdraw3d)$/, what: 'functions of the Maxima plugin (computer algebra), which mathstudii does not have' },
+  { test: /^include$/, what: 'include(…), which reads another worksheet file that is not part of this one' },
+  { test: /^(wfile|rfile|importData|importCells|readTable|writeTable|readFile|writeFile|exportData|appendfile)$/, what: 'file functions that read or write data files that are not part of the worksheet' },
+  { test: /^(CurrentDirectory|DocumentDirectory|GetFolderPath|time|date)$/, what: 'functions whose value depends on the computer and the moment SMath ran (folders, the clock)' },
+];
+
 /** Names a top-level formula defines on the worksheet: x := …, x[i] := …, a unit of its own, a loop's variables. */
 function worksheetDefines(t: Tok): string[] {
   if (isOp(t, ':')) {
@@ -156,7 +168,9 @@ const BINOPS: Record<string, { op: string; p: number }> = {
 const FN_MAP: Record<string, string> = {
   arcsin: 'asin', arccos: 'acos', arctan: 'atan', arccot: 'acot', arcsec: 'asec', arccsc: 'acsc',
   arcsinh: 'asinh', arccosh: 'acosh', arctanh: 'atanh', arccoth: 'acoth', Gamma: 'gamma', Γ: 'gamma',
-  random: 'rnd', product: 'prod', mod: 'mod', Min: 'min', Max: 'max',
+  random: 'rnd', product: 'prod', mod: 'mod', Min: 'min', Max: 'max', nthroot: 'nthRoot',
+  // at(f, x = a) substitutes; "at" reads as a unit here
+  at: 'subs',
 };
 
 /**
@@ -185,6 +199,9 @@ const NUMBER = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 const number = (s: string) => s.replace(/^\./, '0.').replace(/\.(?=$|[eE])/, '');
 
 const CONSTANTS: Record<string, string> = { π: 'π', e: 'e', '∞': '∞' };
+
+/** Names that are values without a definition: SMath's constants and imaginary unit (j as engineers write it). */
+const SYMBOLS = new Set(['π', 'e', '∞', 'i', 'j']);
 
 class Converter {
   warnings: string[] = [];
@@ -347,7 +364,11 @@ class Converter {
     switch (name) {
       case 'el': {
         const base = wrap(A(0), P.ATOM);
-        return { s: `${base}[${t.args.slice(1).map((a) => this.expr(a).s).join(', ')}]`, p: P.ATOM };
+        // a range as a subscript takes those elements (v[2..4]): range(a, b) here is a vector a … b
+        const index = (a: Tok) => (isFn(a, 'range') && (a.args.length === 2 || a.args.length === 3)
+          ? `range(${this.expr(a.args[0]).s}, ${this.expr(a.args[1]).s}${a.args.length === 3 ? `, ${wrap(this.expr(a.args[2]), P.ADD + 1)} - ${wrap(this.expr(a.args[0]), P.ADD + 1)}` : ''})`
+          : this.expr(a).s);
+        return { s: `${base}[${t.args.slice(1).map(index).join(', ')}]`, p: P.ATOM };
       }
       case 'mat':
         return this.matrix(t);
@@ -380,19 +401,20 @@ class Converter {
         if (n === 3) return { s: `if(${this.args(t).join(', ')})`, p: P.ATOM };
         break;
       case 'solve':
-        if (n === 4 && isOp(t.args[0], '≡')) {
-          const [lhs, rhs] = t.args[0].args.map((a) => this.expr(a));
-          return { s: `root(${lhs.s} - ${wrap(rhs, P.ADD + 1)}, ${A(1).s}, ${A(2).s}, ${A(3).s})`, p: P.ATOM };
-        }
-        if (n === 4) return { s: `root(${this.args(t).join(', ')})`, p: P.ATOM };
+        // solve(f, x, a, b): every root between a and b
+        if (n === 4) return { s: `roots(${this.args(t).join(', ')})`, p: P.ATOM };
         throw new Unsupported('solve(…) inside an expression');
       case 'line':
       case 'for':
       case 'while':
       case 'try':
         throw new Unsupported('a program inside an expression');
-      case 'sys':
-        throw new Unsupported('a sys(…) block (system of equations)');
+      case 'sys': {
+        // a system (SMath's braced list of values or equations) as a value is a column vector
+        const items = listItems(t);
+        if (!items.length || Number(t.args[t.args.length - 2]?.text) * Number(t.args[t.args.length - 1]?.text) !== items.length) throw new Error('Malformed sys(…)');
+        return { s: `[${items.map((a) => this.expr(a).s).join('; ')}]`, p: P.ATOM };
+      }
     }
     const fn = FN_MAP[name] ?? this.name(name);
     return { s: `${fn}(${this.args(t).join(', ')})`, p: P.ATOM };
@@ -426,6 +448,8 @@ class Converter {
           if (a.length === 4) return this.cFor(a[0], a[1], a[2], a[3], ind);
           break;
         case 'if': {
+          // if without else
+          if (a.length === 2) return [`${ind}if ${this.expr(a[0]).s}`, ...this.stmt(a[1], inner)];
           if (a.length !== 3) break;
           const out = [`${ind}if ${this.expr(a[0]).s}`, ...this.stmt(a[1], inner)];
           let rest = a[2];
@@ -765,6 +789,30 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     for (const t of toks) for (const n of worksheetDefines(t)) lastDefined.set(n, i);
   });
   const lazyNotes: string[] = [];
+  // functions only a plugin or SMath's computer has: say once which, and how many regions use them
+  {
+    const defined = new Set<string>();
+    for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) defined.add(t.args[0].text);
+    const hits = ELSEWHERE.map(() => ({ names: new Set<string>(), regions: 0 }));
+    inputs.forEach((toks) => {
+      const seen = new Set<number>();
+      for (const t of toks) walk(t, (n) => {
+        if (n.type !== 'function' || defined.has(n.text)) return;
+        const k = ELSEWHERE.findIndex((e) => e.test.test(n.text));
+        if (k < 0) return;
+        hits[k].names.add(n.text);
+        seen.add(k);
+      });
+      for (const k of seen) hits[k].regions++;
+    });
+    hits.forEach((h, k) => {
+      if (!h.regions) return;
+      const names = [...h.names];
+      warnings.push(`${h.regions} region${h.regions > 1 ? 's use' : ' uses'} ${ELSEWHERE[k].what} (${names.slice(0, 5).join(', ')}${names.length > 5 ? ' …' : ''}): ${h.regions > 1 ? 'they and what depends on them are' : 'it and what depends on it is'} not calculated`);
+    });
+    const lastError = inputs.some((toks) => toks.some((t) => { let found = false; walk(t, (n) => { if (isVar(n) && n.text === 'lastError') found = true; }); return found; }));
+    if (lastError) warnings.push('lastError (the message of the last error SMath or a plugin reported) is not available here');
+  }
   const usedAfter = (i: number) => {
     const s = new Set<string>();
     for (let j = i + 1; j < used.length; j++) for (const n of used[j]) s.add(n);
@@ -820,8 +868,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         } else if (isOp(t, ':')) {
           let lhs = conv.target(t.args[0]);
           const rhs = t.args[1];
-          // names this definition reads that are only defined further down: SMath keeps them as
-          // symbols and calculates when the value is used, so it becomes a function of them
+          // names this definition reads that are only defined further down, or nowhere: SMath keeps
+          // them as symbols and calculates when the value is used, so it becomes a function of them
           const late: string[] = [];
           const name = isVar(t.args[0]) ? smName(t.args[0].text) : null;
           if (name) {
@@ -834,8 +882,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
               const m = smName(n.text);
               if (bound.has(m)) return;
               const waits = conv.lazy.get(m);
-              if (waits) for (const p of waits) if (!definedBefore.has(p)) add(p);
-              if (!waits && m !== name && !definedBefore.has(m) && (lastDefined.get(m) ?? -1) > i) add(m);
+              if (waits) for (const p of waits) if (!definedBefore.has(p) && !bound.has(p)) add(p);
+              // defined further down, or nowhere on the worksheet (a symbol, as in σ(φ) := … cos(2·φ) solved for φ later)
+              if (!waits && m !== name && !definedBefore.has(m) && !SYMBOLS.has(m) && (lastDefined.get(m) ?? Infinity) > i) add(m);
             });
           }
           const rhsSrc = isProgram(rhs) ? `\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
@@ -946,7 +995,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   });
   for (const note of conv.displayNotes) warnings.push(note);
   if (lazyNotes.length) {
-    warnings.push(`${lazyNotes.length} definition${lazyNotes.length > 1 ? 's read names' : ' reads names'} defined only further down (${lazyNotes.slice(0, 4).join(', ')}${lazyNotes.length > 4 ? ' …' : ''}): SMath keeps such names as symbols and calculates when the value is used, so here each is a function of them, called with the values they have where it is used`);
+    warnings.push(`${lazyNotes.length} definition${lazyNotes.length > 1 ? 's read names' : ' reads names'} defined only further down or not at all (${lazyNotes.slice(0, 4).join(', ')}${lazyNotes.length > 4 ? ' …' : ''}): SMath keeps such names as symbols and calculates when the value is used, so here each is a function of them, called with the values they have where it is used`);
   }
   if (plotRanges) warnings.push(`${plotRanges} plot${plotRanges > 1 ? 's' : ''}: SMath stores a view (zoom and pan), not axis limits, so the axes start from automatic ranges`);
 

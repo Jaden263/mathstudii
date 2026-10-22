@@ -359,8 +359,64 @@ describe('SMath import: definitions that read names defined further down', () =>
     const { ws, saved, warnings } = importSmath(strToU8(xml), 'x.sm');
     expect(sources(ws).slice(1, 3)).toEqual(['w(L, I) := q*L/I', 'σ(L, I, k) := w(L, I)/k']);
     expect(sources(ws).filter((x) => x.endsWith(' ='))).toEqual(['w(L, I) =', 'σ(L, I, k) =', 'w(L, I) =', 'σ(L, I, k) =']);
-    expect(warnings.some((w) => /2 definitions read names defined only further down \(w\(L, I\), σ\(L, I, k\)\)/.test(w))).toBe(true);
+    expect(warnings.some((w) => /2 definitions read names defined only further down or not at all \(w\(L, I\), σ\(L, I, k\)\)/.test(w))).toBe(true);
     const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
     expect(cmp).toMatchObject({ checked: 4, agree: 4 });
+  });
+});
+
+describe('SMath import: functions and lists', () => {
+  const one = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+  };
+  it('a system sys(a, b) as a value is a column vector; its saved result too', () => {
+    const { ws, saved } = one(region(`<math><input>${def(v('t') + fn('M', 1), v('t') + v('2') + op('*') + v('t') + v('2') + op('^') + v('2') + v('1') + fn('sys', 4))}</input></math>`),
+      region(`<math><input>${v('3') + fn('M', 1)}</input><result action="numeric">${v('6') + v('9') + v('2') + v('1') + fn('sys', 4)}</result></math>`));
+    expect(sources(ws)).toEqual(['M(t) := [t*2; t^2]', 'M(3) =']);
+    expect(saved![0].expr).toBe('[6; 9]');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
+  it('a range as a subscript takes those elements; if without else in a program; nthroot', () => {
+    const { ws } = one(
+      math(def(v('v'), v('1') + v('2') + v('3') + v('4') + v('4') + v('1') + fn('mat', 6))),
+      math(v('v') + v('2') + v('3') + fn('range', 2) + fn('el', 2), { result: 'numeric' }),
+      // s := 0; for j ∈ 1..4: if v[j] > 2 then s := s + v[j]
+      math(def(v('s'), v('0'))),
+      math(v('j') + v('1') + v('4') + fn('range', 2) + v('v') + v('j') + fn('el', 2) + v('2') + op('>') + v('s') + v('s') + v('v') + v('j') + fn('el', 2) + op('+') + op(':') + fn('if', 2) + fn('for', 3)),
+      math(v('s'), { result: 'numeric' }),
+      math(v('8') + op('-', 1) + v('3') + fn('nthroot', 2), { result: 'numeric' }),
+    );
+    expect(sources(ws)[1]).toBe('v[range(2, 3)] =');
+    expect(value(ws, 'v[range(2, 3)] =')).toMatch(/2 \\\\ 3/);
+    expect(sources(ws).find((x) => x.startsWith('s :=\n'))).toContain('    if v[j] > 2\n      s ← s + v[j]');
+    expect(value(ws, 's =')).toMatch(/= 7/);
+    expect(value(ws, 'nthRoot(-8, 3) =')).toMatch(/= -2/);
+  });
+
+  it('solve(f, x, a, b) gives every root between a and b; roots(f, x, x₀); at(f, x = a)', () => {
+    const { ws, saved } = one(
+      math(def(v('σ.x'), v('40') + u('MPa') + op('*'))),
+      // σ(φ) reads φ, which the worksheet never defines: a symbol, as in SMath
+      math(def(v('σ'), v('σ.x') + v('2') + v('φ') + op('*') + fn('cos', 1) + op('*'))),
+      region(`<math><input>${def(v('φ.0'), v('σ') + v('0') + op('≡') + v('φ') + v('0') + v('π') + fn('solve', 4))}</input><contract>${u('°')}</contract><result action="numeric">${v('45') + v('135') + v('2') + v('1') + fn('sys', 4)}</result></math>`),
+      region(`<math><input>${v('σ') + v('0') + op('≡') + v('φ') + v('1') + fn('roots', 3)}</input><contract>${u('°')}</contract><result action="numeric">${v('45')}</result></math>`),
+      region(`<math><input>${v('σ') + v('φ') + v('0') + op('≡') + fn('at', 2)}</input><contract>${u('MPa')}</contract><result action="numeric">${v('40')}</result></math>`),
+    );
+    expect(sources(ws).slice(1)).toEqual(['σ(φ) := σ_x*cos(2*φ)', 'φ_0 := roots(σ(φ) == 0, φ, 0, π) = deg', 'roots(σ(φ) == 0, φ, 1) = deg', 'subs(σ(φ), φ == 0) = MPa']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('says which regions need an SMath plugin or the computer SMath ran on', () => {
+    const { warnings } = one(
+      math(def(v('h'), s('H') + s('T') + v('300') + u('K') + op('*') + s('P') + v('1') + u('atm') + op('*') + s('Water') + fn('CoolProp_Props', 6))),
+      math(def(v('t0'), s('') + fn('time', 1))),
+      math(v('lastError'), { result: 'numeric' }),
+    );
+    expect(warnings).toContain('1 region uses functions of the CoolProp plugin (fluid properties), which mathstudii does not have (CoolProp_Props): it and what depends on it is not calculated');
+    expect(warnings.some((w) => /1 region uses functions whose value depends on the computer and the moment SMath ran .*\(time\)/.test(w))).toBe(true);
+    expect(warnings.some((w) => /lastError/.test(w))).toBe(true);
   });
 });
