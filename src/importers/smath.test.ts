@@ -501,3 +501,24 @@ describe('SMath import: programs that show their value', () => {
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
   });
 });
+
+describe('SMath import: page settings and what the report says', () => {
+  it('a print layout with header and footer prints a header with the title and author', () => {
+    const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><settings><metadata lang="eng"><title>Beam check</title><author>FCB</author></metadata>`
+      + `<pageModel active="true"><header alignment="Center">&amp;[DATE] &amp;[TIME] - &amp;[FILENAME]</header><footer alignment="Center">&amp;[PAGENUM] / &amp;[COUNT] | J. Smith | Engineer</footer></pageModel></settings><regions></regions></worksheet>`;
+    const { ws, warnings } = importSmath(strToU8(xml), 'x.sm');
+    expect(ws.settings.report).toEqual({ enabled: true, subject: 'Beam check', author: 'FCB' });
+    expect(warnings.some((w) => /J\. Smith Engineer/.test(w))).toBe(true);
+  });
+  it('names the plugin regions it does not convert, and empty placeholders', () => {
+    id = 0;
+    top = 0;
+    const { warnings, ws } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      region('<table id="1"><inputs /></table>')}${region('<snapshot tag="draw" />')}${math(def(v('a'), v('#')))}${
+      region(`<writer lang="eng"><![CDATA[<p>Pump&nbsp;P1 <img src="x.png"> &copy; 2024</p>]]></writer>`)}</regions></worksheet>`), 'x.sm');
+    expect(warnings.some((w) => /table at .*Table plugin/.test(w))).toBe(true);
+    expect(warnings.some((w) => /snapshot at .*Snapshot region/.test(w))).toBe(true);
+    expect(warnings.some((w) => /math at .*empty placeholder/.test(w))).toBe(true);
+    expect(ws.regions.some((r) => r.kind === 'text' && r.markdown === 'Pump P1 © 2024')).toBe(true);
+  });
+});

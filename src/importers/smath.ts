@@ -329,6 +329,12 @@ class Converter {
       throw new Unsupported(`the “${op}” operator`);
     }
     if (op === ':') throw new Unsupported('a definition inside an expression');
+    // a † b is the cross product; a ± b both a + b and a − b, as a list
+    if (op === '†' && t.args.length === 2) return { s: `cross(${this.value(this.expr(a)).s}, ${this.value(this.expr(b)).s})`, p: P.ATOM };
+    if (op === '±' && t.args.length === 2) {
+      const x = this.value(this.expr(a)), y = this.value(this.expr(b));
+      return { s: `[${wrap(x, P.ADD)} + ${wrap(y, P.ADD + 1)}; ${wrap(x, P.ADD)} - ${wrap(y, P.ADD + 1)}]`, p: P.ATOM };
+    }
     const bin = BINOPS[op];
     if (!bin || t.args.length !== 2) throw new Unsupported(`the “${op}” operator`);
     const x = this.value(this.expr(a)), y = this.value(this.expr(b));
@@ -576,7 +582,8 @@ function richText(el: El, base: Look = {}): RichText {
   };
   const walkInline = (n: XNode, look: Look) => {
     for (let c = n.firstChild; c; c = c.nextSibling) {
-      if (c.nodeType === 3 || c.nodeType === 4) emit((c.nodeValue ?? '').replace(/\s+/g, ' '), look);
+      // white space as HTML collapses it (a no-break space stays)
+      if (c.nodeType === 3 || c.nodeType === 4) emit((c.nodeValue ?? '').replace(/[ \t\r\n]+/g, ' '), look);
       else if (c.nodeType === 1) {
         const e = c as El;
         const tag = local(e).toLowerCase();
@@ -626,7 +633,7 @@ function richText(el: El, base: Look = {}): RichText {
     const merged: Run[] = [];
     for (const r of runs) {
       const last = merged[merged.length - 1];
-      if ('text' in r && last && 'text' in last && !!last.look.bold === !!r.look.bold && !!last.look.italic === !!r.look.italic) merged[merged.length - 1] = { text: last.text + r.text, look: last.look };
+      if ('text' in r && last && 'text' in last && !!last.look.bold === !!r.look.bold && !!last.look.italic === !!r.look.italic) merged[merged.length - 1] = { text: (last.text + r.text).replace(/ {2,}/g, ' '), look: last.look };
       else merged.push(r);
     }
     return merged.map((r) => {
@@ -752,6 +759,20 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   if (prec >= 0 && prec <= 15) ws.settings.precision = prec;
   const thr = Number(calc && child(calc, 'exponentialThreshold')?.textContent);
   if (thr > 0 && thr <= 15) ws.settings.expThreshold = thr;
+  // a print layout with header and footer prints a header here too, with the document's title and author
+  const settingsEl = child(root, 'settings') ?? root;
+  const meta = pickLang(kids(settingsEl).filter((c) => local(c) === 'metadata'));
+  const metaTitle = meta && child(meta, 'title')?.textContent?.trim();
+  const metaAuthor = meta && child(meta, 'author')?.textContent?.trim();
+  const pageModel = child(settingsEl, 'pageModel');
+  if (pageModel?.getAttribute('active') === 'true') {
+    const header = child(pageModel, 'header')?.textContent ?? '', footer = child(pageModel, 'footer')?.textContent ?? '';
+    if (header.trim() || footer.trim()) {
+      ws.settings.report = { enabled: true, ...(metaTitle ? { subject: metaTitle } : {}), ...(metaAuthor ? { author: metaAuthor } : {}) };
+      const own = (t: string) => t.replace(/&(amp;)*\[(DATE|TIME|FILENAME|PAGENUM|COUNT|FILEPATH)\]/g, '').replace(/[\s\-/|]+/g, ' ').trim();
+      if (own(header) || own(footer)) warnings.push(`the page header and footer print as mathstudii's (title, author, date, page numbers); SMath's own text in them (${[own(header), own(footer)].filter(Boolean).join('; ')}) is not repeated`);
+    }
+  }
 
   const placed = flatten(regionsEl).sort((a, b) => (Math.abs(a.y - b.y) < 4 ? a.x - b.x : a.y - b.y));
 
@@ -851,13 +872,17 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   const saved: SavedResult[] = [];
   const definedBefore = new Set<string>();
   const fail = (what: string, e: unknown, at: Placed) => {
-    const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet` : (e as Error).message;
+    const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet`
+      : e instanceof Placeholder ? 'has an empty placeholder (■), so SMath does not calculate it either'
+      : (e as Error).message;
     warnings.push(`${what} at ${Math.round(at.y)} px: ${msg}`);
     regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Not imported (${what}):* ${msg}`, width: 300 }));
   };
   let plotRanges = 0;
+  let maximaPlots = 0;
 
   const areas: { area: Region; collapsed: boolean }[] = [];
+  const lostLook = { borders: 0, fonts: new Set<string>(), numberFormats: 0 };
   placed.forEach((at, i) => {
     const r = at.region;
     const body = regionKinds(r)[0];
@@ -865,6 +890,20 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const kind = local(body);
     const width = Number(r.getAttribute('width') ?? 0);
     const first = regions.length;
+    // formatting there is no place for here, counted for the report
+    if (r.getAttribute('border') === 'true') lostLook.borders++;
+    if (kind === 'text') {
+      const fonts = new Set<string>();
+      for (const e of [body, ...body.getElementsByTagName('*')] as El[]) {
+        const f = e.getAttribute('fontFamily') ?? /font-family:\s*([^;]+)/i.exec(e.getAttribute('style') ?? '')?.[1];
+        if (f) fonts.add(f.replace(/['"]/g, '').split(',')[0].trim());
+      }
+      for (const f of fonts) if (!/^(arial|times new roman|segoe ui|tahoma|verdana|calibri|liberation sans|helvetica)$/i.test(f)) lostLook.fonts.add(f);
+    }
+    if (kind === 'math') {
+      const dp = body.getAttribute('decimalPlaces');
+      if ((dp && Number(dp) !== ws.settings.precision) || body.getAttribute('significantDigitsMode') === 'true') lostLook.numberFormats++;
+    }
     try {
       if (at.areaBottom !== undefined) {
         // SMath keeps an area's regions at their places when it is expanded; collapsed after the layout is fitted
@@ -935,6 +974,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           regions.push(createRegion('math', at.x, at.y, { source: src }));
         } else if (isProgram(t)) {
           regions.push(...topLevelProgram(conv, t, at, usedAfter(i), definedBefore, show === ' ='));
+        } else if (!result && isOp(t, '≈')) {
+          // "R ≈ 14.02 Ω" is a note of a rounded value: text here (≈ calculates nothing)
+          const [l, rr] = t.args.map((a) => conv.expr(a).s);
+          regions.push(createRegion('text', at.x, at.y, { markdown: `${mdEscape(l)} ≈ ${mdEscape(rr)}`, width: Math.max(120, width + 20) }));
         } else if (!result && isOp(t, '≡')) {
           // a formula shown for documentation, e.g. "A·x = d"
           try {
@@ -1019,11 +1062,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         const raw = child(body, 'ImageFile');
         if (!raw?.textContent?.trim()) throw new Unsupported('a Maxima plugin region with no saved picture (it needs the Maxima plugin)');
         regions.push(imageRegion(raw, (raw.getAttribute('FileName') ?? '.png').replace(/^.*\./, '').toLowerCase(), at, width));
-        warnings.push(`Maxima plot at ${Math.round(at.y)} px: shown as the picture Maxima drew; Maxima itself is a plugin mathstudii does not have, so it is not redrawn`);
+        maximaPlots++;
       } else if (kind === 'writer') {
         // the Writer plugin's rich text (HTML)
-        const html = body.textContent ?? '';
-        const xmlDoc = new DOMParser({ onError: () => {} }).parseFromString(`<content>${html.replace(/&nbsp;/g, '\u00a0').replace(/<br\s*>/gi, '<br/>').replace(/<\/?div[^>]*>/gi, '<br/>')}</content>`, 'text/xml');
+        const xmlDoc = new DOMParser({ onError: () => {} }).parseFromString(`<content>${htmlAsXml(body.textContent ?? '')}</content>`, 'text/xml');
         const rich = xmlDoc.documentElement ? richText(xmlDoc.documentElement) : null;
         if (rich?.md) {
           const style = regionStyle(r, rich.look);
@@ -1042,13 +1084,22 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       } else if (kind === 'xyplot') {
         regions.push(xyPlot(conv, body, at, definedBefore, plotLists, hasStrings));
       } else {
-        throw new Unsupported(`the “${kind}” region (an SMath plugin)`);
+        throw new Unsupported(PLUGIN_REGIONS[kind] ?? `the “${kind}” region (an SMath plugin)`);
       }
     } catch (e) {
       fail(kind === 'math' ? 'math' : kind, e, at);
     }
   });
   for (const note of conv.displayNotes) warnings.push(note);
+  const sigDigits = calcSetting('significantDigitsMode') === 'true';
+  const looks = [
+    lostLook.borders ? `borders round ${lostLook.borders} region${lostLook.borders > 1 ? 's' : ''}` : '',
+    lostLook.fonts.size ? `the fonts ${[...lostLook.fonts].slice(0, 4).join(', ')} (texts use the worksheet font)` : '',
+    lostLook.numberFormats ? `the number format of ${lostLook.numberFormats} formula${lostLook.numberFormats > 1 ? 's' : ''} (results use the worksheet's ${ws.settings.precision} decimal places)` : '',
+    sigDigits ? `significant digits: SMath rounds results to ${ws.settings.precision} significant digits, here to ${ws.settings.precision} decimal places` : '',
+  ].filter(Boolean);
+  if (looks.length) warnings.push(`formatting not kept: ${looks.join('; ')}`);
+  if (maximaPlots) warnings.push(`${maximaPlots} Maxima plot${maximaPlots > 1 ? 's are' : ' is'} shown as the picture${maximaPlots > 1 ? 's' : ''} Maxima drew: the Maxima plugin is not part of mathstudii, so ${maximaPlots > 1 ? 'they are' : 'it is'} not redrawn when values change`);
   if (lazyNotes.length) {
     warnings.push(`${lazyNotes.length} definition${lazyNotes.length > 1 ? 's read names' : ' reads names'} defined only further down or not at all (${lazyNotes.slice(0, 4).join(', ')}${lazyNotes.length > 4 ? ' …' : ''}): SMath keeps such names as symbols and calculates when the value is used, so here each is a function of them, called with the values they have where it is used`);
   }
@@ -1062,10 +1113,26 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   return { ws: out, warnings, format: 'SMath Studio (.sm)', saved };
 }
 
+/** SMath plugin regions that are not converted, as the import report names them. */
+const PLUGIN_REGIONS: Record<string, string> = {
+  table: 'a region of the Table plugin (a formatted table of values and text)',
+  snapshot: 'a Snapshot region (a picture of other regions that SMath draws while it runs; the file keeps no picture)',
+  mathcadblock: 'a solve block of the Mathcad Toolbox plugin (its equations are imported as formulas to read, the solution is not calculated)',
+};
+
+/** HTML of the Writer plugin as XML: void elements closed, entities XML does not know as characters. */
+function htmlAsXml(html: string): string {
+  const named: Record<string, string> = { nbsp: '\u00a0', ndash: '–', mdash: '—', laquo: '«', raquo: '»', deg: '°', middot: '·', copy: '©', hellip: '…' };
+  return html
+    .replace(/<(br|img|hr|input|meta|link|col|area|wbr)\b([^>]*?)\/?>/gi, '<$1$2/>')
+    .replace(/<\/?div[^>]*>/gi, '<br/>')
+    .replace(/&([a-z]+);/gi, (m, n: string) => (/^(amp|lt|gt|quot|apos)$/i.test(n) ? m : named[n.toLowerCase()] ?? ''));
+}
+
 /** An image from base64 data (a picture, the Image plugin, a Maxima plot). */
 function imageRegion(raw: El | undefined, fmt: string, at: Placed, width: number): Region {
   const b64 = (raw?.textContent ?? '').replace(/\s+/g, '');
-  if (!b64) throw new Error('image data not found');
+  if (!b64) throw new Error(`the picture is not in the file${raw?.getAttribute('filename') ? ` (it was ${raw.getAttribute('filename')})` : ''}: SMath showed it from a file or an expression`);
   if (/emf|wmf/.test(fmt)) throw new Unsupported(`a ${fmt.toUpperCase()} image (browsers cannot display it)`);
   const mime = fmt === 'jpg' || fmt === 'jpeg' ? 'image/jpeg' : fmt === 'gif' ? 'image/gif' : fmt === 'bmp' ? 'image/bmp' : fmt === 'svg' ? 'image/svg+xml' : 'image/png';
   return createRegion('image', at.x, at.y, { src: `data:${mime};base64,${b64}`, width: Math.min(PAGE_WIDTH - 2 * PAGE_MARGIN, width || 240) });
