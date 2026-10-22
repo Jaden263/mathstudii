@@ -9,7 +9,7 @@
 import { compileExpr } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
 import { parseRange, isIdentifier, splitTop, findEvalEquals } from './syntax';
-import { tick, toVector, assignIndex, normalize, engineCtx, int, matrix2D } from './library';
+import { tick, toVector, assignIndex, normalize, engineCtx, int, matrix2D, elementsOf } from './library';
 import { math, isUnit, isComplex, isMatrix, joinUnit, splitUnit } from './math';
 
 export type ProgramStmt = Stmt;
@@ -250,7 +250,7 @@ function exec(s: Stmt, scope: ChainScope): unknown {
     }
     case 'destructure': {
       const v = valueOf(s, scope);
-      const items = toVector(v);
+      const items = elementsOf(v);
       if (items.length !== s.names.length) throw new Error(`Expected ${s.names.length} values, got ${items.length}`);
       s.names.forEach((n, i) => scope.set(n, normalize(items[i])));
       return v;

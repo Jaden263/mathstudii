@@ -1,4 +1,5 @@
-// More Mathcad built-ins that public worksheets use: SIUnitsOf, error, IsNaN, the coordinate
+// More Mathcad built-ins that public worksheets use: max and min over all their arguments,
+// SIUnitsOf, error, IsNaN, the coordinate
 // conversions (xy2pol, pol2xy, xyz2sph, sph2xyz, xyz2cyl, cyl2xyz), gmean and hmean, Spearman's
 // and Kendall's rank correlations; and the product of two vectors, which in Mathcad is their dot
 // product. Semantics follow PTC's reference pages, checked against values Mathcad saved with real
@@ -179,7 +180,22 @@ function IsNaN(x: unknown): unknown {
   return 0;
 }
 
+/** max(A, B, c …) and min(…): the largest (smallest) element over all the arguments, arrays and scalars. */
+function extreme(fn: (...xs: unknown[]) => unknown, name: string) {
+  return (...args: unknown[]) => {
+    if (!args.length) throw new Error(`${name} needs at least one value`);
+    const items = args.flatMap((a) => (isArrayValue(a) ? toVector(a) : [a]));
+    if (!items.length) throw new Error(`${name} of an empty array`);
+    const out = fn(...items);
+    // a plain 0 among quantities is their zero: max(F, 0) of a negative force is 0 N
+    const q = out === 0 ? items.find(isUnit) : undefined;
+    return q ? joinUnit(0, splitUnit(q).unit) : out;
+  };
+}
+
 const FUNCTIONS: Record<string, unknown> = {
+  mcMax: extreme(math.max as unknown as (...xs: unknown[]) => unknown, 'max'),
+  mcMin: extreme(math.min as unknown as (...xs: unknown[]) => unknown, 'min'),
   SIUnitsOf: siUnitsOf, mcError: error, IsNaN,
   xy2pol, pol2xy, xyz2sph, sph2xyz, xyz2cyl, cyl2xyz,
   gmean, hmean, Spear, kendltau,

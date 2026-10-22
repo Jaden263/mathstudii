@@ -171,3 +171,81 @@ describe('systems of element definitions', () => {
     expect(shown(['[a[1]; b] := [2; 3]', 'a[1] + b ='])).toBe('5');
   });
 });
+
+describe('nested arrays', () => {
+  it('a matrix literal with arrays among its elements nests them, never joins them', () => {
+    // [X; Y] of vectors of different lengths, or of a vector beside a number
+    expect(shown(['X := [1; 2]', 'Y := [3; 4; 5]', 'N := [X; Y]', 'rows(N) ='])).toBe('2');
+    expect(shown(['X := [1; 2]', 'Y := [3; 4; 5]', 'N := [X; Y]', 'B := N[1]', 'B[2] ='])).toBe('5');
+    expect(shown(['X := [1; 2]', 'P := [X; 3]', 'P[1] + rows(P) ='])).toBe('5');
+    // of one shape, too: an element is a whole array
+    expect(shown(['X := [1; 2]', 'M := [X; 2 X]', 'B := M[1]', 'B[1] ='])).toBe('4');
+  });
+  it('[a; b] := [X; Y] takes each array as it is', () => {
+    expect(shown(['X := [1; 2]', 'Y := [3; 4; 5]', '[a; b] := [X; Y]', 'rows(a) + b[2] ='])).toBe('7');
+    expect(shown(['X := [1; 2]', '[p; q] := [X; 3 X]', 'q[1] ='])).toBe('6');
+  });
+  it('E[i] ← an array makes that element the array', () => {
+    expect(shown(['g :=\n  E[0] ← 1\n  E[1] ← [7; 8]\n  E', 'B := g[1]', 'B[1] + rows(g) ='])).toBe('10');
+  });
+});
+
+describe('vectorize', () => {
+  it('takes a call that gives an array (of no array argument) element by element', () => {
+    // without vectorize the product of two vectors is their dot product
+    expect(shown(['F(a) := [a; 2 a]', 'F(3)*F(3) ='])).toBe('45');
+    expect(shown(['F(a) := [a; 2 a]', 'vectorize(F(3)*F(3)) ='])).toMatch(/^\\begin\{bmatrix\} 9 \\\\ 36 \\end\{bmatrix\}$/);
+  });
+  it('an array with a subscript is that element, beside the array taken element by element', () => {
+    expect(shown(['A := [1; 2; 3]', 'vectorize(A*A[2]) ='])).toMatch(/^\\begin\{bmatrix\} 3 \\\\ 6 \\\\ 9 \\end\{bmatrix\}$/);
+  });
+});
+
+describe('max and min', () => {
+  it('over every element of every argument', () => {
+    expect(shown(['max([1; 5], 3, [2, 7]) ='])).toBe('7');
+    expect(shown(['min([4; 5], 3, [2, 7]) ='])).toBe('2');
+  });
+  it('a plain 0 among quantities is their zero', () => {
+    expect(shown(['F := -2 kN', 'max(F, 0) = kN'])).toMatch(/^0\\ \\mathrm\{kN\}$/);
+    expect(shown(['F := 2 kN', 'max(F, 0) = kN'])).toMatch(/^2\\ \\mathrm\{kN\}$/);
+  });
+});
+
+describe('comparisons', () => {
+  it('a quantity compares with a plain 0, and with no other number', () => {
+    expect(shown(['F := 2 kN', 'if(F > 0, 1, 2) + if(F ≤ 0, 10, 20) ='])).toBe('21');
+    expect(shown(['F := 2 kN', '(F == 0) + (0 < F) ='])).toBe('1');
+    expect(() => shown(['F := 2 kN', 'F > 1 ='])).toThrow();
+  });
+  it('text equals text', () => {
+    expect(shown(['s := "fixed"', 'if(s == "fixed", 1, 2) + if(s ≠ "pinned", 10, 20) ='])).toBe('11');
+  });
+  it('comparisons joined by logic on their own are a check of the whole condition', () => {
+    const res = run(['a := 2', 'a > 1 ∧ a < 3', 'a > 1 ∧ a > 5']);
+    expect((res[1] as MathResult).check).toEqual({ ok: true });
+    expect((res[2] as MathResult).check).toEqual({ ok: false });
+  });
+});
+
+describe('solve blocks that define a function', () => {
+  it('a guess may use the function’s arguments: it is worked out at each call', () => {
+    const block = createRegion('solve', 40, 0, { guesses: 'x := N/2', constraints: 'x^2 = N', solver: 'f(N) := find(x)' });
+    expect(shown([block, 'f(16) + f(9) ='])).toBe('7');
+    const units = createRegion('solve', 40, 0, { guesses: 's := A/(1 m)', constraints: 's^2 = A', solver: 'g(A) := find(s)' });
+    expect(shown([units, 'g(4 m^2) = m'])).toMatch(/^2\\ \\mathrm\{m\}$/);
+  });
+});
+
+describe('display units', () => {
+  it('a unit short of some of the value’s units gets them, in SI', () => {
+    expect(shown(['EI := 76 MN*m^2', 'EI = kN'])).toBe('76\\,000\\ \\mathrm{kN}\\cdot \\mathrm{m}^{2}');
+  });
+});
+
+describe('lsolve', () => {
+  it('solves a system with units in SI; each unknown takes its unit from an equation', () => {
+    expect(shown(['K := [2 N/m, 0; 0, 4 N]', 'F := [4 N; 8 N*m]', 'lsolve(K, F) ='])).toBe('\\begin{bmatrix} 2 \\\\ 2 \\end{bmatrix}\\ \\mathrm{m}');
+    expect(shown(['K := [2 N/m, 1 N; 0, 4 N*m]', 'F := [6 N; 8 N*m]', 'lsolve(K, F) ='])).toBe('\\begin{bmatrix} 2\\ \\mathrm{m} \\\\ 2 \\end{bmatrix}');
+  });
+});

@@ -7,7 +7,7 @@
 import type { MathNode, Unit } from 'mathjs';
 import { math, isMatrix, isUnit, splitUnit, joinUnit } from './math';
 import { toVector, vec, numVec, num, int, matrix2D, engineCtx, normalize } from './library';
-import { compileNode, freeSymbols } from './compile';
+import { compileNode } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
 import * as N from './numeric';
 
@@ -273,18 +273,68 @@ function vectorize(args: MathNode[], _m: unknown, scope: ScopeLike) {
   if (args.length !== 1) throw new Error('vectorize(expression) takes one expression');
   // matrix literals in the expression are operands too: each becomes a name bound to its value
   const literals: unknown[] = [];
-  const expr = args[0].transform((n: MathNode) => {
-    if (n.type !== 'ArrayNode') return n;
+  let expr = args[0].transform((n: MathNode) => {
+    // (compiled, a matrix literal is a call of __matrix)
+    const literal = n.type === 'ArrayNode' || (n.type === 'FunctionNode' && (n as unknown as { fn: { name?: string } }).fn.name === '__matrix');
+    if (!literal) return n;
     literals.push(compileNode(n).evaluate(scope));
     return new math.SymbolNode(`__vec${literals.length - 1}`);
   });
   const local0 = new ChainScope(scope);
   literals.forEach((v, k) => local0.set(`__vec${k}`, normalize(v)));
   scope = local0;
+  // a call that names no array but gives one (F(e, k) of scalars, a vector out) is an operand too:
+  // worked out once, then taken element by element; calls are lifted from the inside out, so a
+  // scalar function around it applies to each element
+  const arrayName = (n: string) => scope.has(n) && isArrayValue(scope.get(n));
+  // an array with a subscript (A[i]) is that element, not an operand taken element by element
+  const fnOf = (n: MathNode) => (n as unknown as { fn: { name?: string } }).fn.name ?? '';
+  const argsOf = (n: MathNode) => (n as unknown as { args: MathNode[] }).args;
+  const operands = (n: MathNode, out = new Set<string>()): Set<string> => {
+    if (n.type === 'SymbolNode') out.add((n as unknown as { name: string }).name);
+    else if (n.type === 'FunctionNode' && fnOf(n) === '__idx') argsOf(n).forEach((a, k) => (k === 0 && a.type === 'SymbolNode' ? undefined : operands(a, out)));
+    else n.forEach((c: MathNode) => operands(c, out));
+    return out;
+  };
+  let lifted = 0;
+  const lift = (n: MathNode): MathNode => {
+    const inner = n.map((c: MathNode) => lift(c));
+    if (inner.type !== 'FunctionNode') return inner;
+    const fnName = fnOf(inner);
+    if (fnName === '__matrix' || fnName === '__row' || fnName === '__unitName' || [...operands(inner)].some(arrayName)) return inner;
+    let v: unknown;
+    try {
+      v = compileNode(inner).evaluate(scope);
+    } catch {
+      return inner;
+    }
+    if (!isArrayValue(v)) return inner;
+    const name = `__vcall${lifted++}`;
+    local0.set(name, normalize(v));
+    return new math.SymbolNode(name);
+  };
+  expr = lift(expr);
+  // the operands taken element by element get names of their own, so A[i] beside A still indexes A
+  const element = new Map<string, string>();
+  const rename = (n: MathNode): MathNode => {
+    if (n.type === 'SymbolNode') {
+      const name = (n as unknown as { name: string }).name;
+      if (!arrayName(name)) return n;
+      if (!element.has(name)) element.set(name, `__vel${element.size}`);
+      return new math.SymbolNode(element.get(name)!);
+    }
+    if (n.type === 'FunctionNode' && fnOf(n) === '__idx') {
+      const [base, ...rest] = argsOf(n);
+      return new math.FunctionNode((n as unknown as { fn: MathNode }).fn as never, [base.type === 'SymbolNode' ? base : rename(base), ...rest.map(rename)]);
+    }
+    return n.map((c: MathNode) => rename(c));
+  };
+  expr = rename(expr);
   const body = compileNode(expr);
-  const names = [...freeSymbols(expr)].filter((n) => scope.has(n) && isArrayValue(scope.get(n)));
+  const sources = [...element.keys()];
+  const names = sources.map((n) => element.get(n)!);
   if (!names.length) return body.evaluate(scope);
-  const arrays = names.map((n) => toVector(scope.get(n)));
+  const arrays = sources.map((n) => toVector(scope.get(n)));
   const len = arrays[0].length;
   if (arrays.some((a) => a.length !== len)) throw new Error(`vectorize: ${names.join(', ')} have different numbers of elements`);
   const local = new ChainScope(scope);
@@ -292,7 +342,7 @@ function vectorize(args: MathNode[], _m: unknown, scope: ScopeLike) {
     names.forEach((n, k) => local.set(n, arrays[k][i]));
     return body.evaluate(local);
   });
-  const size = math.size(scope.get(names[0]) as never) as unknown as number[];
+  const size = math.size(scope.get(sources[0]) as never) as unknown as number[];
   return size.length === 2 && size[1] > 1 ? math.reshape(math.matrix(out as never), size) : normalize(vec(out));
 }
 vectorize.rawArgs = true;

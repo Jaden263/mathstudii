@@ -1442,11 +1442,13 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           else warnings.push(`Plot at ${Math.round(at.y)} px: Mathcad 15 plots are stored in a binary format and could not be converted`);
         } else regions.push(plot(body, conv, at));
       } else if (kind === 'spec-table') {
-        let y = at.y;
-        for (const m of kids(body).filter((c) => local(c) === 'math')) {
-          regions.push(createRegion('math', at.x, y, { source: conv.statement(m) }));
-          y += SPEC_ROW;
-        }
+        // a row a math region, within the table's own height: Prime calculates the table where it
+        // starts, so its last row must not fall below a region beside it
+        const rows = kids(body).filter((c) => local(c) === 'math');
+        const below = placed.reduce((m, p) => (p.y > at.y + 0.5 ? Math.min(m, p.y) : m), Infinity);
+        const height = Number(r.getAttribute('actualHeight') ?? 0) * PX;
+        const step = Math.max(0, Math.min(SPEC_ROW, height > 0 ? height / rows.length : SPEC_ROW, (below - at.y) / rows.length));
+        rows.forEach((m, k) => regions.push(createRegion('math', at.x, at.y + k * step, { source: conv.statement(m) })));
       } else if (kind === 'pageBreak') {
         const mark = createRegion('text', at.x, at.y, { markdown: '' });
         pageBreaks.add(mark.id);

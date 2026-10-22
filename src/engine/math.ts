@@ -27,6 +27,32 @@ export const math: MathJsInstance = create(all, { number: 'number', precision: 6
       },
     }),
   }, { override: true });
+  // and compares with one: max(F, 0) of a force is F or 0 N
+  const compareWithZero = (name: string, test: (d: number) => unknown, more: Record<string, unknown> = {}) => {
+    const old = fns[name];
+    const of = (u: Unit) => (u.value as number | null) ?? 0;
+    return typed(name, old, {
+      ...more,
+      'Unit, number': (u: Unit, n: number) => {
+        if (n !== 0) throw new TypeError(`Cannot compare units with a number other than 0 in ${name}`);
+        return test(of(u));
+      },
+      'number, Unit': (n: number, u: Unit) => {
+        if (n !== 0) throw new TypeError(`Cannot compare units with a number other than 0 in ${name}`);
+        return test(-of(u));
+      },
+    });
+  };
+  math.import({
+    larger: compareWithZero('larger', (d) => d > 0),
+    smaller: compareWithZero('smaller', (d) => d < 0),
+    largerEq: compareWithZero('largerEq', (d) => d >= 0),
+    smallerEq: compareWithZero('smallerEq', (d) => d <= 0),
+    // and text equals text ("fixed" == "fixed"), as in Mathcad, rather than as numbers
+    equal: compareWithZero('equal', (d) => d === 0, { 'string, string': (a: string, b: string) => a === b }),
+    unequal: compareWithZero('unequal', (d) => d !== 0, { 'string, string': (a: string, b: string) => a !== b }),
+    compare: compareWithZero('compare', (d) => Math.sign(d)),
+  }, { override: true });
 }
 
 // Names may be written in any alphabet (Длина, Höhe), as in Mathcad and SMath; mathjs itself

@@ -134,7 +134,22 @@ export function splitChain(src: string): { terms: string[]; ops: string[] } | nu
   if (!found.length) return null;
   terms.push(src.slice(last));
   if (terms.some((t) => !t.trim())) return null;
+  // a ≤ b ∧ c < d joins comparisons with logic: a condition of its own, not one chain
+  if (terms.some((t) => logicAtTop(t))) return null;
   return { terms: terms.map((t) => t.trim()), ops: found };
+}
+
+/** Whether an expression has a logical operator (∧ ∨ ⊕, and, or, xor) outside brackets. */
+export function logicAtTop(src: string): boolean {
+  let found = false;
+  scan(src, (i, depth) => {
+    if (depth !== 0) return;
+    if ('∧∨⊕'.includes(src[i]) || /^\s(and|or|xor)\s/.test(src.slice(i - 1, i + 5))) {
+      found = true;
+      return true;
+    }
+  });
+  return found;
 }
 
 // names in any alphabet (Cyrillic, Latin with accents, Greek …), as Mathcad and SMath allow

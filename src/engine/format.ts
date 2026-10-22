@@ -133,7 +133,14 @@ function toLoose(u: Unit, target: string): Unit {
   } catch (e) {
     const t = math.unit(1, target) as Unit;
     const du = (u as unknown as { dimensions: number[] }).dimensions, dt = (t as unknown as { dimensions: number[] }).dimensions;
-    if (!du.every((x, i) => i === ANGLE || Math.abs(x - dt[i]) < 1e-9)) throw e;
+    if (!du.every((x, i) => i === ANGLE || Math.abs(x - dt[i]) < 1e-9)) {
+      // a display unit short of some units gets them, in SI, as Mathcad does: 76 MN·m² shown
+      // in kN is 76 148 kN·m²
+      const rest = (math.divide(u, t) as Unit).toSI();
+      const extra = rest.formatUnits();
+      if (!extra || (rest as unknown as { dimensions: number[] }).dimensions.every((x) => Math.abs(x) < 1e-9)) throw e;
+      return u.to(`${target} ${extra}`);
+    }
     const k = dt[ANGLE] - du[ANGLE];
     return (math.multiply(u, math.pow(math.unit(1, 'rad'), k) as Unit) as Unit).to(target);
   }

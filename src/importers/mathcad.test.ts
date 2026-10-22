@@ -560,3 +560,17 @@ describe('Mathcad import: systems of element definitions', () => {
     expect(results(ws).by('u[3] =').tex).toMatch(/= 3$/);
   });
 });
+
+describe('Mathcad import: spec tables', () => {
+  it('a row a math region, all within the table, above a region below it that uses them', () => {
+    const row = (n: string, v: string) => `<math>${define(id(n), v)}</math>`;
+    const { ws } = primeOf(
+      `<region region-id="t" left="40" top="40" actualHeight="45"><spec-table>${row('a', real(1))}${row('b', real(2))}${row('c', ap('<ml:plus/>', id('a'), id('b')))}</spec-table></region>`,
+      `<region region-id="d" left="300" top="70"><math>${evalOf(ap('<ml:mult/>', id('c'), real(2)))}</math></region>`,
+    );
+    const ys = ws.regions.filter((r) => r.kind === 'math').map((r) => r.y);
+    expect(ys[2] - ys[0]).toBeLessThanOrEqual(45);
+    expect(ys[2]).toBeLessThan(ys[3]);
+    expect(results(ws).by('c*2 =').tex).toMatch(/= 6$/);
+  });
+});

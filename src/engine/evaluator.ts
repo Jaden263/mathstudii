@@ -6,8 +6,8 @@ import { evaluationOrder } from '../model/areas';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { compileExpr, parseExpr, freeSymbols, RENAME } from './compile';
-import { parseStatement, parseRange, splitComparison, splitChain, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
-import { engineCtx, toVector, vec, assignIndex, normalize, int } from './library';
+import { parseStatement, parseRange, splitComparison, splitChain, logicAtTop, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
+import { engineCtx, toVector, vec, assignIndex, normalize, int, elementsOf } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, valueText, unitParts, type FormatOptions } from './format';
 import { dimsOf, closestName, unitNames, compatibleUnits, quantityName } from './unitCatalog';
@@ -143,6 +143,18 @@ export function friendlyError(e: unknown): string {
 function shadowBuiltin(name: string, fn: unknown, ...scopes: ScopeLike[]) {
   const internal = RENAME[name];
   if (internal) for (const s of scopes) s.set(internal, fn);
+}
+
+/** The arguments of a solve block that defines a function, f(a, b) := find(x); none otherwise. */
+function solverParams(solver: string): string[] {
+  const p = findTop(solver, ':=');
+  if (p < 0 || !/^\s*(find|minerr|minimize|maximize)\s*\(/.test(solver.slice(p + 2))) return [];
+  try {
+    const lhs = parseLhs(solver.slice(0, p));
+    return lhs.kind === 'func' ? lhs.params : [];
+  } catch {
+    return [];
+  }
 }
 
 class Evaluator {
@@ -359,6 +371,18 @@ class Evaluator {
             res.error += ` — did you mean "${fix.to}"?`;
           }
           this.results.set(r.id, res);
+        }
+        return;
+      }
+      // comparisons joined by logic (a > b ∧ a < c) on their own: a check of the whole condition
+      if (st.type === 'expr' && logicAtTop(st.expr) && /[<>≤≥≠]|==/.test(st.expr)) {
+        try {
+          const v = this.evalWithRanges(st.expr, scope);
+          const ok = flatValues(v).every((x) => !!x && x !== 0);
+          const mark = ok ? `\\textcolor{#2f9e44}{\\checkmark\\ \\text{OK}}` : `\\textcolor{#e03131}{\\times\\ \\text{NOT OK}}`;
+          this.results.set(r.id, { kind: 'math', tex: `${exprTex(st.expr)}\\qquad ${mark}`, check: { ok } });
+        } catch (e) {
+          this.results.set(r.id, { kind: 'math', tex: exprTex(st.expr), error: friendlyError(e) });
         }
         return;
       }
@@ -612,7 +636,7 @@ class Evaluator {
       }
       case 'destructure': {
         const v = this.evalWithRanges(rhs, scope);
-        const items = toVector(v);
+        const items = elementsOf(v);
         if (items.length !== lhs.names.length) throw new Error(`Expected ${lhs.names.length} values, got ${items.length}`);
         lhs.names.forEach((n, i) => {
           scope.set(n, items[i]);
@@ -700,7 +724,7 @@ class Evaluator {
     }
     if (lhs.kind === 'destructure') {
       const v = runProgram(stmts, scope, {});
-      const items = toVector(v);
+      const items = elementsOf(v);
       if (items.length !== lhs.names.length) throw new Error(`Expected ${lhs.names.length} values, got ${items.length}`);
       lhs.names.forEach((n, i) => scope.set(n, items[i]));
       return v;
@@ -714,10 +738,19 @@ class Evaluator {
     const out: SolveResult = { kind: 'solve', guesses: [], constraints: [], solver: { tex: '' } };
     const local = new ChainScope(this.global);
     const lines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
+    // f(N, M) := find(x, y): a guess may use the function's arguments, and is worked out at each call
+    const params = solverParams(r.solver);
+    const deferred: { name: string; rhs: string }[] = [];
     for (const g of lines(r.guesses)) {
       try {
         const st = parseStatement(g);
         if (st.type !== 'define' || st.lhs.kind !== 'var') throw new Error('Guess values must be definitions like x := 1 m');
+        if (params.length && [...freeSymbols(parseExpr(st.rhs))].some((n) => params.includes(n))) {
+          deferred.push({ name: st.lhs.name, rhs: st.rhs });
+          texCtx.defined.add(st.lhs.name);
+          out.guesses.push({ tex: `${lhsTex(st.lhs)} \\coloneqq ${exprTex(st.rhs)}` });
+          continue;
+        }
         const v = this.define(st.lhs, st.rhs, local);
         texCtx.defined.add(st.lhs.name);
         out.guesses.push({ tex: this.statementTex(st, v) });
@@ -747,7 +780,7 @@ class Evaluator {
     }
     const solverSrc = r.solver.trim();
     try {
-      const { tex, value } = this.runSolver(solverSrc, local, cons);
+      const { tex, value } = this.runSolver(solverSrc, local, cons, deferred);
       out.solver = { tex: tex(value) };
       if (value !== null && value !== undefined) this.shown.set(r.id, value);
     } catch (e) {
@@ -765,7 +798,7 @@ class Evaluator {
     }
   }
 
-  private runSolver(src: string, local: ChainScope, cons: { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string; src: OdeLine }[]) {
+  private runSolver(src: string, local: ChainScope, cons: { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string; src: OdeLine }[], deferred: { name: string; rhs: string }[] = []) {
     if (!src) throw new Error('Add a solver call, e.g. x := find(x)');
     let lhs: Lhs | null = null;
     let rest = src;
@@ -799,13 +832,18 @@ class Evaluator {
       objective = f as (...a: unknown[]) => unknown;
     }
     if (args.length === 0 || !args.every(isIdentifier)) throw new Error(`${fn}: list the unknowns, e.g. ${fn}(x, y)`);
+    const later = new Set(deferred.map((d) => d.name));
     const units: (Unit | null)[] = [];
     for (const name of args) {
+      if (later.has(name)) {
+        units.push(null);
+        continue;
+      }
       if (!local.has(name)) throw new Error(`No guess value for "${name}"`);
       units.push(splitUnit(local.get(name)).unit);
     }
     /** The block solved in a scope (the worksheet's, or a call's when the solver defines a function). */
-    const solveIn = (scope: ChainScope): number[] => {
+    const solveIn = (scope: ChainScope, units: (Unit | null)[]): number[] => {
       const x0 = args.map((name) => splitUnit(scope.get(name)).value);
       const setUnknowns = (xs: number[]) => args.forEach((n, i) => scope.set(n, joinUnit(xs[i], units[i])));
       // residual scales from the initial guess keep mixed-unit systems well conditioned
@@ -875,9 +913,14 @@ class Evaluator {
         if (vals.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
         const sc = new ChainScope(guesses);
         params.forEach((q, i) => sc.set(q, normalize(vals[i])));
-        args.forEach((n) => sc.set(n, local.get(n)));
-        const xs = solveIn(sc);
-        const out = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, units[i]));
+        args.forEach((n) => {
+          if (!later.has(n)) sc.set(n, local.get(n));
+        });
+        // guesses from the arguments, for this call
+        for (const d of deferred) sc.set(d.name, normalize(compileExpr(d.rhs).evaluate(sc)));
+        const callUnits = args.map((n, i) => (later.has(n) ? splitUnit(sc.get(n)).unit : units[i]));
+        const xs = solveIn(sc, callUnits);
+        const out = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, callUnits[i]));
         return out.length === 1 ? out[0] : vec(out);
       };
       this.global.set(name, solver);
@@ -886,7 +929,8 @@ class Evaluator {
       const callTex = `\\mathrm{${fn}}\\left(${args.map((a) => exprTex(a)).join(',')}\\right)`;
       return { tex: () => `${lhsTex(lhs)} \\coloneqq ${callTex}`, value: null as unknown };
     }
-    const xs = solveIn(local);
+    if (later.size) throw new Error('Guess values that use arguments need a solver that defines a function, f(a) := find(x)');
+    const xs = solveIn(local, units);
     const values = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, units[i]));
     const value = values.length === 1 ? values[0] : vec(values);
     if (lhs) {

@@ -23,6 +23,30 @@ export function toVector(v: unknown): unknown[] {
   return math.flatten(toArray(v) as never) as unknown as unknown[];
 }
 
+/**
+ * The elements of an array as they are, row by row: an element that is itself an array (a
+ * nested array, [X; Y] of vectors) stays one, as [a; b] := [X; Y] needs.
+ */
+export function elementsOf(v: unknown): unknown[] {
+  if (isMatrix(v)) {
+    const size = v.size();
+    if (size.length === 1) return Array.from({ length: size[0] }, (_, i) => v.get([i]));
+    if (size.length === 2) {
+      const out: unknown[] = [];
+      for (let r = 0; r < size[0]; r++) for (let c = 0; c < size[1]; c++) out.push(v.get([r, c]));
+      return out;
+    }
+    // [X; Y] of equal arrays is kept as one array of more dimensions: its elements are the rest
+    if (size.length > 2) {
+      const data = v.toArray() as unknown as unknown[][][];
+      const out: unknown[] = [];
+      for (let r = 0; r < size[0]; r++) for (let c = 0; c < size[1]; c++) out.push(math.matrix(data[r][c] as never));
+      return out;
+    }
+  }
+  return toVector(v);
+}
+
 export function vec(values: unknown[]): Matrix {
   return math.matrix(values as never);
 }
@@ -246,7 +270,16 @@ export function indexValue(obj: unknown, ...idx: unknown[]): unknown {
       else throw new Error('Matrices take two subscripts [row, col]');
     } else if (idx.length === 2) index = [zeroBased(idx[0], size[0]), zeroBased(idx[1], size[1])];
     else throw new Error('Matrices take two subscripts [row, col]');
-  } else throw new Error('Arrays with more than two dimensions are not supported');
+  } else {
+    // a nested array ([X; Y] of equal arrays, kept as one of more dimensions): its element is an array
+    let r: number, c: number;
+    if (idx.length === 1 && size[1] === 1) [r, c] = [zeroBased(idx[0], size[0]) as number, 0];
+    else if (idx.length === 1 && size[0] === 1) [r, c] = [0, zeroBased(idx[0], size[1]) as number];
+    else if (idx.length === 2) [r, c] = [zeroBased(idx[0], size[0]) as number, zeroBased(idx[1], size[1]) as number];
+    else throw new Error('Matrices take two subscripts [row, col]');
+    if (typeof r !== 'number' || typeof c !== 'number') throw new Error('An element of a nested array takes one index each');
+    return normalize(math.matrix((M.toArray() as unknown as unknown[][][])[r][c] as never));
+  }
   const res = math.subset(M, math.index(...(index as never[])));
   return normalize(res);
 }
@@ -271,6 +304,17 @@ export function assignIndex(current: unknown, idx: unknown[], value: unknown): M
   if (ks.length === 2 && M.size().length === 1) {
     if (M.size()[0] === 0) M = math.zeros([0, 0], 'dense') as Matrix;
     else M = math.reshape(M, [M.size()[0], 1]) as Matrix;
+  }
+  if ((isMatrix(value) || Array.isArray(value)) && M.size().length === ks.length) {
+    // an array as an element makes a nested array (Mathcad): grow to the place, then put it there
+    const grown = math.subset(M, math.index(...ks), 0 as never, 0 as never) as Matrix;
+    const size = grown.size();
+    const data = grown.toArray() as unknown as unknown[];
+    const v = normalize(value);
+    if (ks.length === 1) data[ks[0]] = v;
+    else (data[ks[0]] as unknown[])[ks[1]] = v;
+    const Dense = (math as unknown as { DenseMatrix: new (d: { data: unknown[]; size: number[] }) => Matrix }).DenseMatrix;
+    return new Dense({ data, size });
   }
   return math.subset(M, math.index(...ks), value as never, 0 as never) as Matrix;
 }
@@ -669,7 +713,51 @@ function magnitude(x: unknown) {
   return math.abs(x as never);
 }
 
+/** One row of a matrix literal, its elements as they are. */
+function matrixRow(...items: unknown[]): unknown[] {
+  return items;
+}
+
+/**
+ * A matrix literal. Its elements are numbers, or arrays: in Mathcad an array element makes a
+ * nested array, never a joined one. Arrays of one shape make one array of more dimensions (as
+ * before); arrays of different shapes or arrays beside numbers ([X; Y; n] of a program) keep
+ * each element as it is.
+ */
+function matrixOf(...rows: unknown[][]): unknown {
+  if (rows.some((r) => r.length !== rows[0].length)) throw new Error('The rows of a matrix need the same number of elements');
+  const isArr = (x: unknown) => isMatrix(x) || Array.isArray(x);
+  const items = rows.flat();
+  if (!items.some(isArr)) return math.matrix(rows as never);
+  const shapes = items.map((x) => (isArr(x) ? (math.size(x as never) as unknown as number[]).join('x') : ''));
+  if (shapes.every((sh) => sh && sh === shapes[0])) return math.matrix(rows as never);
+  const data = rows.map((r) => r.map((x) => (Array.isArray(x) ? math.matrix(x as never) : x)));
+  // (a DenseMatrix given its data and size keeps array elements as elements)
+  const Dense = (math as unknown as { DenseMatrix: new (d: { data: unknown[][]; size: number[] }) => Matrix }).DenseMatrix;
+  return new Dense({ data, size: [rows.length, rows[0].length] });
+}
+
+/**
+ * lsolve(M, v): x with M·x = v. With units (a stiffness matrix of N, N·m and N·m² terms) the
+ * system is solved in SI numbers, and x_j takes the unit v_i / M_ij of an equation that has it.
+ */
+function lsolve(A: unknown, b: unknown): unknown {
+  const M = matrix2D(A), B = toVector(b);
+  if (!M.flat().some(isUnit) && !B.some(isUnit)) return normalize(math.lusolve(math.matrix(M as never), vec(B) as never));
+  const nums = M.map((r) => r.map((x) => splitUnit(x).value));
+  const rhs = B.map((x) => splitUnit(x).value);
+  const x = toVector(math.lusolve(nums as never, rhs as never)).map((v) => Number(v));
+  return vec(x.map((v, j) => {
+    const i = nums.findIndex((r) => r[j] !== 0);
+    if (i < 0) return v;
+    const unit = math.divide(joinUnit(1, splitUnit(B[i]).unit) as never, joinUnit(1, splitUnit(M[i][j]).unit) as never);
+    return joinUnit(v, splitUnit(unit).unit);
+  }));
+}
+
 const LIBRARY: Record<string, unknown> = {
+    __row: matrixRow,
+    __matrix: matrixOf,
     __I: math.complex(0, 1),
     mag: magnitude,
     __call: callOrMultiply,
@@ -717,7 +805,7 @@ const LIBRARY: Record<string, unknown> = {
     eigenvals: (A: unknown) => normalize(eigs(A).values),
     eigenvecs,
     eigenvec,
-    mcLsolve: (A: unknown, b: unknown) => normalize(math.lusolve(math.matrix(matrix2D(A) as never), vec(toVector(b)) as never)),
+    mcLsolve: lsolve,
     norm1: (A: unknown) => math.norm(math.matrix(matrix2D(A) as never), 1),
     norm2: (A: unknown) => {
       const M = math.matrix(matrix2D(A) as never);
