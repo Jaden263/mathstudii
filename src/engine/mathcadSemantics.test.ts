@@ -158,3 +158,16 @@ describe('number formats', () => {
     expect((res[1] as MathResult).tex).toMatch(/= 1\.2346$/);
   });
 });
+
+describe('systems of element definitions', () => {
+  it('[x[i + 1]; y[i + 1]] := […]: each step calculates the whole right side, then writes the elements', () => {
+    const lines = ['i := 0 .. 3', '[x[0]; y[0]] := [1; 0]', '[x[i + 1]; y[i + 1]] := [x[i] + y[i]; x[i]]'];
+    // y takes the x of the step before (not the one written beside it): Fibonacci in both
+    expect(shown([...lines, 'x[4] ='])).toBe('5');
+    expect(shown([...lines, 'y[4] ='])).toBe('3');
+    expect(shown([...lines, 'rows(y) ='])).toBe('5');
+  });
+  it('a name among the elements takes its value as it is', () => {
+    expect(shown(['[a[1]; b] := [2; 3]', 'a[1] + b ='])).toBe('5');
+  });
+});

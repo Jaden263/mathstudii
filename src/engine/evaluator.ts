@@ -620,6 +620,58 @@ class Evaluator {
         });
         return v;
       }
+      case 'elements': {
+        // Mathcad's system of element definitions: for each value of the range variables the
+        // whole right side is calculated first (from the elements written before), then each
+        // element is written, so [x[i + 1]; y[i + 1]] := [f(x[i], y[i]); g(x[i], y[i])] steps both
+        const { targets } = lhs;
+        const nodes = [...targets.flatMap((t) => t.indices), rhs].map((s) => parseExpr(s));
+        const syms = new Set<string>();
+        nodes.forEach((n) => freeSymbols(n, syms));
+        const rv = [...syms].filter((n) => this.isRange(n, scope));
+        if (rv.length > 2) throw new Error('At most two range variables are allowed in an element definition');
+        const cIdx = targets.map((t) => t.indices.map((s) => compileExpr(s)));
+        const cRhs = compileExpr(rhs);
+        const cur: unknown[] = targets.map((t) => {
+          const v: unknown = scope.has(t.name) ? scope.get(t.name) : undefined;
+          return t.indices.length && (isMatrix(v) || Array.isArray(v)) ? v : undefined;
+        });
+        const local = new ChainScope(scope);
+        let last: unknown;
+        const assignOnce = () => {
+          targets.forEach((t, k) => {
+            if (t.indices.length && syms.has(t.name) && cur[k] !== undefined) local.set(t.name, normalize(cur[k]));
+          });
+          last = normalize(cRhs.evaluate(local));
+          const items = toVector(last);
+          if (items.length !== targets.length) throw new Error(`Expected ${targets.length} values, got ${items.length}`);
+          // the indices are read before any element is written
+          const idx = cIdx.map((c) => c.map((e) => e.evaluate(local)));
+          targets.forEach((t, k) => {
+            cur[k] = t.indices.length ? assignIndex(cur[k], idx[k], normalize(items[k])) : normalize(items[k]);
+          });
+        };
+        if (rv.length === 0) assignOnce();
+        else if (rv.length === 1) {
+          for (const x of toVector(scope.get(rv[0]))) {
+            local.set(rv[0], x);
+            assignOnce();
+          }
+        } else {
+          for (const x of toVector(scope.get(rv[0]))) {
+            for (const y of toVector(scope.get(rv[1]))) {
+              local.set(rv[0], x);
+              local.set(rv[1], y);
+              assignOnce();
+            }
+          }
+        }
+        targets.forEach((t, k) => {
+          scope.set(t.name, normalize(cur[k]));
+          this.ranges.delete(t.name);
+        });
+        return last;
+      }
     }
   }
 

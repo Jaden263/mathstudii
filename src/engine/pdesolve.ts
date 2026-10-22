@@ -234,7 +234,7 @@ export function pdesolveNames(solver: string): string[] {
   let lhsNames: string[] = [];
   try {
     const lhs = p >= 0 ? parseLhs(solver.slice(0, p)) : null;
-    lhsNames = !lhs ? [] : lhs.kind === 'destructure' ? lhs.names : lhs.kind === 'index' ? [] : [lhs.name];
+    lhsNames = !lhs ? [] : lhs.kind === 'destructure' ? lhs.names : lhs.kind === 'index' || lhs.kind === 'elements' ? [] : [lhs.name];
   } catch {
     /* shown with its error by the solver */
   }

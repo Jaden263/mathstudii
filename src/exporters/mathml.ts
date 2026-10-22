@@ -242,6 +242,8 @@ export class MlWriter {
         throw new NotRepresentable('a row assignment (Mathcad 15 has column assignments only)');
       case 'list':
         return `<ml:matrix rows="${t.names.length}" cols="1">${t.names.map((n) => this.id(n, 'var')).join('')}</ml:matrix>`;
+      case 'elements':
+        return `<ml:matrix rows="${t.items.length}" cols="1">${t.items.map((it) => this.target(it.idx.length ? { k: 'index', name: it.name, idx: it.idx } : { k: 'var', name: it.name })).join('')}</ml:matrix>`;
     }
   }
 

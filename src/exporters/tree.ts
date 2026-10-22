@@ -53,7 +53,9 @@ export type Target =
   | { k: 'index'; name: string; idx: X[] }
   | { k: 'col'; name: string; j: X }
   | { k: 'row'; name: string; i: X }
-  | { k: 'list'; names: string[] };
+  | { k: 'list'; names: string[] }
+  /** [x[i + 1]; y[i + 1]] := …: elements of several arrays at once. */
+  | { k: 'elements'; items: { name: string; idx: X[] }[] };
 
 export type PStmt =
   | { k: 'local'; target: Target; value: X }
@@ -174,6 +176,7 @@ export class TreeReader {
       case 'func': return { k: 'fn', name: lhs.name, params: lhs.params };
       case 'index': return { k: 'index', name: lhs.name, idx: lhs.indices.map((i) => this.expr(i)) };
       case 'destructure': return { k: 'list', names: lhs.names };
+      case 'elements': return { k: 'elements', items: lhs.targets.map((t) => ({ name: t.name, idx: t.indices.map((i) => this.expr(i)) })) };
     }
   }
 
@@ -472,6 +475,7 @@ export function definedNames(sources: string[]): Set<string> {
   const out = new Set<string>();
   const addLhs = (lhs: Lhs) => {
     if (lhs.kind === 'destructure') lhs.names.forEach((n) => out.add(n));
+    else if (lhs.kind === 'elements') lhs.targets.forEach((t) => out.add(t.name));
     else out.add(lhs.name);
     if (lhs.kind === 'func') lhs.params.forEach((p) => out.add(p));
   };

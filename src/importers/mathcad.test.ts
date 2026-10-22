@@ -530,3 +530,17 @@ describe('Mathcad Prime import: Excel components', () => {
     expect(results(res.ws).by('b =').tex).toMatch(/= 15$/);
   });
 });
+
+describe('Mathcad import: systems of element definitions', () => {
+  it('a column of elements on the left is written as such', () => {
+    const el = (n: string, i: string) => ap('<ml:indexer/>', id(n), i);
+    const { ws } = primeOf(
+      math(define(id('j'), `<ml:range>${real(0)}${real(2)}</ml:range>`)),
+      math(define(`<ml:matrix rows="2" cols="1">${el('u', real(0))}${el('v', real(0))}</ml:matrix>`, `<ml:matrix rows="2" cols="1">${real(1)}${real(0)}</ml:matrix>`)),
+      math(define(`<ml:matrix rows="2" cols="1">${el('u', ap('<ml:plus/>', id('j'), real(1)))}${el('v', ap('<ml:plus/>', id('j'), real(1)))}</ml:matrix>`, `<ml:matrix rows="2" cols="1">${ap('<ml:plus/>', el('u', id('j')), el('v', id('j')))}${el('u', id('j'))}</ml:matrix>`)),
+      math(evalOf(el('u', real(3)))),
+    );
+    expect(sources(ws).slice(1, 3)).toEqual(['[u[0]; v[0]] := [1; 0]', '[u[j + 1]; v[j + 1]] := [u[j] + v[j]; u[j]]']);
+    expect(results(ws).by('u[3] =').tex).toMatch(/= 3$/);
+  });
+});

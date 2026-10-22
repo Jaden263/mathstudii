@@ -15,7 +15,9 @@ export type Lhs =
   | { kind: 'var'; name: string }
   | { kind: 'func'; name: string; params: string[] }
   | { kind: 'index'; name: string; indices: string[] }
-  | { kind: 'destructure'; names: string[] };
+  | { kind: 'destructure'; names: string[] }
+  /** [x[i + 1]; y[i + 1]] := [f(x[i], y[i]); g(x[i], y[i])]: elements of several arrays at once. */
+  | { kind: 'elements'; targets: { name: string; indices: string[] }[] };
 
 export type Statement =
   | { type: 'empty' }
@@ -159,6 +161,16 @@ export function parseLhs(text: string): Lhs {
   if (m) {
     const names = m[1].split(/[;,]/).map((p) => p.trim());
     if (names.length > 0 && names.every(isIdentifier)) return { kind: 'destructure', names };
+    // a system of element definitions: names and elements (x[i + 1]) listed together
+    const parts = splitTop(m[1], ';').flatMap((p) => splitTop(p, ',')).map((p) => p.trim());
+    const targets = parts.map((p) => {
+      if (isIdentifier(p)) return { name: p, indices: [] as string[] };
+      const e = /^([^\s([]+)\s*\[(.*)\]$/s.exec(p);
+      return e && isIdentifier(e[1]) ? { name: e[1], indices: splitTop(e[2], ',').map((q) => q.trim()) } : null;
+    });
+    if (targets.length > 1 && targets.every((t) => t !== null) && new Set(targets.map((t) => t!.name)).size === targets.length) {
+      return { kind: 'elements', targets: targets as { name: string; indices: string[] }[] };
+    }
   }
   throw new Error(`Cannot define "${s}"`);
 }

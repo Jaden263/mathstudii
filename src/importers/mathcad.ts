@@ -596,7 +596,13 @@ class Converter {
       }
       case 'matrix': {
         const items = kids(el).filter((c) => local(c) !== 'display');
-        if (!items.every((c) => local(c) === 'id')) throw new Unsupported('a system of element definitions ([x[i + 1]; y[i + 1]] := …)');
+        // a system of element definitions: [x[i + 1]; y[i + 1]] := … (a column of names and elements)
+        if (!items.every((c) => local(c) === 'id')) {
+          const isElement = (c: El) => local(c) === 'apply' && local(kids(c)[0] ?? c) === 'indexer' && local(kids(c)[1] ?? c) === 'id';
+          const cols = Number(el.getAttribute('cols') ?? 1);
+          if (cols !== 1 || !items.every((c) => local(c) === 'id' || isElement(c))) throw new Unsupported('a system of element definitions other than a column of names and elements');
+          return `[${items.map((c) => this.target(c)).join('; ')}]`;
+        }
         // the names are listed column by column, our list takes the values row by row
         const rows = Number(el.getAttribute('rows') ?? items.length) || items.length, cols = Math.max(1, Math.round(items.length / rows));
         const names = items.map((c) => this.name(c));

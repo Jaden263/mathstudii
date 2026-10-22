@@ -168,6 +168,8 @@ class SmWriter {
         throw new NotRepresentable('a row assignment');
       case 'list':
         throw new NotRepresentable('a definition of several names at once');
+      case 'elements':
+        throw new NotRepresentable('a definition of elements of several arrays at once');
     }
   }
 

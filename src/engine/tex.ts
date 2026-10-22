@@ -283,6 +283,7 @@ export function lhsTex(lhs: Lhs): string {
     case 'func': return `${nameTex(lhs.name)}${call(lhs.params.map(nameTex).join(','))}`;
     case 'index': return `{${nameTex(lhs.name)}}_{${lhs.indices.map(exprTex).join(',')}}`;
     case 'destructure': return `\\begin{bmatrix} ${lhs.names.map(nameTex).join(' \\\\ ')} \\end{bmatrix}`;
+    case 'elements': return `\\begin{bmatrix} ${lhs.targets.map((t) => (t.indices.length ? `{${nameTex(t.name)}}_{${t.indices.map(exprTex).join(',')}}` : nameTex(t.name))).join(' \\\\ ')} \\end{bmatrix}`;
   }
 }
 
