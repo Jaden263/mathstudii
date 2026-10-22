@@ -267,6 +267,13 @@ class Converter {
   params = new Set<string>();
   /** Matrices read or written with one index (for the report). */
   linearIndexed = new Set<string>();
+  /** Functions defined for several numbers of arguments (SMath name → the numbers, fewest first). */
+  overloads = new Map<string, number[]>();
+  /** The name of a function called (or defined) with n arguments: f, or f_n when f has fewer too. */
+  arity(name: string, fn: string, n: number): string {
+    const ns = this.overloads.get(name);
+    return ns && n !== ns[0] ? `${fn}_${n}` : fn;
+  }
 
   unit(raw: string): Ex {
     // a region marked "ignore units" calculates with every unit as 1
@@ -477,6 +484,10 @@ class Converter {
       }
       case 'diff':
         return { s: `diff(${this.args(t).join(', ')})`, p: P.ATOM };
+      case 'sqrt':
+        // a display unit with a root (MPa·√m): the power ½, as a display unit takes it here
+        if (n === 1 && this.inContract) return { s: `${wrap(A(0), P.POW + 1)}^0.5`, p: P.POW };
+        break;
       case 'lspline':
         // lspline(x, y, t): the spline with linear ends at t, a number as SMath gives it (cinterp the same)
         if (n === 3 && !this.userFunctions.has(name)) return { s: `lsplineAt(${this.args(t).join(', ')})`, p: P.ATOM };
@@ -516,7 +527,7 @@ class Converter {
       }
     }
     const fn = this.functionNames[smName(name)] ?? (this.userFunctions.has(smName(name)) ? undefined : FN_MAP[name]) ?? this.name(name);
-    return { s: `${fn}(${this.args(t).join(', ')})`, p: P.ATOM };
+    return { s: `${this.arity(name, fn, n)}(${this.args(t).join(', ')})`, p: P.ATOM };
   }
 
   // ------------------------------------------------------------ programs
@@ -526,7 +537,7 @@ class Converter {
     if (isFn(t, 'el')) return this.expr(t).s;
     if (t.type === 'function') {
       if (!t.args.every(isVar)) throw new Unsupported('a function definition with non-name parameters');
-      return `${this.functionNames[smName(t.text)] ?? this.name(t.text)}(${t.args.map((a) => this.name(a.text)).join(', ')})`;
+      return `${this.arity(t.text, this.functionNames[smName(t.text)] ?? this.name(t.text), t.args.length)}(${t.args.map((a) => this.name(a.text)).join(', ')})`;
     }
     throw new Unsupported('a definition of an expression');
   }
@@ -898,7 +909,34 @@ function flatten(container: El): Placed[] {
 
 const regionKinds = (r: El) => kids(r).filter((c) => local(c) !== 'region');
 
-export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportResult {
+export interface SmathImportOptions {
+  /** Another file the worksheet reads (include(…)) by its file name: its bytes, when at hand. */
+  file?: (name: string) => Uint8Array | undefined;
+}
+
+/** What an imported worksheet defines, for a worksheet that includes it. */
+interface Defines {
+  /** Functions by SMath name, with the numbers of arguments they are defined for. */
+  functions: Map<string, Set<number>>;
+  /** Variables (by name as converted). */
+  variables: Set<string>;
+}
+
+type Imported = ImportResult & { defines: Defines };
+
+/**
+ * Import an SMath Studio worksheet. A worksheet it includes (include(…)) comes in where it is,
+ * in a collapsed area, when `opts.file` has it; `references` says which it reads and whether
+ * they were at hand.
+ */
+export function importSmath(data: Uint8Array, fileName = 'worksheet', opts: SmathImportOptions = {}): ImportResult {
+  const { defines: _, ...result } = importSheet(data, fileName, opts, [baseName(fileName).toLowerCase()]);
+  return result;
+}
+
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+function importSheet(data: Uint8Array, fileName: string, opts: SmathImportOptions, chain: string[]): Imported {
   const xml = readXml(data);
   if (!/smath\.info\/schemas\/worksheet|<\?application progid="SMath/i.test(xml)) throw new Error('Not an SMath Studio worksheet (.sm or .smz)');
   const doc = new DOMParser({ onError: () => {} }).parseFromString(xml, 'text/xml');
@@ -965,6 +1003,46 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const both = [...fns].filter((n) => vars.has(n));
     for (const n of both) conv.functionNames[n] = `${n}_fn`;
     if (both.length) warnings.push(`${both.join(', ')} ${both.length > 1 ? 'are' : 'is'} both a function and a variable in SMath, which tells them apart by their arguments: the function${both.length > 1 ? 's are' : ' is'} ${both.map((n) => `${n}_fn`).join(', ')} here`);
+  }
+  // include(…) of another worksheet: its regions come in where it is, when the file is at hand
+  const includes = new Map<number, { name: string; sheet?: Imported }>();
+  inputs.forEach((toks, i) => {
+    const t = toks[0];
+    if (toks.length !== 1 || !isFn(t, 'include') || t.args.length !== 1) return;
+    // the file name: the last text in the path (strjoin(CurrentDirectory(""), "FEMstudio.sm"))
+    let name = '';
+    walk(t.args[0], (n) => {
+      if (n.style === 'string' && n.text.trim()) name = baseName(n.text.trim());
+    });
+    if (!name) return;
+    let sheet: Imported | undefined;
+    const bytes = chain.includes(name.toLowerCase()) ? undefined : opts.file?.(name);
+    if (bytes) {
+      try {
+        sheet = importSheet(bytes, name, opts, [...chain, name.toLowerCase()]);
+      } catch (e) {
+        warnings.push(`include(“${name}”): ${(e as Error).message}`);
+      }
+    }
+    includes.set(i, { name, sheet });
+    if (sheet) {
+      for (const f of sheet.defines.functions.keys()) conv.userFunctions.add(smName(f));
+      for (const n of sheet.defines.variables) conv.assigned.add(n);
+    }
+  });
+  // SMath tells functions apart by their number of arguments (fembeam(…6) and fembeam(…7)): the
+  // fewest keep the name, the others get the number (fembeam_7)
+  const arities = new Map<string, Set<number>>();
+  const addArity = (name: string, n: number) => {
+    if (!arities.has(name)) arities.set(name, new Set());
+    arities.get(name)!.add(n);
+  };
+  for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) addArity(t.args[0].text, t.args[0].args.length);
+  for (const { sheet } of includes.values()) if (sheet) for (const [f, ns] of sheet.defines.functions) for (const n of ns) addArity(f, n);
+  for (const [f, ns] of arities) if (ns.size > 1) conv.overloads.set(f, [...ns].sort((a, b) => a - b));
+  if (conv.overloads.size) {
+    const list = [...conv.overloads].map(([f, ns]) => `${conv.name(f)}(${ns.join(', ')} arguments: ${ns.map((n, k) => (k ? `${conv.name(f)}_${n}` : conv.name(f))).join(', ')})`);
+    warnings.push(`SMath tells functions apart by their number of arguments; here each has a name of its own: ${list.slice(0, 4).join('; ')}${list.length > 4 ? ' …' : ''}`);
   }
   // units the worksheet defines (k.1 := 17.5 N/mm) are variables of that name
   for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isUserUnit(t.args[0])) conv.userUnits.add(t.args[0].text);
@@ -1052,6 +1130,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   };
   inputs.forEach((toks, i) => {
     if (!disabled(placed[i])) for (const t of toks) for (const n of worksheetDefines(t)) lastDefined.set(n, i);
+    const sheet = includes.get(i)?.sheet;
+    if (sheet) for (const n of [...sheet.defines.variables, ...[...sheet.defines.functions.keys()].map(smName)]) lastDefined.set(n, i);
   });
   const lazyNotes: string[] = [];
   const unitless: number[] = [];
@@ -1060,7 +1140,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const defined = new Set<string>();
     for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) defined.add(t.args[0].text);
     const hits = ELSEWHERE.map(() => ({ names: new Set<string>(), regions: 0 }));
-    inputs.forEach((toks) => {
+    inputs.forEach((toks, i) => {
+      // an include(…) of a worksheet is reported where it is
+      if (includes.has(i)) return;
       const seen = new Set<number>();
       for (const t of toks) walk(t, (n) => {
         if (n.type !== 'function' || defined.has(n.text)) return;
@@ -1099,6 +1181,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   let maximaPlots = 0;
 
   const areas: { area: Region; collapsed: boolean }[] = [];
+  /** Areas of included worksheets: what is below them moves down by their height, then up as they collapse. */
+  const includeAreas: { y: number; height: number; ids: Set<string> }[] = [];
   const lostLook = { borders: 0, fonts: new Set<string>(), numberFormats: 0 };
   placed.forEach((at, i) => {
     const r = at.region;
@@ -1134,6 +1218,27 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       }
       conv.ignoreUnits = kind === 'math' && body.getAttribute('ignoreUnits') === 'true';
       if (conv.ignoreUnits) unitless.push(Math.round(at.y));
+      const inc = includes.get(i);
+      if (inc) {
+        if (!inc.sheet) {
+          regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *include(“${mdEscape(inc.name)}”)*: another SMath worksheet, not part of this file. Pick it in the import report to bring its definitions in.`, width: 320 }));
+          warnings.push(`include(“${inc.name}”) at ${Math.round(at.y)} px reads another SMath worksheet, ${inc.name}, which is not part of this file: pick it in the import report to bring in its definitions (they are then kept in this worksheet); until then what uses them is not calculated`);
+          return;
+        }
+        // its regions in an area of their own, collapsed (they take the place of the include)
+        const sub = inc.sheet.ws.regions;
+        const top = Math.min(...sub.map((q) => q.y));
+        const height = AREA_BAR + Math.max(...sub.map((q) => q.y - top)) + 40;
+        const area = createRegion('area', at.x, at.y, { title: `Included from ${inc.name}`, height });
+        regions.push(area, ...sub.map((q) => ({ ...q, y: at.y + AREA_BAR + (q.y - top) })));
+        areas.push({ area, collapsed: true });
+        includeAreas.push({ y: at.y, height, ids: new Set([area.id, ...sub.map((q) => q.id)]) });
+        for (const w of inc.sheet.warnings) warnings.push(`In ${inc.name}: ${w}`);
+        warnings.push(`include(“${inc.name}”) at ${Math.round(at.y)} px: its ${sub.length} regions are in the collapsed area “Included from ${inc.name}”, kept in this worksheet`);
+        for (const n of inc.sheet.defines.variables) definedBefore.add(n);
+        for (const f of inc.sheet.defines.functions.keys()) definedBefore.add(smName(f));
+        return;
+      }
       if (kind === 'math') {
         const toks = parseRpn(child(body, 'input'));
         if (!toks.length) return;
@@ -1354,12 +1459,33 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   }
   if (plotRanges) warnings.push(`${plotRanges} plot${plotRanges > 1 ? 's' : ''}: SMath stores a view (zoom and pan), not axis limits, so the axes start from automatic ranges`);
 
+  for (const inc of includeAreas) for (const r of regions) if (!inc.ids.has(r.id) && r.y > inc.y) r.y += inc.height;
   fitToPage(regions);
   ws.regions = regions;
   // collapse the areas SMath had collapsed, inner ones first (what is below moves up)
   let out = ws;
   for (const { area } of areas.filter((a) => a.collapsed).reverse()) out = collapseArea(out, area.id);
-  return { ws: out, warnings, format: 'SMath Studio (.sm)', saved };
+  // what the worksheet defines, for one that includes it
+  const defines: Defines = { functions: new Map(), variables: new Set() };
+  inputs.forEach((toks, i) => {
+    if (disabled(placed[i])) return;
+    for (const t of toks) {
+      if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) {
+        if (!defines.functions.has(t.args[0].text)) defines.functions.set(t.args[0].text, new Set());
+        defines.functions.get(t.args[0].text)!.add(t.args[0].args.length);
+      } else for (const n of worksheetDefines(t)) defines.variables.add(n);
+    }
+  });
+  for (const { sheet } of includes.values()) {
+    if (!sheet) continue;
+    for (const [f, ns] of sheet.defines.functions) for (const n of ns) {
+      if (!defines.functions.has(f)) defines.functions.set(f, new Set());
+      defines.functions.get(f)!.add(n);
+    }
+    for (const n of sheet.defines.variables) defines.variables.add(n);
+  }
+  const references = [...includes.values()].map(({ name, sheet }) => ({ name, found: !!sheet }));
+  return { ws: out, warnings, format: 'SMath Studio (.sm)', saved, ...(references.length ? { references } : {}), defines };
 }
 
 /** SMath plugin regions that are not converted, as the import report names them. */

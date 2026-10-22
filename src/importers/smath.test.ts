@@ -806,3 +806,57 @@ describe('SMath import: one index into a matrix', () => {
     expect(compareSaved(s0!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
   });
 });
+
+describe('SMath import: include(…) of another worksheet', () => {
+  const at = (left: number, top: number, body: string) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="80" height="24" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const sheet = (...regions: string[]) => strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`);
+  const plain = (input: string) => `<math><input>${input}</input></math>`;
+  const shown = (input: string, saved: string) => `<math><input>${input}</input><result action="numeric">${saved}</result></math>`;
+
+  it('brings the included worksheet in where it is, in a collapsed area, and tells functions apart by their number of arguments', () => {
+    id = 0;
+    // lib.sm: area(a) := a², area(a, b) := a·b, g := 9.81
+    const lib = sheet(
+      at(9, 10, plain(def(v('a') + fn('area', 1), v('a') + v('2') + op('^')))),
+      at(9, 40, plain(def(v('a') + v('b') + fn('area', 2), v('a') + v('b') + op('*')))),
+      at(9, 70, plain(def(v('g'), v('9.81')))),
+    );
+    const main = sheet(
+      at(9, 10, shown(s('') + fn('CurrentDirectory', 1) + s('lib.sm') + fn('strjoin', 2) + fn('include', 1), v('1'))),
+      at(9, 40, shown(v('3') + fn('area', 1), v('9'))),
+      at(9, 70, shown(v('3') + v('4') + fn('area', 2), v('12'))),
+      at(9, 100, shown(v('2') + v('g') + op('*'), v('19.62'))),
+    );
+    const { ws, saved, warnings, references } = importSmath(main, 'main.sm', { file: (name) => (name === 'lib.sm' ? lib : undefined) });
+    expect(references).toEqual([{ name: 'lib.sm', found: true }]);
+    const area = ws.regions.find((r) => r.kind === 'area') as { title: string; collapsed?: boolean };
+    expect(area).toMatchObject({ title: 'Included from lib.sm', collapsed: true });
+    expect(sources(ws)).toEqual(['area(a) := a^2', 'area_2(a, b) := a*b', 'g := 9.81', 'area(3) =', 'area_2(3, 4) =', '2*g =']);
+    expect(warnings.some((w) => /include\(“lib\.sm”\) at 10 px: its 3 regions are in the collapsed area “Included from lib\.sm”/.test(w))).toBe(true);
+    expect(warnings.some((w) => /functions apart by their number of arguments.*area\(1, 2 arguments: area, area_2\)/.test(w))).toBe(true);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('says which worksheet to pick when the included file is not at hand', () => {
+    id = 0;
+    const main = sheet(at(9, 10, plain(s('C:\\calc\\lib.sm') + fn('include', 1))), at(9, 40, shown(v('3') + fn('area', 1), v('9'))));
+    const { ws, warnings, references } = importSmath(main, 'main.sm');
+    expect(references).toEqual([{ name: 'lib.sm', found: false }]);
+    expect(ws.regions[0]).toMatchObject({ kind: 'text' });
+    expect(warnings.some((w) => /include\(“lib\.sm”\) at 10 px reads another SMath worksheet, lib\.sm, which is not part of this file: pick it in the import report/.test(w))).toBe(true);
+  });
+});
+
+describe('SMath import: display units', () => {
+  it('a root in a display unit is the power ½: K = MPa·√m', () => {
+    id = 0;
+    top = 0;
+    // K := 83 MPa·√m, shown as K = MPa·√m (SMath saved 83)
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('K'), v('83') + u('MPa') + op('*') + u('m') + fn('sqrt', 1) + op('*')))}${
+      region(`<math><input>${v('K')}</input><contract>${u('MPa') + u('m') + fn('sqrt', 1) + op('*')}</contract><result action="numeric">${v('83')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)[1]).toBe('K = MPa*m^0.5');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+});

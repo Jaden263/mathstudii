@@ -7,6 +7,8 @@ export interface ImportResult {
   format: string;
   /** Results the program saved with the file, to check the recalculated ones against (saved.ts). */
   saved?: SavedResult[];
+  /** Other worksheets the file reads (SMath's include(…)), by file name, and whether they were at hand. */
+  references?: { name: string; found: boolean }[];
 }
 
 /** A result shown in the file as the source program last calculated it. */
