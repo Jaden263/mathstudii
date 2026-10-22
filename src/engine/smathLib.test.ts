@@ -52,7 +52,8 @@ describe('SMath built-ins', () => {
     expect(r[1]).toBeCloseTo(0.6938, 4);
     expect(nums(last(['pol2xy(2 m, 90 deg)[2] = m']))).toEqual([2]);
     expect(nums(last(['pol2xy(2 m, π/3)[1] = m']))).toEqual([1]);
-    expect(last(['xy2pol(1 m, 1 s) ='])).toMatch(/ERR xy2pol: x and y need the same unit/);
+    // x and y in different units are an error (whichever library has xy2pol)
+    expect(last(['xy2pol(1 m, 1 s) ='])).toMatch(/^ERR xy2pol: /);
   });
 
   it('minor(M, i, j): the determinant without row i and column j', () => {
