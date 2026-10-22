@@ -1,6 +1,6 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
-import type { Unit } from 'mathjs';
+import type { MathNode, Unit } from 'mathjs';
 import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, PlateRegion, SolveRegion, SpreadsheetRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { evaluationOrder } from '../model/areas';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
@@ -155,6 +155,17 @@ function solverParams(solver: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** Does an expression read the value of a name (not only call a function of that name)? */
+function readsValue(node: MathNode, name: string): boolean {
+  let found = false;
+  node.traverse((n: MathNode, path: string, parent: MathNode | null) => {
+    if (found || n.type !== 'SymbolNode' || (n as unknown as { name: string }).name !== name) return;
+    if (parent && parent.type === 'FunctionNode' && path === 'fn') return;
+    found = true;
+  });
+  return found;
 }
 
 class Evaluator {
@@ -605,7 +616,8 @@ class Evaluator {
         let cur: unknown = scope.local.has(name) || scope.has(name) ? scope.get(name) : undefined;
         if (typeof cur === 'function' || (!isMatrix(cur) && !Array.isArray(cur))) cur = undefined;
         const local = new ChainScope(scope);
-        const recurrence = syms.has(name);
+        // (a call of a function of the same name is not: XEA[i, j] := XEA(T[i], P[j]) calls it throughout)
+        const recurrence = nodes.some((n) => readsValue(n, name));
         // a recurrence (x[i + 1] := f(x[i])) reads the elements written in the steps before, so
         // it writes them at once; the elements of any other definition are written together
         // (after its first element the recurrence's array is its own copy: written in place)

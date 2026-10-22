@@ -180,8 +180,23 @@ const integral: Raw = (args, _m, scope) => {
   const at = unitFunction(args[0], v, scope, xUnit);
   const mid = Number.isFinite(a.value) && Number.isFinite(b.value) ? (a.value + b.value) / 2
     : Number.isFinite(a.value) ? a.value + 1 : Number.isFinite(b.value) ? b.value - 1 : 0.5;
-  const fUnit = splitUnit(at(mid)).unit;
-  const value = N.integrate((x) => splitUnit(at(x)).value, a.value, b.value, 1e-11);
+  // the integrand's unit is that of its values with one: a plain 0 (a branch of an if) is a zero
+  // of any unit, as in Mathcad, wherever the integration samples it
+  let fUnit: Unit | null = null;
+  let plain = false;
+  const sample = (x: number) => {
+    const s = splitUnit(at(x));
+    if (s.unit) {
+      if (!fUnit) fUnit = s.unit;
+      else if (!fUnit.equalBase(s.unit)) throw new Error('integral: the integrand has different units at different points');
+    } else if (s.value !== 0) plain = true;
+    return s.value;
+  };
+  sample(mid);
+  const value = N.integrate(sample, a.value, b.value, 1e-11);
+  if (fUnit && plain) throw new Error('integral: the integrand has a unit at some points and none at others');
+  // an integrand that is a plain 0 everywhere integrates to a plain 0, a zero of any unit
+  if (!fUnit && !plain) return 0;
   return mulUnits(value, fUnit, xUnit);
 };
 integral.rawArgs = true;

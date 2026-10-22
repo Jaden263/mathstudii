@@ -94,6 +94,13 @@ export function operatorName(raw: string): string | null {
 }
 
 /**
+ * Functions the import writes for Mathcad operators (M⟨j⟩ is col(M, j), |v| is mag(v) …): a
+ * worksheet's own function of one of these names gets a name of its own (col_), so that the
+ * operators keep their meaning.
+ */
+const OPERATOR_FUNCTIONS = new Set(['col', 'row', 'mag', 'sqrt', 'nthRoot', 'cross', 'sum', 'prod', 'vectorize', 'integral', 'integrate', 'diff', 'atan2', 'mod', 'traceText']);
+
+/**
  * A name as Mathcad 15 tells names apart: by its spelling and its math style (font). The
  * function in(x, v) in a style of its own is not the unit in. The first two styles, Variables
  * (font 0) and Constants (font 1), make no name of their own: f(F) ← … defined in Constants is
@@ -145,6 +152,8 @@ class Converter {
       return this.variables.has(raw) && !this.unitSlot && !/[()*/^ ]/.test(u) ? `unit(1, "${u}")` : u;
     }
     if (label === 'CONSTANT' && CONSTANT_MAP[raw]) return CONSTANT_MAP[raw];
+    // atan2 handed on as a function (map2(atan2, x, y)) keeps Mathcad's order of arguments, x then y
+    if (raw === 'atan2' && !this.defined.has(nameKey(el))) return 'atan2xy';
     // Mathcad 15's ∞ has no label (it is no letter, so no name of ours either)
     if (raw === '∞' && label !== 'VARIABLE') return '∞';
     // unlabelled (Mathcad 15) or auto-labelled (*, sheets converted from 15) names that are units
@@ -167,10 +176,13 @@ class Converter {
    * that spelling a number (F_TIE_, F_TIE_2). A custom operator's name (|>, ||, ≤) has its
    * symbols spelled out (op_bar_gt), so that operators stay apart.
    */
+  /** Names the worksheet defines as functions or variables (plain, without a style of their own). */
+  userNames = new Set<string>();
+
   ident(el: El): string {
     const raw = rawName(el);
     const s = operatorName(raw) ?? sanitize(raw);
-    if (nameKey(el) === raw) return s;
+    if (nameKey(el) === raw) return OPERATOR_FUNCTIONS.has(s) && this.userNames.has(raw) ? `${s}_` : s;
     const taken = this.plainNames.has(raw) || typeof (math as unknown as Record<string, unknown>)[raw] === 'function' || isUnitName(unitName(raw));
     const styles = this.styledNames.get(raw) ?? [];
     const slot = Math.max(0, styles.indexOf(styleOf(el))) + (taken ? 1 : 0);
@@ -1262,9 +1274,10 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet', options:
       if (!styles.includes(styleOf(id))) conv.styledNames.set(raw, [...styles, styleOf(id)]);
     }
   }
-  for (const r of nameRoots) for (const d of r.getElementsByTagNameNS('*', 'define')) {
+  for (const r of nameRoots) for (const d of [...r.getElementsByTagNameNS('*', 'define'), ...r.getElementsByTagNameNS('*', 'globalDefine')]) {
     const t = kids(d)[0];
-    if (t && local(t) === 'id') conv.variables.add(rawName(t));
+    if (t && local(t) === 'id' && local(d) === 'define') conv.variables.add(rawName(t));
+    definedNames(d).sheet.forEach((n) => !n.includes('#') && conv.userNames.add(n));
   }
 
   // ORIGIN: Prime's calculation settings, Mathcad 15's <builtInVariables>
@@ -1507,7 +1520,16 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet', options:
         }
         if (solve) {
           if (/\b(find|minerr|minimize|maximize|odesolve|pdesolve)\(/i.test(src)) {
-            regions.push(createRegion('solve', solve.at.x, mathY(solve.at), { guesses: solve.guesses.join('\n'), constraints: solve.constraints.join('\n'), solver: src }));
+            // Find(x, y) → solves symbolically: solved numerically here, from 0 where the block
+            // gives no guess (the solution of its equations does not depend on one)
+            let solver = src;
+            const symbolic = /^(.*\b(?:find|minerr)\((.*)\))\s*→$/i.exec(src);
+            if (symbolic) {
+              solver = `${symbolic[1]} =`;
+              const guessed = new Set(solve.guesses.map((g) => g.split(':=')[0].trim()));
+              for (const v of symbolic[2].split(',').map((x) => x.trim())) if (/^[\p{L}_][\p{L}\p{N}_ʹ]*$/u.test(v) && !guessed.has(v)) solve.guesses.push(`${v} := 0`);
+            }
+            regions.push(createRegion('solve', solve.at.x, mathY(solve.at), { guesses: solve.guesses.join('\n'), constraints: solve.constraints.join('\n'), solver }));
             solve = null;
             continue;
           }

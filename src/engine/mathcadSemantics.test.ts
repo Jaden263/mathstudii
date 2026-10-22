@@ -271,6 +271,8 @@ describe('quotient of two vectors', () => {
     expect(shown(['y := [1; 2; 4] m', 'F := 3 kN', 'F*(y/y) = kN'])).toBe('\\begin{bmatrix} 3 \\\\ 3 \\\\ 3 \\end{bmatrix}\\ \\mathrm{kN}');
     expect(shown(['[6; 8]/[2; 4] ='])).toBe('\\begin{bmatrix} 3 \\\\ 2 \\end{bmatrix}');
     expect(shown(['[2, 0; 0, 4]/[2, 0; 0, 4] ='])).toBe('\\begin{bmatrix} 1 & 0 \\\\ 0 & 1 \\end{bmatrix}');
+    expect(shown(['1/[2; 4] ='])).toBe('\\begin{bmatrix} 0.5 \\\\ 0.25 \\end{bmatrix}');
+    expect(shown(['c := [2; 4] m/N', '1/c = N/m'])).toBe('\\begin{bmatrix} 0.5 \\\\ 0.25 \\end{bmatrix}\\ \\mathrm{N/m}');
   });
 });
 
@@ -397,5 +399,45 @@ describe('Minimize and Maximize outside a solve block', () => {
   it('give the argument where the function is least or greatest, from a guess, in its unit', () => {
     expect(shown(['f(x) := -(x - 5)^2 + 3', 'x := 1', 'maximize(f, x) ='])).toBe('5');
     expect(shown(['g(x, y) := (x - 1 m)^2/m^2 + (y - 2)^2', 'minimize(g, 0 m, 0) ='])).toBe('\\begin{bmatrix} 1\\ \\mathrm{m} \\\\ 2 \\end{bmatrix}');
+  });
+});
+
+describe('integrals of piecewise functions', () => {
+  it('take a branch that is a plain 0 for a zero of the other branches’ unit', () => {
+    expect(shown(['f(x) := if(x < 1 m, 0, 3 N)', 'integral(f(x), x, 0 m, 2 m) = J'])).toBe('3\\ \\mathrm{J}');
+    expect(shown(['g(x) := if(x > 1 m, 0, 3 N)', 'integral(g(x), x, 0 m, 2 m) = J'])).toBe('3\\ \\mathrm{J}');
+  });
+});
+
+describe('integrals of a plain 0', () => {
+  it('are a plain 0, which an integral of another unit takes for its own zero', () => {
+    // ∫₀¹ (s − s²/2)/2 ds + ∫₁³ 1/4 ds = 1/6 + 1/2
+    expect(shown(['h(x, y) := if(x ≥ y, 0, (y - x)/(2 N))', 'H(x, y) := integral(h(t, y), t, 0 m, x)', 'G(x, y) := integral(H(s, y), s, 0 m, x)', 'G(3 m, 1 m) = m^3/N'])).toBe('0.6667\\ \\frac{\\mathrm{m}^{3}}{\\mathrm{N}}');
+  });
+});
+
+describe('nested arrays times a value', () => {
+  it('multiply every element, the arrays among them too', () => {
+    const res = run(['N := [[4, 5]; 2]*1 m', 'N[0] =', 'N[1] =']);
+    expect((res[1] as MathResult).tex).toContain('\\begin{bmatrix} 4 & 5 \\end{bmatrix}\\ \\mathrm{m}');
+    expect((res[2] as MathResult).tex).toMatch(/= 2\\ \\mathrm\{m\}$/);
+  });
+});
+
+describe('atan2 handed on as a function', () => {
+  it('takes x then y, as Mathcad’s atan2 does', () => {
+    expect(shown(['ap(f, a, b) := f(a, b)', 'ap(atan2xy, 0, 1) = deg'])).toBe('90\\ {}^{\\circ}');
+  });
+});
+
+describe('a value to the power of an array', () => {
+  it('is taken to each element', () => {
+    expect(shown(['T := [1000; 2000]', 'KP(T) := 10^(-1000/T + 2)', 'KP(T) ='])).toBe('\\begin{bmatrix} 10 \\\\ 31.6228 \\end{bmatrix}');
+  });
+});
+
+describe('an element definition calling a function of its own name', () => {
+  it('calls the function for every element', () => {
+    expect(shown(['f(a, b) := a + 10*b', 'i := 0 .. 1', 'j := 0 .. 1', 'f[i, j] := f(i, j)', 'f ='])).toBe('\\begin{bmatrix} 0 & 10 \\\\ 1 & 11 \\end{bmatrix}');
   });
 });

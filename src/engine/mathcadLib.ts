@@ -372,6 +372,10 @@ const vectorPow = (() => {
   const wrap = (f: (x: unknown, y: unknown) => unknown) => (x: unknown, y: unknown) => (isVector(x) ? math.dotPow(x as never, y as never) : f(x, y));
   const sigs = { ...old.signatures };
   for (const k of ['Array,number', 'Array,BigNumber', 'Matrix,number', 'Matrix,BigNumber']) if (sigs[k]) sigs[k] = wrap(sigs[k]);
+  // and a value to the power of an array is taken to each element (10^(−9988/T + 13.64) of a
+  // vector of temperatures), as Mathcad applies scalar operations to arrays
+  const toEach = (x: unknown, y: unknown) => math.map(y as never, ((e: unknown) => math.pow(x as never, e as never)) as never);
+  for (const k of ['number,Array', 'number,Matrix', 'Complex,Array', 'Complex,Matrix', 'Unit,Array', 'Unit,Matrix']) sigs[k] = toEach;
   return math.typed('pow', sigs as never);
 })();
 

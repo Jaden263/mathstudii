@@ -651,6 +651,32 @@ describe('Mathcad 15 import: custom operators, names in several styles, program 
     expect(sources(ws)).toEqual(['null_(i, j) := 0', 'matrix(2, 2, null_) =']);
     expect(results(ws).by('matrix(2, 2, null_) =').tex).toContain('\\begin{bmatrix} 0 & 0');
   });
+  it('a function of the worksheet named col is not the column operator M⟨j⟩, which the import writes col(M, j)', () => {
+    const { ws } = xmcdOf(m15(1, define(id15('M'), `<ml:matrix rows="2" cols="2">${real(1)}${real(2)}${real(3)}${real(4)}</ml:matrix>`))
+      + m15(2, fn15('col', ['A', 'j'], ap('<ml:mult/>', real(10), ap('<ml:matcol/>', id15('A'), id15('j')))))
+      + m15(3, evalOf(ap(id15('col'), `<ml:sequence>${id15('M')}${real(1)}</ml:sequence>`))));
+    expect(sources(ws)).toEqual(['M := [1, 3; 2, 4]', 'col_(A, j) := 10*col(A, j)', 'col_(M, 1) =']);
+    expect(results(ws).by('col_(M, 1) =').tex).toContain('\\begin{bmatrix} 30 \\\\ 40 \\end{bmatrix}');
+  });
+  it('atan2 handed to a function keeps Mathcad’s order of arguments; a call of it is written atan2(y, x)', () => {
+    const { ws } = xmcdOf(m15(1, fn15('ap', ['f', 'a', 'b'], ap(id15('f'), `<ml:sequence>${id15('a')}${id15('b')}</ml:sequence>`)))
+      + m15(2, evalOf(ap(id15('ap'), `<ml:sequence>${id15('atan2')}${real(0)}${real(1)}</ml:sequence>`)))
+      + m15(3, evalOf(ap(id15('atan2'), `<ml:sequence>${real(0)}${real(1)}</ml:sequence>`))));
+    expect(sources(ws).slice(1)).toEqual(['ap(atan2xy, 0, 1) =', 'atan2(1, 0) =']);
+    const { by } = results(ws);
+    expect(by('ap(atan2xy, 0, 1) =').tex).toMatch(/= 1\.5708$/);
+    expect(by('atan2(1, 0) =').tex).toMatch(/= 1\.5708$/);
+  });
+  it('Given … Find(x, y) → (solved symbolically in Mathcad) is solved numerically, from 0 where no guess is given', () => {
+    const { ws } = xmcdOf(m15(1, id15('Given'))
+      + m15(2, ap('<ml:equal/>', ap('<ml:plus/>', id15('x'), id15('y')), real(3)))
+      + m15(3, ap('<ml:equal/>', ap('<ml:minus/>', id15('x'), id15('y')), real(1)))
+      + m15(4, `<ml:symEval><ml:apply><ml:Find/><ml:sequence>${id15('x')}${id15('y')}</ml:sequence></ml:apply><ml:symResult>${real(0)}</ml:symResult></ml:symEval>`));
+    const solve = ws.regions.find((r) => r.kind === 'solve') as Extract<Region, { kind: 'solve' }>;
+    expect(solve).toMatchObject({ guesses: 'x := 0\ny := 0', solver: 'find(x, y) =' });
+    const out = evaluateWorksheet(ws);
+    expect((out.results.get(solve.id) as SolveResult).solver.tex).toContain('\\begin{bmatrix} 2 \\\\ 1 \\end{bmatrix}');
+  });
   it('(break) and (return x): a program statement in parentheses is that statement', () => {
     const { ws } = xmcdOf([
       m15(1, fn15('first', ['v'], program(

@@ -235,6 +235,8 @@ const FUNCTIONS: Record<string, unknown> = {
   xy2pol, pol2xy, xyz2sph, sph2xyz, xyz2cyl, cyl2xyz,
   gmean, hmean, Spear, kendltau, traceText,
   minimize: optimum(1, 'Minimize'), maximize: optimum(-1, 'Maximize'),
+  // Mathcad's atan2(x, y), as a function handed to another one (calls are written atan2(y, x))
+  atan2xy: (x: unknown, y: unknown) => math.atan2(y as never, x as never),
 };
 
 /**
@@ -255,14 +257,28 @@ const vectorProduct = (() => {
     }
     return f(x, y);
   };
+  // an array with arrays among its elements (Mathcad's nested arrays) times a value: each element
+  // times it, arrays among them too
+  const nested = (f: (x: unknown, y: unknown) => unknown, arrayFirst: boolean) => (x: unknown, y: unknown): unknown => {
+    try {
+      return f(x, y);
+    } catch (e) {
+      const arr = arrayFirst ? x : y, other = arrayFirst ? y : x;
+      if (!(e instanceof TypeError) || !toVector(arr).some(isArrayValue)) throw e;
+      return math.map(arr as never, ((el: unknown) => (arrayFirst ? math.multiply(el as never, other as never) : math.multiply(other as never, el as never))) as never);
+    }
+  };
   const sigs = { ...old.signatures };
   for (const k of ['Array,Array', 'Matrix,Matrix', 'Matrix,Array', 'Array,Matrix']) if (sigs[k]) sigs[k] = wrap(sigs[k]);
+  for (const k of ['Array,any', 'DenseMatrix,any']) if (sigs[k]) sigs[k] = nested(sigs[k], true);
+  for (const k of ['any,Array', 'any,DenseMatrix']) if (sigs[k]) sigs[k] = nested(sigs[k], false);
   return math.typed('multiply', sigs as never);
 })();
 
 /**
  * u/v of two vectors of one size is their quotient element by element in Mathcad (F·(y/y) is a
- * vector of F); a matrix divisor is still inverted (A/B = A·B⁻¹ of a square B).
+ * vector of F), and so is x/v of a value; a matrix divisor is still inverted (A/B = A·B⁻¹ of a
+ * square B).
  */
 const vectorQuotient = (() => {
   const old = math.divide as unknown as { signatures: Record<string, (x: unknown, y: unknown) => unknown> };
@@ -274,8 +290,11 @@ const vectorQuotient = (() => {
     const n = vectorSize(x);
     return n && n === vectorSize(y) ? math.dotDivide(x as never, y as never) : f(x, y);
   };
+  // and a value over a vector is over each element (1/c of a vector of compliances)
+  const overVector = (f: (x: unknown, y: unknown) => unknown) => (x: unknown, y: unknown) => (vectorSize(y) ? math.dotDivide(x as never, y as never) : f(x, y));
   const sigs = { ...old.signatures };
   for (const k of ['Array,Array', 'Matrix,Matrix', 'Matrix,Array', 'Array,Matrix']) if (sigs[k]) sigs[k] = wrap(sigs[k]);
+  for (const k of ['any,Array', 'any,Matrix']) if (sigs[k]) sigs[k] = overVector(sigs[k]);
   return math.typed('divide', sigs as never);
 })();
 
