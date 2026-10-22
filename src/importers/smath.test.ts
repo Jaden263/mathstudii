@@ -437,3 +437,28 @@ describe('SMath import: what SMath does not calculate, and how it rounds', () =>
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
   });
 });
+
+describe('SMath import: the X-Y Plot plugin', () => {
+  it('draws its functions over the saved x-axis, with the saved limits, colours, styles and labels', () => {
+    id = 0;
+    top = 0;
+    const xy = `<xyplot width="343" height="211" points="100" name="XYPlot"><xaxes xmin="2.235174E-08" xmax="6.28" xtick="2" /><yaxes ymin="-2" ymax="2" ytick="1" />`
+      + `<title2d title="" /><xylabel xlabel="wt" ylabel="Vin" /><traces>`
+      + `<trace seriesname="a" plotmethod="Lines" linecolor="Blue" symboltype="None" /><trace seriesname="b" plotmethod="Points" linecolor="Red" symboltype="Circle" /><trace seriesname="c" plotmethod="Lines" linecolor="Black" symboltype="None" />`
+      + `</traces><input>${v('ωt') + fn('sin', 1) + v('pts') + v('0') + v('3') + v('1') + fn('sys', 5)}</input></xyplot>`;
+    const { ws } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('pts'), v('0') + v('0') + v('1') + v('1') + v('2') + v('2') + fn('mat', 6)))}${region(xy, 9, 40)}</regions></worksheet>`), 'x.sm');
+    const p = ws.regions.find((r) => r.kind === 'plot')!;
+    expect(p.kind === 'plot' && p).toMatchObject({
+      xExpr: 'ωt', xmin: '0', xmax: '6.28', ymin: '-2', ymax: '2', title: 'Vin over wt', width: 343, height: 211,
+      traces: [
+        { y: 'sin(ωt)', style: 'line', color: 'blue' },
+        { xExpr: 'col(pts, 1)', y: 'col(pts, 2)', style: 'points', color: 'red' },
+        { y: '0', style: 'line' },
+      ],
+    });
+    const res = evaluateWorksheet(ws).results.get(p.id) as { error?: string; series: { xs: number[] }[] };
+    expect(res.error).toBeUndefined();
+    expect(res.series[0].xs[res.series[0].xs.length - 1]).toBeCloseTo(6.28, 6);
+  });
+});

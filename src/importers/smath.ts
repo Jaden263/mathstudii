@@ -743,7 +743,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const body = regionKinds(at.region)[0];
     const kind = body ? local(body) : '';
     try {
-      if (kind === 'math' || kind === 'plot') return parseRpn(child(body!, 'input'));
+      if (kind === 'math' || kind === 'plot' || kind === 'xyplot') return parseRpn(child(body!, 'input'));
     } catch {
       /* reported in pass 2 */
     }
@@ -761,7 +761,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       namesUsed(t, s, conv.userUnits);
     }
     // x in a plot is the plot's own variable
-    if (body && local(body) === 'plot') s.delete('x');
+    if (body && (local(body) === 'plot' || local(body) === 'xyplot')) s.delete('x');
     return s;
   });
   for (const toks of inputs) {
@@ -770,7 +770,14 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) for (const p of t.args[0].args) if (isVar(p)) conv.assigned.add(smName(p.text));
     }
   }
-  // SMath collects plot items in a variable: plotter := sys(a, b, c, n, 1)
+  // SMath collects plot items in a variable a plot draws: plotter := sys(a, b, c, n, 1)
+  const plotted = new Set<string>();
+  inputs.forEach((toks, i) => {
+    const body = regionKinds(placed[i].region)[0];
+    if (!body || !/^(plot|xyplot)$/.test(local(body))) return;
+    const items = (t: Tok): Tok[] => (isFn(t, 'sys') ? listItems(t).flatMap(items) : [t]);
+    for (const t of toks) for (const it of items(t)) if (isVar(it)) plotted.add(smName(it.text));
+  });
   const plotLists = new Map<string, Tok[]>();
   const hasStrings = new Set<string>();
   for (const toks of inputs) {
@@ -778,7 +785,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     if (!t || !isOp(t, ':')) continue;
     const name = targetName(t.args[0]);
     if (!name) continue;
-    if (isFn(t.args[1], 'sys') && isVar(t.args[0])) plotLists.set(name, listItems(t.args[1]));
+    if (isFn(t.args[1], 'sys') && isVar(t.args[0]) && plotted.has(name)) plotLists.set(name, listItems(t.args[1]));
     walk(t.args[1], (n) => {
       if (n.style === 'string') hasStrings.add(name);
     });
@@ -1009,6 +1016,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       } else if (kind === 'plot') {
         regions.push(plot(conv, body, at, width, Number(r.getAttribute('height') ?? 0), definedBefore, plotLists, hasStrings));
         plotRanges++;
+      } else if (kind === 'xyplot') {
+        regions.push(xyPlot(conv, body, at, definedBefore, plotLists, hasStrings));
       } else {
         throw new Unsupported(`the “${kind}” region (an SMath plugin)`);
       }
@@ -1068,19 +1077,14 @@ function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>
   ];
 }
 
-function plot(
-  conv: Converter, body: El, at: Placed, width: number, height: number,
-  before: Set<string>, lists: Map<string, Tok[]>, hasStrings: Set<string>,
-): Region {
-  if ((body.getAttribute('type') ?? '2d') !== '2d') throw new Unsupported('a 3-D plot');
-  const toks = parseRpn(child(body, 'input'));
-  if (toks.length !== 1) throw new Error('the plot has no formula');
+/** The items a plot draws: sys(…) lists and variables holding them expanded; text labels left out (with a note). */
+function plotItems(conv: Converter, input: Tok, at: Placed, lists: Map<string, Tok[]>, hasStrings: Set<string>): Tok[] {
   const expand = (t: Tok): Tok[] => {
     if (isFn(t, 'sys')) return listItems(t).flatMap(expand);
     if (isVar(t) && lists.has(smName(t.text))) return lists.get(smName(t.text))!.flatMap(expand);
     return [t];
   };
-  const items = expand(toks[0]).filter((t) => {
+  const items = expand(input).filter((t) => {
     // text labels ([x, y, "text", size, colour] rows) have no counterpart here
     if (isVar(t) && hasStrings.has(smName(t.text))) {
       conv.warnings.push(`Plot at ${Math.round(at.y)} px: the text labels in “${smName(t.text)}” are not drawn`);
@@ -1089,23 +1093,30 @@ function plot(
     return true;
   });
   if (!items.length) throw new Unsupported('a plot of text labels only');
-  // SMath plots functions of x; if x is already a worksheet variable, use another name
-  const xv = before.has('x') ? 'x_plot' : 'x';
-  conv.rename = xv === 'x' ? {} : { x: xv };
+  return items;
+}
+
+/**
+ * Traces of plot items: a function of the plot variable v is drawn over the x-axis, a number
+ * as a level line, anything else as a matrix of points (column 1 x, column 2 y).
+ */
+function plotTraces(conv: Converter, items: Tok[], v: string, xv: string): { xExpr: string; traces: PlotTrace[] } {
+  conv.rename = xv === v ? {} : { [v]: xv };
   try {
     const traces: PlotTrace[] = [];
     let hasFunction = false;
     for (const it of items) {
       let usesX = false;
       walk(it, (n) => {
-        if (n.type === 'operand' && !n.style && n.text === 'x') usesX = true;
+        if (n.type === 'operand' && !n.style && smName(n.text) === v) usesX = true;
+        // a definition waiting for the plot variable (σ(φ) := …)
+        if (n.type === 'operand' && isVar(n) && conv.lazy.get(smName(n.text))?.includes(v)) usesX = true;
       });
       const e = conv.expr(it).s;
-      if (usesX) {
-        hasFunction = true;
+      if (usesX || (it.type === 'operand' && NUMBER.test(it.text))) {
+        hasFunction ||= usesX;
         traces.push({ y: e, style: 'line' });
       } else {
-        // a matrix of points: column 1 is x, column 2 is y
         traces.push({ xExpr: `col(${e}, 1)`, y: `col(${e}, 2)`, style: 'line' });
       }
     }
@@ -1114,11 +1125,80 @@ function plot(
       xExpr = traces[0].xExpr;
       delete traces[0].xExpr;
     }
-    return createRegion('plot', at.x, at.y, {
-      xExpr, traces,
-      width: Math.max(200, width || 300), height: Math.max(150, height || 240),
-    });
+    return { xExpr, traces };
   } finally {
     conv.rename = {};
   }
+}
+
+function plot(
+  conv: Converter, body: El, at: Placed, width: number, height: number,
+  before: Set<string>, lists: Map<string, Tok[]>, hasStrings: Set<string>,
+): Region {
+  if ((body.getAttribute('type') ?? '2d') !== '2d') throw new Unsupported('a 3-D plot');
+  const toks = parseRpn(child(body, 'input'));
+  if (toks.length !== 1) throw new Error('the plot has no formula');
+  const items = plotItems(conv, toks[0], at, lists, hasStrings);
+  // SMath plots functions of x; if x is already a worksheet variable, use another name
+  const { xExpr, traces } = plotTraces(conv, items, 'x', before.has('x') ? 'x_plot' : 'x');
+  return createRegion('plot', at.x, at.y, {
+    xExpr, traces,
+    width: Math.max(200, width || 300), height: Math.max(150, height || 240),
+  });
+}
+
+/** .NET colour names of the X-Y Plot plugin as CSS colours (black stays the default). */
+const plotColor = (c: string | null) => (c && c.toLowerCase() !== 'black' && /^[a-z]+$/i.test(c) ? c.toLowerCase() : undefined);
+
+/**
+ * The X-Y Plot plugin (JXCharts): functions of one variable over the x-axis it saves, matrices
+ * of points, level lines; axis limits, trace colours and styles, title and axis labels.
+ */
+function xyPlot(conv: Converter, body: El, at: Placed, before: Set<string>, lists: Map<string, Tok[]>, hasStrings: Set<string>): Region {
+  const toks = parseRpn(child(body, 'input'));
+  if (toks.length !== 1) throw new Error('the plot has no formula');
+  const items = plotItems(conv, toks[0], at, lists, hasStrings);
+  // the plot variable: the name its functions read that the worksheet does not define (x when several)
+  const free = new Set<string>();
+  for (const it of items) walk(it, (n) => {
+    if (n.type !== 'operand' || !isVar(n) || SYMBOLS.has(n.text)) return;
+    const m = smName(n.text);
+    const late = conv.lazy.get(m);
+    if (late) for (const p of late) if (!before.has(p)) free.add(p);
+    if (!late && !before.has(m)) free.add(m);
+  });
+  const v = free.has('x') || !free.size ? 'x' : [...free][0];
+  if (free.size > 1) conv.warnings.push(`X-Y plot at ${Math.round(at.y)} px: its functions read ${[...free].join(', ')}, which have no value above it; ${v} is taken as the plot variable`);
+  const xv = before.has(v) && v === 'x' ? 'x_plot' : v;
+  const { xExpr, traces } = plotTraces(conv, items, v, xv);
+  // the plugin's trace settings, in the order of the items
+  const settings = kids(child(body, 'traces') ?? body).filter((c) => local(c) === 'trace');
+  let labels = 0;
+  traces.forEach((t, k) => {
+    const s = settings[k];
+    if (!s) return;
+    const method = (s.getAttribute('plotmethod') ?? 'Lines').toLowerCase();
+    if (method === 'labels') labels++;
+    const symbols = (s.getAttribute('symboltype') ?? 'None') !== 'None';
+    t.style = method === 'points' || method === 'scatter' ? 'points' : symbols ? 'both' : method === 'bars' ? 'bar' : method === 'steps' ? 'step' : 'line';
+    const color = plotColor(s.getAttribute('linecolor'));
+    if (color) t.color = color;
+  });
+  if (labels) conv.warnings.push(`X-Y plot at ${Math.round(at.y)} px: ${labels} trace${labels > 1 ? 's' : ''} of text labels ${labels > 1 ? 'are' : 'is'} drawn as points`);
+  const ax = child(body, 'xaxes'), ay = child(body, 'yaxes');
+  // limits as saved; a limit next to nothing against the other (2.2E-08 for 6.28) is 0
+  const lim = (e: El | undefined, a: string, other: string) => {
+    const raw = e?.getAttribute(a);
+    const n = Number(raw), o = Number(e?.getAttribute(other));
+    if (!raw || !Number.isFinite(n)) return '';
+    return String(Number.isFinite(o) && Math.abs(n) < 1e-6 * Math.abs(o) ? 0 : n);
+  };
+  const lab = child(body, 'xylabel');
+  const xl = lab?.getAttribute('xlabel') ?? '', yl = lab?.getAttribute('ylabel') ?? '';
+  const title = child(body, 'title2d')?.getAttribute('title') || ((xl && xl !== 'x') || (yl && yl !== 'y') ? `${yl || 'y'} over ${xl || 'x'}` : '');
+  return createRegion('plot', at.x, at.y, {
+    xExpr, traces, title,
+    xmin: lim(ax, 'xmin', 'xmax'), xmax: lim(ax, 'xmax', 'xmin'), ymin: lim(ay, 'ymin', 'ymax'), ymax: lim(ay, 'ymax', 'ymin'),
+    width: Math.max(200, Number(body.getAttribute('width')) || 300), height: Math.max(150, Number(body.getAttribute('height')) || 240),
+  });
 }
