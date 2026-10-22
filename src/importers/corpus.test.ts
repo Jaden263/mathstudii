@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { unzipSync, gunzipSync, decompressSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
+import { pageBreakShift } from './pages';
 import { importMathcad } from './mathcad';
 import { importSmath } from './smath';
 import { compareSaved } from './saved';
@@ -791,8 +792,12 @@ function analyse(file: string): FileReport {
     if (err && !r.disabled && (r.kind === 'math' || r.kind === 'solve' || r.kind === 'plot')) rep.evalErrors.push({ id: r.id, source: short(regionSource(r)), error: short(err, 200), root: '' });
   }
 
-  // match imported regions to the file's by place: same kind of region, top within 2 px
-  const ys = (s: SrcRegion) => [s.y, ...s.alt];
+  // match imported regions to the file's by place: same kind of region, top within 2 px; Mathcad
+  // files only: a page break moves what is below it as the import does (pageBreakShift)
+  const shiftY = format === 'sm' ? () => 0 : pageBreakShift(src.filter((s) => s.kind === 'pageBreak').map((s) => s.y));
+  const ys = (s: SrcRegion) => [s.y, ...s.alt].map((y) => y + shiftY(y));
+  /** As the file has them (warnings name these places). */
+  const fileYs = (s: SrcRegion) => [s.y, ...s.alt];
   const pool = ws.regions.filter((r) => r.kind !== 'area' && !(r.kind === 'text' && r.markdown.startsWith('⚠️')));
   const used = new Set<string>();
   const matchOf = new Map<SrcRegion, Region>();
@@ -855,7 +860,7 @@ function analyse(file: string): FileReport {
   const savedIds = new Set(saved.map((s) => s.regionId));
   const warnAt = (s: SrcRegion) => res.warnings.find((w) => {
     const m = / at (-?\d+) px/.exec(w);
-    return m && ys(s).concat(s.y).some((y) => Math.abs(Number(m[1]) - y) <= 2);
+    return m && fileYs(s).some((y) => Math.abs(Number(m[1]) - y) <= 2);
   });
   // matching by place is not exact (regions side by side, moved ones): as many as the import is
   // short of are reported, those with a warning at their place first

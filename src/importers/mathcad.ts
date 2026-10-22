@@ -7,10 +7,11 @@
 import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
-  createRegion, emptyWorksheet, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH,
-  type AreaRegion, type MathChoices, type PageBand, type Region, type PlotTrace, type TextRegion,
+  createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH,
+  type AreaRegion, type MathChoices, type PageBand, type Region, type PlotTrace, type TextRegion, type Worksheet,
 } from '../model/types';
-import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
+import { AREA_BAR, AREA_PAD, collapseArea, hiddenIds, nestBands, withContents } from '../model/areas';
+import { pageBreakShift } from './pages';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
 import { isUnitName, math } from '../engine/math';
 import { cssColor, normalSize, toMarkdown, type RunStyle, type TextPara, type TextRun } from './textFormat';
@@ -1289,8 +1290,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   /** Text regions, written once the whole worksheet's normal text size is known. */
   const texts: { region: TextRegion; paras: TextPara[]; highlight?: string }[] = [];
   const textStyles = pkg ? new Map<string, Mc15TextStyle>() : mc15TextStyles(doc);
-  /** Where the worksheet has page breaks (expanded layout). */
-  const pageBreaks: number[] = [];
+  /** Markers where the worksheet has page breaks (they move with the layout until it is final). */
+  const pageBreaks = new Set<string>();
   const fail = (what: string, e: unknown, at: Placed) => {
     const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet` : (e as Error).message;
     warnings.push(`${what} at ${Math.round(at.y)} px: ${msg}`);
@@ -1447,7 +1448,9 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           y += SPEC_ROW;
         }
       } else if (kind === 'pageBreak') {
-        pageBreaks.push(at.y);
+        const mark = createRegion('text', at.x, at.y, { markdown: '' });
+        pageBreaks.add(mark.id);
+        regions.push(mark);
       } else if (kind === 'reference') {
         // Mathcad 15 "Reference": the definitions of another worksheet, read when this one calculates
         const href = body.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '';
@@ -1471,7 +1474,6 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     }
   }
   if (solve) warnings.push('A "Given" block has no Find/Minerr call; its constraints were dropped');
-  startPages(regions, areas, pageBreaks);
 
   // the page header and footer: the page's own lines (Report tab), with their fields
   const page = pkg ? primePage(pkg, pageWidth || 816, binary, warnings) : mc15Page(pageModel, binary);
@@ -1504,31 +1506,31 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   for (const i of areas.map((_, k) => k).sort((p, q) => areas[q].depth - areas[p].depth)) {
     if (areas[i].collapsed) out = collapseArea(out, bars[i].id);
   }
+  out = startPages(out, pageBreaks);
   return { ws: out, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved };
 }
 
 /**
- * A page break starts a new page: what follows it, if it would begin on the break's page here,
- * moves down to the top of our next page (with everything below it). An area the break lies in
- * grows by as much.
+ * A page break starts a new page (pageBreakShift): on the final layout, as the file has it with
+ * its areas collapsed, what is below a break moves down. A collapsed area's hidden regions move
+ * with its bar; an open area a break lies in grows. The markers of the breaks go.
  */
-function startPages(regions: Region[], areas: { y: number; height: number }[], breaks: number[]): void {
-  let moved = 0;
-  for (const at of [...breaks].sort((a, b) => a - b)) {
-    const b = at + moved;
-    const below = regions.filter((r) => r.y > b);
-    if (!below.length) break;
-    const first = Math.min(...below.map((r) => r.y));
-    const page = Math.floor(b / PAGE_HEIGHT);
-    if (first >= (page + 1) * PAGE_HEIGHT) continue;
-    const by = (page + 1) * PAGE_HEIGHT + PAGE_MARGIN - first;
-    for (const r of below) r.y += by;
-    for (const a of areas) {
-      if (a.y > b) a.y += by;
-      else if (a.y + a.height > b) a.height += by;
+function startPages(ws: Worksheet, markers: Set<string>): Worksheet {
+  if (!markers.size) return ws;
+  const hidden = hiddenIds(ws.regions);
+  const shift = pageBreakShift(ws.regions.filter((r) => markers.has(r.id) && !hidden.has(r.id)).map((r) => r.y));
+  const owner = new Map<string, number>();
+  for (const r of ws.regions) if (r.kind === 'area' && r.collapsed) r.hidden?.forEach((id) => owner.set(id, shift(r.y)));
+  const regions = ws.regions.filter((r) => !markers.has(r.id)).map((r): Region => {
+    const by = owner.get(r.id) ?? shift(r.y);
+    if (r.kind === 'area') {
+      const hiddenLeft = r.hidden?.filter((id) => !markers.has(id));
+      const grown = r.collapsed ? r.height : r.height + shift(r.y + r.height) - shift(r.y);
+      return { ...r, y: r.y + by, height: grown, ...(r.hidden ? { hidden: hiddenLeft } : {}) };
     }
-    moved += by;
-  }
+    return by ? { ...r, y: r.y + by } : r;
+  });
+  return { ...ws, regions };
 }
 
 /**

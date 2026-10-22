@@ -322,9 +322,25 @@ describe('Mathcad import: areas', () => {
     ].join(''));
     const at = (src: string) => ws.regions.find((r) => r.kind === 'math' && r.source === src)!.y;
     expect(at('a := 2')).toBeLessThan(PAGE_HEIGHT);
-    expect(at('b := 3')).toBe(PAGE_HEIGHT + PAGE_MARGIN);
+    // the break falls at the top of the next page; what follows keeps its distance from it
+    expect(Math.abs(at('b := 3') - (PAGE_HEIGHT + PAGE_MARGIN + 20 * (96 / 72)))).toBeLessThan(1);
     // what follows keeps its distance
     expect(Math.abs(at('b =') - at('b := 3') - (300 - 220) * (96 / 72))).toBeLessThan(1);
+  });
+  it('a page break below a collapsed area: the area’s hidden regions move with its bar', () => {
+    const { ws } = xmcdOf([
+      `<region region-id="a" left="0" top="20" width="500" height="100"><area is-collapsed="true" name="A">${m15('1', 42, 20, define(id15('a'), real(2)))}</area></region>`,
+      '<region region-id="p" left="0" top="60" width="400" height="2"><pageBreak/></region>',
+      m15('2', 42, 80, evalOf(id15('a'))),
+    ].join(''));
+    const bar = ws.regions.find((r): r is AreaRegion => r.kind === 'area')!;
+    const a = ws.regions.find((r) => r.kind === 'math' && r.source === 'a := 2')!;
+    const show = ws.regions.find((r) => r.kind === 'math' && r.source === 'a =')!;
+    expect(bar.y).toBeLessThan(PAGE_HEIGHT);
+    expect(a.y).toBeLessThan(PAGE_HEIGHT);
+    expect(show.y).toBeGreaterThan(PAGE_HEIGHT);
+    expect(ws.regions.some((r) => r.kind === 'text' && r.markdown === '')).toBe(false);
+    expect(results(ws).by('a =').tex).toMatch(/= 2$/);
   });
   it('Prime: regions relative to the area; IsCollapsed and IsLocked', () => {
     const { ws } = primeOf(
