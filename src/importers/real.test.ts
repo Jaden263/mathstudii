@@ -145,7 +145,7 @@ describe('Mathcad Prime constructs', () => {
   const m = (inner: string) => `<region region-id="${++top}" left="20" top="${top * 30}"><math>${inner}</math></region>`;
   const prime = (regions: string[]) => zipSync({ 'mathcad/worksheet.xml': strToU8(`<worksheet ${W}><regions>${regions.join('')}</regions></worksheet>`) });
 
-  it('an input control becomes its selected value; a script control becomes its check', () => {
+  it('an input control becomes its selected value, keeping its choices; a script control becomes its check', () => {
     top = 0;
     const res = importMathcad(prime([
       m(`<ml:define><ml:matrix rows="2" cols="1">${pid('f_ck')}${pid('f_ctk')}</ml:matrix><ml:ComboBoxControl rows="3" cols="2" SelectedRow="1"><ml:ComboBoxRowNames><ml:rowName>C20</ml:rowName><ml:rowName>C30</ml:rowName><ml:rowName>C40</ml:rowName></ml:ComboBoxRowNames><ml:ComboBoxScaleFactors>${pid('MPa', 'UNIT')}${pid('MPa', 'UNIT')}</ml:ComboBoxScaleFactors><ml:ComboBoxValues>${real(20)}${real(1.5)}${real(30)}${real(2)}${real(40)}${real(2.5)}</ml:ComboBoxValues></ml:ComboBoxControl></ml:define>`),
@@ -154,7 +154,7 @@ describe('Mathcad Prime constructs', () => {
     ]), 'c.mcdx');
     const src = math(res.ws).map((r) => r.source);
     expect(src).toEqual(['[f_ck; f_ctk] := [30 MPa; 2 MPa]', 'f_ctk < f_ck', 'a := if(f_ck > 25 MPa, "high", "low")']);
-    expect(res.warnings.join('\n')).toMatch(/selected value, “C30”/);
+    expect(math(res.ws)[0].choices).toEqual({ labels: ['C20', 'C30', 'C40'], values: ['[20 MPa; 1.5 MPa]', '[30 MPa; 2 MPa]', '[40 MPa; 2.5 MPa]'], selected: 1 });
     const ev = evaluateWithScope(res.ws);
     expect((ev.results.get(res.ws.regions[1].id) as MathResult).check?.ok).toBe(true);
   });

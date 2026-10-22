@@ -1696,6 +1696,39 @@ kbd {
   color: var(--warn);
 }
 
+.import-files {
+  font-size: 13px;
+}
+
+.data-files {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: grid;
+  gap: 6px;
+}
+
+.data-files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.data-files .df-name {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.data-files small {
+  color: var(--text-muted);
+  margin-right: auto;
+}
+
+.data-files .warn {
+  color: var(--warn);
+}
+
 .import-warnings {
   max-height: 40vh;
   overflow-y: auto;

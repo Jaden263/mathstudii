@@ -6,9 +6,11 @@ export interface ImportReport {
   format: string;
   warnings: string[];
   count: number;
+  /** Data files the worksheet reads that are not attached yet. */
+  missingFiles?: string[];
 }
 
-export function ImportReportDialog({ report, onClose }: { report: ImportReport; onClose: () => void }) {
+export function ImportReportDialog({ report, onClose, onDataFiles }: { report: ImportReport; onClose: () => void; onDataFiles?: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
@@ -26,13 +28,19 @@ export function ImportReportDialog({ report, onClose }: { report: ImportReport; 
           {ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
           {report.format}: {report.count} regions imported{ok ? ' with no problems.' : `, ${report.warnings.length} need attention.`}
         </p>
+        {!!report.missingFiles?.length && (
+          <p className="import-files">
+            It reads {report.missingFiles.length === 1 ? 'a data file' : `${report.missingFiles.length} data files`}: {report.missingFiles.join(', ')}. Attach {report.missingFiles.length === 1 ? 'it' : 'them'} to calculate with {report.missingFiles.length === 1 ? 'it' : 'them'} (they are kept in the worksheet).{' '}
+            {onDataFiles && <button className="btn" onClick={onDataFiles}>Attach data files…</button>}
+          </p>
+        )}
         {!ok && (
           <ul className="import-warnings">
             {report.warnings.map((w, i) => <li key={i}>{w}</li>)}
           </ul>
         )}
         <p className="hint">
-          The import converts the math, programs, solve blocks, text, images and X-Y plots. Results are recalculated here rather than copied, so check them
+          The import converts the math, programs, solve blocks, text with its formatting, images, X-Y plots, areas, input controls, page headers and footers. Results are recalculated here rather than copied, so check them
           against the original. Regions that could not be converted are marked ⚠️ on the page. Saving creates a new <code>.mstd</code> file; the original file is not changed.
         </p>
       </div>

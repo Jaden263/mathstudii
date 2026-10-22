@@ -1296,6 +1296,31 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     regions.push(createRegion('image', at.x, at.y + 18, { src, width }));
     return true;
   };
+  /**
+   * Mathcad 15's File Read component (outputs, no inputs, a data file) becomes
+   * out := READPRN("file") (READCSV for .csv, READEXCEL for a workbook); a File Write component
+   * (inputs and a file) is noted, as nothing here writes files. False for other components.
+   */
+  const componentRead = (body: El, at: Placed): boolean => {
+    const ref = body.getAttribute('item-idref');
+    const file = ref ? componentFile(binary[ref]) : null;
+    if (!file) return false;
+    const ins = kids(child(body, 'inputs') ?? body).filter((c) => local(c) !== 'inputs' && local(c) !== 'outputs');
+    const outs = kids(child(body, 'outputs') ?? body).filter((c) => local(c) !== 'inputs' && local(c) !== 'outputs');
+    const name = file.split(/[\\/]/).pop() ?? file;
+    if (outs.length === 1 && !ins.length) {
+      const lhs = conv.target(outs[0]);
+      const fn = /\.csv$/i.test(name) ? 'READCSV' : /\.xlsx?$/i.test(name) ? 'READEXCEL' : 'READPRN';
+      regions.push(createRegion('math', at.x, at.y, { source: `${lhs} := ${fn}(${JSON.stringify(file)})` }));
+      warnings.push(`The File Read component for ${lhs} at ${Math.round(at.y)} px became ${lhs} := ${fn}("${name}"): attach ${name} in File ▸ Data files… (a component set to read only some rows or columns reads them all here)`);
+      return true;
+    }
+    if (ins.length && !outs.length && rendering(at, 'File Write component')) {
+      warnings.push(`The File Write component at ${Math.round(at.y)} px (it writes ${ins.map((c) => conv.expr(c).s).join(', ')} to ${name}) is shown as Mathcad's picture of it: worksheets here do not write files`);
+      return true;
+    }
+    return false;
+  };
   // math regions are placed at their baseline less a line's ascent, so that our reading order
   // (by the top of a region) is Mathcad's
   const mathY = (at: Placed) => (at.order !== at.y ? at.order - 12 : at.y);
@@ -1401,10 +1426,13 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         const file = href.split(/[\\/]/).pop() || 'another worksheet';
         warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: what that worksheet defines is not imported (import it too and copy the definitions here)`);
         regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported.*`, width: 300 }));
-      } else if (!rendering(at, kind === 'ole' ? 'Embedded object' : kind === 'component' ? 'Component' : `A ${kind} region`)) {
-        warnings.push(`Skipped a ${kind} region at ${Math.round(at.y)} px`);
+      } else if (kind === 'component' && componentRead(body, at)) {
+        // a File Read component: the function reading that file
       } else {
-        warnings.push(`A ${kind} region at ${Math.round(at.y)} px is shown as Mathcad's picture of it`);
+        // what is not converted: Mathcad's picture of it, named as precisely as the file allows
+        const what = kind === 'ole' ? oleKind(body) : kind === 'component' ? componentKind(body, conv) : `A ${kind} region`;
+        if (!rendering(at, what.replace(/ \(.*$/, ''))) warnings.push(`${what} at ${Math.round(at.y)} px was not imported: the file has no picture of it`);
+        else warnings.push(`${what} at ${Math.round(at.y)} px is shown as Mathcad's picture of it`);
       }
     } catch (e) {
       fail(kind === 'math' ? 'math' : kind, e, at);
@@ -1532,6 +1560,73 @@ function savedOfEval(math: El): string | null {
   const ev = math.getElementsByTagNameNS('*', 'eval')[0];
   const res = ev ? kids(ev).find((c) => local(c) === 'result') : undefined;
   return res ? savedExpr(res) : null;
+}
+
+/** Embedded objects Mathcad 15 files hold, by their class id. */
+const OLE_KINDS: Record<string, string> = {
+  '0002CE03-0000-0000-C000-000000000046': 'An equation (Microsoft Equation 3.0)',
+  '00020906-0000-0000-C000-000000000046': 'A Word document',
+  'F4754C9B-64F5-4B40-8AF4-679732AC0607': 'A Word document',
+  '00020830-0000-0000-C000-000000000046': 'An Excel workbook',
+  '00020820-0000-0000-C000-000000000046': 'An Excel workbook',
+  'D3E34B21-9D75-101A-8C3D-00AA001A1652': 'A Paint picture',
+  '64818D11-4F9B-11CF-86EA-00AA00B929E8': 'A PowerPoint slide',
+  '64818D10-4F9B-11CF-86EA-00AA00B929E8': 'A PowerPoint presentation',
+};
+
+/** An embedded (OLE) object of Mathcad 15, named by what it is when its class is known. */
+function oleKind(el: El): string {
+  const id = (el.getAttribute('clsid') ?? '').replace(/[{}]/g, '').toUpperCase();
+  return `${OLE_KINDS[id] ?? 'An embedded object'} (OLE${el.getAttribute('type') === 'static' ? ', static' : ''})`;
+}
+
+/** A Mathcad 15 component, named with what goes in and comes out of it. */
+function componentKind(el: El, conv: Converter): string {
+  const names = (part: string) => kids(child(el, part) ?? el).filter((c) => local(c) !== 'inputs' && local(c) !== 'outputs').map((c) => {
+    try {
+      return conv.expr(c).s;
+    } catch {
+      return '?';
+    }
+  });
+  const ins = names('inputs'), outs = names('outputs');
+  const io = [ins.length ? `inputs ${ins.join(', ')}` : '', outs.length ? `outputs ${outs.join(', ')}, not defined here` : ''].filter(Boolean).join('; ');
+  return `A component${io ? ` (${io})` : ''}`;
+}
+
+/**
+ * The data file a Mathcad 15 component reads or writes, from its saved state (an OLE stream):
+ * the first name with an extension after the stream's "Contents", as saved (often relative).
+ */
+function componentFile(item: { data: string; enc: string } | undefined): string | null {
+  if (!item?.data) return null;
+  let bytes: Uint8Array;
+  try {
+    bytes = Uint8Array.from(atob(item.data), (c) => c.charCodeAt(0));
+    if (/gzip/i.test(item.enc)) bytes = gunzipSync(bytes);
+  } catch {
+    return null;
+  }
+  // UTF-16 strings, at even or odd offsets: runs of printable code units
+  const found: { at: number; s: string }[] = [];
+  for (const start of [0, 1]) {
+    let cur = '', from = start;
+    for (let i = start; i + 1 < bytes.length; i += 2) {
+      const c = bytes[i] | (bytes[i + 1] << 8);
+      // (a length byte before 0xFF, which starts a saved string, is no character)
+      if (((c >= 0x20 && c < 0x7f) || (c >= 0xa0 && c < 0xd800)) && (c & 0xff) !== 0xff) cur += String.fromCharCode(c);
+      else {
+        if (cur.length >= 3) found.push({ at: from, s: cur });
+        cur = '';
+        from = i + 2;
+      }
+    }
+    if (cur.length >= 3) found.push({ at: from, s: cur });
+  }
+  const strings = found.sort((a, b) => a.at - b.at).map((f) => f.s);
+  const after = strings.indexOf('Contents');
+  if (after < 0) return null;
+  return strings.slice(after + 1).find((t) => !/^OlePres/.test(t) && /[^\\/:*?"<>|]\.[A-Za-z0-9]{1,6}$/.test(t)) ?? null;
 }
 
 function binaryImage(item: { data: string; enc: string } | undefined): string | null {

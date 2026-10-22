@@ -430,6 +430,11 @@ export interface WorksheetSettings {
   report?: ReportSettings;
   /** Protected worksheet: only regions marked as inputs can be edited (absent: not protected). */
   protect?: WorksheetProtection;
+  /**
+   * Data files the worksheet reads (READPRN, READCSV, READFILE, READEXCEL), kept in it by file
+   * name: their text, or a data: URL for an Excel workbook.
+   */
+  dataFiles?: Record<string, string>;
 }
 
 /** Protection of a worksheet, with an optional password kept as a salted SHA-256 hash. */

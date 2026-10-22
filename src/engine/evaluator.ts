@@ -28,6 +28,7 @@ import './specialLib';
 import './odeLib';
 import './mathcadLib';
 import './mathcadFunctions';
+import { dataFileCtx } from './dataFiles';
 import { resetRandom } from './random';
 
 export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult, SpreadsheetResult };
@@ -178,6 +179,8 @@ class Evaluator {
     engineCtx.tol = this.ws.settings.tol;
     engineCtx.iterationBudget = 1e8;
     engineCtx.deadline = performance.now() + 20000;
+    // the data files the worksheet reads (READPRN …) are kept in it
+    dataFileCtx.files = this.ws.settings.dataFiles ?? {};
     // random numbers start where Mathcad's do, so a recalculation draws the same ones
     resetRandom();
     math.Unit.setUnitSystem(this.ws.settings.unitSystem ?? 'si');

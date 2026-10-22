@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, strToU8, gzipSync } from 'fflate';
+import { toBase64 } from './common';
 import { importMathcad, primeValue } from './mathcad';
 import { evaluateWorksheet, evaluateWithScope, type MathResult, type SolveResult } from '../engine/evaluator';
 import { compareSaved } from './saved';
@@ -473,5 +474,30 @@ describe('Mathcad import: input controls', () => {
     expect(primeValue('(op_matrix:0x1 (unboxed 2) (unboxed 2) (list (number 1:0x2) (number 3:0x3) (number 2:0x4) (number 4:0x5)))')).toBe('[1, 2; 3, 4]');
     expect(primeValue('(string "Class S")')).toBe('"Class S"');
     expect(primeValue('(unknown 1)')).toBeNull();
+  });
+});
+
+describe('Mathcad 15 import: data files', () => {
+  /** A component's saved state as Mathcad keeps it: UTF-16 names in an OLE stream, gzipped and base64'd. */
+  const state = (...names: string[]) => {
+    const parts: number[] = [1, 2, 3];
+    for (const n of names) {
+      parts.push(0, n.length + 1, 0xff);
+      for (const ch of n) parts.push(ch.charCodeAt(0) & 0xff, ch.charCodeAt(0) >> 8);
+      parts.push(0, 0);
+    }
+    return toBase64(gzipSync(Uint8Array.from(parts)));
+  };
+  const sheet = (component: string, item: string) => importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>
+<region region-id="1" left="24" top="20" width="100" height="40">${component}</region>
+<region region-id="2" left="24" top="90"><math><ml:eval>${id15('Pattern')}</ml:eval></math></region>
+</regions><binaryContent><item item-id="7" content-encoding="gzip">${item}</item></binaryContent></worksheet>`), 'd.xmcd');
+  it('a File Read component reads its file with READCSV or READPRN, from the data files the worksheet keeps', () => {
+    const res = sheet(`<component clsid-buddy="01350083-1122-11DB-9380-000D56C6051A" item-idref="7"><inputs/><outputs>${id15('Pattern')}</outputs></component>`, state('Pattern', 'Root Entry', 'Contents', '..\\data\\beam.csv', 'Pattern'));
+    expect(sources(res.ws)).toEqual(['Pattern := READCSV("..\\\\data\\\\beam.csv")', 'Pattern =']);
+    expect(res.warnings.join('\n')).toMatch(/File Read component for Pattern at \d+ px became Pattern := READCSV\("beam.csv"\): attach beam.csv in File ▸ Data files…/);
+    const ws = { ...res.ws, settings: { ...res.ws.settings, dataFiles: { 'beam.csv': '4,5\n6,7\n' } } };
+    expect(results(ws).by('Pattern =').tex).toMatch(/4[\s\S]*5[\s\S]*6[\s\S]*7/);
   });
 });

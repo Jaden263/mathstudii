@@ -85,7 +85,8 @@ export function trimHistory<T>(past: T[], bytes: number[], max = HISTORY, maxByt
 const NO_HISTORY = new Set<Action['type']>(['areaFit', 'lock', 'input', 'protect']);
 
 /** Settings a protected worksheet still lets anyone change. */
-const OPEN_SETTINGS = new Set(['autoCalc']);
+// a protected worksheet's data files are inputs too
+const OPEN_SETTINGS = new Set(['autoCalc', 'dataFiles']);
 
 function apply(ws: Worksheet, a: Action): Worksheet {
   switch (a.type) {

@@ -23,6 +23,7 @@ import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs,
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
+import { DataFilesDialog, dataFileNames } from './DataFilesDialog';
 import { ExportReportDialog, type ExportReport } from './ExportReportDialog';
 import { moveSteps, separateKeepingOrder } from './separateOrdered';
 import { regionPictures } from './regionPicture';
@@ -481,7 +482,7 @@ export function App() {
       ? (await import('../importers/smath')).importSmath(bytes, name)
       : (await import('../importers/mathcad')).importMathcad(bytes, name);
     loadDoc(res.ws, null);
-    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
+    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length, missingFiles: dataFileNames(res.ws).filter((f) => !f.attached).map((f) => f.name) });
     // the source program lays out math at different sizes: push overlaps apart once rendered,
     // keeping the order in which the regions calculate
     window.setTimeout(() => separateRef.current(true, 'separate', true), 400);
@@ -895,6 +896,7 @@ export function App() {
 
   // ------------------------------------------------------------ areas and protection
   const [protectDlg, setProtectDlg] = useState(false);
+  const [dataFilesDlg, setDataFilesDlg] = useState(false);
   const selectAll = () => {
     const hidden = hiddenIds(ws.regions);
     setSelected(new Set(ws.regions.filter((q) => !hidden.has(q.id)).map((q) => q.id)));
@@ -1147,6 +1149,7 @@ export function App() {
                 {(['mcdx', 'xmcd', 'sm'] as Format[]).map((f) => (
                   <button key={f} role="menuitem" onClick={() => { setFileMenu(false); void exportTo(f); }} title="Math, text, solve blocks and units as the program writes them; beams, plates, CAD … as a labelled picture with their values">Export to {formatLabel(f)}…</button>
                 ))}
+                <button role="menuitem" onClick={() => { setFileMenu(false); setDataFilesDlg(true); }} title="Files the worksheet reads with READPRN, READCSV, READFILE or READEXCEL, kept in it">Data files…</button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setProtectDlg(true); }}>{isProtected(ws) ? 'Unprotect worksheet…' : 'Protect worksheet…'}</button>
                 <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
                 <div className="menu-head">Recent documents</div>
@@ -1378,7 +1381,8 @@ export function App() {
           />
         </div>
       )}
-      {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
+      {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} onDataFiles={() => { setImportReport(null); setDataFilesDlg(true); }} />}
+      {dataFilesDlg && <DataFilesDialog ws={ws} dispatch={dispatch} onClose={() => setDataFilesDlg(false)} />}
       {exportReport && <ExportReportDialog report={exportReport} onClose={() => setExportReport(null)} />}
       {protectDlg && (
         <ProtectDialog
