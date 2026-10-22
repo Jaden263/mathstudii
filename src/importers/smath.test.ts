@@ -514,6 +514,26 @@ describe('SMath import: what SMath does not calculate, and how it rounds', () =>
     expect(cmp).toMatchObject({ checked: 3, agree: 2 });
     expect(cmp.differ.map((d) => d.theirs)).toEqual(['1220']);
   });
+  it('a value shown without its trailing zeros is as exact as the decimal places set: 0.5 at 4 places is not 0.6, 2 at 0 places is 2.475', () => {
+    const shown = (attrs: string, rhs: string, saved: string) => region(`<math ${attrs}><input>${def(v('A'), rhs)}</input><result action="numeric">${saved}</result></math>`);
+    const mat = (...xs: string[]) => xs.map(v).join('') + v(String(xs.length)) + v('1') + fn('mat', xs.length + 2);
+    const { ws, saved } = one(
+      // 4 decimal places, trailing zeros not shown: 0.5 is 0.5 ± 0.00005, so 0.6 and 0.50007 differ, 0.50004 agrees
+      shown('decimalPlaces="4"', v('0.6'), v('0.5')),
+      shown('decimalPlaces="4"', v('0.50007'), v('0.5')),
+      shown('decimalPlaces="4"', v('0.50004'), v('0.5')),
+      // 0 decimal places: 2.475 is shown as 2; 3.15 at 1 place as 3.2 (just at half a unit)
+      shown('decimalPlaces="0"', v('2.475'), v('2')),
+      shown('decimalPlaces="1"', v('10.5') + v('0.3') + op('*'), v('3.2')),
+      // 1·10⁻⁵ at 4 places is the mantissa 1.0000: 1.2·10⁻⁵ differs
+      shown('decimalPlaces="4"', v('0.000012'), v('1') + v('10') + v('5') + op('-', 1) + op('^') + op('*')),
+      // a matrix is as exact as its places, whatever its first element: [0; 2] is not [0; 3]
+      shown('decimalPlaces="4"', mat('0', '3'), mat('0', '2')),
+    );
+    const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
+    expect(cmp).toMatchObject({ checked: 7, agree: 3 });
+    expect(cmp.differ.map((d) => d.ours)).toEqual(['0.6', '0.50007', '1.2e-5', '[0, 3]']);
+  });
 });
 
 describe('SMath import: the X-Y Plot plugin', () => {
@@ -608,7 +628,10 @@ describe('SMath import: text comparisons, solve, and definitions beside what the
     );
     expect(sources(ws)[0]).toBe('D := roots(40/19.5 == D/(1 - D), D, 0.6722) =');
     expect(warnings.some((w) => /solve/.test(w))).toBe(false);
-    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+    const ev = evaluateWithScope(ws);
+    expect(ev.shown.get(ws.regions[0].id)).toBeCloseTo(40 / 59.5, 9);
+    // the root is 0.672269, which shows as 0.6723 at 4 decimal places: SMath's solve stopped 7e-5 short of it
+    expect(compareSaved(saved!, ws.regions, ev.shown)).toMatchObject({ checked: 1, agree: 0 });
   });
 
   it('a value defined before what it reads on the same line is calculated after it', () => {

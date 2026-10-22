@@ -1160,14 +1160,11 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             // the result has its unit when SMath chose it, else it is a number in the display unit
             let hasUnit = false;
             walk(tok, (n) => { if (n.style === 'unit') hasUnit = true; });
-            // rounded to the digits shown: half a unit in the last significant digit. In SMath's
-            // significant-digits mode zeros ending a whole number are rounding (11330 is 11333.3 to 4
-            // digits, 1220 is 1225 to 3, rounded half to even), so the precision set counts there
-            const mantissa = /\d[\d.]*/.exec(value)?.[0] ?? '';
-            const sig = (m: string) => m.replace('.', '').replace(/^0+/, '').length || 1;
+            // rounded as SMath rounds what it shows: to the decimal places (or significant digits) set
+            // for the region or the worksheet, whatever digits it happened to show
             const sigMode = (body.getAttribute('significantDigitsMode') ?? calcSetting('significantDigitsMode')) === 'true';
-            const places = Number(body.getAttribute('decimalPlaces') ?? calcSetting('precision') ?? 4) || 4;
-            const digits = sigMode && !mantissa.includes('.') && /[1-9]0+$/.test(mantissa) ? Math.max(sig(mantissa.replace(/0+$/, '')), Math.min(places, sig(mantissa))) : sig(mantissa);
+            const placesSet = Number(body.getAttribute('decimalPlaces') ?? calcSetting('precision') ?? 4);
+            const places = Number.isInteger(placesSet) && placesSet >= 0 ? placesSet : 4;
             const shownIn = unit.trim() === '%' ? '1/100' : contract ? conv.displayUnit(contract, true) : '';
             // a temperature shown in °C is that temperature (27 °C is 300.15 K), not 27 K
             const absolute = !!contract && contract.type === 'operand' && contract.style === 'unit' && ABSOLUTE_TEMPERATURE.has(contract.text);
@@ -1175,7 +1172,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             // a big matrix is saved as the rows and columns in view (matrixOptions: first row, first column, columns, rows)
             const view = /^(\d+),(\d+),(\d+),(\d+)$/.exec(body.getAttribute('matrixOptions') ?? '');
             const window = view ? { row: +view[1], col: +view[2], cols: +view[3], rows: +view[4] } : undefined;
-            saved.push({ regionId: last.id, expr, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)), ...(window ? { window } : {}) });
+            saved.push({ regionId: last.id, expr, tol: shownTolerance(tok, places, sigMode), ...(window ? { window } : {}) });
           } catch {
             /* a result we cannot read (a matrix of text, a placeholder) is not compared */
           }
@@ -1425,6 +1422,47 @@ function withLeftover(unit: string, rest: string): string {
   const per = /^1\/(.+)$/.exec(rest);
   if (per) return `${unit}/${/^[\p{L}_]\w*$/u.test(per[1]) ? per[1] : `(${per[1]})`}`;
   return `${unit}*${/^[\p{L}_][\w^]*$/u.test(rest) ? rest : `(${rest})`}`;
+}
+
+/**
+ * The relative tolerance of a value SMath showed. SMath rounds what it shows to the decimal
+ * places set (of the mantissa when it writes n·10^k), or to that many significant digits, and
+ * leaves trailing zeros out: 0.5 at 4 places is 0.5 ± 0.00005, not 0.5 ± 0.05. Half a unit in
+ * the last place, against the largest number shown (a matrix compares by its largest element);
+ * never below 1e-4.
+ */
+function shownTolerance(tok: Tok, places: number, sigMode: boolean): number {
+  let largest = 0, half = 0;
+  const exponent = (t: Tok | undefined): number | null => {
+    if (t && t.type === 'operand' && !t.style && NUMBER.test(t.text)) return Number(number(t.text));
+    if (isOp(t, '-') && t!.args.length === 1) {
+      const k = exponent(t!.args[0]);
+      return k === null ? null : -k;
+    }
+    return null;
+  };
+  const visit = (t: Tok, k: number) => {
+    if (t.type === 'operand') {
+      if (t.style || !NUMBER.test(t.text)) return;
+      const v = Math.abs(Number(number(t.text))) * 10 ** k;
+      largest = Math.max(largest, v);
+      const last = sigMode ? (v ? Math.floor(Math.log10(v)) - places + 1 : -Infinity) : k - places;
+      half = Math.max(half, 0.5 * 10 ** last);
+      return;
+    }
+    // n·10^k: n rounded, then scaled
+    if (isOp(t, '*') && t.args.length === 2 && isOp(t.args[1], '^') && t.args[1].args[0]?.type === 'operand' && t.args[1].args[0].text === '10') {
+      const e = exponent(t.args[1].args[1]);
+      if (e !== null) return visit(t.args[0], k + e);
+    }
+    // the exponent of a unit (m^4) is not a value shown
+    if (isOp(t, '^')) return visit(t.args[0], k);
+    // a matrix's last two arguments are its size
+    for (const a of isFn(t, 'mat', 'sys') ? listItems(t) : t.args) visit(a, k);
+  };
+  visit(tok, 0);
+  // a value just at half a unit (3.15 shown at 1 place as 3.2) agrees despite the round-off of its difference
+  return largest > 0 ? Math.max(1e-4, (half / largest) * (1 + 1e-9)) : 1e-4;
 }
 
 /** The values SMath showed for solve(f, x): one root, or a column of them (none when it is not numbers). */
