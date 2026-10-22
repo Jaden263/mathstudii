@@ -12,7 +12,8 @@ export function renderMarkdown(md: string, live?: TextResult): string {
     stash.push(html);
     return `\uE000${stash.length - 1}\uE001`;
   };
-  const src = md.replace(/(`+)([\s\S]*?[^`])\1(?!`)|\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$|\{\{([^}]+)\}\}/g, (m, ticks: string, code: string, disp: string, inl: string, liveKey: string) => {
+  // \$ and \{ are a dollar and a brace (text imported from Mathcad escapes them)
+  const src = md.replace(/(`+)([\s\S]*?[^`])\1(?!`)|(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$([^$\n]+?)(?<!\\)\$|(?<!\\)\{\{([^}]+)\}\}/g, (m, ticks: string, code: string, disp: string, inl: string, liveKey: string) => {
     if (ticks !== undefined) return keep(`<code>${escapeHtml(code.trim() || m)}</code>`);
     if (disp !== undefined) return keep(`<span class="md-display">${renderTex(disp, true)}</span>`);
     if (inl !== undefined) return keep(renderTex(inl, false));

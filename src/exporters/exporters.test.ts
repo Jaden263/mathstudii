@@ -299,7 +299,8 @@ describe('what the other program has no counterpart for', () => {
       const r = roundTrip(ws, format, pictures);
       expect(r.differ).toEqual([]);
       const texts = r.back.ws.regions.filter((x) => x.kind === 'text').map((x) => (x as { markdown: string }).markdown).join('\n');
-      expect(texts).toMatch(/\[mathstudii beam “b”\]\** shown as a picture/);
+      // (brackets the text has are escaped in its Markdown)
+      expect(texts).toMatch(/\\?\[mathstudii beam “b”\\?\]\** shown as a picture/);
       expect(r.back.ws.regions.filter((x) => x.kind === 'image').length).toBeGreaterThanOrEqual(1);
       // b.M_max, read below the beam, is a value definition there
       const bM = si(r.before.variables.get('b') && (r.before.variables.get('b') as Record<string, unknown>).M_max) as number;

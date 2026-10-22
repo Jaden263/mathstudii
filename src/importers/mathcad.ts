@@ -8,11 +8,12 @@ import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
   createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH,
-  type AreaRegion, type Region, type PlotTrace,
+  type AreaRegion, type Region, type PlotTrace, type TextRegion,
 } from '../model/types';
 import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
 import { isUnitName, math } from '../engine/math';
+import { cssColor, normalSize, toMarkdown, type RunStyle, type TextPara, type TextRun } from './textFormat';
 import type { NumberFormat, NumberStyle } from '../engine/format';
 
 export type { ImportResult } from './common';
@@ -711,70 +712,200 @@ class Converter {
 
 // ------------------------------------------------------------ text
 
-function textFromXmcd(el: El, conv: Converter): string {
-  const paras: string[] = [];
-  const inline = (n: XNode): string => {
-    let s = '';
+/** A Mathcad 15 text style: its font (size in pt), colour, alignment and list, from <textStyles>. */
+interface Mc15TextStyle { base?: string; style: RunStyle; align?: string; list?: string }
+
+/** Mathcad 15's text styles by name, each resolved over the style it is based on. */
+function mc15TextStyles(doc: { getElementsByTagNameNS(ns: string, name: string): ArrayLike<El> }): Map<string, Mc15TextStyle> {
+  const raw = new Map<string, Mc15TextStyle>();
+  const list = doc.getElementsByTagNameNS('*', 'textStyle');
+  for (let i = 0; i < list.length; i++) {
+    const ts = list[i];
+    const inl = child(ts, 'inlineAttr'), blk = child(ts, 'blockAttr');
+    raw.set(ts.getAttribute('name') ?? '', { base: ts.getAttribute('base-style') ?? undefined, style: inl ? mc15Inline(inl, {}) : {}, align: blk?.getAttribute('text-align') ?? undefined, list: blk?.getAttribute('list-style-type') ?? undefined });
+  }
+  const resolved = new Map<string, Mc15TextStyle>();
+  const resolve = (name: string, depth = 0): Mc15TextStyle => {
+    const own = raw.get(name);
+    if (!own) return { style: {} };
+    const base = own.base && depth < 10 ? resolve(own.base, depth + 1) : { style: {} };
+    const keep = (v: string | undefined, b: string | undefined) => (v && v !== 'inherit' ? v : b);
+    return { style: { ...base.style, ...own.style }, align: keep(own.align, base.align), list: keep(own.list, base.list) };
+  };
+  for (const name of raw.keys()) resolved.set(name, resolve(name));
+  return resolved;
+}
+
+/** Mathcad 15 <inlineAttr>, <f> (size in pt) and <c> attributes over a style. */
+function mc15Inline(el: El, over: RunStyle): RunStyle {
+  const out: RunStyle = { ...over };
+  const a = (n: string) => {
+    const v = el.getAttribute(n);
+    return v === null || v === '' || v === 'inherit' ? undefined : v;
+  };
+  const size = a('font-size') ?? a('size');
+  if (size && Number(size) > 0) out.size = Number(size) * (96 / 72);
+  const family = a('font-family') ?? a('family');
+  if (family) out.family = family;
+  const color = cssColor(a('color') ?? a('val'));
+  if (color) out.color = color;
+  const bg = cssColor(a('background-color'));
+  if (bg) out.background = bg;
+  const w = a('font-weight');
+  if (w) out.bold = /bold/i.test(w);
+  const st = a('font-style');
+  if (st) out.italic = /italic|oblique/i.test(st);
+  const u = a('underline');
+  if (u) out.underline = u === 'true';
+  const lt = a('line-through');
+  if (lt) out.strike = lt === 'true';
+  const va = a('vertical-align');
+  if (va) {
+    out.sub = va === 'sub';
+    out.sup = va === 'super';
+  }
+  return out;
+}
+
+/** Mathcad 15 text as paragraphs of styled runs; inline math as `code`. */
+function textFromXmcd(el: El, conv: Converter, styles: Map<string, Mc15TextStyle>): TextPara[] {
+  const paras: TextPara[] = [];
+  const walk = (n: XNode, st: RunStyle, out: TextRun[]) => {
     for (let c = n.firstChild; c; c = c.nextSibling) {
-      if (c.nodeType === 3) s += c.nodeValue ?? '';
-      else if (c.nodeType === 1) {
-        const t = local(c);
-        const inner = inline(c);
-        if (t === 'b' || t === 'strong') s += inner.trim() ? `**${inner}**` : inner;
-        else if (t === 'i' || t === 'em') s += inner.trim() ? `*${inner}*` : inner;
-        else if (t === 'math') {
+      if (c.nodeType === 3) {
+        // Mathcad indents the markup: a line break and what follows it is not text (that is <br/>)
+        out.push({ text: (c.nodeValue ?? '').replace(/[ \t]*[\r\n]\s*/g, ''), style: st });
+        continue;
+      }
+      if (c.nodeType !== 1) continue;
+      const e = c as El;
+      switch (local(e)) {
+        case 'b': case 'strong': walk(e, { ...st, bold: true }, out); break;
+        case 'i': case 'em': walk(e, { ...st, italic: true }, out); break;
+        case 'u': walk(e, { ...st, underline: true }, out); break;
+        case 'sub': walk(e, { ...st, sub: true }, out); break;
+        case 'sup': walk(e, { ...st, sup: true }, out); break;
+        case 'f': case 'c': case 'inlineAttr': case 'span': walk(e, mc15Inline(e, st), out); break;
+        case 'link': case 'a': walk(e, { ...st, link: e.getAttribute('href') ?? undefined }, out); break;
+        case 'sp': out.push({ text: ' '.repeat(Math.max(1, Number(e.getAttribute('count') ?? 1))), style: st }); break;
+        case 'tab': out.push({ text: '    ', style: st }); break;
+        case 'br': out.push({ text: '\n', style: st }); break;
+        case 'math': case 'region': {
+          const m = local(e) === 'math' ? e : child(e, 'math');
+          let src = '(math)';
           try {
-            s += `\`${conv.statement(c as El)}\``;
+            if (m) src = conv.statement(m);
           } catch {
-            s += '`(math)`';
+            /* shown as (math) */
           }
-        } else if (t === 'br') s += '\n';
-        else s += inner;
+          out.push({ text: `\`${src.replace(/`/g, "'")}\``, style: st, markup: true });
+          break;
+        }
+        default: walk(e, st, out);
       }
     }
-    return s;
   };
   const ps = kids(el).filter((c) => local(c) === 'p');
   for (const p of ps.length ? ps : [el]) {
-    const style = p.getAttribute('style') ?? '';
-    let line = inline(p).replace(/[ \t]+/g, ' ').trim();
-    if (!line) continue;
-    if (/heading\s*1|title/i.test(style)) line = `# ${line}`;
-    else if (/heading\s*2/i.test(style)) line = `## ${line}`;
-    else if (/heading/i.test(style)) line = `### ${line}`;
-    paras.push(line);
+    const name = p.getAttribute('style') ?? 'Normal';
+    const ts = styles.get(name) ?? styles.get('Normal') ?? { style: {} };
+    const runs: TextRun[] = [];
+    walk(p, ts.style, runs);
+    // spaces at the ends of a paragraph do nothing
+    if (runs.length) {
+      runs[0] = { ...runs[0], text: runs[0].markup ? runs[0].text : runs[0].text.replace(/^ +/, '') };
+      const k = runs.length - 1;
+      runs[k] = { ...runs[k], text: runs[k].markup ? runs[k].text : runs[k].text.replace(/ +$/, '') };
+    }
+    const align = (v: string | null | undefined) => (v && v !== 'inherit' ? v : undefined);
+    const a = align(p.getAttribute('text-align')) ?? ts.align;
+    const l = align(p.getAttribute('list-style-type')) ?? ts.list;
+    const hm = /(?:heading|header|überschrift|заголовок|titre|título)\s*(\d)/i.exec(name);
+    paras.push({
+      runs,
+      ...(a === 'center' || a === 'right' || a === 'justify' ? { align: a } : {}),
+      ...(l && l !== 'none' ? { list: /decimal|alpha|roman/.test(l) ? 'number' : 'bullet' } : {}),
+      ...(hm ? { heading: Math.min(3, Math.max(1, Number(hm[1]))) as 1 | 2 | 3 } : /^title$/i.test(name) ? { heading: 1 as const } : {}),
+    });
   }
-  return paras.join('\n\n');
+  return paras;
 }
 
-function textFromXaml(xml: string): string {
-  const doc = new DOMParser().parseFromString(xml, 'text/xml');
-  const paras: string[] = [];
-  const all = doc.getElementsByTagNameNS('*', 'Paragraph');
-  for (let i = 0; i < all.length; i++) {
-    const p = all[i];
-    let s = '';
-    const walk = (n: XNode, bold: boolean, italic: boolean) => {
-      for (let c = n.firstChild; c; c = c.nextSibling) {
-        if (c.nodeType === 3) {
-          const t = c.nodeValue ?? '';
-          s += bold && t.trim() ? `**${t}**` : italic && t.trim() ? `*${t}*` : t;
-        } else if (c.nodeType === 1) {
-          const e = c as El;
-          const t = local(e);
-          walk(e, bold || t === 'Bold' || e.getAttribute('FontWeight') === 'Bold', italic || t === 'Italic' || e.getAttribute('FontStyle') === 'Italic');
-        }
-      }
-    };
-    walk(p, p.getAttribute('FontWeight') === 'Bold', false);
-    s = s.replace(/\*\*\*\*/g, '').trim();
-    if (!s) continue;
-    const size = Number(p.getAttribute('FontSize') ?? 0);
-    if (size >= 20) s = `# ${s.replace(/\*\*/g, '')}`;
-    else if (size >= 16) s = `## ${s.replace(/\*\*/g, '')}`;
-    paras.push(s);
+/** Prime XAML attributes (FontSize in px, colours as #AARRGGBB) over the inherited style. */
+function xamlStyle(e: El, over: RunStyle): RunStyle {
+  const out: RunStyle = { ...over };
+  const a = (n: string) => e.getAttribute(n) || undefined;
+  const size = Number(a('FontSize'));
+  if (size > 0) out.size = size;
+  if (a('FontFamily')) out.family = a('FontFamily');
+  const fg = a('Foreground');
+  if (fg) out.color = cssColor(fg);
+  const bg = a('Background');
+  if (bg) out.background = cssColor(bg);
+  const w = a('FontWeight');
+  if (w) out.bold = /bold|black|heavy/i.test(w);
+  const st = a('FontStyle');
+  if (st) out.italic = /italic|oblique/i.test(st);
+  const deco = a('TextDecorations');
+  if (deco !== undefined) {
+    out.underline = /underline/i.test(deco);
+    out.strike = /strikethrough/i.test(deco);
   }
-  return paras.join('\n\n');
+  // <Run.TextDecorations><TextDecoration Location="Underline"/></Run.TextDecorations>
+  for (const pe of kids(e).filter((c) => local(c).endsWith('.TextDecorations'))) {
+    for (const d of Array.from(pe.getElementsByTagNameNS('*', 'TextDecoration'))) {
+      const loc = d.getAttribute('Location') ?? '';
+      if (/underline/i.test(loc)) out.underline = true;
+      if (/strikethrough/i.test(loc)) out.strike = true;
+    }
+  }
+  const va = a('BaselineAlignment') ?? a('Typography.Variants');
+  if (va) {
+    out.sub = /subscript/i.test(va);
+    out.sup = /superscript/i.test(va);
+  }
+  return out;
+}
+
+/** A Prime text (FlowDocument XAML) as paragraphs of styled runs. */
+function textFromXaml(root: El | null): TextPara[] {
+  const paras: TextPara[] = [];
+  const inline = (n: El, st: RunStyle, out: TextRun[]) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) {
+        out.push({ text: c.nodeValue ?? '', style: st });
+        continue;
+      }
+      if (c.nodeType !== 1) continue;
+      const e = c as El;
+      const t = local(e);
+      if (t.includes('.')) continue; // property elements (Run.TextDecorations)
+      if (t === 'LineBreak') out.push({ text: '\n', style: st });
+      else if (t === 'Bold') inline(e, { ...xamlStyle(e, st), bold: true }, out);
+      else if (t === 'Italic') inline(e, { ...xamlStyle(e, st), italic: true }, out);
+      else if (t === 'Underline') inline(e, { ...xamlStyle(e, st), underline: true }, out);
+      else if (t === 'Hyperlink') inline(e, { ...xamlStyle(e, st), link: e.getAttribute('NavigateUri') ?? undefined }, out);
+      else inline(e, xamlStyle(e, st), out);
+    }
+  };
+  const block = (n: El, st: RunStyle, align: string | undefined, list: TextPara['list']) => {
+    for (const e of kids(n)) {
+      const t = local(e);
+      if (t.includes('.')) continue;
+      const own = xamlStyle(e, st);
+      const al = e.getAttribute('TextAlignment') ?? align;
+      if (t === 'Paragraph') {
+        const runs: TextRun[] = [];
+        inline(e, own, runs);
+        paras.push({ runs, ...(al === 'Center' || al === 'Right' || al === 'Justify' ? { align: al.toLowerCase() as 'center' | 'right' | 'justify' } : {}), ...(list ? { list } : {}) });
+      } else if (t === 'List') {
+        const marker = e.getAttribute('MarkerStyle') ?? 'Disc';
+        block(e, own, al, /decimal|letter|roman/i.test(marker) ? 'number' : 'bullet');
+      } else block(e, own, al, list);
+    }
+  };
+  if (root) block(root, xamlStyle(root, {}), undefined, undefined);
+  return paras;
 }
 
 // ------------------------------------------------------------ packages
@@ -1111,6 +1242,9 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   const placed = flat.sort((a, b) => a.order - b.order || a.x - b.x);
 
   const regions: Region[] = [];
+  /** Text regions, written once the whole worksheet's normal text size is known. */
+  const texts: { region: TextRegion; paras: TextPara[]; highlight?: string }[] = [];
+  const textStyles = pkg ? new Map<string, Mc15TextStyle>() : mc15TextStyles(doc);
   let pageBreaks = 0;
   const fail = (what: string, e: unknown, at: Placed) => {
     const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet` : (e as Error).message;
@@ -1185,17 +1319,25 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           saved.push({ regionId: reg.id, expr: conv.scale ? `(${value})*(${conv.scale})` : value });
         }
       } else if (kind === 'text') {
-        let md = '';
+        let paras: TextPara[] = [];
         const idref = body.getAttribute('item-idref');
+        const flow = child(body, 'FlowDocument');
         if (pkg && idref && pkg.rels[idref]) {
           const xaml = findFile(pkg.files, pkg.rels[idref]);
           if (xaml) {
             const inner = unzipSync(xaml);
             const docKey = Object.keys(inner).find((k) => /document\.xaml$/i.test(k));
-            if (docKey) md = textFromXaml(strFromU8(inner[docKey]));
+            if (docKey) paras = textFromXaml(new DOMParser({ onError: () => {} }).parseFromString(strFromU8(inner[docKey]), 'text/xml').documentElement as unknown as El);
           }
-        } else md = textFromXmcd(body, conv);
-        if (md.trim()) regions.push(createRegion('text', at.x, at.y, { markdown: md, width: Math.max(160, Number(r.getAttribute('width') ?? 0) * PX || 360) }));
+        } else if (flow) paras = textFromXaml(flow); // converted from Mathcad 15: the document itself
+        else paras = textFromXmcd(body, conv, textStyles);
+        if (paras.some((p) => p.runs.some((x) => x.text.trim()))) {
+          const reg = createRegion('text', at.x, at.y, { markdown: '', width: Math.max(160, Number(r.getAttribute('width') ?? 0) * PX || 360) });
+          // Mathcad 15 highlights a region with its own background colour
+          const highlight = r.getAttribute('show-highlight') === 'true' ? cssColor(r.getAttribute('background-color')) ?? '#ffff80' : cssColor(r.getAttribute('background-color'));
+          texts.push({ region: reg as TextRegion, paras, highlight });
+          regions.push(reg);
+        }
       } else if (kind === 'solveblock') {
         regions.push(solveBlock(body, conv, at));
       } else if (kind === 'picture') {
@@ -1233,6 +1375,18 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   }
   if (solve) warnings.push('A "Given" block has no Find/Minerr call; its constraints were dropped');
   void pageBreaks; // page breaks follow from our own page layout
+
+  // text: the size most of it has is the normal size here; a serif worksheet keeps its serif
+  const normal = normalSize(texts.map((t) => t.paras));
+  for (const t of texts) {
+    const { markdown, style } = toMarkdown(t.paras, normal);
+    t.region.markdown = markdown;
+    if (t.highlight && !style.background) style.background = t.highlight;
+    if (Object.keys(style).length) t.region.style = style;
+  }
+  const families = texts.flatMap((t) => t.paras.flatMap((p) => p.runs.map((x) => [x.style.family ?? '', x.text.length] as const)));
+  const serif = families.reduce((n, [f, len]) => n + (/times|georgia|garamond|cambria|serif/i.test(f) && !/sans/i.test(f) ? len : -len), 0) > 0;
+  if (serif) ws.settings.format = { ...ws.settings.format, textFont: 'serif' };
 
   // areas: their bars (drawn first, under the regions), collapsed again as in the file
   const bars = areas.map((a) => createRegion('area', a.x, a.y, { title: a.title, height: Math.round(a.height) }) as AreaRegion);
