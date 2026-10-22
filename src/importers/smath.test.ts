@@ -450,6 +450,16 @@ describe('SMath import: functions and lists', () => {
     expect(value(ws, 'nthRoot(-8, 3) =')).toMatch(/= -2/);
   });
 
+  it('description(x) is the comment beside the definition of x (plot labels set from it)', () => {
+    const { ws } = one(
+      math(def(v('text.phi'), v('1')), { desc: 'Angle in °' }),
+      math(def(v("VPlot'Labels'XLabel"), v('text.phi') + fn('description', 1)) + def(v("VPlot'Labels'YLabel"), v('t') + fn('description', 1)) + v('2') + v('1') + fn('line', 4)),
+    );
+    expect(sources(ws).some((x) => x.includes('← "Angle in °"') && x.includes('← ""'))).toBe(true);
+    const ev = evaluateWithScope(ws);
+    expect(ws.regions.filter((r) => r.kind === 'math').map((r) => (ev.results.get(r.id) as MathResult | undefined)?.error)).toEqual([undefined, undefined]);
+  });
+
   it('a range inside an expression is the vector of its values: (0..3)·2', () => {
     const { ws } = one(math(def(v('φ'), v('0') + v('3') + fn('range', 2) + br + v('2') + op('*'))), math(def(v('i'), v('1') + v('3') + fn('range', 2))), math(v('φ'), { result: 'numeric' }));
     expect(sources(ws)).toEqual(['φ := range(0, 3)*2', 'i := 1 .. 3', 'φ =']);
@@ -682,12 +692,17 @@ describe('SMath import: values that are programs', () => {
 });
 
 describe('SMath import: page settings and what the report says', () => {
-  it('a print layout with header and footer prints a header with the title and author', () => {
+  it('a print layout with header and footer: mathstudii\u2019s, with the title and author, ready to switch on (off, as the regions would run into it)', () => {
     const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><settings><metadata lang="eng"><title>Beam check</title><author>FCB</author></metadata>`
-      + `<pageModel active="true"><header alignment="Center">&amp;[DATE] &amp;[TIME] - &amp;[FILENAME]</header><footer alignment="Center">&amp;[PAGENUM] / &amp;[COUNT] | J. Smith | Engineer</footer></pageModel></settings><regions></regions></worksheet>`;
+      + `<pageModel active="true"><header alignment="Center">&amp;[DATE] &amp;[TIME] - &amp;[FILENAME]</header><footer alignment="Center">&amp;[PAGENUM] / &amp;[COUNT] | J. Smith | Engineer</footer></pageModel></settings><regions>`
+      // a title 9 px from the top of the sheet, a formula under it
+      + `<region id="0" left="36" top="9" width="300" height="33"><text lang="eng"><p>Beam check</p></text></region>`
+      + `<region id="1" left="27" top="45" width="72" height="24"><math><input>${def(v('a'), v('1'))}</input></math></region></regions></worksheet>`;
     const { ws, warnings } = importSmath(strToU8(xml), 'x.sm');
-    expect(ws.settings.report).toEqual({ enabled: true, subject: 'Beam check', author: 'FCB' });
-    expect(warnings.some((w) => /J\. Smith Engineer/.test(w))).toBe(true);
+    expect(ws.settings.report).toEqual({ enabled: false, subject: 'Beam check', author: 'FCB' });
+    expect(warnings.some((w) => /page header and footer \(J\. Smith Engineer\).*Format → Page header & footer/.test(w))).toBe(true);
+    // the regions keep SMath's places (9 px from the top of the sheet)
+    expect(ws.regions.map((r) => r.y)).toEqual([9, 45]);
   });
   it('names the plugin regions it does not convert, and empty placeholders', () => {
     id = 0;

@@ -256,6 +256,8 @@ class Converter {
   displayNotes = new Set<string>();
   /** Units the worksheet defines itself (kcf := 1 kip/ft³): variables here. */
   userUnits = new Set<string>();
+  /** The comment written beside each variable's definition, for description(x). */
+  descriptions = new Map<string, string>();
 
   unit(raw: string): Ex {
     // a region marked "ignore units" calculates with every unit as 1
@@ -464,6 +466,10 @@ class Converter {
         const [x, y, v] = this.args(t);
         return { s: `interp(cspline(${x}, ${y}), ${x}, ${y}, ${v})`, p: P.ATOM };
       }
+      case 'description':
+        // description(x): the comment written beside the definition of x, as text
+        if (n === 1 && isVar(t.args[0])) return { s: JSON.stringify(this.descriptions.get(smName(t.args[0].text)) ?? ''), p: P.ATOM };
+        break;
       case 'if':
         if (n === 3) return { s: `if(${this.args(t).join(', ')})`, p: P.ATOM };
         break;
@@ -899,7 +905,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   if (prec >= 0 && prec <= 15) ws.settings.precision = prec;
   const thr = Number(calc && child(calc, 'exponentialThreshold')?.textContent);
   if (thr > 0 && thr <= 15) ws.settings.expThreshold = thr;
-  // a print layout with header and footer prints a header here too, with the document's title and author
+  // a print layout with header and footer: mathstudii's page header and footer, with the
+  // document's title and author, ready to switch on. They stay off: SMath prints them in the
+  // page margins, while here they take the top and bottom of each page, where the regions SMath
+  // placed would run into them
   const settingsEl = child(root, 'settings') ?? root;
   const meta = pickLang(kids(settingsEl).filter((c) => local(c) === 'metadata'));
   const metaTitle = meta && child(meta, 'title')?.textContent?.trim();
@@ -908,9 +917,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   if (pageModel?.getAttribute('active') === 'true') {
     const header = child(pageModel, 'header')?.textContent ?? '', footer = child(pageModel, 'footer')?.textContent ?? '';
     if (header.trim() || footer.trim()) {
-      ws.settings.report = { enabled: true, ...(metaTitle ? { subject: metaTitle } : {}), ...(metaAuthor ? { author: metaAuthor } : {}) };
+      ws.settings.report = { enabled: false, ...(metaTitle ? { subject: metaTitle } : {}), ...(metaAuthor ? { author: metaAuthor } : {}) };
       const own = (t: string) => t.replace(/&(amp;)*\[(DATE|TIME|FILENAME|PAGENUM|COUNT|FILEPATH)\]/g, '').replace(/[\s\-/|]+/g, ' ').trim();
-      if (own(header) || own(footer)) warnings.push(`the page header and footer print as mathstudii's (title, author, date, page numbers); SMath's own text in them (${[own(header), own(footer)].filter(Boolean).join('; ')}) is not repeated`);
+      const text = [own(header), own(footer)].filter(Boolean).join('; ');
+      warnings.push(`SMath prints a page header and footer${text ? ` (${text})` : ' (date, file name, page numbers)'} in the page margins: mathstudii's (title, author, date, page numbers) are under Format → Page header & footer, off, as here they would run into the regions at the top and bottom of each page`);
     }
   }
 
@@ -942,6 +952,15 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   }
   // units the worksheet defines (k.1 := 17.5 N/mm) are variables of that name
   for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isUserUnit(t.args[0])) conv.userUnits.add(t.args[0].text);
+  // the comments beside definitions, which description(x) reads (labels of plots from them)
+  inputs.forEach((toks, i) => {
+    const body = regionKinds(placed[i].region)[0];
+    const t = toks[0];
+    if (!body || toks.length !== 1 || !isOp(t, ':') || !isVar(t.args[0])) return;
+    const desc = pickLang(kids(body).filter((c) => local(c) === 'description'));
+    const text = (desc?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (text) conv.descriptions.set(smName(t.args[0].text), text);
+  });
   const used = inputs.map((toks, i) => {
     const s = new Set<string>();
     const body = regionKinds(placed[i].region)[0];
