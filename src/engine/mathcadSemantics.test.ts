@@ -249,3 +249,10 @@ describe('lsolve', () => {
     expect(shown(['K := [2 N/m, 1 N; 0, 4 N*m]', 'F := [6 N; 8 N*m]', 'lsolve(K, F) ='])).toBe('\\begin{bmatrix} 2\\ \\mathrm{m} \\\\ 2 \\end{bmatrix}');
   });
 });
+
+describe('mod', () => {
+  it('of two quantities of one kind is the remainder, in the unit of the first', () => {
+    expect(shown(['mod(10 s, 3 s) ='])).toBe('1\\ \\mathrm{s}');
+    expect(shown(['mod(250 mm, 0.1 m) = mm'])).toBe('50\\ \\mathrm{mm}');
+  });
+});

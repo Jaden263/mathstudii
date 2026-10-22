@@ -27,6 +27,16 @@ export const math: MathJsInstance = create(all, { number: 'number', precision: 6
       },
     }),
   }, { override: true });
+  // mod(t, T) of quantities of one kind (10 s, 3 s): the remainder, in the unit of t
+  const mod = fns.mod;
+  math.import({
+    mod: typed('mod', mod, {
+      'Unit, Unit': (a: Unit, b: Unit) => {
+        const u = a.formatUnits();
+        return math.unit((mod as (x: number, y: number) => number)(a.toNumber(u), b.toNumber(u)), u);
+      },
+    }),
+  }, { override: true });
   // and compares with one: max(F, 0) of a force is F or 0 N
   const compareWithZero = (name: string, test: (d: number) => unknown, more: Record<string, unknown> = {}) => {
     const old = fns[name];

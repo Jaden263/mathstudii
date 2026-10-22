@@ -37,7 +37,11 @@ const sameDims = (a: number[], b: number[]) => {
   return true;
 };
 
-const flat = (v: unknown): unknown[] => (isMatrix(v) ? (math.flatten(v.toArray() as never) as unknown as unknown[]) : Array.isArray(v) ? (math.flatten(v as never) as unknown as unknown[]) : [v]);
+/** Every element, row by row; a nested array's elements (arrays themselves) give theirs. */
+const flat = (v: unknown): unknown[] => {
+  const items = isMatrix(v) ? (math.flatten(v.toArray() as never) as unknown as unknown[]) : Array.isArray(v) ? (math.flatten(v as never) as unknown as unknown[]) : [v];
+  return items.some((x) => isMatrix(x) || Array.isArray(x)) ? items.flatMap(flat) : items;
+};
 
 /** Do two values agree to a relative tolerance (of the largest element, for vectors and matrices)? */
 export function agrees(ours: unknown, theirs: unknown, tol = 1e-6): boolean {

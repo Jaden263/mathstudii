@@ -76,6 +76,23 @@ function rawName(el: El): string {
   return s;
 }
 
+/** Words for the symbols of a custom operator's name. */
+const SYMBOL_WORDS: Record<string, string> = {
+  '*': 'star', '+': 'plus', '-': 'minus', '−': 'minus', '/': 'slash', '\\': 'backslash', '|': 'bar', '<': 'lt', '>': 'gt',
+  '≤': 'le', '≥': 'ge', '=': 'eq', '≠': 'ne', ':': 'colon', '.': 'dot', ',': 'comma', '!': 'excl', '?': 'query', '&': 'amp',
+  '^': 'caret', '~': 'tilde', '#': 'hash', '@': 'at', '$': 'dollar', '_': 'underscore', '±': 'pm', '∠': 'angle', '∈': 'in',
+  '×': 'times', '·': 'cdot', '⊗': 'otimes', '⊕': 'oplus', '∘': 'circ', '⁺': 'supplus', '⁻': 'supminus', '→': 'arrow',
+};
+
+/**
+ * A custom operator's name (Mathcad lets a function be called |>, || or ≤ and written between
+ * its operands): its symbols as words, op_bar_gt. Null for a name with a letter or digit.
+ */
+export function operatorName(raw: string): string | null {
+  if (!raw || /[\p{L}\p{N}%∞°]/u.test(raw)) return null;
+  return `op_${[...raw].map((ch) => SYMBOL_WORDS[ch] ?? `u${ch.codePointAt(0)!.toString(16)}`).join('_')}`;
+}
+
 /**
  * A name as Mathcad 15 tells names apart: by its spelling and its math style (font). The
  * function in(x, v) in a style of its own is not the unit in.
@@ -134,18 +151,26 @@ class Converter {
 
   /** Names spelled without a math style of their own (Mathcad 15), anywhere in the file. */
   plainNames = new Set<string>();
+  /** The math styles (fonts) each name is written in besides the plain one, in the order the file has them. */
+  styledNames = new Map<string, string[]>();
 
   /**
    * A name as an identifier here. Mathcad 15 tells names apart by their math style too: a
    * function max or in written in a style of its own is not the built-in max or the unit in,
-   * so such a name gets a _ of its own when its spelling is taken.
+   * so such a name gets a _ of its own when its spelling is taken, and each further style of
+   * that spelling a number (F_TIE_, F_TIE_2). A custom operator's name (|>, ||, ≤) has its
+   * symbols spelled out (op_bar_gt), so that operators stay apart.
    */
   ident(el: El): string {
     const raw = rawName(el);
-    const s = sanitize(raw);
+    const s = operatorName(raw) ?? sanitize(raw);
     if (nameKey(el) === raw) return s;
     const taken = this.plainNames.has(raw) || typeof (math as unknown as Record<string, unknown>)[raw] === 'function' || isUnitName(unitName(raw));
-    return taken && !s.endsWith('_') ? `${s}_` : s;
+    const styles = this.styledNames.get(raw) ?? [];
+    const slot = Math.max(0, styles.indexOf(el.getAttribute('font') ?? '')) + (taken ? 1 : 0);
+    if (slot === 0) return s;
+    if (s.endsWith('_')) return slot === 1 ? s : `${s}${slot}`;
+    return slot === 1 ? `${s}_` : `${s}_${slot}`;
   }
 
   /** A display unit: the expression, without a numeric scale Mathcad allows there (10⁻³⁴ kg·m²/s). */
@@ -234,6 +259,8 @@ class Converter {
 
   /** The lines of a program-valued operand, as a block at this indent. */
   block(el: El, indent: string): string[] {
+    // (break), (return x): a program statement in parentheses
+    while (local(el) === 'parens' && kids(el).length === 1 && this.isProgram(kids(el)[0])) el = kids(el)[0];
     return local(el) === 'program' ? this.programLines(el, indent) : this.stmt(el, indent);
   }
 
@@ -1154,7 +1181,14 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   for (const d of doc.getElementsByTagNameNS('*', 'globalDefine')) definedNames(d).sheet.forEach((n) => sheetNames.add(n));
   let insideNames = new Set<string>();
   conv.defined = { has: (n: string) => sheetNames.has(n) || insideNames.has(n) };
-  for (const id of doc.getElementsByTagNameNS('*', 'id')) if (nameKey(id) === rawName(id)) conv.plainNames.add(rawName(id));
+  for (const id of doc.getElementsByTagNameNS('*', 'id')) {
+    const raw = rawName(id);
+    if (nameKey(id) === raw) conv.plainNames.add(raw);
+    else {
+      const styles = conv.styledNames.get(raw) ?? [];
+      if (!styles.includes(id.getAttribute('font')!)) conv.styledNames.set(raw, [...styles, id.getAttribute('font')!]);
+    }
+  }
   for (const d of doc.getElementsByTagNameNS('*', 'define')) {
     const t = kids(d)[0];
     if (t && local(t) === 'id') conv.variables.add(rawName(t));

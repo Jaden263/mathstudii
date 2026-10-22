@@ -574,3 +574,55 @@ describe('Mathcad import: spec tables', () => {
     expect(results(ws).by('c*2 =').tex).toMatch(/= 6$/);
   });
 });
+
+describe('Mathcad 15 import: custom operators, names in several styles, program statements in parentheses', () => {
+  const xmcdOf = (regions: string) => importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>${regions}</regions></worksheet>`), 'o.xmcd');
+  const m15 = (rid: number, inner: string) => `<region region-id="${rid}" left="24" top="${rid * 30}"><math>${inner}</math></region>`;
+  const fn15 = (name: string, params: string[], body: string, idf = id15) => define(`<ml:function>${idf(name)}<ml:boundVars>${params.map((p) => id15(p)).join('')}</ml:boundVars></ml:function>`, body);
+  const infix = (op: string, a: string, b: string) => `<ml:apply fixity="infix">${id15(op)}${a}${b}</ml:apply>`;
+  it('operators named || and |+ (functions written between their operands) stay apart', () => {
+    const { ws } = xmcdOf([
+      m15(1, fn15('||', ['A', 'B'], ap('<ml:div/>', ap('<ml:mult/>', id15('A'), id15('B')), ap('<ml:plus/>', id15('A'), id15('B'))))),
+      m15(2, fn15('|+', ['A', 'B'], ap('<ml:plus/>', id15('A'), ap('<ml:mult/>', real(10), id15('B'))))),
+      m15(3, evalOf(infix('||', real(2), real(2)))),
+      m15(4, evalOf(infix('|+', real(2), real(2)))),
+    ].join(''));
+    expect(sources(ws)).toEqual(['op_bar_bar(A, B) := A*B/(A + B)', 'op_bar_plus(A, B) := A + 10*B', 'op_bar_bar(2, 2) =', 'op_bar_plus(2, 2) =']);
+    const { by } = results(ws);
+    expect(by('op_bar_bar(2, 2) =').tex).toMatch(/= 1$/);
+    expect(by('op_bar_plus(2, 2) =').tex).toMatch(/= 22$/);
+  });
+  it('a name in two styles of its own besides the plain one is three names', () => {
+    const styled = (n: string, font: string) => `<ml:id xml:space="preserve" font="${font}">${n}</ml:id>`;
+    const { ws } = xmcdOf([
+      m15(1, define(id15('F'), real(1))),
+      m15(2, define(styled('F', '4'), real(2))),
+      m15(3, define(styled('F', '7'), real(3))),
+      m15(4, evalOf(ap('<ml:plus/>', ap('<ml:plus/>', id15('F'), ap('<ml:mult/>', real(10), styled('F', '4'))), ap('<ml:mult/>', real(100), styled('F', '7'))))),
+    ].join(''));
+    expect(sources(ws).slice(0, 3)).toEqual(['F := 1', 'F_ := 2', 'F_2 := 3']);
+    expect(results(ws).by('F + 10*F_ + 100*F_2 =').tex).toMatch(/= 321$/);
+  });
+  it('(break) and (return x): a program statement in parentheses is that statement', () => {
+    const { ws } = xmcdOf([
+      m15(1, fn15('first', ['v'], program(
+        `<ml:for>${id15('k')}<ml:range>${real(0)}${real(9)}</ml:range>${program(`<ml:ifThen>${ap('<ml:greaterThan/>', ap('<ml:indexer/>', id15('v'), id15('k')), real(2))}<ml:parens><ml:return>${id15('k')}</ml:return></ml:parens></ml:ifThen>`)}</ml:for>`,
+        ap('<ml:neg/>', real(1)),
+      ))),
+      m15(2, evalOf(ap(id15('first'), `<ml:matrix rows="4" cols="1">${real(1)}${real(2)}${real(5)}${real(7)}</ml:matrix>`))),
+    ].join(''));
+    expect(sources(ws)[0]).toBe('first(v) :=\n  for k ∈ 0 .. 9\n    if v[k] > 2\n      return k\n  -1');
+    expect(results(ws).by('first([1; 2; 5; 7]) =').tex).toMatch(/= 2$/);
+  });
+});
+
+describe('saved results: nested arrays', () => {
+  it('compare element by element, an array among the elements by its own elements', () => {
+    const { ws, saved } = primeOf(math(define(id('N'), `<ml:matrix rows="2" cols="1">${real(1)}<ml:matrix rows="2" cols="1">${real(2)}${real(3)}</ml:matrix></ml:matrix>`)), math(evalOf(id('N'))));
+    const shown = evaluateWithScope(ws).shown;
+    const reg = ws.regions.find((r) => r.kind === 'math' && r.source === 'N =')!;
+    expect(compareSaved([{ regionId: reg.id, expr: '[1; [2; 3]]' }, ...(saved ?? [])], ws.regions, shown)).toMatchObject({ checked: 1, agree: 1 });
+    expect(compareSaved([{ regionId: reg.id, expr: '[1; [2; 4]]' }], ws.regions, shown)).toMatchObject({ checked: 1, agree: 0 });
+  });
+});
