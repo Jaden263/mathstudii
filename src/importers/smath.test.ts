@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { gzipSync, strToU8, zipSync } from 'fflate';
 import { importSmath } from './smath';
-import { evaluateWorksheet, type MathResult } from '../engine/evaluator';
+import { compareSaved } from './saved';
+import { evaluateWorksheet, evaluateWithScope, type MathResult } from '../engine/evaluator';
 import { loadCas } from '../engine/symbolic';
 import type { Region, Worksheet } from '../model/types';
 
@@ -332,5 +333,34 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
     expect(value(ws, 'v1 =')).toMatch(/= 97/);
     expect(warnings.some((w) => /slider.*v1 := 97/.test(w))).toBe(true);
     expect(warnings.some((w) => /Maxima plot.*picture/.test(w))).toBe(true);
+  });
+});
+
+describe('SMath import: definitions that read names defined further down', () => {
+  it('calculates them where they are used, with the values the names have there (SMath keeps them as symbols)', () => {
+    id = 0;
+    top = 0;
+    const show = (input: string, saved: string) => region(`<math><input>${input}</input><result action="numeric">${v(saved)}</result></math>`);
+    const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${[
+      math(def(v('q'), v('2'))),
+      // w := q·L/I before L and I are defined; σ := w/k reads w and k
+      math(def(v('w'), v('q') + v('L') + op('*') + v('I') + op('/'))),
+      math(def(v('σ'), v('w') + v('k') + op('/'))),
+      math(def(v('L'), v('3'))),
+      math(def(v('I'), v('2'))),
+      math(def(v('k'), v('3'))),
+      show(v('w'), '3'),
+      show(v('σ'), '1'),
+      // a second section: other I, the same formulas
+      math(def(v('I'), v('6'))),
+      show(v('w'), '1'),
+      show(v('σ'), '0.3333'),
+    ].join('')}</regions></worksheet>`;
+    const { ws, saved, warnings } = importSmath(strToU8(xml), 'x.sm');
+    expect(sources(ws).slice(1, 3)).toEqual(['w(L, I) := q*L/I', 'σ(L, I, k) := w(L, I)/k']);
+    expect(sources(ws).filter((x) => x.endsWith(' ='))).toEqual(['w(L, I) =', 'σ(L, I, k) =', 'w(L, I) =', 'σ(L, I, k) =']);
+    expect(warnings.some((w) => /2 definitions read names defined only further down \(w\(L, I\), σ\(L, I, k\)\)/.test(w))).toBe(true);
+    const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
+    expect(cmp).toMatchObject({ checked: 4, agree: 4 });
   });
 });

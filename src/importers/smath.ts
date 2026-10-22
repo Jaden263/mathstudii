@@ -109,6 +109,25 @@ function assignments(t: Tok): { all: string[]; element: Set<string>; counters: S
   return { all, element, counters };
 }
 
+/** Names a top-level formula defines on the worksheet: x := …, x[i] := …, a unit of its own, a loop's variables. */
+function worksheetDefines(t: Tok): string[] {
+  if (isOp(t, ':')) {
+    const n = targetName(t.args[0]);
+    return n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el')) ? [n] : [];
+  }
+  return isProgram(t) ? assignments(t).all : [];
+}
+
+/** Variables a formula binds itself: the variable of sum, int, diff, solve …, loop counters, program locals. */
+function boundNames(t: Tok): Set<string> {
+  const out = new Set<string>(assignments(t).all);
+  walk(t, (n) => {
+    if (isFn(n, 'sum', 'product', 'int', 'diff', 'solve', 'roots', 'at', 'Solve', 'FindRoot') && isVar(n.args[1])) out.add(smName(n.args[1].text));
+    if (isFn(n, 'for') && isVar(n.args[0])) out.add(smName(n.args[0].text));
+  });
+  return out;
+}
+
 /** Program constructs: these become indented mathstudii programs. */
 function isProgram(t: Tok): boolean {
   if (isFn(t, 'line', 'for', 'while', 'try')) return true;
@@ -191,6 +210,11 @@ class Converter {
   private inContract = false;
   private exactUnits = false;
 
+  /**
+   * Variables whose definition reads names only defined further down (SMath keeps those as
+   * symbols until the value is used): here functions of those names, called where they are used.
+   */
+  lazy = new Map<string, string[]>();
   /** Why a display unit is shown in another unit (once per worksheet). */
   displayNotes = new Set<string>();
   /** Units the worksheet defines itself (kcf := 1 kip/ft³): variables here. */
@@ -247,7 +271,15 @@ class Converter {
     if (NUMBER.test(t.text)) return { s: number(t.text), p: P.ATOM };
     if (CONSTANTS[t.text]) return { s: CONSTANTS[t.text], p: P.ATOM };
     if (t.text === 'break' || t.text === 'continue') throw new Unsupported(`“${t.text}” outside a program`);
-    return { s: this.name(t.text), p: P.ATOM };
+    return { s: this.lazyCall(this.name(t.text)), p: P.ATOM };
+  }
+
+  /** A variable, or the call of a definition that waits for names defined further down (which may wait too). */
+  lazyCall(name: string, seen = new Set<string>()): string {
+    const late = this.lazy.get(name);
+    if (!late || seen.has(name)) return name;
+    seen.add(name);
+    return `${name}(${late.map((p) => this.lazyCall(p, seen)).join(', ')})`;
   }
 
   /** True when every leaf is a unit (or an exponent): such factors read naturally as "5 kN/m". */
@@ -727,6 +759,12 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       if (n.style === 'string') hasStrings.add(name);
     });
   }
+  // where each name is last defined on the worksheet, to tell names defined further down
+  const lastDefined = new Map<string, number>();
+  inputs.forEach((toks, i) => {
+    for (const t of toks) for (const n of worksheetDefines(t)) lastDefined.set(n, i);
+  });
+  const lazyNotes: string[] = [];
   const usedAfter = (i: number) => {
     const s = new Set<string>();
     for (let j = i + 1; j < used.length; j++) for (const n of used[j]) s.add(n);
@@ -780,9 +818,34 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             width: Math.max(220, width),
           }));
         } else if (isOp(t, ':')) {
-          const lhs = conv.target(t.args[0]);
+          let lhs = conv.target(t.args[0]);
           const rhs = t.args[1];
-          const src = isProgram(rhs) ? `${lhs} :=\n${conv.stmt(rhs, '  ').join('\n')}` : `${lhs} := ${conv.expr(rhs).s}${show && !show.includes('→') ? show : ''}`;
+          // names this definition reads that are only defined further down: SMath keeps them as
+          // symbols and calculates when the value is used, so it becomes a function of them
+          const late: string[] = [];
+          const name = isVar(t.args[0]) ? smName(t.args[0].text) : null;
+          if (name) {
+            const bound = boundNames(rhs);
+            const add = (n: string) => {
+              if (!late.includes(n)) late.push(n);
+            };
+            walk(rhs, (n) => {
+              if (n.type !== 'operand' || !isVar(n)) return;
+              const m = smName(n.text);
+              if (bound.has(m)) return;
+              const waits = conv.lazy.get(m);
+              if (waits) for (const p of waits) if (!definedBefore.has(p)) add(p);
+              if (!waits && m !== name && !definedBefore.has(m) && (lastDefined.get(m) ?? -1) > i) add(m);
+            });
+          }
+          const rhsSrc = isProgram(rhs) ? `\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
+          if (name) conv.lazy.delete(name);
+          if (late.length && name) {
+            lhs = `${lhs}(${late.map((n) => conv.name(n)).join(', ')})`;
+            conv.lazy.set(name, late.map((n) => conv.name(n)));
+            lazyNotes.push(lhs);
+          }
+          const src = `${lhs} :=${rhsSrc}${!late.length && !isProgram(rhs) && show && !show.includes('→') ? show : ''}`;
           regions.push(createRegion('math', at.x, at.y, { source: src }));
         } else if (isProgram(t)) {
           regions.push(...topLevelProgram(conv, t, at, usedAfter(i), definedBefore));
@@ -882,6 +945,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     }
   });
   for (const note of conv.displayNotes) warnings.push(note);
+  if (lazyNotes.length) {
+    warnings.push(`${lazyNotes.length} definition${lazyNotes.length > 1 ? 's read names' : ' reads names'} defined only further down (${lazyNotes.slice(0, 4).join(', ')}${lazyNotes.length > 4 ? ' …' : ''}): SMath keeps such names as symbols and calculates when the value is used, so here each is a function of them, called with the values they have where it is used`);
+  }
   if (plotRanges) warnings.push(`${plotRanges} plot${plotRanges > 1 ? 's' : ''}: SMath stores a view (zoom and pan), not axis limits, so the axes start from automatic ranges`);
 
   fitToPage(regions);
