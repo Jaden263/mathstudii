@@ -566,6 +566,18 @@ describe('SMath import: text comparisons, solve, and definitions beside what the
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
   });
 
+  it('Zeros, Ones and Ceil are the built-ins of those names; a function the worksheet defines is its own', () => {
+    id = 0;
+    const { ws, saved } = load(
+      at(9, 10, shown(def(v('F'), v('3') + fn('Zeros', 1)), v('0') + v('0') + v('0') + v('3') + v('1') + fn('mat', 5))),
+      at(9, 40, shown(v('2.3') + fn('Ceil', 1), v('3'))),
+      at(9, 70, `<math><input>${def(v('n') + fn('Ones', 1), v('2') + v('n') + op('*'))}</input></math>`),
+      at(9, 100, shown(v('4') + fn('Ones', 1), v('8'))),
+    );
+    expect(sources(ws)).toEqual(['F := zeros(3) =', 'ceil(2.3) =', 'Ones(n) := 2*n', 'Ones(4) =']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
   it('x := solve(f, x) finds the root again from the value SMath showed', () => {
     id = 0;
     // D/(1 − D) = 40/19.5: SMath showed 0.6722

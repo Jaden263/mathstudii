@@ -172,6 +172,8 @@ const FN_MAP: Record<string, string> = {
   random: 'rnd', product: 'prod', mod: 'mod', Min: 'min', Max: 'max', nthroot: 'nthRoot',
   // at(f, x = a) substitutes; "at" reads as a unit here
   at: 'subs',
+  // Zeros(n) a column of n zeros, Zeros(m, n) an m × n matrix; Ones the same of ones
+  Zeros: 'zeros', Ones: 'ones',
 };
 
 /**
@@ -235,6 +237,8 @@ class Converter {
   rename: Record<string, string> = {};
   /** Functions with the name of a variable (SMath tells them apart by their arguments): their own names here. */
   functionNames: Record<string, string> = {};
+  /** Functions the worksheet defines: its own, not a built-in of the name. */
+  userFunctions = new Set<string>();
 
   /** Inside a display unit, where every name is a unit even when a variable has its name. */
   private inContract = false;
@@ -461,6 +465,11 @@ class Converter {
       case 'if':
         if (n === 3) return { s: `if(${this.args(t).join(', ')})`, p: P.ATOM };
         break;
+      case 'Ceil':
+      case 'Floor':
+        // the whole number at or above (below) x
+        if (n === 1 && !this.userFunctions.has(name)) return { s: `${name.toLowerCase()}(${A(0).s})`, p: P.ATOM };
+        break;
       case 'solve':
         // solve(f, x, a, b): every root between a and b
         if (n === 4) return { s: `roots(${this.args(t).join(', ')})`, p: P.ATOM };
@@ -483,7 +492,7 @@ class Converter {
         return { s: `[${items.map((a) => this.expr(a).s).join('; ')}]`, p: P.ATOM };
       }
     }
-    const fn = this.functionNames[smName(name)] ?? FN_MAP[name] ?? this.name(name);
+    const fn = this.functionNames[smName(name)] ?? (this.userFunctions.has(smName(name)) ? undefined : FN_MAP[name]) ?? this.name(name);
     return { s: `${fn}(${this.args(t).join(', ')})`, p: P.ATOM };
   }
 
@@ -907,6 +916,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) fns.add(smName(t.args[0].text));
       else for (const n of worksheetDefines(t)) vars.add(n);
     }
+    conv.userFunctions = fns;
     const both = [...fns].filter((n) => vars.has(n));
     for (const n of both) conv.functionNames[n] = `${n}_fn`;
     if (both.length) warnings.push(`${both.join(', ')} ${both.length > 1 ? 'are' : 'is'} both a function and a variable in SMath, which tells them apart by their arguments: the function${both.length > 1 ? 's are' : ' is'} ${both.map((n) => `${n}_fn`).join(', ')} here`);
