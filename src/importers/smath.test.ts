@@ -487,3 +487,17 @@ describe('SMath import: the X-Y Plot plugin', () => {
     expect(res.series[0].xs[res.series[0].xs.length - 1]).toBeCloseTo(6.28, 6);
   });
 });
+
+describe('SMath import: programs that show their value', () => {
+  it('x := if … shows the value SMath showed, as x := =', () => {
+    id = 0;
+    top = 0;
+    const prog = v('a') + v('2') + op('>') + v('y') + v('1') + op(':') + v('y') + v('2') + op(':') + fn('if', 3);
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('a'), v('3')))}${region(`<math><input>${prog}</input><result action="numeric">${v('1')}</result></math>`)}${region(`<math><input>${def(v('z'), prog)}</input><result action="numeric">${v('1')}</result></math>`)}${
+      region(`<math><input>${v('y')}</input><result action="numeric">${v('1')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)[1].split('\n')[0]).toBe('y := =');
+    expect(sources(ws)[2].split('\n')[0]).toBe('z := =');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+});

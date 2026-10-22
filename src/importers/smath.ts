@@ -923,7 +923,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
               if (!waits && m !== name && !definedBefore.has(m) && !SYMBOLS.has(m) && (lastDefined.get(m) ?? Infinity) > i) add(m);
             });
           }
-          const rhsSrc = isProgram(rhs) ? `\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
+          // a program shows its value with "x := =" (in the unit it has)
+          const rhsSrc = isProgram(rhs) ? `${!late.length && show === ' =' ? ' =' : ''}\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
           if (name) conv.lazy.delete(name);
           if (late.length && name) {
             lhs = `${lhs}(${late.map((n) => conv.name(n)).join(', ')})`;
@@ -933,7 +934,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           const src = `${lhs} :=${rhsSrc}${!late.length && !isProgram(rhs) && show && !show.includes('→') ? show : ''}`;
           regions.push(createRegion('math', at.x, at.y, { source: src }));
         } else if (isProgram(t)) {
-          regions.push(...topLevelProgram(conv, t, at, usedAfter(i), definedBefore));
+          regions.push(...topLevelProgram(conv, t, at, usedAfter(i), definedBefore, show === ' ='));
         } else if (!result && isOp(t, '≡')) {
           // a formula shown for documentation, e.g. "A·x = d"
           try {
@@ -1079,7 +1080,7 @@ function imageRegion(raw: El | undefined, fmt: string, at: Placed, width: number
  * When several of its variables are read later, the program runs once and returns them
  * together ({x: x, y: y}); one definition per variable then takes its value out.
  */
-function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>, before: Set<string>): Region[] {
+function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>, before: Set<string>, shown = false): Region[] {
   const { all, element, counters } = assignments(t);
   if (!all.length) throw new Unsupported('a program that assigns no variable');
   let keep = all.filter((n) => later.has(n) && !counters.has(n));
@@ -1088,7 +1089,8 @@ function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>
   // element assignments must start from the existing value, not from an empty local
   const seed = [...element].filter((n) => before.has(n)).map((n) => `  ${n} ← ${n}`);
   if (keep.length === 1) {
-    return [createRegion('math', at.x, at.y, { source: `${keep[0]} :=\n${[...seed, ...body, `  return ${keep[0]}`].join('\n')}` })];
+    // the value SMath showed is the one the program leaves
+    return [createRegion('math', at.x, at.y, { source: `${keep[0]} :=${shown ? ' =' : ''}\n${[...seed, ...body, `  return ${keep[0]}`].join('\n')}` })];
   }
   const tmp = conv.helperName();
   const ret = `  return {${keep.map((v) => `${JSON.stringify(v)}: ${v}`).join(', ')}}`;
