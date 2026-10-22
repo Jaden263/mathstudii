@@ -90,3 +90,36 @@ describe('comparisons and programs', () => {
     expect(shown(['f(x) :=\n  y ← 1\n  if x > 0\n    y ← 2', 'f(-1) + 10 f(1) ='])).toBe('21');
   });
 });
+
+describe('built-in functions', () => {
+  it('SIUnitsOf and UnitsOf: the SI unit of a value or of an array', () => {
+    expect(shown(['SIUnitsOf(5 km) ='])).toBe('1\\ \\mathrm{m}');
+    expect(shown(['UnitsOf([1; 2] kN) ='])).toBe('1\\ \\mathrm{N}');
+    expect(shown(['SIUnitsOf(3) ='])).toBe('1');
+    // IF97 Units: p/SIUnitsOf(p) strips the unit off for a DLL call
+    expect(shown(['p := 2 MPa', 'p/SIUnitsOf(p) ='])).toBe('2 \\cdot 10^{6}');
+  });
+  it('the product of two vectors is their dot product', () => {
+    // Lab01.xmcd saved 1573.9247
+    expect(shown(['[-36.13; 5.98; -30.44]*[-18.25; -17.03; -33.39] ='])).toBe('1573.9247');
+    expect(shown(['[1, 2; 3, 4]*[1; 1] ='])).toMatch(/3 \\\\ 7/);
+  });
+  it('coordinate conversions', () => {
+    // Lab01.xmcd saved [23.861021; 3.5565473; 17.442923]
+    expect(shown(['sph2xyz(-29.77, -15.56, 8.48) ='])).toMatch(/23\.861 \\\\ 3\.5565 \\\\ 17\.4429/);
+    expect(shown(['v := xyz2sph(1, 1, 1)', 'sph2xyz(v) ='])).toMatch(/^\\begin\{bmatrix\} 1 \\\\ 1 \\\\ 1 \\end\{bmatrix\}$/);
+    expect(shown(['xy2pol(3 m, 4 m) ='])).toMatch(/5\\ \\mathrm\{m\} \\\\ 0\.9273/);
+    expect(shown(['cyl2xyz(xyz2cyl(1, 2, 3)) ='])).toMatch(/1 \\\\ 2 \\\\ 3/);
+  });
+  it('means and rank correlations', () => {
+    expect(shown(['gmean([1; 4], 16) ='])).toBe('4');
+    expect(shown(['hmean(1, 4, 4) ='])).toBe('2');
+    expect(shown(['Spear([1; 2; 3; 4], [1; 3; 2; 4]) ='])).toBe('0.8');
+    expect(shown(['kendltau([1; 2; 3; 4], [1; 3; 2; 4]) ='])).toBe('0.6667');
+  });
+  it('error(S) stops with the message S; IsNaN', () => {
+    expect(() => shown(['f(x) := error("too small")', 'f(1) ='])).toThrow('too small');
+    expect(shown(['g(x) :=\n  try\n    error("no")\n  on error\n    2', 'g(1) ='])).toBe('2');
+    expect(shown(['IsNaN(NaN) + IsNaN(1) ='])).toBe('1');
+  });
+});

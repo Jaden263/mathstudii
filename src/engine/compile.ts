@@ -25,6 +25,8 @@ export const RENAME: Record<string, string> = {
   fft: 'mcFft',
   ifft: 'mcIfft',
   concat: 'mcConcat',
+  // mathjs keeps "error" for itself
+  error: 'mcError',
 };
 
 /**
