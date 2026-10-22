@@ -104,6 +104,8 @@ class Converter {
   name(el: El): string {
     const raw = rawName(el);
     const label = el.getAttribute('labels') ?? '';
+    // % on its own (x/%): 1 % is 0.01
+    if (raw === '%' && !this.unitSlot) return '(1 %)';
     if (label === 'UNIT' || raw === '%') {
       const u = unitName(raw);
       // Prime tells a unit from a variable of the same name by its label; here the unit is written out
@@ -325,6 +327,10 @@ class Converter {
       const vop = op;
       const [a, b] = [e(0), e(1)];
       if (h === 'pow') return { s: `${this.wrap(a, P.POW + 1)}${vop}${isNumberLiteral(b.s) ? b.s : this.wrap(b, P.POW)}`, p };
+      // 40·% is 40 % (a ratio of 0.4), %·x is x %
+      const isPercent = (c: El) => local(c) === 'id' && rawName(c) === '%';
+      if (h === 'mult' && isPercent(rest[1])) return { s: `${this.wrap(a, P.ATOM)} %`, p: P.MUL };
+      if (h === 'mult' && isPercent(rest[0])) return { s: `${this.wrap(b, P.ATOM)} %`, p: P.MUL };
       // number × unit reads naturally as "5 m"
       if (h === 'mult' && isNumberLiteral(a.s) && local(rest[1]) === 'id' && rest[1].getAttribute('labels') === 'UNIT') {
         return { s: `${a.s} ${b.s}`, p: P.MUL };
@@ -656,6 +662,11 @@ class Converter {
       while (value && local(value) === 'parens' && this.isProgram(kids(value)[0])) value = kids(value)[0];
       // a program, or one program statement standing for it
       if (this.isProgram(value)) return `${lhs} ${op}${show}\n${this.block(value, '  ').join('\n')}`;
+      // Mathcad 15's list of values for an element definition, x[i] := 0.2, 1, 2: the vector of them
+      if (value && local(value) === 'sequence' && local(lhsEl) === 'apply' && local(kids(lhsEl)[0] ?? lhsEl) === 'indexer') {
+        const name = this.expr(kids(lhsEl)[1]).s;
+        return `${name} ${op} [${kids(value).map((c) => this.expr(c).s).join('; ')}]${show}`;
+      }
       // programs among the operands are computed first, which makes the definition a program
       const { lines, value: v } = this.withHoist('  ', () => this.expr(value).s);
       if (lines.length) return `${lhs} ${op}${show}\n${lines.join('\n')}\n  ${v}`;
@@ -816,12 +827,32 @@ function readMcdx(data: Uint8Array): Package {
 
 // ------------------------------------------------------------ saved results
 
-/** Mathcad's unit names (meter, kilonewton …) are mathjs names too; anything else is not compared. */
+/** Mathcad's names of saved units that mathjs spells otherwise (most, meter or kilonewton, it shares). */
+const SAVED_UNITS: Record<string, string> = {
+  pascal: 'Pa', micron: 'um', gravitational_acceleration: '(9.80665 m/s^2)', becquerel: '(1/s)', pound: 'lb',
+  pound_force: 'lbf', kips_per_sq_inch: 'ksi', pounds_per_sq_inch: 'psi', knots: 'knot', International_BTU: 'BTU',
+  gallons_per_minute: '(gal/minute)', kip: 'kip', degree: 'deg',
+};
+const LONG_PREFIX: Record<string, string> = {
+  yotta: 'Y', zetta: 'Z', exa: 'E', peta: 'P', tera: 'T', giga: 'G', mega: 'M', kilo: 'k', hecto: 'h', deca: 'da',
+  deci: 'd', centi: 'c', milli: 'm', micro: 'u', nano: 'n', pico: 'p', femto: 'f', atto: 'a',
+};
+
+/** A saved unit name as ours: as it is, from the table, or a long SI prefix on a name from it (megapascal). */
+function savedUnit(name: string): string | null {
+  if (SAVED_UNITS[name]) return SAVED_UNITS[name];
+  if (isUnitName(name)) return name;
+  const m = /^(yotta|zetta|exa|peta|tera|giga|mega|kilo|hecto|deca|deci|centi|milli|micro|nano|pico|femto|atto)(.+)$/.exec(name);
+  const base = m ? SAVED_UNITS[m[2]] : undefined;
+  return base && /^[A-Za-z]+$/.test(base) && isUnitName(LONG_PREFIX[m![1]] + base) ? LONG_PREFIX[m![1]] + base : null;
+}
+
+/** A saved result's unit (a product of powers of named units); null when one is not known here. */
 function unitMonomial(el: El): string | null {
   const parts: string[] = [];
   for (const r of kids(el).filter((c) => local(c) === 'unitReference')) {
-    const name = r.getAttribute('unit') ?? '';
-    if (!isUnitName(name)) return null;
+    const name = savedUnit(r.getAttribute('unit') ?? '');
+    if (name === null) return null;
     const num = Number(r.getAttribute('power-numerator') ?? 1), den = Number(r.getAttribute('power-denominator') ?? 1);
     const pw = num / den;
     parts.push(pw === 1 ? name : `${name}^(${Number.isInteger(pw) ? pw : `${num}/${den}`})`);
@@ -840,8 +871,10 @@ function savedExpr(el: El): string | null {
   if (t === 'str') return JSON.stringify(el.textContent ?? '');
   if (t === 'imag') return `${(el.textContent ?? '').trim()}i`;
   if (t === 'complex') {
-    const [re, im] = kids(el).map(savedExpr);
-    return re !== null && im !== null ? `(${re} + ${im})` : null;
+    // a part that is 0 may be left out
+    const re = kids(el).find((c) => local(c) === 'real'), im = kids(el).find((c) => local(c) === 'imag');
+    const a = re ? savedExpr(re) : '0', b = im ? savedExpr(im) : '0i';
+    return a !== null && b !== null ? `(${a} + ${b})` : null;
   }
   if (t === 'unitedValue') {
     const [v, u] = kids(el);
