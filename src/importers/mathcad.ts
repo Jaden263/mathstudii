@@ -16,6 +16,7 @@ import { isUnitName, math } from '../engine/math';
 import { cssColor, normalSize, toMarkdown, type RunStyle, type TextPara, type TextRun } from './textFormat';
 import { bandOf, mc15Fields, mc15Text, primeField, type BandPiece } from './mathcadPage';
 import { cfbStream } from './cfb';
+import { wordContent } from './office';
 import { importWorkbook } from '../sheet/importBook';
 import type { SheetInput, SheetOutput, SpreadsheetData } from '../sheet/model';
 import type { NumberFormat, NumberStyle } from '../engine/format';
@@ -1299,6 +1300,24 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     regions.push(createRegion('image', at.x, at.y + 18, { src, width }));
     return true;
   };
+  /** A Prime OLE object that is a Word document: a text region with its paragraphs. */
+  const oleText = (body: El, at: Placed): boolean => {
+    const idref = body.getAttribute('item-idref');
+    const ole = pkg && idref && pkg.rels[idref] ? findFile(pkg.files, pkg.rels[idref]) : undefined;
+    const doc = ole ? wordContent(ole) : null;
+    if (!doc) return false;
+    const width = Math.min(PAGE_WIDTH - 2 * PAGE_MARGIN, Math.max(160, Number(at.region.getAttribute('width') ?? 0) * PX || 360));
+    if (doc.paragraphs.length) {
+      const reg = createRegion('text', at.x, at.y, { markdown: '', width }) as TextRegion;
+      texts.push({ region: reg, paras: doc.paragraphs.map((l) => ({ runs: [{ text: l, style: {} }] })) });
+      regions.push(reg);
+      warnings.push(`An embedded Word document at ${Math.round(at.y)} px became a text region with its text; its formatting, pictures and equations are not kept`);
+      return true;
+    }
+    // what such a document shows is drawn in a Windows metafile, which is not converted
+    warnings.push(`An embedded Word document at ${Math.round(at.y)} px was not imported: it holds no text, only drawing objects, and Prime keeps its picture as a Windows metafile, which is not shown here`);
+    return true;
+  };
   /**
    * Mathcad 15's File Read component (outputs, no inputs, a data file) becomes
    * out := READPRN("file") (READCSV for .csv, READEXCEL for a workbook); a File Write component
@@ -1429,13 +1448,15 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         const file = href.split(/[\\/]/).pop() || 'another worksheet';
         warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: what that worksheet defines is not imported (import it too and copy the definitions here)`);
         regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported.*`, width: 300 }));
+      } else if (kind === 'oleObject' && pkg && oleText(body, at)) {
+        // an embedded Word document: its text
       } else if (kind === 'excelComponent' && pkg) {
         regions.push(excelComponent(body, pkg, conv, at, warnings));
       } else if (kind === 'component' && componentRead(body, at)) {
         // a File Read component: the function reading that file
       } else {
         // what is not converted: Mathcad's picture of it, named as precisely as the file allows
-        const what = kind === 'ole' ? oleKind(body) : kind === 'component' ? componentKind(body, conv) : `A ${kind} region`;
+        const what = kind === 'ole' ? oleKind(body) : kind === 'oleObject' ? 'An embedded object (OLE)' : kind === 'component' ? componentKind(body, conv) : kind === 'chartComponent' ? 'A chart component' : `A ${kind} region`;
         if (!rendering(at, what.replace(/ \(.*$/, ''))) warnings.push(`${what} at ${Math.round(at.y)} px was not imported: the file has no picture of it`);
         else warnings.push(`${what} at ${Math.round(at.y)} px is shown as Mathcad's picture of it`);
       }
