@@ -35,6 +35,8 @@ const OPS: Record<string, [string, number]> = {
 const FN_OUT: Record<string, string> = {
   asin: 'arcsin', acos: 'arccos', acot: 'arccot', asec: 'arcsec', acsc: 'arccsc', asinh: 'arcsinh',
   acosh: 'arccosh', atanh: 'arctanh', acoth: 'arccoth', gamma: 'Gamma', Γ: 'Gamma', rnd: 'random', prod: 'product',
+  // what the SMath import maps SMath's at, Zeros and Ones to
+  subs: 'at', zeros: 'Zeros', ones: 'Ones',
 };
 
 /** Built-ins with arguments that are indices (counted from 1 in SMath): submatrix(M, ir, jr, ic, jc), csort(M, j). */
@@ -90,7 +92,9 @@ class SmWriter {
         return this.x(e.value) + this.x(e.unit) + op('*');
       case 'call': {
         if (/^(find|minerr|minimize|maximize|odesolve|Odesolve|Pdesolve|pdesolve)$/.test(e.fn)) throw new NotRepresentable(`${e.fn} outside a solve block`);
-        const name = e.role === 'var' ? smName(e.fn) : FN_OUT[e.fn] ?? e.fn;
+        // text compared with text is SMath's =; every root between a and b its solve(f, x, a, b)
+        if (e.role === 'fn' && e.fn === 'equalText' && e.args.length === 2) return this.x(e.args[0]) + this.x(e.args[1]) + op('≡');
+        const name = e.role === 'var' ? smName(e.fn) : e.fn === 'roots' && e.args.length === 4 ? 'solve' : FN_OUT[e.fn] ?? e.fn;
         const at = e.role === 'fn' ? INDEX_ARGS[e.fn] : undefined;
         return e.args.map((a, i) => (at?.includes(i) ? this.index(a) : this.x(a))).join('') + fn(name, e.args.length);
       }
@@ -214,14 +218,27 @@ class SmWriter {
   }
 }
 
+/** The size of a display unit a plain number can be shown in: deg is π/180, % is 1/100 (1 for any other). */
+function plainScale(unit: string): number {
+  if (!unit) return 1;
+  if (unit === '%') return 0.01;
+  try {
+    const u = math.unit(1, unit);
+    return u.equalBase(math.unit('rad')) || u.dimensions.every((d) => d === 0) ? ((u.value as number | null) ?? 1) : 1;
+  } catch {
+    return 1;
+  }
+}
+
 /** A value as SMath shows it: a number in the display unit, a matrix, text. */
 function resultTokens(v: unknown, unit: string, metric: boolean): { tokens: string; contract: string } | null {
   const num = (n: number) => {
     const s = plainNumber(String(+n.toPrecision(12)));
     return s.startsWith('-') ? number(s.slice(1)) + op('-', 1) : number(s);
   };
-  // a ratio shown in percent: SMath's % is 1/100
-  if (typeof v === 'number' && Number.isFinite(v)) return { tokens: num(unit === '%' ? v * 100 : v), contract: '' };
+  // a plain number shown in deg or %: in that unit (an angle is a number, 0.6938 is 39.75°; SMath's % is 1/100)
+  const scale = plainScale(unit);
+  if (typeof v === 'number' && Number.isFinite(v)) return { tokens: num(v / scale), contract: '' };
   if (typeof v === 'boolean') return { tokens: operand(v ? '1' : '0'), contract: '' };
   if (typeof v === 'string') return { tokens: strTok(v), contract: '' };
   if (isUnit(v)) {
@@ -239,7 +256,7 @@ function resultTokens(v: unknown, unit: string, metric: boolean): { tokens: stri
     const rows = (a.length && Array.isArray(a[0]) ? a : a.map((x) => [x])) as unknown[][];
     if (!rows.length || rows.length * rows[0].length > 400) return null;
     if (rows.flat().some((c) => typeof c !== 'number' || !Number.isFinite(c))) return null;
-    return { tokens: rows.flat().map((c) => num(c as number)).join('') + operand(String(rows.length)) + operand(String(rows[0].length)) + fn('mat', rows.length * rows[0].length + 2), contract: '' };
+    return { tokens: rows.flat().map((c) => num((c as number) / scale)).join('') + operand(String(rows.length)) + operand(String(rows[0].length)) + fn('mat', rows.length * rows[0].length + 2), contract: '' };
   }
   return null;
 }
