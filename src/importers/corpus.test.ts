@@ -643,16 +643,16 @@ interface FileReport {
     checked: number;
     agree: number;
     differ: { source: string; ours: string; theirs: string }[];
-    missing: { source: string; theirs: string; error: string; root: string }[];
+    missing: { source: string; theirs: string; error: string; root: string; rootAt?: string }[];
     /** Values in the file the importer did not keep (by place); reason = a warning at that place. */
-    lost: { kind: string; y: number; theirs: string; reason: string }[];
+    lost: { kind: string; y: number; theirs: string; reason: string; unsure?: boolean }[];
     /** Results the program itself saved as an error, and what we give there. */
     theirErrors: { error: string; ours: string }[];
     /** Prime's results of regions that do not show them: checks (a < b) compared with ours. */
     implicit: { inFile: number; compared: number; agree: number; differ: { source: string; ours: string; theirs: string }[] };
   };
   plots: { savedTraces: number; compared: number; agree: number; differ: { plot: string; trace: number; why: string }[] };
-  evalErrors: { id?: string; source: string; error: string; root: string }[];
+  evalErrors: { id?: string; source: string; error: string; root: string; rootAt?: string }[];
   layout: {
     matched: number;
     /** Source regions with no imported region at their place, by kind. */
@@ -840,13 +840,18 @@ function analyse(file: string): FileReport {
     const m = / at (-?\d+) px/.exec(w);
     return m && ys(s).concat(s.y).some((y) => Math.abs(Number(m[1]) - y) <= 2);
   });
+  // matching by place is not exact (regions side by side, moved ones): as many as the import is
+  // short of are reported, those with a warning at their place first
+  const lost: FileReport['saved']['lost'] = [];
   for (const s of src) {
     if (s.saved !== 'value') continue;
     const r = matchOf.get(s);
     if (r && savedIds.has(r.id)) continue;
-    const reason = warnAt(s) ?? (r ? `imported as ${short(regionSource(r), 100)} (no saved value kept)` : 'no imported region at its place');
-    rep.saved.lost.push({ kind: s.kind, y: Math.round(s.y), theirs: s.savedText ?? '', reason: short(reason, 220) });
+    const w = warnAt(s);
+    const reason = w ?? (r ? `imported as ${short(regionSource(r), 100)} (no saved value kept)` : 'no imported region at its place');
+    lost.push({ kind: s.kind, y: Math.round(s.y), theirs: s.savedText ?? '', reason: short(reason, 220), ...(w ? {} : { unsure: true }) });
   }
+  rep.saved.lost = [...lost.filter((l) => !l.unsure), ...lost.filter((l) => l.unsure)].slice(0, Math.max(0, rep.saved.inFile - saved.length));
   // results the program saved as its own error
   for (const s of src) {
     if (s.saved !== 'error') continue;
@@ -903,8 +908,11 @@ function analyse(file: string): FileReport {
   for (const s of src) for (const n of s.defines ?? []) if (!srcDefiner.has(n)) srcDefiner.set(n, s);
   const external = src.some((s) => /^(reference|ole|component)$/.test(s.kind) || /component/i.test(s.kind));
   const sources = ws.regions.map(regionSource).join('\n');
+  // the region the chain ends at, with its error as it stands
+  let rootAt = '';
   const rootCause = (id: string, seen: Set<string>): string => {
     const err = resultError(ev.results.get(id));
+    rootAt = `${short(regionSource(byId.get(id)), 120)} ⇒ ${short(err ?? 'no value', 120)}`;
     if (!err) return 'no value, no error';
     const m = /"([^"]+)" is not defined/.exec(err) ?? /Undefined (?:symbol|function) ([^\s:]+)/.exec(err);
     if (!m) return `error: ${errorKey(err)}`;
@@ -928,9 +936,11 @@ function analyse(file: string): FileReport {
   };
   rep.saved.missing.forEach((m, i) => {
     m.root = short(rootCause(missingIds[i], new Set([missingIds[i]])), 200);
+    m.rootAt = rootAt;
   });
   for (const e of rep.evalErrors) {
     e.root = short(rootCause(e.id!, new Set([e.id!])), 200);
+    e.rootAt = rootAt;
     delete e.id;
   }
 
@@ -1121,10 +1131,10 @@ function summary(list: FileReport[]): string {
 
 // The files run in CORPUS_JOBS child processes (default: up to 4 cores), each a vitest run of this
 // file on a list of them (CORPUS_LIST). A file whose import and calculation take longer than
-// CORPUS_FILE_TIMEOUT seconds (default 60; some calculations cannot be interrupted) is reported as
+// CORPUS_FILE_TIMEOUT seconds (default 45; some calculations cannot be interrupted) is reported as
 // not finished, and its process restarts on the files after it.
 const JOBS = Math.max(1, Number(process.env.CORPUS_JOBS ?? Math.min(4, availableParallelism())));
-const LIMIT = Math.max(5, Number(process.env.CORPUS_FILE_TIMEOUT ?? 60)) * 1000;
+const LIMIT = Math.max(5, Number(process.env.CORPUS_FILE_TIMEOUT ?? 45)) * 1000;
 const LIST = process.env.CORPUS_LIST ?? '';
 
 const all = DIR ? readdirSync(DIR).filter((f) => /\.(mcdx|xmcd|smz?)$/i.test(f) && (!FILTER || FILTER.test(f))).sort() : [];
