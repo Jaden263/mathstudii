@@ -300,7 +300,8 @@ export function programTex(body: string[]): string {
       const ln = lines[pos++];
       let row = programLineTex(ln.text);
       if (pos < lines.length && lines[pos].indent > ln.indent) {
-        row += ' \\\\ \\quad ' + block(lines[pos].indent);
+        // r ← with a program of its own as the value: the program right of the arrow
+        row += /(←|<-)\s*$/.test(ln.text) ? ` ${block(lines[pos].indent)}` : ' \\\\ \\quad ' + block(lines[pos].indent);
       }
       rows.push(row);
     }
@@ -327,11 +328,11 @@ function programLineTex(text: string): string {
     const rhs = text.slice(arrow.index + arrow[0].length).trim();
     let l: string;
     try {
-      l = /\[/.test(lhs) ? exprTex(lhs) : lhs.startsWith('[') ? exprTex(lhs) : nameTex(lhs);
+      l = /[[(]/.test(lhs) ? exprTex(lhs) : nameTex(lhs);
     } catch {
       l = escapeText(lhs);
     }
-    return `${l} \\leftarrow ${exprTex(rhs)}`;
+    return rhs ? `${l} \\leftarrow ${exprTex(rhs)}` : `${l} \\leftarrow`;
   }
   return exprTex(text);
 }

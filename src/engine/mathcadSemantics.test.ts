@@ -123,3 +123,20 @@ describe('built-in functions', () => {
     expect(shown(['IsNaN(NaN) + IsNaN(1) ='])).toBe('1');
   });
 });
+
+describe('programs', () => {
+  it('a local definition can take a program of its own (Mathcad nests programs as operands)', () => {
+    expect(shown(['f(n) :=\n  r ←\n    a ← 2\n    a*n\n  r + 1', 'f(5) ='])).toBe('11');
+    // a return inside the nested program ends that program only
+    expect(shown(['g(n) :=\n  r ←\n    if n > 0\n      return 1\n    -1\n  10 r', 'g(3) + g(-3) ='])).toBe('0');
+  });
+  it('[a; b] ←, local functions f(x) ←, and row(M, i) ← in programs', () => {
+    expect(shown(['f(n) :=\n  [p; q] ← [n; 3 n]\n  g(x) ← x + q\n  g(1) + p', 'f(5) ='])).toBe('21');
+    expect(shown(['M :=\n  M ← [0, 0; 0, 0]\n  row(M, 1) ← [7, 8]\n  col(M, 0) ← [1; 2]\n  M', 'M ='])).toMatch(/1 & 0 \\\\ 2 & 8/);
+  });
+  it('x := = unit shows the value of a program in that unit', () => {
+    expect(shown(['L :=\n  a ← 2 m\n  a + 50 cm', 'L ='])).toBe('2.5\\ \\mathrm{m}');
+    const res = run(['L := = mm\n  a ← 2 m\n  a + 50 cm']);
+    expect((res[0] as MathResult).tex).toMatch(/= 2500\\ \\mathrm\{mm\}$/);
+  });
+});

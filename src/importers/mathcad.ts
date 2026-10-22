@@ -12,7 +12,7 @@ import {
 } from '../model/types';
 import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
-import { isUnitName } from '../engine/math';
+import { isUnitName, math } from '../engine/math';
 
 export type { ImportResult } from './common';
 
@@ -68,6 +68,15 @@ function rawName(el: El): string {
   return s;
 }
 
+/**
+ * A name as Mathcad 15 tells names apart: by its spelling and its math style (font). The
+ * function in(x, v) in a style of its own is not the unit in.
+ */
+function nameKey(el: El): string {
+  const font = el.getAttribute('font');
+  return font && font !== '0' ? `${rawName(el)}#${font}` : rawName(el);
+}
+
 // ------------------------------------------------------------ expressions
 
 const BINOPS: Record<string, { op: string; p: number }> = {
@@ -79,8 +88,8 @@ const BINOPS: Record<string, { op: string; p: number }> = {
 
 class Converter {
   warnings: string[] = [];
-  /** Names the worksheet defines anywhere (Mathcad 15 does not label units: an undefined unit name is one). */
-  defined = new Set<string>();
+  /** Names defined so far, as the regions are read (Mathcad 15 does not label units: an undefined unit name is one). */
+  defined: { has(name: string): boolean } = new Set<string>();
   /** Names defined at the top level of the worksheet (variables a unit of the same name would clash with). */
   variables = new Set<string>();
   /** The numeric factor dropped from the last display unit (the saved result is a multiple of it). */
@@ -106,9 +115,25 @@ class Converter {
     // unlabelled (Mathcad 15) or auto-labelled (*, sheets converted from 15) names that are units
     if (label === '' || label === '*') {
       const u = unitName(raw);
-      if (!this.defined.has(raw) && (this.unitSlot || u !== raw) && isUnitName(u.replace(/^\((.*)\)$/, '$1').split(/[*/^ ]/)[0])) return u;
+      if (!this.defined.has(nameKey(el)) && (this.unitSlot || u !== raw) && isUnitName(u.replace(/^\((.*)\)$/, '$1').split(/[*/^ ]/)[0])) return u;
     }
-    return sanitize(raw);
+    return this.ident(el);
+  }
+
+  /** Names spelled without a math style of their own (Mathcad 15), anywhere in the file. */
+  plainNames = new Set<string>();
+
+  /**
+   * A name as an identifier here. Mathcad 15 tells names apart by their math style too: a
+   * function max or in written in a style of its own is not the built-in max or the unit in,
+   * so such a name gets a _ of its own when its spelling is taken.
+   */
+  ident(el: El): string {
+    const raw = rawName(el);
+    const s = sanitize(raw);
+    if (nameKey(el) === raw) return s;
+    const taken = this.plainNames.has(raw) || typeof (math as unknown as Record<string, unknown>)[raw] === 'function' || isUnitName(unitName(raw));
+    return taken && !s.endsWith('_') ? `${s}_` : s;
   }
 
   /** A display unit: the expression, without a numeric scale Mathcad allows there (10⁻³⁴ kg·m²/s). */
@@ -141,9 +166,63 @@ class Converter {
 
   lambda(el: El): { vars: string[]; body: string } {
     const bv = child(el, 'boundVars');
-    const vars = bv ? kids(bv).filter((c) => local(c) === 'id').map((c) => sanitize(rawName(c))) : [];
+    const vars = bv ? kids(bv).filter((c) => local(c) === 'id').map((c) => this.ident(c)) : [];
     const body = kids(el).find((c) => local(c) !== 'boundVars');
-    return { vars, body: body ? this.expr(body).s : '0' };
+    return { vars, body: body ? this.lazily(() => this.expr(body).s) : '0' };
+  }
+
+  // ---------------------------------------------------------------- programs as operands
+  //
+  // Mathcad nests a program anywhere a value goes: x := 2 + ⟨program⟩. Here a program is
+  // a definition's or a local definition's whole value, so such a program is computed first
+  // into a local of its own (p_1 ← ⟨program⟩) and the expression uses that. Where the operand
+  // is evaluated later or not at all (integrands, branches of if) that is not the same, and
+  // the program is not imported.
+
+  /** Lines that compute the programs of the statement being converted, and their indent. */
+  private hoist: { indent: string; lines: string[] } | null = null;
+  /** Inside a part of an expression evaluated later or not at all. */
+  private lazy = 0;
+  private temps = 0;
+
+  lazily<T>(f: () => T): T {
+    this.lazy++;
+    try {
+      return f();
+    } finally {
+      this.lazy--;
+    }
+  }
+
+  /** A name for a program's value no name of the worksheet has. */
+  private temp(): string {
+    let n: string;
+    do n = `p_${++this.temps}`; while (this.plainNames.has(n) || this.defined.has(n));
+    return n;
+  }
+
+  /** Convert with programs in it computed into locals first: the lines that do that, and the result. */
+  withHoist<T>(indent: string, f: () => T): { lines: string[]; value: T } {
+    const saved = this.hoist, savedLazy = this.lazy;
+    this.hoist = { indent, lines: [] };
+    this.lazy = 0;
+    try {
+      const value = f();
+      return { lines: this.hoist.lines, value };
+    } finally {
+      this.hoist = saved;
+      this.lazy = savedLazy;
+    }
+  }
+
+  /** Elements that stand for a whole program where a value is expected. */
+  isProgram(el: El | undefined): boolean {
+    return !!el && /^(program|for|while|tryCatch|onError|localDefine|return|ifThen|otherwise|break|continue)$/.test(local(el));
+  }
+
+  /** The lines of a program-valued operand, as a block at this indent. */
+  block(el: El, indent: string): string[] {
+    return local(el) === 'program' ? this.programLines(el, indent) : this.stmt(el, indent);
   }
 
   bounds(rest: El[]): [string, string] | null {
@@ -323,18 +402,18 @@ class Converter {
   primes(el: El): { name: string; n: number } | null {
     const [head, arg] = kids(el);
     if (local(el) !== 'apply' || !head || local(head) !== 'functionDerivative' || !arg) return null;
-    if (local(arg) === 'id') return { name: sanitize(rawName(arg)), n: 1 };
+    if (local(arg) === 'id') return { name: this.ident(arg), n: 1 };
     const inner = this.primes(arg);
     return inner && { name: inner.name, n: inner.n + 1 };
   }
 
   call(head: El, rest: El[]): Ex {
     const raw = rawName(head);
-    let fn = sanitize(raw);
+    let fn = this.ident(head);
     const args = this.args(rest);
     // y′′(t), y′(0): prime notation of a function (odesolve), when y′′ is not a name of its own
     const primed = /^(.*?)(['′]+)$/.exec(raw);
-    if (primed && primed[1] && !this.defined.has(raw)) return { s: `${sanitize(primed[1])}${"'".repeat(primed[2].length)}(${args.join(', ')})`, p: P.ATOM };
+    if (primed && primed[1] && !this.defined.has(nameKey(head))) return { s: `${sanitize(primed[1])}${"'".repeat(primed[2].length)}(${args.join(', ')})`, p: P.ATOM };
     if (raw === 'Γ') fn = 'gamma';
     if (raw === 'mod') fn = 'mod'; // a function here, not the reserved operator
     if (raw === 'if') fn = 'if'; // Mathcad's inline if(cond, a, b), labelled KEYWORD
@@ -363,7 +442,13 @@ class Converter {
       }
       return acc;
     }
-    throw new Unsupported('a multi-line program inside an expression');
+    if (this.hoist && !this.lazy) {
+      const name = this.temp();
+      const { indent, lines: out } = this.hoist;
+      out.push(`${indent}${name} ←`, ...this.programLines(el, indent + '  '));
+      return name;
+    }
+    throw new Unsupported(this.lazy ? 'a multi-line program in an integrand or a branch of if' : 'a multi-line program inside an expression');
   }
 
   ifChain(el: El): string {
@@ -382,7 +467,7 @@ class Converter {
     const val = (body: El) => {
       const inner = kids(body)[0];
       if (!inner) return 'NaN';
-      return local(inner) === 'program' ? this.inlineProgram(inner) : this.expr(inner).s;
+      return this.lazily(() => (local(inner) === 'program' ? this.inlineProgram(inner) : this.expr(inner).s));
     };
     let acc = 'NaN';
     for (const [test, body] of [...branches].reverse()) acc = test === null ? val(body) : `if(${test}, ${val(body)}, ${acc})`;
@@ -402,15 +487,19 @@ class Converter {
         let j = i;
         while (j < items.length && local(items[j]) === 'ifThen') j++;
         const hasOtherwise = j < items.length && local(items[j]) === 'otherwise';
-        for (let k = i; k < j; k++) {
-          const [c, v] = kids(items[k]);
-          out.push(`${indent}${k > i && hasOtherwise ? 'else if' : 'if'} ${this.expr(c).s}`, ...this.stmt(v, indent + '  '));
-        }
-        if (hasOtherwise) {
-          out.push(`${indent}else`, ...this.stmt(kids(items[j])[0], indent + '  '));
-          j++;
-        }
-        i = j - 1;
+        const run = this.withHoist(indent, () => {
+          const lines: string[] = [];
+          for (let k = i; k < j; k++) {
+            const [c, v] = kids(items[k]);
+            // an else-if's test is evaluated only when the tests before it fail
+            const test = k > i && hasOtherwise ? this.lazily(() => this.expr(c).s) : this.expr(c).s;
+            lines.push(`${indent}${k > i && hasOtherwise ? 'else if' : 'if'} ${test}`, ...this.block(v, indent + '  '));
+          }
+          if (hasOtherwise) lines.push(`${indent}else`, ...this.block(kids(items[j])[0], indent + '  '));
+          return lines;
+        });
+        out.push(...run.lines, ...run.value);
+        i = hasOtherwise ? j : j - 1;
         continue;
       }
       out.push(...this.stmt(it, indent));
@@ -418,20 +507,28 @@ class Converter {
     return out;
   }
 
+  /** A program statement, after the lines that compute the programs among its operands. */
   stmt(el: El, indent: string): string[] {
+    if (local(el) === 'program') return this.programLines(el, indent);
+    const { lines, value } = this.withHoist(indent, () => this.stmtLines(el, indent));
+    return [...lines, ...value];
+  }
+
+  private stmtLines(el: El, indent: string): string[] {
     const t = local(el);
     const ks = kids(el);
     switch (t) {
-      case 'program':
-        return this.programLines(el, indent);
       case 'localDefine':
+        // a program of its own as the value: r ← and the program indented below
+        if (this.isProgram(ks[1])) return [`${indent}${this.target(ks[0])} ←`, ...this.block(ks[1], indent + '  ')];
         return [`${indent}${this.target(ks[0])} ← ${this.expr(ks[1]).s}`];
       case 'for': {
         const iter = this.expr(ks[1]).s;
-        return [`${indent}for ${this.name(ks[0])} ∈ ${iter}`, ...this.stmt(ks[2], indent + '  ')];
+        return [`${indent}for ${this.name(ks[0])} ∈ ${iter}`, ...this.block(ks[2], indent + '  ')];
       }
       case 'while':
-        return [`${indent}while ${this.expr(ks[0]).s}`, ...this.stmt(ks[1], indent + '  ')];
+        // the condition is evaluated before every pass
+        return [`${indent}while ${this.lazily(() => this.expr(ks[0]).s)}`, ...this.block(ks[1], indent + '  ')];
       case 'if': {
         const out: string[] = [];
         let first = true;
@@ -439,7 +536,7 @@ class Converter {
           let test: string | null = null;
           for (const c of kids(n)) {
             const ct = local(c);
-            if (ct === 'test') test = this.expr(kids(c)[0]).s;
+            if (ct === 'test') test = first ? this.expr(kids(c)[0]).s : this.lazily(() => this.expr(kids(c)[0]).s);
             else if (ct === 'then') {
               out.push(`${indent}${first ? 'if' : 'else if'} ${test}`, ...this.stmt(kids(c)[0], indent + '  '));
               first = false;
@@ -451,18 +548,21 @@ class Converter {
         return out;
       }
       case 'ifThen':
-        return [`${indent}if ${this.expr(ks[0]).s}`, ...this.stmt(ks[1], indent + '  ')];
+        return [`${indent}if ${this.expr(ks[0]).s}`, ...this.block(ks[1], indent + '  ')];
       case 'otherwise':
-        return [`${indent}else`, ...this.stmt(ks[0], indent + '  ')];
-      case 'return':
-        return [`${indent}return ${ks[0] ? this.expr(ks[0]).s : '0'}`];
+        return [`${indent}else`, ...this.block(ks[0], indent + '  ')];
+      case 'return': {
+        if (!this.isProgram(ks[0])) return [`${indent}return ${ks[0] ? this.expr(ks[0]).s : '0'}`];
+        const name = this.temp();
+        return [`${indent}${name} ←`, ...this.block(ks[0], indent + '  '), `${indent}return ${name}`];
+      }
       case 'break':
         return [`${indent}break`];
       case 'continue':
         return [`${indent}continue`];
       case 'tryCatch':
       case 'onError':
-        return [`${indent}try`, ...this.stmt(ks[0], indent + '  '), `${indent}on error`, ...this.stmt(ks[1], indent + '  ')];
+        return [`${indent}try`, ...this.block(ks[0], indent + '  '), `${indent}on error`, ...this.block(ks[1], indent + '  ')];
       default:
         return [`${indent}${this.expr(el).s}`];
     }
@@ -547,14 +647,19 @@ class Converter {
       const [lhsEl, valEl] = kids(inner);
       const op = t === 'globalDefine' ? '≡' : ':=';
       const lhs = this.target(lhsEl);
-      if (local(valEl) === 'program') return `${lhs} ${op}\n${this.programLines(valEl, '  ').join('\n')}`;
-      if (local(valEl) === 'eval') {
-        const v = this.expr(kids(valEl)[0]);
-        const unit = this.unitOverride(valEl);
-        return `${lhs} ${op} ${v.s} =${unit ? ' ' + unit : ''}`;
-      }
       if (/Control$/.test(local(valEl))) return `${lhs} ${op} ${this.control(lhs, valEl)}`;
-      return `${lhs} ${op} ${this.expr(valEl).s}`;
+      // x := ⟨value⟩ = unit shows the value
+      const shown = local(valEl) === 'eval';
+      const unit = shown ? this.unitOverride(valEl) : '';
+      const show = shown ? ` =${unit ? ' ' + unit : ''}` : '';
+      let value = shown ? kids(valEl)[0] : valEl;
+      while (value && local(value) === 'parens' && this.isProgram(kids(value)[0])) value = kids(value)[0];
+      // a program, or one program statement standing for it
+      if (this.isProgram(value)) return `${lhs} ${op}${show}\n${this.block(value, '  ').join('\n')}`;
+      // programs among the operands are computed first, which makes the definition a program
+      const { lines, value: v } = this.withHoist('  ', () => this.expr(value).s);
+      if (lines.length) return `${lhs} ${op}${show}\n${lines.join('\n')}\n  ${v}`;
+      return `${lhs} ${op} ${v}${show}`;
     }
     if (/ScriptableControl$/.test(t)) return this.scriptControl(inner);
     if (t === 'eval') {
@@ -772,25 +877,35 @@ function primeResults(pkg: Package): Map<string, string> {
 
 // ------------------------------------------------------------ main
 
-/** Every name the worksheet defines: definitions, function parameters, program locals, loop counters. */
-function definedNames(root: El, out: Set<string>) {
+/**
+ * The names a region defines: on the worksheet (definitions, functions, element definitions,
+ * solve blocks) and only inside itself (function parameters, program locals, loop counters).
+ */
+function definedNames(root: El): { sheet: Set<string>; inside: Set<string> } {
+  const sheet = new Set<string>(), inside = new Set<string>();
+  const add = (n: El | undefined, out: Set<string>) => {
+    if (!n) return;
+    const k = local(n);
+    if (k === 'id') out.add(nameKey(n));
+    else if (k === 'function') {
+      add(child(n, 'id'), out);
+      add(child(n, 'boundVars'), inside);
+    } else if (k === 'boundVars' || k === 'matrix') kids(n).forEach((c) => add(c, out));
+    else if (k === 'apply' && local(kids(n)[0] ?? n) === 'indexer') add(kids(n)[1], out);
+  };
   const visit = (el: El) => {
     const t = local(el);
-    const target = t === 'define' || t === 'globalDefine' || t === 'localDefine' || t === 'for' ? kids(el)[0] : undefined;
-    const add = (n: El | undefined) => {
-      if (!n) return;
-      const k = local(n);
-      if (k === 'id') out.add(rawName(n));
-      else if (k === 'function') kids(n).forEach(add);
-      else if (k === 'boundVars' || k === 'matrix') kids(n).forEach(add);
-      else if (k === 'apply' && local(kids(n)[0] ?? n) === 'indexer') add(kids(n)[1]);
-    };
-    add(target);
-    if (t === 'boundVars') kids(el).forEach(add);
+    if (t === 'define' || t === 'globalDefine') add(kids(el)[0], sheet);
+    else if (t === 'localDefine' || t === 'for') add(kids(el)[0], inside);
+    else if (t === 'boundVars') add(el, inside);
     kids(el).forEach(visit);
   };
   visit(root);
+  return { sheet, inside };
 }
+
+/** Height of a row of a Prime spec table, which is imported as one math region a row. */
+const SPEC_ROW = 40;
 
 export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportResult {
   const isZip = data[0] === 0x50 && data[1] === 0x4b;
@@ -806,7 +921,13 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   ws.title = fileName.replace(/\.(mcdx|xmcd)$/i, '');
   // Prime places regions in device-independent pixels (1/96 inch) like us, Mathcad 15 in points
   const PX = pkg ? 1 : 96 / 72;
-  definedNames(root, conv.defined);
+  // Mathcad 15 does not label units: a name is a unit unless the worksheet has defined it above
+  // (or the region defines it itself); global definitions (≡) come first
+  const sheetNames = new Set<string>();
+  for (const d of doc.getElementsByTagNameNS('*', 'globalDefine')) definedNames(d).sheet.forEach((n) => sheetNames.add(n));
+  let insideNames = new Set<string>();
+  conv.defined = { has: (n: string) => sheetNames.has(n) || insideNames.has(n) };
+  for (const id of doc.getElementsByTagNameNS('*', 'id')) if (nameKey(id) === rawName(id)) conv.plainNames.add(rawName(id));
   for (const d of doc.getElementsByTagNameNS('*', 'define')) {
     const t = kids(d)[0];
     if (t && local(t) === 'id') conv.variables.add(rawName(t));
@@ -835,11 +956,16 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
 
   // order: Prime by the region's top; Mathcad 15 by the baseline of its math (align-y), so that
   // h := (b − a)/N, whose fraction rises above the line, comes after N := 5 to its left
-  type Placed = { region: El; x: number; y: number; order: number };
+  type Placed = { region: El; x: number; y: number; order: number; included?: string };
   /** An area as it is expanded: its bar at (x, y), its band `height` tall. */
   type AreaPlace = { x: number; y: number; height: number; collapsed: boolean; locked: boolean; title: string; depth: number };
   const areas: AreaPlace[] = [];
-  const sizeOf = (r: El) => Number(r.getAttribute('height') ?? r.getAttribute('actualHeight') ?? 0) * PX || 20;
+  const sizeOf = (r: El) => {
+    // a spec table becomes one math region a row (SPEC_ROW apart)
+    const table = child(r, 'spec-table');
+    if (table) return kids(table).filter((c) => local(c) === 'math').length * SPEC_ROW;
+    return Number(r.getAttribute('height') ?? r.getAttribute('actualHeight') ?? 0) * PX || 20;
+  };
   /**
    * The regions of a container placed as on the expanded page. Prime places an area's regions
    * relative to the area; Mathcad 15 relative to a collapsed area but on the page in an open
@@ -847,7 +973,17 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
    * moves down by what the area hides; the import collapses the area again afterwards.
    * Returns the bottom of what it placed.
    */
-  const layout = (container: El, ox: number, oy: number, depth: number, out: Placed[]): number => {
+  /** A Prime reference's worksheet as Prime cached it in the package (mathcad/include/…): its regions. */
+  const cachedReference = (ref: El): El | null => {
+    const idref = ref.getAttribute('item-idref');
+    const path = pkg && idref ? pkg.rels[idref] : undefined;
+    const bytes = path ? findFile(pkg!.files, path) : undefined;
+    if (!bytes) return null;
+    const cached = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(bytes).replace(/^\uFEFF/, ''), 'text/xml').documentElement;
+    return cached ? child(cached, 'regions') ?? null : null;
+  };
+  const refFile = (ref: El) => (ref.getAttribute('href') ?? ref.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '').split(/[\\/]/).pop() || 'another worksheet';
+  const layout = (container: El, ox: number, oy: number, depth: number, out: Placed[], included?: string): number => {
     const items = kids(container).filter((c) => local(c) === 'region').sort((a, b) => Number(a.getAttribute('top') ?? 0) - Number(b.getAttribute('top') ?? 0));
     const pushes: { at: number; by: number }[] = [];
     let bottom = oy;
@@ -859,8 +995,24 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
       const alignY = r.getAttribute('align-y');
       const order = !pkg && alignY !== null ? oy + Number(alignY) * PX + shift : y;
       const area = child(r, 'Area') ?? child(r, 'area');
+      // a reference whose worksheet Prime cached: its definitions in a collapsed, locked area there
+      const ref = child(r, 'reference');
+      const cached = ref ? cachedReference(ref) : null;
+      if (ref && cached) {
+        const file = refFile(ref);
+        const at = areas.length;
+        areas.push({ x, y, height: 0, collapsed: true, locked: true, title: `Reference: ${file}`, depth });
+        const end = layout(cached, x, y + AREA_BAR, depth + 1, out, file);
+        areas[at].height = Math.max(AREA_BAR + AREA_PAD, end - y + AREA_PAD);
+        pushes.push({ at: top, by: areas[at].height - AREA_BAR });
+        referenced.push(file);
+        bottom = Math.max(bottom, y + areas[at].height);
+        continue;
+      }
       if (!area) {
-        out.push({ region: r, x, y, order });
+        // what a referenced worksheet shows is not needed to calculate with it
+        if (included && !/^(math|solveblock|spec-table)$/.test(local(kids(r).find((c) => local(c) !== 'rendering') ?? r))) continue;
+        out.push({ region: r, x, y, order, ...(included ? { included } : {}) });
         bottom = Math.max(bottom, y + sizeOf(r));
         continue;
       }
@@ -871,7 +1023,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
       const relative = !!pkg || collapsed;
       const at = areas.length;
       areas.push({ x, y, height: 0, collapsed, locked, title: area.getAttribute('show-name') === 'false' ? '' : area.getAttribute('name') ?? '', depth });
-      const end = layout(inner, relative ? x : ox, relative ? y : oy + shift, depth + 1, out);
+      const end = layout(inner, relative ? x : ox, relative ? y : oy + shift, depth + 1, out, included);
       // the band holds the contents; an open area of Mathcad 15 also saves its own height
       const saved = !collapsed && !pkg ? sizeOf(r) : 0;
       const height = Math.max(AREA_BAR + AREA_PAD, end - y + AREA_PAD, saved);
@@ -882,7 +1034,11 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     return bottom;
   };
   const flat: Placed[] = [];
+  const referenced: string[] = [];
   layout(regionsEl, 0, 0, 0, flat);
+  for (const file of referenced) {
+    warnings.push(`The worksheet references ${file}: its definitions come from the copy Prime saved with this file, in the collapsed area “Reference: ${file}” (locked; they do not change when ${file} does)`);
+  }
   const placed = flat.sort((a, b) => a.order - b.order || a.x - b.x);
 
   const regions: Region[] = [];
@@ -913,6 +1069,9 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     const r = at.region;
     const body = kids(r).find((c) => local(c) !== 'rendering');
     if (!body) continue;
+    const names = definedNames(r);
+    names.sheet.forEach((n) => sheetNames.add(n));
+    insideNames = names.inside;
     const kind = local(body);
     try {
       if (kind === 'math') {
@@ -950,7 +1109,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined });
         regions.push(reg);
         const ref = body.getAttribute('resultRef');
-        const value = ref !== null ? cached.get(ref) : savedOfEval(body);
+        // a referenced worksheet's results are not in this file's result.xml
+        const value = at.included ? undefined : ref !== null ? cached.get(ref) : savedOfEval(body);
         if (value !== undefined && value !== null && / =( |$)/.test(src.split('\n')[0])) {
           saved.push({ regionId: reg.id, expr: conv.scale ? `(${value})*(${conv.scale})` : value });
         }
@@ -982,7 +1142,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         let y = at.y;
         for (const m of kids(body).filter((c) => local(c) === 'math')) {
           regions.push(createRegion('math', at.x, y, { source: conv.statement(m) }));
-          y += 40;
+          y += SPEC_ROW;
         }
       } else if (kind === 'pageBreak') {
         pageBreaks++;

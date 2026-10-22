@@ -322,3 +322,74 @@ describe('Mathcad import: areas', () => {
     expect(results(ws).by('k =').tex).toMatch(/= 4$/);
   });
 });
+
+describe('Mathcad import: programs as operands, references, Mathcad 15 names', () => {
+  beforeAll(async () => {
+    await loadCas();
+  });
+  const fnDef = (name: string, params: string[], body: string, idf = id) => define(`<ml:function>${idf(name)}<ml:boundVars>${params.map((p) => idf(p)).join('')}</ml:boundVars></ml:function>`, body);
+  it('a program as a local definition’s value, a try/on error value, x := ⟨program⟩ = and a program inside an expression', () => {
+    const { ws, warnings } = primeOf(
+      // in(i, v) := | r ← ⟨try v[i] on error NaN⟩, r   (Beamcheck.xmcd's shape)
+      math(fnDef('get', ['i', 'v'], program(`<ml:localDefine>${id('r')}<ml:tryCatch>${ap('<ml:indexer/>', id('v'), id('i'))}${id('NaN')}</ml:tryCatch></ml:localDefine>`, id('r')))),
+      math(evalOf(ap(id('get', 'FUNCTION'), `<ml:sequence>${real(5)}<ml:matrix rows="2" cols="1">${real(1)}${real(2)}</ml:matrix></ml:sequence>`))),
+      // L := ⟨a ← 2 m, a + 50 cm⟩ = mm
+      math(define(id('L'), evalOf(program(`<ml:localDefine>${id('a')}${unit(2, 'm')}</ml:localDefine>`, ap('<ml:plus/>', id('a'), unit(50, 'cm'))), id('mm', 'UNIT')))),
+      // y := 1 + ⟨b ← 3, b²⟩
+      math(define(id('y'), ap('<ml:plus/>', real(1), program(`<ml:localDefine>${id('b')}${real(3)}</ml:localDefine>`, ap('<ml:pow/>', id('b'), real(2)))))),
+      math(evalOf(id('y'))),
+    );
+    expect(warnings).toEqual([]);
+    expect(sources(ws)).toEqual([
+      'get(i, v) :=\n  r ←\n    try\n      v[i]\n    on error\n      NaN\n  r',
+      'get(5, [1; 2]) =',
+      'L := = mm\n  a ← 2 m\n  a + 50 cm',
+      'y :=\n  p_1 ←\n    b ← 3\n    b^2\n  1 + p_1',
+      'y =',
+    ]);
+    const { by, out } = results(ws);
+    expect(by('get(5, [1; 2]) =').tex).toMatch(/= \\mathrm\{NaN\}$/);
+    expect((out.results.get(ws.regions[2].id) as MathResult).tex).toMatch(/= 2500\\ \\mathrm\{mm\}$/);
+    expect(by('y =').tex).toMatch(/= 10$/);
+  });
+
+  it('a Prime reference whose worksheet the package caches: its definitions in a locked, collapsed area', () => {
+    top = 0;
+    const main = `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>
+      <region region-id="1" top="40" left="0"><reference href="D:\\calc\\Concrete.mcdx" item-idref="R9"/></region>
+      <region region-id="2" top="70" left="40"><math>${evalOf(ap('<ml:mult/>', real(2), id('f_ck')))}</math></region></regions></worksheet>`;
+    const cachedWs = `<cachedWorksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>
+      <region region-id="5" top="20" left="20"><math>${define(id('f_ck'), unit(30, 'MPa'))}</math></region>
+      <region region-id="6" top="60" left="20"><text item-idref="R1"/></region></regions></cachedWorksheet>`;
+    const rels = `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="R9" Type="include" Target="/mathcad/include/include1.xml"/></Relationships>`;
+    const { ws, warnings } = importMathcad(zipSync({
+      'mathcad/worksheet.xml': strToU8(main), 'mathcad/_rels/worksheet.xml.rels': strToU8(rels), 'mathcad/include/include1.xml': strToU8(cachedWs),
+    }), 'x.mcdx');
+    expect(warnings.join('\n')).toMatch(/references Concrete\.mcdx: its definitions come from the copy Prime saved/);
+    const bar = ws.regions.find((r): r is AreaRegion => r.kind === 'area')!;
+    const fck = ws.regions.find((r) => r.kind === 'math' && r.source === 'f_ck := 30 MPa')!;
+    expect(bar).toMatchObject({ title: 'Reference: Concrete.mcdx', collapsed: true, locked: true, hidden: [fck.id] });
+    // only what calculates is taken from the referenced worksheet
+    expect(ws.regions.filter((r) => r.kind === 'text')).toEqual([]);
+    expect(results(ws).by('2*f_ck =').tex).toContain('60');
+  });
+
+  it('Mathcad 15: a name is a unit until the worksheet defines it, and a name in a style of its own is another name', () => {
+    const font = (n: string) => `<ml:id xml:space="preserve" font="17">${n}</ml:id>`;
+    const { ws } = importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>
+  <region region-id="1" left="24" top="30"><math>${evalOf(ap('<ml:mult/>', real(6), id15('in')), id15('mm'))}</math></region>
+  <region region-id="2" left="24" top="60"><math>${fnDef('in', ['i', 'v'], ap('<ml:indexer/>', id15('v'), id15('i')), (n) => (n === 'in' ? font(n) : id15(n)))}</math></region>
+  <region region-id="3" left="24" top="90"><math>${evalOf(ap('<ml:mult/>', real(2), id15('in')), id15('mm'))}</math></region>
+  <region region-id="4" left="24" top="120"><math>${evalOf(ap(font('in'), `<ml:sequence>${real(1)}<ml:matrix rows="2" cols="1">${real(10)}${real(20)}</ml:matrix></ml:sequence>`))}</math></region>
+  <region region-id="5" left="24" top="150"><math>${define(id15('N'), real(5))}</math></region>
+  <region region-id="6" left="24" top="180"><math>${evalOf(ap('<ml:mult/>', real(2), id15('N')))}</math></region>
+</regions></worksheet>`), 'n.xmcd');
+    // the unit inch before and after a function in() in another style; N a variable once defined
+    expect(sources(ws)).toEqual(['6*inch = mm', 'in_(i, v) := v[i]', '2*inch = mm', 'in_(1, [10; 20]) =', 'N := 5', '2*N =']);
+    const { by } = results(ws);
+    expect(by('6*inch = mm').tex).toMatch(/152\.4/);
+    expect(by('in_(1, [10; 20]) =').tex).toMatch(/= 20$/);
+    expect(by('2*N =').tex).toMatch(/= 10$/);
+  });
+});

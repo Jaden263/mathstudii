@@ -20,7 +20,7 @@ export type Lhs =
 export type Statement =
   | { type: 'empty' }
   | { type: 'define'; global: boolean; lhs: Lhs; rhs: string; show: boolean; unit: string }
-  | { type: 'program'; global: boolean; lhs: Lhs; body: string[]; show: boolean }
+  | { type: 'program'; global: boolean; lhs: Lhs; body: string[]; show: boolean; unit?: string }
   | { type: 'eval'; expr: string; unit: string }
   | { type: 'symbolic'; expr: string; keywords: string }
   | { type: 'expr'; expr: string };
@@ -168,13 +168,14 @@ export function parseStatement(source: string): Statement {
   if (!text.trim()) return { type: 'empty' };
   const lines = text.split('\n');
   const first = lines[0].trimEnd();
-  // program: first line ends with := or ≡ and the body follows on further lines
-  if (lines.length > 1 && /(:=|≡)\s*(=)?\s*$/.test(first)) {
-    const global = /≡\s*(=)?\s*$/.test(first);
-    const show = /=\s*$/.test(first.replace(/(:=|≡)\s*$/, ''));
-    const lhsText = first.replace(/(:=|≡)\s*=?\s*$/, '');
+  // program: first line ends with := or ≡ and the body follows on further lines; "x := = mm"
+  // shows the program's value, in mm
+  const pm = lines.length > 1 ? /^(.*?)(:=|≡)\s*(?:=\s*([^=]*?))?\s*$/.exec(first) : null;
+  if (pm && !/(:=|≡)/.test(pm[1]) && (pm[3] === undefined || /=\s*[^=]*$/.test(first.slice(pm[1].length + pm[2].length)))) {
+    const global = pm[2] === '≡';
+    const show = /=/.test(first.slice(pm[1].length + pm[2].length));
     const body = lines.slice(1).filter((l) => l.trim() !== '');
-    return { type: 'program', global, lhs: parseLhs(lhsText), body, show };
+    return { type: 'program', global, lhs: parseLhs(pm[1]), body, show, ...(pm[3] ? { unit: pm[3].trim() } : {}) };
   }
   const flat = lines.map((l) => l.trim()).join(' ');
   let p = findTop(flat, ':=');

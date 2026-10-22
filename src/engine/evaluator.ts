@@ -281,7 +281,7 @@ class Evaluator {
         added.forEach((p) => texCtx.defined.add(p));
         const body = programTex(st.body);
         added.forEach((p) => texCtx.defined.delete(p));
-        const shown = st.show && value !== null && value !== undefined && typeof value !== 'function' ? ` = ${res(value, '')}` : '';
+        const shown = st.show && value !== null && value !== undefined && typeof value !== 'function' ? ` = ${res(value, st.unit ?? '')}` : '';
         return `${lhsTex(st.lhs)} ${op} ${body}${shown}`;
       }
       case 'eval': {
@@ -357,6 +357,7 @@ class Evaluator {
           break;
         case 'program':
           value = this.defineProgram(st.lhs, st.body, scope);
+          if (st.show && st.unit) valueTex(value, this.fmt, st.unit);
           break;
         case 'eval':
           value = this.evalWithRanges(st.expr, scope);

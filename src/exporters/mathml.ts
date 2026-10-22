@@ -237,6 +237,9 @@ export class MlWriter {
         return this.apply(this.el('indexer'), this.id(t.name, 'var'), t.idx.length === 1 ? this.x(t.idx[0]) : this.el('sequence', t.idx.map((i) => this.x(i)).join('')));
       case 'col':
         return this.apply(this.el('matcol'), this.id(t.name, 'var'), this.x(t.j));
+      case 'row':
+        if (this.prime) return this.apply(this.el('matrow'), this.id(t.name, 'var'), this.x(t.i));
+        throw new NotRepresentable('a row assignment (Mathcad 15 has column assignments only)');
       case 'list':
         return `<ml:matrix rows="${t.names.length}" cols="1">${t.names.map((n) => this.id(n, 'var')).join('')}</ml:matrix>`;
     }
@@ -289,6 +292,8 @@ export class MlWriter {
     switch (s.k) {
       case 'local':
         return this.el('localDefine', this.target(s.target) + this.x(s.value));
+      case 'localProgram':
+        return this.el('localDefine', this.target(s.target) + this.program(s.body));
       case 'if':
         return this.prime ? this.primeIf(s.branches) : this.mc15If(s.branches);
       case 'for':

@@ -52,10 +52,13 @@ export type Target =
   | { k: 'fn'; name: string; params: string[] }
   | { k: 'index'; name: string; idx: X[] }
   | { k: 'col'; name: string; j: X }
+  | { k: 'row'; name: string; i: X }
   | { k: 'list'; names: string[] };
 
 export type PStmt =
   | { k: 'local'; target: Target; value: X }
+  /** r ← a program of its own as the value */
+  | { k: 'localProgram'; target: Target; body: PStmt[] }
   | { k: 'if'; branches: { cond: X | null; body: PStmt[] }[] }
   | { k: 'for'; v: string; iter: X; body: PStmt[] }
   | { k: 'while'; cond: X; body: PStmt[] }
@@ -202,11 +205,20 @@ export class TreeReader {
     const local = new Set(bound);
     const walk = (list: ProgramStmt[]): PStmt[] => list.map((s): PStmt => {
       switch (s.k) {
-        case 'assign': {
-          local.add(s.name);
-          const value = this.expr(s.expr, local);
-          if (s.column) return { k: 'local', target: { k: 'col', name: s.name, j: this.expr(s.index![0], local) }, value };
-          return { k: 'local', target: s.index ? { k: 'index', name: s.name, idx: s.index.map((i) => this.expr(i, local)) } : { k: 'var', name: s.name }, value };
+        case 'assign':
+        case 'destructure':
+        case 'localfn': {
+          const target: Target = s.k === 'destructure' ? { k: 'list', names: s.names }
+            : s.k === 'localfn' ? { k: 'fn', name: s.name, params: s.params }
+            : s.column ? { k: 'col', name: s.name, j: this.expr(s.index![0], local) }
+            : s.row ? { k: 'row', name: s.name, i: this.expr(s.index![0], local) }
+            : s.index ? { k: 'index', name: s.name, idx: s.index.map((i) => this.expr(i, local)) } : { k: 'var', name: s.name };
+          if (s.k === 'destructure') s.names.forEach((n) => local.add(n));
+          else local.add(s.name);
+          const params = s.k === 'localfn' ? s.params : [];
+          params.forEach((p) => local.add(p));
+          if (s.block) return { k: 'localProgram', target, body: walk(s.block) };
+          return { k: 'local', target, value: this.expr(s.expr, local) };
         }
         case 'if':
           // a condition's lone = is a comparison (if x = 0), as in Mathcad

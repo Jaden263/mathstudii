@@ -21,8 +21,18 @@ function condition(src: string): string {
   return s;
 }
 
+/**
+ * A local definition's value is an expression, or a program of its own (r ← followed by an
+ * indented block, as Mathcad nests a program as an operand): the value of its last line.
+ */
+type Value = { expr: string; block?: Stmt[] };
+
 type Stmt =
-  | { k: 'assign'; name: string; index: string[] | null; expr: string; line: number; column?: boolean }
+  | ({ k: 'assign'; name: string; index: string[] | null; line: number; column?: boolean; row?: boolean } & Value)
+  /** [a; b] ← v: several locals at once from the elements of v */
+  | ({ k: 'destructure'; names: string[]; line: number } & Value)
+  /** f(x) ← x² : a function local to the program */
+  | ({ k: 'localfn'; name: string; params: string[]; line: number } & Value)
   | { k: 'if'; branches: { cond: string | null; body: Stmt[] }[]; line: number }
   | { k: 'for'; v: string; iter: string; body: Stmt[]; line: number }
   | { k: 'while'; cond: string; body: Stmt[]; line: number }
@@ -99,13 +109,21 @@ export function parseProgram(src: string[]): Stmt[] {
     if (arrow) {
       const lhs = ln.text.slice(0, arrow.index).trim();
       const expr = ln.text.slice(arrow.index + arrow[0].length).trim();
+      // nothing after the arrow: the value is the indented program below
+      const value: Value = expr ? { expr } : { expr: '', block: body(ln) };
       const im = /^(\S+?)\s*\[(.*)\]$/.exec(lhs);
-      if (im && isIdentifier(im[1])) return { k: 'assign', name: im[1], index: splitTop(im[2], ','), expr, line: ln.no };
-      // Mathcad's column assignment M<j> ← v
-      const cm = /^col\s*\(\s*([^\s,()]+)\s*,(.*)\)$/.exec(lhs);
-      if (cm && isIdentifier(cm[1])) return { k: 'assign', name: cm[1], index: [cm[2].trim()], expr, line: ln.no, column: true };
+      if (im && isIdentifier(im[1])) return { k: 'assign', name: im[1], index: splitTop(im[2], ','), ...value, line: ln.no };
+      // Mathcad's column and row assignments M<j> ← v, row(M, i) ← v
+      const cm = /^(col|row)\s*\(\s*([^\s,()]+)\s*,(.*)\)$/.exec(lhs);
+      if (cm && isIdentifier(cm[2])) return { k: 'assign', name: cm[2], index: [cm[3].trim()], ...value, line: ln.no, ...(cm[1] === 'col' ? { column: true } : { row: true }) };
+      const dm = /^\[(.*)\]$/.exec(lhs);
+      const names = dm ? dm[1].split(/[;,]/).map((x) => x.trim()) : [];
+      if (dm && names.length && names.every(isIdentifier)) return { k: 'destructure', names, ...value, line: ln.no };
+      const fm = /^([^\s(]+)\s*\((.*)\)$/.exec(lhs);
+      const params = fm ? (fm[2].trim() ? splitTop(fm[2], ',').map((x) => x.trim()) : []) : [];
+      if (fm && isIdentifier(fm[1]) && params.every(isIdentifier)) return { k: 'localfn', name: fm[1], params, ...value, line: ln.no };
       if (!isIdentifier(lhs)) throw new Error(`Line ${ln.no}: cannot assign to "${lhs}"`);
-      return { k: 'assign', name: lhs, index: null, expr, line: ln.no };
+      return { k: 'assign', name: lhs, index: null, ...value, line: ln.no };
     }
     return { k: 'expr', expr: ln.text, line: ln.no };
   }
@@ -166,6 +184,30 @@ function roundish(v: number): number {
   return Math.abs(v - r) < 1e-12 * Math.max(1, Math.abs(v)) ? r : v;
 }
 
+/** Set row i of a matrix to a vector (a row or a column of values), growing it as Mathcad does. */
+function assignRow(cur: unknown, i: unknown, v: unknown): unknown {
+  const k = int(i, 'row') - engineCtx.origin;
+  if (k < 0) throw new Error(`Row below ORIGIN (${engineCtx.origin})`);
+  const row = toVector(v);
+  const rows: unknown[][] = isMatrix(cur) || Array.isArray(cur) ? matrix2D(cur).map((r) => r.slice()) : [];
+  const height = Math.max(rows.length, k + 1), width = Math.max(rows[0]?.length ?? 0, row.length);
+  const out = Array.from({ length: height }, (_, r) => Array.from({ length: width }, (_, c) => (r === k ? (row[c] ?? 0) : rows[r]?.[c] ?? 0)));
+  return math.matrix(out as never);
+}
+
+/** The value of a local definition: its expression, or its own program's value (a return in it ends that program). */
+function valueOf(s: Value, scope: ChainScope): unknown {
+  if (!s.block) return normalize(compileExpr(s.expr).evaluate(scope));
+  try {
+    const v = run(s.block, scope);
+    if (v === undefined) throw new Error('Program produced no value');
+    return normalize(v);
+  } catch (e) {
+    if (e instanceof Signal && e.kind === 'return') return normalize(e.value);
+    throw e;
+  }
+}
+
 /** Set column j of a matrix to a vector, growing it (zero-filled) as Mathcad does. */
 function assignColumn(cur: unknown, j: unknown, v: unknown): unknown {
   const k = int(j, 'column') - engineCtx.origin;
@@ -198,13 +240,31 @@ function exec(s: Stmt, scope: ChainScope): unknown {
   tick();
   switch (s.k) {
     case 'assign': {
-      const v = normalize(compileExpr(s.expr).evaluate(scope));
+      const v = valueOf(s, scope);
       if (s.index) {
         const idx = s.index.map((i) => compileExpr(i).evaluate(scope));
         const cur = scope.local.has(s.name) ? scope.local.get(s.name) : undefined;
-        scope.set(s.name, s.column ? assignColumn(cur, idx[0], v) : assignIndex(cur, idx, v));
+        scope.set(s.name, s.column ? assignColumn(cur, idx[0], v) : s.row ? assignRow(cur, idx[0], v) : assignIndex(cur, idx, v));
       } else scope.set(s.name, v);
       return v;
+    }
+    case 'destructure': {
+      const v = valueOf(s, scope);
+      const items = toVector(v);
+      if (items.length !== s.names.length) throw new Error(`Expected ${s.names.length} values, got ${items.length}`);
+      s.names.forEach((n, i) => scope.set(n, normalize(items[i])));
+      return v;
+    }
+    case 'localfn': {
+      const { name, params } = s;
+      const fn = (...args: unknown[]) => {
+        if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+        const local = new ChainScope(scope);
+        params.forEach((p, i) => local.set(p, normalize(args[i])));
+        return valueOf(s, local);
+      };
+      scope.set(name, fn);
+      return fn;
     }
     case 'expr':
       return compileExpr(s.expr).evaluate(scope);
