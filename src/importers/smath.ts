@@ -7,7 +7,8 @@
 // saved by SMath Studio 0.96–0.99 (the program's bundled examples).
 import { unzipSync, gunzipSync, decompressSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
-import { createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH, type Region, type PlotTrace } from '../model/types';
+import { createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH, type Region, type RegionStyle, type PlotTrace } from '../model/types';
+import { AREA_BAR, AREA_PAD, collapseArea } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, Unsupported, unitName, wrap, type Ex, type ImportResult, type SavedResult } from './common';
 
 type El = XElement;
@@ -70,16 +71,20 @@ function walk(t: Tok, f: (t: Tok) => void) {
   for (const a of t.args) walk(a, f);
 }
 
-/** Variable and function names a tree reads. */
-function namesUsed(t: Tok, out: Set<string>) {
+/** Variable and function names a tree reads (with the worksheet's own units). */
+function namesUsed(t: Tok, out: Set<string>, userUnits?: Set<string>) {
   walk(t, (n) => {
     if ((n.type === 'operand' && !n.style && isVar(n)) || n.type === 'function') out.add(smName(n.text));
+    else if (n.type === 'operand' && n.style === 'unit' && userUnits?.has(n.text)) out.add(smName(n.text));
   });
 }
 
-/** Base name of a definition target: x, x[i] (el), f(x). */
+/** A unit the worksheet defines (its name in unit style on the left of ":"). */
+const isUserUnit = (t: Tok | undefined) => !!t && t.type === 'operand' && t.style === 'unit' && /^[^\d.]/.test(t.text);
+
+/** Base name of a definition target: x, x[i] (el), f(x), a unit of the worksheet's own. */
 function targetName(t: Tok): string | null {
-  if (isVar(t)) return smName(t.text);
+  if (isVar(t) || isUserUnit(t)) return smName(t.text);
   if (isFn(t, 'el') && isVar(t.args[0])) return smName(t.args[0].text);
   if (t.type === 'function') return smName(t.text);
   return null;
@@ -135,8 +140,30 @@ const FN_MAP: Record<string, string> = {
   random: 'rnd', product: 'prod', mod: 'mod', Min: 'min', Max: 'max',
 };
 
-/** SMath unit names that mean something else here (g is gravity in Mathcad convention). */
-const SMATH_UNITS: Record<string, string> = { g: 'gm', in: 'inch', h: 'hr', min: 'min', t: 'tonne', l: 'L', '°': 'deg', 'g.e': 'g' };
+/**
+ * SMath unit names that mean something else here (g is gravity in Mathcad convention), and the
+ * units SMath shows that the engine has no name for: J/kg is the gray (Gy), mol/s the katal, the
+ * tonne-force 1000 kgf.
+ */
+const SMATH_UNITS: Record<string, string> = {
+  g: 'gm', in: 'inch', h: 'hr', min: 'min', t: 'tonne', l: 'L', '°': 'deg', 'g.e': 'g',
+  Gy: '(J/kg)', Sv: '(J/kg)', kat: '(mol/s)', tonnef: '(1000 kgf)',
+};
+
+/** Display units that cannot be written as a unit here, and the unit shown instead. */
+const SMATH_DISPLAY: Record<string, { unit: string; why: string }> = {
+  tonnef: { unit: 'kgf', why: 'tonnef (tonne-force) is not a unit here: shown in kgf (1 tonnef = 1000 kgf)' },
+};
+
+/** SMath's physical constants are units (style="unit"): k is Boltzmann's constant, e the elementary charge. */
+const SMATH_CONSTANTS: Record<string, string> = {
+  k: 'boltzmann', e: 'elementaryCharge', c: 'speedOfLight', 'N.A': 'avogadro',
+  'ε.0': 'vacuumPermittivity', 'μ.0': 'vacuumPermeability', 'm.e': 'electronMass', 'm.p': 'protonMass', 'm.n': 'neutronMass',
+};
+
+/** A number as SMath writes it: "2.", ".5", "1e-3". */
+const NUMBER = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+const number = (s: string) => s.replace(/^\./, '0.').replace(/\.(?=$|[eE])/, '');
 
 const CONSTANTS: Record<string, string> = { π: 'π', e: 'e', '∞': '∞' };
 
@@ -162,21 +189,36 @@ class Converter {
 
   /** Inside a display unit, where every name is a unit even when a variable has its name. */
   private inContract = false;
+  private exactUnits = false;
+
+  /** Why a display unit is shown in another unit (once per worksheet). */
+  displayNotes = new Set<string>();
+  /** Units the worksheet defines itself (kcf := 1 kip/ft³): variables here. */
+  userUnits = new Set<string>();
 
   unit(raw: string): Ex {
     // a region marked "ignore units" calculates with every unit as 1
     if (this.ignoreUnits) return { s: '1', p: P.ATOM };
+    if (this.userUnits.has(raw)) return { s: this.name(raw), p: P.ATOM };
+    if (this.inContract && !this.exactUnits && SMATH_DISPLAY[raw]) {
+      this.displayNotes.add(SMATH_DISPLAY[raw].why);
+      return { s: SMATH_DISPLAY[raw].unit, p: P.ATOM };
+    }
+    if (SMATH_CONSTANTS[raw] && !this.inContract) return { s: SMATH_CONSTANTS[raw], p: P.ATOM };
     const name = SMATH_UNITS[raw] ?? unitName(raw);
     if (!this.inContract && (this.assigned.has(name) || this.assigned.has(raw))) return { s: `unit(1, "${name}")`, p: P.ATOM };
     return { s: name, p: P.ATOM };
   }
 
-  displayUnit(t: Tok): string {
+  /** The unit a result is shown in; exact: as the value SMath saved means it (tonnef stays 1000 kgf). */
+  displayUnit(t: Tok, exact = false): string {
     this.inContract = true;
+    this.exactUnits = exact;
     try {
       return this.expr(t).s;
     } finally {
       this.inContract = false;
+      this.exactUnits = false;
     }
   }
 
@@ -202,7 +244,7 @@ class Converter {
     if (t.style === 'unit') return this.unit(t.text);
     if (t.style === 'string') return { s: JSON.stringify(t.text), p: P.ATOM };
     if (isPlaceholderText(t.text)) throw new Placeholder();
-    if (/^\d*\.?\d+([eE][+-]?\d+)?$/.test(t.text)) return { s: t.text.replace(/^\./, '0.'), p: P.ATOM };
+    if (NUMBER.test(t.text)) return { s: number(t.text), p: P.ATOM };
     if (CONSTANTS[t.text]) return { s: CONSTANTS[t.text], p: P.ATOM };
     if (t.text === 'break' || t.text === 'continue') throw new Unsupported(`“${t.text}” outside a program`);
     return { s: this.name(t.text), p: P.ATOM };
@@ -327,7 +369,7 @@ class Converter {
   // ------------------------------------------------------------ programs
 
   target(t: Tok): string {
-    if (isVar(t)) return this.name(t.text);
+    if (isVar(t) || isUserUnit(t)) return this.name(t.text);
     if (isFn(t, 'el')) return this.expr(t).s;
     if (t.type === 'function') {
       if (!t.args.every(isVar)) throw new Unsupported('a function definition with non-name parameters');
@@ -395,19 +437,160 @@ function pickLang(els: El[]): El | undefined {
   return els.find((e) => (e.getAttribute('lang') ?? '') === 'eng') ?? els.find((e) => !e.getAttribute('lang')) ?? els[0];
 }
 
-/** Markdown from SMath's <text>/<description> paragraphs. */
-function paragraphs(el: El): string {
-  const ps = kids(el).filter((c) => local(c) === 'p');
-  const out: string[] = [];
-  for (const p of ps.length ? ps : [el]) {
-    const bold = p.getAttribute('bold') === 'true';
-    const italic = p.getAttribute('italic') === 'true';
-    const lines = (p.textContent ?? '').split(/\r?\n/).map((l) => l.trim().replace(/\$/g, '&#36;'));
-    const fmt = (l: string) => (!l ? l : bold ? `**${l}**` : italic ? `*${l}*` : l);
-    const md = lines.map(fmt).join('  \n').trim();
-    if (md) out.push(md);
+/** Characters Markdown (and the $TeX$ and {{value}} syntax of text regions) would read as formatting. */
+const mdEscape = (s: string) => s.replace(/[\\`*_[\]<>#|~]/g, '\\$&').replace(/\$/g, '&#36;').replace(/\{(?=\{)/g, '&#123;').replace(/^(\s*)(\d+)\.(?=\s)/, '$1$2\\.').replace(/^(\s*)([-+])(?=\s)/, '$1\\$2');
+
+/** Inline formatting of a run of SMath text (an HTML-like style attribute, or the 0.9x p attributes). */
+interface Look {
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  /** px, as SMath 1.x writes font sizes in text. */
+  size?: number;
+}
+
+function cssLook(style: string, base: Look): Look {
+  const out = { ...base };
+  for (const decl of style.split(';')) {
+    const [k, v] = decl.split(':').map((x) => x?.trim().toLowerCase() ?? '');
+    if (k === 'font-weight') out.bold = v === 'bold' || Number(v) >= 600;
+    else if (k === 'font-style') out.italic = v === 'italic';
+    else if (k === 'color' && /^#[0-9a-f]{6}$/.test(v)) out.color = v;
+    else if (k === 'font-size') {
+      const n = parseFloat(v);
+      if (n > 0) out.size = /pt/.test(v) ? (n * 4) / 3 : n;
+    }
   }
-  return out.join('\n\n');
+  return out;
+}
+
+/** A text region's content: Markdown lines, the formatting they mostly share, and the regions placed inside it. */
+interface RichText {
+  md: string;
+  /** The look of most of the text (characters counted), for the region's style. */
+  look: Look;
+  /** Math and pictures inside the text (SMath 1.x \[REGION[id]]\), at positions relative to the text. */
+  embedded: El[];
+}
+
+/**
+ * SMath's text: 0.9x writes <p bold="true" italic="true"> paragraphs; 1.x writes <content> with
+ * XHTML-like paragraphs (<p style>, <span style>, <br />) and the math or pictures placed in the
+ * text under <regions>, marked \[REGION[id]]\ where they stand.
+ */
+function richText(el: El, base: Look = {}): RichText {
+  const content = local(el) === 'content' ? el : child(el, 'content');
+  const holder = content ?? el;
+  const embeddedById = new Map<string, El>();
+  for (const r of kids(child(el, 'regions') ?? el).filter((c) => local(c) === 'region')) embeddedById.set((r.getAttribute('id') ?? '').toLowerCase(), r);
+  const embedded: El[] = [];
+  // lines of runs; a run is text in one look, or room for a region placed in the text (gap, in em)
+  type Run = { text: string; look: Look } | { gap: number };
+  const lines: Run[][] = [[]];
+  const emit = (text: string, look: Look) => {
+    // a region inside the text: room for it here, the region itself is placed on the page
+    const parts = text.split(/\\\[REGION\[([0-9a-f]+)\]\]\\/i);
+    const cur = lines[lines.length - 1];
+    parts.forEach((part, i) => {
+      if (i % 2 === 0) {
+        if (part) cur.push({ text: part, look });
+        return;
+      }
+      const r = embeddedById.get(part.toLowerCase());
+      if (!r) return;
+      embedded.push(r);
+      cur.push({ gap: Math.max(1, Math.round(Number(r.getAttribute('width') ?? 0) / 13)) });
+    });
+  };
+  const walkInline = (n: XNode, look: Look) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3 || c.nodeType === 4) emit((c.nodeValue ?? '').replace(/\s+/g, ' '), look);
+      else if (c.nodeType === 1) {
+        const e = c as El;
+        const tag = local(e).toLowerCase();
+        if (tag === 'br') lines.push([]);
+        else {
+          let l = cssLook(e.getAttribute('style') ?? '', look);
+          if (tag === 'b' || tag === 'strong') l = { ...l, bold: true };
+          if (tag === 'i' || tag === 'em') l = { ...l, italic: true };
+          walkInline(e, l);
+        }
+      }
+    }
+  };
+  const ps = kids(holder).filter((c) => local(c) === 'p');
+  const links = new Map<Run[], string>();
+  for (const p of ps.length ? ps : [holder]) {
+    let look = cssLook(p.getAttribute('style') ?? '', base);
+    if (p.getAttribute('bold') === 'true') look = { ...look, bold: true };
+    if (p.getAttribute('italic') === 'true') look = { ...look, italic: true };
+    if (content) walkInline(p, look);
+    else {
+      // 0.9x: the line breaks are in the text itself
+      (p.textContent ?? '').split(/\r?\n/).forEach((l, i) => {
+        if (i) lines.push([]);
+        emit(l, look);
+      });
+      const href = p.getAttribute('href');
+      if (href) links.set(lines[lines.length - 1], href);
+    }
+    lines.push([]);
+  }
+  // the look of most of the text becomes the region's (counted in characters); bold and
+  // italic only when all of it is, else they stay on the words as ** and *
+  const texts = lines.flat().filter((r): r is { text: string; look: Look } => 'text' in r && !!r.text.trim());
+  const weight = new Map<string, { look: Look; n: number }>();
+  for (const r of texts) {
+    const key = JSON.stringify([r.look.color, r.look.size]);
+    const w = weight.get(key) ?? { look: r.look, n: 0 };
+    w.n += r.text.trim().length;
+    weight.set(key, w);
+  }
+  const main = [...weight.values()].sort((a, b) => b.n - a.n)[0]?.look ?? base;
+  const allBold = texts.length > 0 && texts.every((r) => r.look.bold);
+  const allItalic = texts.length > 0 && texts.every((r) => r.look.italic);
+  const render = (runs: Run[]) => {
+    // neighbouring runs of the same weight and slant share their ** and *
+    const merged: Run[] = [];
+    for (const r of runs) {
+      const last = merged[merged.length - 1];
+      if ('text' in r && last && 'text' in last && !!last.look.bold === !!r.look.bold && !!last.look.italic === !!r.look.italic) merged[merged.length - 1] = { text: last.text + r.text, look: last.look };
+      else merged.push(r);
+    }
+    return merged.map((r) => {
+      if ('gap' in r) return '\u2003'.repeat(r.gap);
+      const m = /^(\s*)(.*?)(\s*)$/s.exec(r.text)!;
+      if (!m[2]) return m[0];
+      const b = r.look.bold && !allBold, i = r.look.italic && !allItalic;
+      const mark = b && i ? '***' : b ? '**' : i ? '*' : '';
+      return `${m[1]}${mark}${mdEscape(m[2])}${mark}${m[3]}`;
+    }).join('').trim();
+  };
+  const out = lines.map((l) => {
+    const md = render(l);
+    const href = links.get(l);
+    return href && md ? `[${md}](${href.replace(/[()\s]/g, encodeURIComponent)})` : md;
+  });
+  while (out.length && !out[out.length - 1]) out.pop();
+  while (out.length && !out[0]) out.shift();
+  // an empty line keeps its height
+  const md = out.map((l) => l || '\u00a0').join('  \n');
+  return { md, look: { ...main, bold: allBold || undefined, italic: allItalic || undefined }, embedded };
+}
+
+/** A region's own colours and font size (SMath writes them on <region>), as a mathstudii style. */
+function regionStyle(r: El, look: Look = {}, defaultSize = 10): RegionStyle | undefined {
+  const st: RegionStyle = {};
+  const color = look.color ?? (r.getAttribute('color') ?? '').toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(color) && color !== '#000000') st.color = color;
+  const bg = (r.getAttribute('bgColor') ?? '').toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(bg) && bg !== '#ffffff') st.background = bg;
+  // SMath sizes are points (10 is the default); text sizes in px
+  const pt = look.size ? (look.size * 3) / 4 : Number(r.getAttribute('fontSize') ?? defaultSize);
+  if (pt > 0 && Math.abs(pt - defaultSize) > 0.01) st.fontScale = Math.round((pt / defaultSize) * 100) / 100;
+  if (look.bold) st.bold = true;
+  if (look.italic) st.italic = true;
+  return Object.keys(st).length ? st : undefined;
 }
 
 // ------------------------------------------------------------ file
@@ -436,16 +619,39 @@ interface Placed {
   region: El;
   x: number;
   y: number;
+  /** An area: the lowest bottom of the regions in it (page px). */
+  areaBottom?: number;
+  /** A region placed inside a text (SMath 1.x): its text region. */
+  inText?: El;
 }
 
-/** Regions in reading order. Collapsible areas hold their regions as children, with page coordinates. */
+const num = (e: El, a: string) => Number(e.getAttribute(a) ?? 0) || 0;
+
+/**
+ * Regions in reading order. Collapsible areas hold their regions as children, with page
+ * coordinates; a text of SMath 1.x holds the math and pictures written inside it, placed
+ * relative to the text.
+ */
 function flatten(container: El): Placed[] {
   const out: Placed[] = [];
   for (const r of kids(container).filter((c) => local(c) === 'region')) {
     const nested = kids(r).filter((c) => local(c) === 'region');
-    if (nested.length) out.push(...flatten(r));
     const body = kids(r).find((c) => local(c) !== 'region');
-    if (body && local(body) !== 'area') out.push({ region: r, x: Number(r.getAttribute('left') ?? 0), y: Number(r.getAttribute('top') ?? 0) });
+    const at = { region: r, x: num(r, 'left'), y: num(r, 'top') };
+    if (body && local(body) === 'area') {
+      if (!nested.length) continue;
+      const inside = flatten(r);
+      out.push({ ...at, areaBottom: Math.max(...inside.map((q) => q.y + (q.areaBottom !== undefined ? q.areaBottom - q.y : num(q.region, 'height')))) }, ...inside);
+      continue;
+    }
+    if (nested.length) out.push(...flatten(r));
+    if (!body) continue;
+    out.push(at);
+    if (local(body) === 'text') {
+      const t = pickLang(kids(r).filter((c) => local(c) === 'text'));
+      const holder = t && child(t, 'regions');
+      if (holder) for (const e of kids(holder).filter((c) => local(c) === 'region')) out.push({ region: e, x: at.x + num(e, 'left'), y: at.y + num(e, 'top'), inText: r });
+    }
   }
   return out;
 }
@@ -487,6 +693,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     }
     return [] as Tok[];
   });
+  // units the worksheet defines (k.1 := 17.5 N/mm) are variables of that name
+  for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isUserUnit(t.args[0])) conv.userUnits.add(t.args[0].text);
   const used = inputs.map((toks, i) => {
     const s = new Set<string>();
     const body = regionKinds(placed[i].region)[0];
@@ -494,7 +702,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     for (const t of toks) {
       // a formula shown for documentation reads nothing
       if (isOp(t, '≡') && !shown) continue;
-      namesUsed(t, s);
+      namesUsed(t, s, conv.userUnits);
     }
     // x in a plot is the plot's own variable
     if (body && local(body) === 'plot') s.delete('x');
@@ -535,13 +743,23 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   };
   let plotRanges = 0;
 
+  const areas: { area: Region; collapsed: boolean }[] = [];
   placed.forEach((at, i) => {
     const r = at.region;
     const body = regionKinds(r)[0];
     if (!body) return;
     const kind = local(body);
     const width = Number(r.getAttribute('width') ?? 0);
+    const first = regions.length;
     try {
+      if (at.areaBottom !== undefined) {
+        // SMath keeps an area's regions at their places when it is expanded; collapsed after the layout is fitted
+        const title = pickLang(kids(body).filter((c) => local(c) === 'title'));
+        const area = createRegion('area', at.x, at.y, { title: title ? richText(title).md.replace(/\s*\n\s*/g, ' ') : '', height: Math.max(AREA_BAR, at.areaBottom - at.y + AREA_PAD) });
+        regions.push(area);
+        areas.push({ area, collapsed: body.getAttribute('collapsed') === 'true' || body.getAttribute('isCollapsed') === 'true' });
+        return;
+      }
       conv.ignoreUnits = kind === 'math' && body.getAttribute('ignoreUnits') === 'true';
       if (conv.ignoreUnits) warnings.push(`math at ${Math.round(at.y)} px: SMath ignores the units in this region (each counts as 1); so does the import`);
       if (kind === 'math') {
@@ -593,7 +811,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             walk(tok, (n) => { if (n.style === 'unit') hasUnit = true; });
             // rounded to the digits shown: half a unit in the last significant digit
             const digits = (/\d[\d.]*/.exec(value)?.[0] ?? '').replace('.', '').replace(/^0+/, '').length || 1;
-            const shownIn = unit.trim() === '%' ? '1/100' : unit.trim();
+            const shownIn = unit.trim() === '%' ? '1/100' : contract ? conv.displayUnit(contract, true) : '';
             saved.push({ regionId: last.id, expr: shownIn && !hasUnit ? `(${value})*(${shownIn})` : value, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
           } catch {
             /* a result we cannot read (a matrix of text, a placeholder) is not compared */
@@ -602,25 +820,57 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         // worksheet-level names only: locals of a function's program stay local
         if (isOp(t, ':')) {
           const n = targetName(t.args[0]);
-          if (n && (isVar(t.args[0]) || isFn(t.args[0], 'el'))) definedBefore.add(n);
+          if (n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el'))) definedBefore.add(n);
         } else if (isProgram(t)) for (const n of assignments(t).all) definedBefore.add(n);
 
         // a comment attached to the formula
+        // the region's colours and size
+        const look = regionStyle(r);
+        for (let k = first; k < regions.length; k++) if (look && regions[k].kind === 'math') regions[k].style = look;
+        // a comment attached to the formula
         const desc = pickLang(kids(body).filter((c) => local(c) === 'description' && c.getAttribute('active') !== 'false'));
-        const md = desc ? paragraphs(desc) : '';
-        if (md) regions.push(createRegion('text', at.x + Math.max(60, width) + 16, at.y, { markdown: `*${md.replace(/\*/g, '')}*`, width: 220 }));
+        const note = desc ? richText(desc) : null;
+        if (note?.md) {
+          // SMath shows it beside the formula (position="Right") or above it
+          const above = /^top$/i.test(desc!.getAttribute('position') ?? '');
+          const style = regionStyle(r, { ...note.look, italic: true });
+          regions.push(createRegion('text', above ? at.x : at.x + Math.max(60, width) + 16, above ? Math.max(0, at.y - 18) : at.y, { markdown: note.md, width: 220, ...(style ? { style } : {}) }));
+        }
       } else if (kind === 'text') {
         const t = pickLang(regionKinds(r).filter((c) => local(c) === 'text'));
-        const md = t ? paragraphs(t) : '';
-        if (md) regions.push(createRegion('text', at.x, at.y, { markdown: md, width: Math.max(120, width + 20) }));
-      } else if (kind === 'picture') {
-        const raw = child(body, 'raw');
-        const fmt = (raw?.getAttribute('format') ?? 'png').toLowerCase();
-        const b64 = (raw?.textContent ?? '').replace(/\s+/g, '');
-        if (!b64) throw new Error('image data not found');
-        if (/emf|wmf/.test(fmt)) throw new Unsupported(`a ${fmt.toUpperCase()} image (browsers cannot display it)`);
-        const mime = fmt === 'jpg' || fmt === 'jpeg' ? 'image/jpeg' : fmt === 'gif' ? 'image/gif' : fmt === 'bmp' ? 'image/bmp' : 'image/png';
-        regions.push(createRegion('image', at.x, at.y, { src: `data:${mime};base64,${b64}`, width: Math.min(PAGE_WIDTH - 2 * PAGE_MARGIN, width || 240) }));
+        const size = Number(t?.getAttribute('fontSize') ?? r.getAttribute('fontSize') ?? 10) || 10;
+        const rich = t ? richText(t, { size: (size * 4) / 3 }) : null;
+        if (rich?.md) {
+          const style = regionStyle(r, rich.look);
+          regions.push(createRegion('text', at.x, at.y, { markdown: rich.md, width: Math.max(120, width + 20), ...(style ? { style } : {}) }));
+        }
+      } else if (kind === 'picture' || kind === 'image') {
+        // a picture region, or the Image plugin's (its file kept in the worksheet)
+        const raw = kind === 'picture' ? child(body, 'raw') : child(body, 'imagefile');
+        const fmt = (kind === 'picture' ? raw?.getAttribute('format') ?? 'png' : (raw?.getAttribute('filename') ?? '.png').replace(/^.*\./, '')).toLowerCase();
+        regions.push(imageRegion(raw, fmt, at, width));
+      } else if (kind === 'maximaplugin') {
+        // the Maxima plugin's plot: the picture Maxima drew (the plot itself needs Maxima)
+        const raw = child(body, 'ImageFile');
+        if (!raw?.textContent?.trim()) throw new Unsupported('a Maxima plugin region with no saved picture (it needs the Maxima plugin)');
+        regions.push(imageRegion(raw, (raw.getAttribute('FileName') ?? '.png').replace(/^.*\./, '').toLowerCase(), at, width));
+        warnings.push(`Maxima plot at ${Math.round(at.y)} px: shown as the picture Maxima drew; Maxima itself is a plugin mathstudii does not have, so it is not redrawn`);
+      } else if (kind === 'writer') {
+        // the Writer plugin's rich text (HTML)
+        const html = body.textContent ?? '';
+        const xmlDoc = new DOMParser({ onError: () => {} }).parseFromString(`<content>${html.replace(/&nbsp;/g, '\u00a0').replace(/<br\s*>/gi, '<br/>').replace(/<\/?div[^>]*>/gi, '<br/>')}</content>`, 'text/xml');
+        const rich = xmlDoc.documentElement ? richText(xmlDoc.documentElement) : null;
+        if (rich?.md) {
+          const style = regionStyle(r, rich.look);
+          regions.push(createRegion('text', at.x, at.y, { markdown: rich.md, width: Math.max(120, width + 20), ...(style ? { style } : {}) }));
+        }
+      } else if (kind === 'slider') {
+        // an input control: the variable keeps the value the slider was set to
+        const name = parseRpn(child(body, 'input'))[0];
+        if (!name || !isVar(name)) throw new Unsupported('a slider with no variable');
+        regions.push(createRegion('math', at.x, at.y, { source: `${conv.name(name.text)} := ${number(body.getAttribute('value') ?? '0')}`, input: true }));
+        definedBefore.add(smName(name.text));
+        warnings.push(`slider at ${Math.round(at.y)} px: imported as ${conv.name(name.text)} := ${body.getAttribute('value')} (the value it was set to, ${body.getAttribute('minValue')}…${body.getAttribute('maxValue')}); mathstudii has no slider, so edit the number`);
       } else if (kind === 'plot') {
         regions.push(plot(conv, body, at, width, Number(r.getAttribute('height') ?? 0), definedBefore, plotLists, hasStrings));
         plotRanges++;
@@ -631,11 +881,24 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
       fail(kind === 'math' ? 'math' : kind, e, at);
     }
   });
+  for (const note of conv.displayNotes) warnings.push(note);
   if (plotRanges) warnings.push(`${plotRanges} plot${plotRanges > 1 ? 's' : ''}: SMath stores a view (zoom and pan), not axis limits, so the axes start from automatic ranges`);
 
   fitToPage(regions);
   ws.regions = regions;
-  return { ws, warnings, format: 'SMath Studio (.sm)', saved };
+  // collapse the areas SMath had collapsed, inner ones first (what is below moves up)
+  let out = ws;
+  for (const { area } of areas.filter((a) => a.collapsed).reverse()) out = collapseArea(out, area.id);
+  return { ws: out, warnings, format: 'SMath Studio (.sm)', saved };
+}
+
+/** An image from base64 data (a picture, the Image plugin, a Maxima plot). */
+function imageRegion(raw: El | undefined, fmt: string, at: Placed, width: number): Region {
+  const b64 = (raw?.textContent ?? '').replace(/\s+/g, '');
+  if (!b64) throw new Error('image data not found');
+  if (/emf|wmf/.test(fmt)) throw new Unsupported(`a ${fmt.toUpperCase()} image (browsers cannot display it)`);
+  const mime = fmt === 'jpg' || fmt === 'jpeg' ? 'image/jpeg' : fmt === 'gif' ? 'image/gif' : fmt === 'bmp' ? 'image/bmp' : fmt === 'svg' ? 'image/svg+xml' : 'image/png';
+  return createRegion('image', at.x, at.y, { src: `data:${mime};base64,${b64}`, width: Math.min(PAGE_WIDTH - 2 * PAGE_MARGIN, width || 240) });
 }
 
 /**

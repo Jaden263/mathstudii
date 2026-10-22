@@ -161,10 +161,17 @@ describe('SMath import', () => {
 
   it('keeps text, comments, pictures, plots, display formulas and reports plugins', () => {
     const { ws, warnings } = importSmath(strToU8(worksheet()), 'a.sm');
-    const texts = ws.regions.filter((r) => r.kind === 'text').map((r) => (r as { markdown: string }).markdown);
-    expect(texts[0]).toBe('**Beam on two supports: &#36; cost and *notes***');
-    expect(texts).toContain('*Beam length*');
+    const textRegions = ws.regions.filter((r) => r.kind === 'text');
+    const texts = textRegions.map((r) => (r as { markdown: string }).markdown);
+    // SMath shows *notes* with its asterisks; the bold paragraph makes the region bold
+    expect(texts[0]).toBe('Beam on two supports: &#36; cost and \\*notes\\*');
+    expect(textRegions[0].style).toEqual({ bold: true });
+    expect(texts).toContain('Beam length');
+    expect(textRegions.find((r) => (r as { markdown: string }).markdown === 'Beam length')?.style).toEqual({ italic: true });
     expect(texts).toContain('Hidden part');
+    // the collapsed area hides it
+    const area = ws.regions.find((r) => r.kind === 'area');
+    expect(area && area.kind === 'area' && area.collapsed && area.hidden).toEqual([textRegions.find((r) => (r as { markdown: string }).markdown === 'Hidden part')!.id]);
     expect(texts.some((t) => t.startsWith('⚠️') && t.includes('somePluginRegion'))).toBe(true);
     expect(ws.regions.some((r) => r.kind === 'image' && r.src.startsWith('data:image/png;base64,'))).toBe(true);
     const plot = ws.regions.find((r) => r.kind === 'plot');
@@ -221,5 +228,109 @@ describe('SMath import: what writing files for SMath showed', () => {
     }${region(`<math><input>${def(v('q'), v('12') + u('kN') + u('m') + op('/') + op('*'))}</input><contract>${u('kN') + u('m') + op('/')}</contract><result action="numeric">${v('12')}</result></math>`)}</regions></worksheet>`), 'x.sm').ws;
     expect(sources(ws)).toContain('q := 12 kN/unit(1, "m") = kN/m');
     expect(value(ws, 'q := 12 kN/unit(1, "m") = kN/m')).toMatch(/= 12\\/);
+  });
+});
+
+describe('SMath import: numbers, constants, units and text as SMath writes them', () => {
+  const sheet = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return `<?xml version="1.0" encoding="utf-8"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions type="content">${regions.join('')}</regions></worksheet>`;
+  };
+  const load = (...regions: string[]) => importSmath(strToU8(sheet(...regions)), 'x.sm');
+  const result = (input: string, saved: string, unit = '') =>
+    region(`<math><input>${input}</input>${unit ? `<contract>${unit}</contract>` : ''}<result action="numeric">${saved}</result></math>`);
+
+  it('reads "2." as the number 2', () => {
+    const { ws } = load(math(def(v('V'), v('10'))), result(v('V') + v('2.') + op('*'), v('20')));
+    expect(sources(ws)).toContain('V*2 =');
+    expect(value(ws, 'V*2 =')).toMatch(/= 20/);
+  });
+
+  it('takes SMath constants written as units: Boltzmann k, elementary charge e, light speed c', () => {
+    // V_T := k·T/e with T = 300 K is 25.852 mV
+    const { ws } = load(math(def(v('T'), v('300') + u('K') + op('*'))), result(def(v('V.T'), u('k') + v('T') + op('*') + u('e') + op('/')), v('25.852'), u('mV')),
+      result(v('0.6') + u('c') + op('*'), v('179875474.8') + u('m') + u('s') + op('/') + op('*')));
+    expect(sources(ws)).toContain('V_T := boltzmann*T/elementaryCharge = mV');
+    expect(value(ws, 'V_T := boltzmann*T/elementaryCharge = mV')).toMatch(/25\.85\d*\\ \\mathrm\{mV\}/);
+    expect(value(ws, '0.6 speedOfLight =')).toMatch(/1\.7988/);
+  });
+
+  it('defines a unit of the worksheet as a variable of its name (k.1 := 17.5 N/mm, kcf := kip/ft³)', () => {
+    const { ws } = load(
+      math(def(u('k.1'), v('17.5') + u('N') + u('mm') + op('/') + op('*'))),
+      math(def(v('F'), v('35') + u('N') + op('*'))),
+      result(def(v('d'), v('2') + v('F') + op('*') + v('4') + u('k.1') + op('*') + op('/')), v('1'), u('mm')),
+    );
+    expect(sources(ws)).toEqual(['k_1 := 17.5 N/mm', 'F := 35 N', 'd := 2*F/(4 k_1) = mm']);
+    expect(value(ws, 'd := 2*F/(4 k_1) = mm')).toMatch(/= 1\\ \\mathrm\{mm\}/);
+  });
+
+  it('reads results SMath shows in gray (J/kg), katal and tonne-force', () => {
+    const { ws, saved, warnings } = load(result(def(v('h'), v('2594387') + u('J') + u('kg') + op('/') + op('*')), v('2594387') + u('Gy') + op('*')),
+      result(def(v('P'), v('9806.65') + u('N') + op('*')), v('1'), u('tonnef')),
+      result(def(v('n'), v('2') + u('mol') + u('s') + op('/') + op('*')), v('2') + u('kat') + op('*')));
+    expect(saved!.map((s) => s.expr)).toEqual(['2594387 (J/kg)', '(1)*((1000 kgf))', '2 (mol/s)']);
+    // tonne-force is no unit here: shown in kgf, and the report says so
+    expect(sources(ws)[1]).toBe('P := 9806.65 N = kgf');
+    expect(warnings.some((w) => /tonnef.*kgf/.test(w))).toBe(true);
+    const out = evaluateWorksheet(ws);
+    for (const r of ws.regions) expect((out.results.get(r.id) as MathResult).error).toBeUndefined();
+  });
+
+  it('reads SMath 1.x text: paragraphs, line breaks, bold and italic spans, colours, sizes and math placed in the text', () => {
+    const textRegion = `<region id="9" left="18" top="10" width="300" height="40" color="#0000ff" bgColor="#ffff80" fontSize="10"><text lang="eng" fontFamily="Arial" fontSize="10"><content>`
+      + `<p style="font-size: 20px;">Thickness \\[REGION[1d44faa63ab44d5597c0a27d0d17358f]]\\ of the plate</p>`
+      + `<p style="font-size: 20px;"><span style="font-weight: bold;">Note</span> 2*a_b<br />second line</p></content><regions>`
+      + `<region id="1d44faa63ab44d5597c0a27d0d17358f" left="80" top="0" width="52" height="24" color="#000000" fontSize="10"><math><input>${def(v('t'), v('10') + u('mm') + op('*'))}</input></math></region></regions></text></region>`;
+    const { ws } = load(textRegion, math(v('t') + v('2') + op('^'), { result: 'numeric', unit: u('mm') + v('2') + op('^') }));
+    const text = ws.regions.find((r) => r.kind === 'text') as Region & { markdown: string };
+    expect(text.markdown).toBe('Thickness \u2003\u2003\u2003\u2003 of the plate  \n**Note** 2\\*a\\_b  \nsecond line');
+    // blue on yellow, 20 px = 15 pt against SMath's 10 pt
+    expect(text.style).toEqual({ color: '#0000ff', background: '#ffff80', fontScale: 1.5 });
+    // the math in the text defines t, at its place on the page
+    const t = find(ws, 't := 10 mm');
+    expect(t && t.x > text.x && t.y === text.y).toBe(true);
+    expect(value(ws, 't^2 = mm^2')).toMatch(/= 100\\ \\mathrm\{mm\}\^\{2\}/);
+  });
+
+  it('keeps math regions\u2019 colours and sizes', () => {
+    id = 0;
+    top = 0;
+    const { ws } = importSmath(strToU8(sheet(`<region id="1" left="9" top="9" width="80" height="24" color="#ff0000" bgColor="#dddddd" fontSize="12"><math><input>${def(v('a'), v('1'))}</input></math></region>`)), 'x.sm');
+    expect(ws.regions[0].style).toEqual({ color: '#ff0000', background: '#dddddd', fontScale: 1.2 });
+  });
+
+  it('makes SMath areas areas, collapsed as they were saved', () => {
+    const area = (collapsed: boolean, y: number, inner: string) => `<region id="${++id}" top="${y}" color="#000000" bgColor="#ffff80"><area collapsed="${collapsed}"><title lang="eng"><p>Inputs</p></title></area>${inner}</region>`;
+    const inner = `<region id="${++id}" left="9" top="130" width="80" height="24"><math><input>${def(v('a'), v('2'))}</input></math></region>`;
+    for (const collapsed of [false, true]) {
+      id = 0;
+      const { ws } = importSmath(strToU8(sheet(area(collapsed, 100, inner), `<region id="${++id}" left="9" top="200" width="80" height="24"><math><input>${v('a')}</input><result action="numeric">${v('2')}</result></math></region>`)), 'x.sm');
+      const a = ws.regions.find((r) => r.kind === 'area')!;
+      expect(a.kind === 'area' && a.title).toBe('Inputs');
+      expect(a.kind === 'area' && !!a.collapsed).toBe(collapsed);
+      // collapsed, what is below moves up; the value is the same
+      const shown = find(ws, 'a =');
+      expect(shown.y < 200).toBe(collapsed);
+      expect(value(ws, 'a =')).toMatch(/= 2/);
+    }
+  });
+
+  it('imports the Image plugin\u2019s picture, the picture of a Maxima plot, Writer text and a slider\u2019s value', () => {
+    const { ws, warnings } = load(
+      region(`<image><imagefile filename="4ckidis5.png" lenght="718" width="108" height="149">${PNG}</imagefile><input>${v('#')}</input></image>`),
+      region(`<maximaplugin><ImageFile FileName="0jjv30dg.png" DataLenght="36139">${PNG}</ImageFile></maximaplugin>`),
+      region(`<writer lang="eng"><![CDATA[<span style="font-family: 'Arial'; font-size: 10pt; font-weight: bold;"><div>Current mirror – NPN</div></span>]]></writer>`),
+      region(`<slider orientation="Vertical" maxValue="100" minValue="0" value="97"><input>${v('v1')}</input></slider>`),
+      math(v('v1'), { result: 'numeric' }),
+    );
+    expect(ws.regions.filter((r) => r.kind === 'image')).toHaveLength(2);
+    const text = ws.regions.find((r) => r.kind === 'text') as Region & { markdown: string };
+    expect(text.markdown).toBe('Current mirror – NPN');
+    expect(text.style).toEqual({ bold: true });
+    expect(value(ws, 'v1 =')).toMatch(/= 97/);
+    expect(warnings.some((w) => /slider.*v1 := 97/.test(w))).toBe(true);
+    expect(warnings.some((w) => /Maxima plot.*picture/.test(w))).toBe(true);
   });
 });
