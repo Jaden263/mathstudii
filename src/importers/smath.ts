@@ -461,11 +461,10 @@ class Converter {
       }
       case 'diff':
         return { s: `diff(${this.args(t).join(', ')})`, p: P.ATOM };
-      case 'cinterp': {
-        if (n !== 3) break;
-        const [x, y, v] = this.args(t);
-        return { s: `interp(cspline(${x}, ${y}), ${x}, ${y}, ${v})`, p: P.ATOM };
-      }
+      case 'lspline':
+        // lspline(x, y, t): the spline with linear ends at t, a number as SMath gives it (cinterp the same)
+        if (n === 3 && !this.userFunctions.has(name)) return { s: `lsplineAt(${this.args(t).join(', ')})`, p: P.ATOM };
+        break;
       case 'description':
         // description(x): the comment written beside the definition of x, as text
         if (n === 1 && isVar(t.args[0])) return { s: JSON.stringify(this.descriptions.get(smName(t.args[0].text)) ?? ''), p: P.ATOM };
@@ -932,6 +931,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const kind = body ? local(body) : '';
     try {
       if (kind === 'math' || kind === 'plot' || kind === 'xyplot') return parseRpn(child(body!, 'input'));
+      if (kind === 'mathcadblock') return toolboxFormula(parseRpn(child(body!, 'input')));
     } catch {
       /* reported in pass 2 */
     }
@@ -952,6 +952,34 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   }
   // units the worksheet defines (k.1 := 17.5 N/mm) are variables of that name
   for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isUserUnit(t.args[0])) conv.userUnits.add(t.args[0].text);
+  // a solve block of the Mathcad Toolbox plugin holds the equations written inside its frame
+  const blockOf = new Map<number, number[]>();
+  const inBlock = new Set<number>();
+  placed.forEach((at, i) => {
+    const body = regionKinds(at.region)[0];
+    // only the form converted (Sln := rkfixed(…)): otherwise the equations stay formulas to read
+    const t = inputs[i][0];
+    if (!body || local(body) !== 'mathcadblock' || inputs[i].length !== 1 || !isOp(t, ':') || !isFn(t.args[1], 'rkfixed')) return;
+    const right = at.x + num(at.region, 'width'), bottom = at.y + num(at.region, 'height');
+    const members = placed.map((q, j) => ({ q, j })).filter(({ q, j }) => {
+      const b = regionKinds(q.region)[0];
+      if (j === i || !b || local(b) !== 'math' || child(b, 'result') || q.x < at.x || q.x >= right || q.y < at.y || q.y >= bottom) return false;
+      const toks = inputs[j];
+      return toks.length === 1 && isOp(toks[0], '≡');
+    }).map(({ j }) => j);
+    blockOf.set(i, members);
+    for (const j of members) inBlock.add(j);
+  });
+  /** The worksheet's functions as defined before region i (or anywhere, as SMath binds late). */
+  const functionsAt = (i: number) => {
+    const out = new Map<string, FnDef>();
+    const take = (j: number) => {
+      for (const t of inputs[j]) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el') && t.args[0].args.every(isVar)) out.set(t.args[0].text, { params: t.args[0].args, body: t.args[1] });
+    };
+    for (let j = inputs.length - 1; j > i; j--) take(j);
+    for (let j = 0; j < i; j++) take(j);
+    return out;
+  };
   // the comments beside definitions, which description(x) reads (labels of plots from them)
   inputs.forEach((toks, i) => {
     const body = regionKinds(placed[i].region)[0];
@@ -1063,6 +1091,8 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     const kind = local(body);
     const width = Number(r.getAttribute('width') ?? 0);
     const first = regions.length;
+    // an equation of a Mathcad Toolbox solve block: part of the block
+    if (inBlock.has(i)) return;
     // formatting there is no place for here, counted for the report
     if (r.getAttribute('border') === 'true') lostLook.borders++;
     if (kind === 'text') {
@@ -1264,6 +1294,13 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         plotRanges++;
       } else if (kind === 'xyplot') {
         regions.push(xyPlot(conv, body, at, definedBefore, plotLists, hasStrings));
+      } else if (kind === 'mathcadblock') {
+        const equations = (blockOf.get(i) ?? []).map((j) => inputs[j][0]);
+        regions.push(...toolboxBlock(conv, body, at, equations, functionsAt(i)));
+        const t = inputs[i][0];
+        definedBefore.add(smName(t.args[0].text));
+        if (isFn(t.args[1].args[0], 'sys')) for (const f of listItems(t.args[1].args[0])) definedBefore.add(smName(f.text));
+        else definedBefore.add(smName(t.args[1].args[0].text));
       } else {
         throw new Unsupported(PLUGIN_REGIONS[kind] ?? `the “${kind}” region (an SMath plugin)`);
       }
@@ -1349,6 +1386,112 @@ function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>
   return [
     createRegion('math', at.x, at.y, { source: `${tmp} :=\n${[...seed, ...body, ret].join('\n')}` }),
     ...keep.map((v, k) => createRegion('math', at.x, at.y + k + 1, { source: `${v} := ${tmp}.${v}` })),
+  ];
+}
+
+/** A function the worksheet defines: f(x, y) := body. */
+interface FnDef {
+  params: Tok[];
+  body: Tok;
+}
+
+/** t with every operand named in `values` replaced by (its value): a function's body called with arguments. */
+function substitute(t: Tok, values: Map<string, Tok>): Tok {
+  if (t.type === 'operand' && isVar(t) && values.has(t.text)) {
+    const v = values.get(t.text)!;
+    return v.type === 'operand' || v.type === 'bracket' ? v : { type: 'bracket', text: '(', args: [v] };
+  }
+  return t.args.length ? { ...t, args: t.args.map((a) => substitute(a, values)) } : t;
+}
+
+/**
+ * Calls of the worksheet's functions that (through others) read one of `names` written out with
+ * their definitions: R(t) with R(t) := μ·N(t)·sign(ω(t)) and N(t) := m·g·sin(φ(t)) … becomes
+ * μ·(m·g·sin(φ(t)) …)·sign(ω(t)). The names it wrote out go to `used`.
+ */
+function writeOut(t: Tok, fns: Map<string, FnDef>, names: Set<string>, used: Set<string>, depth = 0): Tok {
+  const reads = (name: string, seen = new Set<string>()): boolean => {
+    const def = fns.get(name);
+    if (!def || seen.has(name)) return false;
+    seen.add(name);
+    let found = false;
+    walk(def.body, (n) => {
+      if (n.type === 'function' && (names.has(n.text) || reads(n.text, seen))) found = true;
+    });
+    return found;
+  };
+  const def = t.type === 'function' ? fns.get(t.text) : undefined;
+  if (def && depth < 20 && def.params.length === t.args.length && reads(t.text)) {
+    used.add(t.text);
+    const body = substitute(def.body, new Map(def.params.map((p, k) => [p.text, t.args[k]])));
+    return writeOut({ type: 'bracket', text: '(', args: [body] }, fns, names, used, depth + 1);
+  }
+  return t.args.length ? { ...t, args: t.args.map((a) => writeOut(a, fns, names, used, depth)) } : t;
+}
+
+/**
+ * The formula of a Mathcad Toolbox solve block with its number of steps as a number: the steps may
+ * be a program that ends with it, line(m := 1, kg := 1, s := 1, 200), which sets units to 1 first so
+ * that the plugin calculates without units (a solve block here keeps them; nothing is assigned).
+ */
+function toolboxFormula(toks: Tok[]): Tok[] {
+  const t = toks[0];
+  if (toks.length !== 1 || !isOp(t, ':') || !isFn(t.args[1], 'rkfixed') || t.args[1].args.length !== 3) return toks;
+  const steps = t.args[1].args[2];
+  if (!isFn(steps, 'line') || !listItems(steps).length) return toks;
+  const call = { ...t.args[1], args: [...t.args[1].args.slice(0, 2), listItems(steps).pop()!] };
+  return [{ ...t, args: [t.args[0], call] }];
+}
+
+/**
+ * A solve block of the Mathcad Toolbox plugin: Sln := rkfixed(sys(φ(t), ω(t)), t_end, n) with the
+ * differential equations and initial values written in it (φ′(t) ≡ ω(t), φ(0) ≡ 0 …), as
+ * Mathcad's Given … rkfixed. It becomes an odesolve solve block (fixed steps) for the functions,
+ * and Sln := odeTable(…) the table rkfixed gives: t and each function at n + 1 equal steps.
+ */
+function toolboxBlock(conv: Converter, body: El, at: Placed, equations: Tok[], fns: Map<string, FnDef>): Region[] {
+  const raw = parseRpn(child(body, 'input'));
+  const toks = toolboxFormula(raw);
+  const t = toks[0];
+  const call = toks.length === 1 && isOp(t, ':') && isVar(t.args[0]) ? t.args[1] : undefined;
+  if (!call || !isFn(call, 'rkfixed') || call.args.length !== 3) throw new Unsupported(PLUGIN_REGIONS.mathcadblock);
+  const [list, end, steps] = call.args;
+  const unitsOff = toks[0] !== raw[0];
+  const items = isFn(list, 'sys') ? listItems(list) : [list];
+  const indep = items[0]?.args[0];
+  if (!indep || !isVar(indep) || !items.every((f) => f.type === 'function' && f.args.length === 1 && isVar(f.args[0]) && f.args[0].text === indep.text)) {
+    throw new Unsupported('a Mathcad Toolbox solve block whose unknowns are not functions of one variable');
+  }
+  const unknowns = new Set(items.map((f) => f.text));
+  if (!equations.length) throw new Error('the Mathcad Toolbox solve block has no equations in it');
+  const used = new Set<string>();
+  const names = [...unknowns].map((u) => conv.name(u));
+  let start: string | null = null;
+  const lines = equations.map((eq) => {
+    if (!isOp(eq, '≡')) throw new Unsupported('a Mathcad Toolbox solve block with something other than equations in it');
+    const [l, r] = eq.args.map((a) => writeOut(a, fns, unknowns, used));
+    // an initial value: φ(0) ≡ 0 (the point where the table starts)
+    if (l.type === 'function' && unknowns.has(l.text) && !(isVar(l.args[0]) && l.args[0].text === indep.text)) start ??= conv.expr(l.args[0]).s;
+    return `${conv.expr(l).s} = ${conv.expr(r).s}`;
+  }).map((line) => {
+    // φ′(t): SMath's name φ' is the derivative of φ here
+    let s = line;
+    for (const n of names) s = s.replace(new RegExp(`(?<![\\p{L}\\p{N}_\u0374])${n}(\u0374+)\\(`, 'gu'), (_m, primes: string) => `${n}${"'".repeat(primes.length)}(`);
+    return s;
+  });
+  const v = conv.name(indep.text);
+  const e = conv.expr(end).s, n = conv.expr(steps).s;
+  const lhs = names.length === 1 ? names[0] : `[${names.join('; ')}]`;
+  const solver = `${lhs} := odesolve(${names.length === 1 ? '' : `[${names.join(', ')}], `}${v}, ${e}, "fixed", ${n})`;
+  const notes = [
+    `imported as an odesolve solve block (${n} fixed steps, as rkfixed) and ${conv.name(t.args[0].text)} := odeTable(…), the table rkfixed gives`,
+    used.size ? `its equations call ${[...used].map((f) => conv.name(f)).join(', ')}, which read ${names.join(', ')}: written out in the block, as a solve block here sees the unknown functions in its own equations only` : '',
+    unitsOff ? 'it sets units to 1 so that the plugin calculates without them; here the block keeps the units, and the table holds SI numbers as the plugin\'s' : '',
+  ].filter(Boolean);
+  conv.warnings.push(`Solve block of the Mathcad Toolbox plugin at ${Math.round(at.y)} px: ${notes.join('; ')}`);
+  return [
+    createRegion('solve', at.x, at.y, { guesses: '', constraints: lines.join('\n'), solver }),
+    createRegion('math', at.x, at.y + 1, { source: `${conv.name(t.args[0].text)} := odeTable(${start ?? '0'}, ${e}, ${n}, ${names.join(', ')})` }),
   ];
 }
 

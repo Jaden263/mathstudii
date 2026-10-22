@@ -36,7 +36,7 @@ const FN_OUT: Record<string, string> = {
   asin: 'arcsin', acos: 'arccos', acot: 'arccot', asec: 'arcsec', acsc: 'arccsc', asinh: 'arcsinh',
   acosh: 'arccosh', atanh: 'arctanh', acoth: 'arccoth', gamma: 'Gamma', Γ: 'Gamma', rnd: 'random', prod: 'product',
   // what the SMath import maps SMath's at, Zeros and Ones to
-  subs: 'at', zeros: 'Zeros', ones: 'Ones',
+  subs: 'at', zeros: 'Zeros', ones: 'Ones', lsplineAt: 'lspline',
 };
 
 /** Built-ins with arguments that are indices (counted from 1 in SMath): submatrix(M, ir, jr, ic, jc), csort(M, j). */

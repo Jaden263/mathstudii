@@ -3,8 +3,8 @@
 // (polar coordinates), minor and Clear. Semantics follow SMath's function reference, checked against values SMath saved
 // with real worksheets.
 import type { MathNode } from 'mathjs';
-import { math, isUnit, splitUnit, joinUnit } from './math';
-import { vec, num, int, matrix2D, engineCtx, tick } from './library';
+import { math, isUnit, isMatrix, splitUnit, joinUnit } from './math';
+import { vec, num, int, matrix2D, toVector, engineCtx, tick } from './library';
 import * as N from './numeric';
 import { compileNode } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
@@ -168,7 +168,50 @@ function minor(M: unknown, i: unknown, j: unknown) {
   return math.det(math.matrix(sub as never));
 }
 
-const SMATH_LIBRARY: Record<string, unknown> = { roots, subs, xy2pol, pol2xy, minor, Clear };
+/**
+ * odeTable(t₀, t₁, n, f, g …): the table the Mathcad Toolbox plugin's rkfixed gives for the
+ * solution functions of a solve block — the variable and each function at n + 1 equal steps
+ * from t₀ to t₁, one row a step, as numbers (in SI units: the plugin keeps none).
+ */
+function odeTable(t0: unknown, t1: unknown, n: unknown, ...fns: unknown[]) {
+  const a = splitUnit(t0), b = splitUnit(t1);
+  const unit = b.unit ?? a.unit;
+  const steps = int(n, 'odeTable: the number of steps');
+  if (steps < 1) throw new Error('odeTable: the number of steps must be 1 or more');
+  if (!fns.length || fns.some((f) => typeof f !== 'function')) throw new Error('odeTable(t₀, t₁, n, f, …): the solution functions come after the number of steps');
+  const rows: number[][] = [];
+  for (let k = 0; k <= steps; k++) {
+    tick();
+    const t = a.value + (k * (b.value - a.value)) / steps;
+    const at = joinUnit(t, unit);
+    rows.push([t, ...fns.map((f) => splitUnit((f as (x: unknown) => unknown)(at)).value)]);
+  }
+  return math.matrix(rows);
+}
+
+/** The SI numbers of a vector's elements, whatever their units (SMath interpolates numbers). */
+const numbers = (v: unknown, what: string) => {
+  const vals = toVector(v).map((x) => splitUnit(x).value);
+  if (!vals.length) throw new Error(`${what} is empty`);
+  return vals;
+};
+
+/**
+ * SMath's spline interpolation at a point: cinterp(x, y, t) (cubic spline), lsplineAt(x, y, t)
+ * (SMath's lspline(x, y, t): the spline with linear ends). SMath interpolates the numbers of the
+ * values and gives a number, whatever units they have (its worksheets multiply the unit back).
+ */
+const splineAt = (end: 'natural' | 'cubic', name: string) => (vx: unknown, vy: unknown, t: unknown) => {
+  const xs = numbers(vx, `${name}: x`), ys = numbers(vy, `${name}: y`);
+  if (xs.length !== ys.length) throw new Error(`${name}: x and y need as many values`);
+  const at = (x: unknown) => N.splineEval(xs, ys, N.splineSecondDerivs(xs, ys, end), splitUnit(x).value);
+  return isMatrix(t) || Array.isArray(t) ? vec(toVector(t).map(at)) : at(t);
+};
+
+const SMATH_LIBRARY: Record<string, unknown> = {
+  roots, subs, xy2pol, pol2xy, minor, Clear, odeTable,
+  cinterp: splineAt('cubic', 'cinterp'), lsplineAt: splineAt('natural', 'lspline'),
+};
 
 // a function the shared library has by the same name and meaning (Mathcad's xy2pol, pol2xy) is
 // that one; a unit by the name is an error

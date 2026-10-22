@@ -716,3 +716,65 @@ describe('SMath import: page settings and what the report says', () => {
     expect(ws.regions.some((r) => r.kind === 'text' && r.markdown === 'Pump P1 © 2024')).toBe(true);
   });
 });
+
+describe('SMath import: the Mathcad Toolbox solve block and interpolation', () => {
+  const at = (left: number, top: number, body: string, h = 24, w = 80) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="${w}" height="${h}" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const plain = (input: string) => `<math><input>${input}</input></math>`;
+  const shown = (input: string, saved: string, unit = '') => `<math><input>${input}</input>${unit ? `<contract>${unit}</contract>` : ''}<result action="numeric">${saved}</result></math>`;
+  const load = (...regions: string[]) => importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+  const call = (f: string, ...args: string[]) => args.join('') + fn(f, args.length);
+  const eq = (a: string, b: string) => a + b + op('≡');
+  const shownValue = (ws: Worksheet, src: string) => evaluateWithScope(ws).shown.get(find(ws, src).id);
+
+  it('Sln := rkfixed(sys(x(t), v(t)), t₁, n) with the equations in the block: an odesolve block and the table rkfixed gives', () => {
+    id = 0;
+    // x″ = −k·x as x′ = v, v′ = −F(t) with F(t) := k·x(t) (a function that reads x); units set to 1 in the block
+    const steps = def(v('s'), v('1')) + v('100') + v('2') + v('1') + fn('line', 4);
+    const { ws, warnings, saved } = load(
+      at(9, 10, plain(def(v('k'), v('1') + u('s') + v('2') + op('^') + op('/')))),
+      at(9, 40, plain(def(v('t') + fn('F', 1), v('k') + call('x', v('t')) + op('*')))),
+      at(9, 70, plain(def(v('t.1'), v('3.14159265358979') + u('s') + op('*')))),
+      at(9, 100, `<mathcadblock seqop="sys"><input>${def(v('Sln'), call('sys', call('x', v('t')), call('v', v('t')), v('2'), v('1')) + v('t.1') + steps + fn('rkfixed', 3))}</input></mathcadblock>`, 90, 300),
+      at(27, 110, plain(eq(call("x'", v('t')), call('v', v('t'))))),
+      at(200, 110, plain(eq(call('x', v('0')), v('1')))),
+      at(27, 140, plain(eq(call("v'", v('t')), call('F', v('t')) + op('-', 1)))),
+      at(200, 140, plain(eq(call('v', v('0')), v('0')))),
+      at(9, 220, shown(call('rows', v('Sln')), v('101'))),
+      at(9, 250, shown(call('x', v('t.1')), v('1') + op('-', 1))),
+    );
+    const block = ws.regions.find((r) => r.kind === 'solve');
+    expect(block).toMatchObject({ constraints: "x'(t) = v(t)\nx(0) = 1\nv'(t) = -(k*x(t))\nv(0) = 0", solver: '[x; v] := odesolve([x, v], t, t_1, "fixed", 100)' });
+    expect(sources(ws)).toContain('Sln := odeTable(0, t_1, 100, x, v)');
+    expect(warnings.some((w) => /Mathcad Toolbox plugin at 100 px: imported as an odesolve solve block.*call F, which read x, v: written out.*sets units to 1/.test(w))).toBe(true);
+    // the equations are the block's, not formulas of their own
+    expect(sources(ws).some((s) => s.includes('=='))).toBe(false);
+    const sln = evaluateWithScope(ws).variables.get('Sln') as { toArray(): number[][] };
+    const rows = sln.toArray();
+    expect(rows.length).toBe(101);
+    // t, x = cos t, v = −sin t at t = π/2 and π, as numbers (SI)
+    expect(rows[50][0]).toBeCloseTo(Math.PI / 2, 9);
+    expect(rows[50][1]).toBeCloseTo(0, 6);
+    expect(rows[50][2]).toBeCloseTo(-1, 6);
+    expect(rows[100][1]).toBeCloseTo(-1, 6);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+
+  it('cinterp and lspline(x, y, t) interpolate numbers, as SMath does: the units are left out (SMath’s worksheets multiply them back)', () => {
+    id = 0;
+    const col = (...xs: string[]) => xs.join('') + v(String(xs.length)) + v('1') + fn('mat', xs.length + 2);
+    const sec = (x: string) => v(x) + u('s') + op('*');
+    const { ws, saved } = load(
+      at(9, 10, plain(def(v('T'), col(sec('0'), sec('1'), sec('2'), sec('3'))))),
+      at(9, 40, plain(def(v('W'), col(v('0'), v('2') + u('s') + op('/'), v('4') + u('s') + op('/'), v('6') + u('s') + op('/'))))),
+      // ω(t) := lspline(T, W, t)·rad/s: the same at 1.5 s and at 1.5
+      at(9, 70, plain(def(v('t') + fn('ω', 1), call('lspline', v('T'), v('W'), v('t')) + u('rad') + u('s') + op('/') + op('*')))),
+      at(9, 100, shown(call('ω', sec('1.5')), v('3'), u('rad') + u('s') + op('/'))),
+      at(9, 130, shown(call('ω', v('1.5')), v('3'), u('rad') + u('s') + op('/'))),
+      at(9, 160, shown(call('cinterp', v('T'), v('W'), sec('2')) + u('m') + op('*'), v('4') + u('m') + op('*'))),
+    );
+    expect(sources(ws)[2]).toBe('ω(t) := lsplineAt(T, W, t)*(rad/s)');
+    expect(shownValue(ws, 'cinterp(T, W, 2 s)*m =')).toMatchObject({ value: 4 });
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+});
