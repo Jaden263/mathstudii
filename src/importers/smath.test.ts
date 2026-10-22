@@ -578,6 +578,17 @@ describe('SMath import: the X-Y Plot plugin', () => {
     expect(res.error).toBeUndefined();
     expect(res.series[0].xs[res.series[0].xs.length - 1]).toBeCloseTo(6.28, 6);
   });
+
+  it('an item that is a number (m·g of numbers) is a level line; a matrix stays points', () => {
+    id = 0;
+    top = 0;
+    const xy = `<xyplot width="300" height="200" points="100"><traces /><input>${v('t') + fn('sin', 1) + v('m') + v('g') + op('*') + v('pts') + v('3') + v('1') + fn('sys', 5)}</input></xyplot>`;
+    const { ws } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('m'), v('2') + u('kg') + op('*')))}${math(def(v('g'), v('9.81') + u('m') + u('s') + v('2') + op('^') + op('/') + op('*')))}${
+      math(def(v('pts'), v('0') + v('0') + v('1') + v('1') + v('2') + v('2') + fn('mat', 6)))}${region(xy, 9, 40)}</regions></worksheet>`), 'x.sm');
+    const p = ws.regions.find((r) => r.kind === 'plot')!;
+    expect(p.kind === 'plot' && p.traces.map((t) => [t.xExpr, t.y])).toEqual([[undefined, 'sin(t)'], [undefined, 'm*g'], ['col(pts, 1)', 'col(pts, 2)']]);
+  });
 });
 
 describe('SMath import: text comparisons, solve, and definitions beside what they read', () => {

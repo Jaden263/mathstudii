@@ -265,6 +265,8 @@ class Converter {
   matrixCols = new Map<string, number>();
   /** Parameters of the function being converted (their names are not the worksheet's variables). */
   params = new Set<string>();
+  /** Variables whose definition so far is one number (a plot draws such an item as a level line). */
+  scalars = new Set<string>();
   /** Matrices read or written with one index (for the report). */
   linearIndexed = new Set<string>();
   /** Functions defined for several numbers of arguments (SMath name → the numbers, fewest first). */
@@ -1313,6 +1315,8 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
             const shape = matrixShape(rhs);
             if (shape && shape.cols > 1 && shape.rows > 1) conv.matrixCols.set(name, shape.cols);
             else if (!isProgram(rhs)) conv.matrixCols.delete(name);
+            if (!late.length && isScalar(rhs, conv.scalars)) conv.scalars.add(name);
+            else conv.scalars.delete(name);
           }
           if (name) conv.lazy.delete(name);
           if (late.length && name) {
@@ -1374,10 +1378,17 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
         } else if (isFn(t, 'Clear')) {
           // Clear(x, y): from here they are undefined again (symbols, fresh vectors)
           for (const a of t.args) if (isVar(a)) definedBefore.delete(smName(a.text));
+          for (const a of t.args) if (isVar(a)) conv.scalars.delete(smName(a.text));
         } else if (isOp(t, ':')) {
           const n = targetName(t.args[0]);
           if (n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el'))) definedBefore.add(n);
-        } else if (isProgram(t)) for (const n of assignments(t).all) definedBefore.add(n);
+          if (n && isFn(t.args[0], 'el')) conv.scalars.delete(n);
+        } else if (isProgram(t)) {
+          for (const n of assignments(t).all) {
+            definedBefore.add(n);
+            conv.scalars.delete(n);
+          }
+        }
 
         // a comment attached to the formula
         // the region's colours and size; a region SMath does not calculate stays so
@@ -1556,6 +1567,25 @@ function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>
   ];
 }
 
+/** Functions of numbers that give a number. */
+const SCALAR_FUNCTIONS = new Set(['sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'arcsin', 'arccos', 'arctan', 'sinh', 'cosh', 'tanh', 'sqrt', 'exp', 'ln', 'log', 'log10', 'abs', 'sign', 'nthroot']);
+
+/** A formula that is one number: numbers, units and variables that are numbers, joined by arithmetic. */
+function isScalar(t: Tok, scalars: Set<string>): boolean {
+  switch (t.type) {
+    case 'operand':
+      if (t.style === 'unit') return true;
+      if (t.style === 'string') return false;
+      return NUMBER.test(t.text) || t.text === 'π' || (isVar(t) && scalars.has(smName(t.text)));
+    case 'bracket':
+      return isScalar(t.args[0], scalars);
+    case 'operator':
+      return /^[-+*/^·÷]$/.test(t.text) && t.args.every((a) => isScalar(a, scalars));
+    case 'function':
+      return SCALAR_FUNCTIONS.has(t.text) && t.args.every((a) => isScalar(a, scalars));
+  }
+}
+
 /** Rows and columns of a matrix a formula writes out: mat(…, m, n), Zeros(m, n), Ones(m, n), matrix(m, n). */
 function matrixShape(t: Tok): { rows: number; cols: number } | null {
   if (isFn(t, 'mat') && t.args.length >= 3) return { rows: Number(t.args[t.args.length - 2].text), cols: Number(t.args[t.args.length - 1].text) };
@@ -1705,7 +1735,8 @@ function plotTraces(conv: Converter, items: Tok[], v: string, xv: string): { xEx
         if (n.type === 'operand' && isVar(n) && conv.lazy.get(smName(n.text))?.includes(v)) usesX = true;
       });
       const e = conv.expr(it).s;
-      if (usesX || (it.type === 'operand' && NUMBER.test(it.text))) {
+      // a number (m·g with m and g numbers) is drawn as a level line, as SMath draws it
+      if (usesX || isScalar(it, conv.scalars)) {
         hasFunction ||= usesX;
         traces.push({ y: e, style: 'line' });
       } else {
