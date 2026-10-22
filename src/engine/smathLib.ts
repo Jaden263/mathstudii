@@ -1,6 +1,6 @@
 // SMath Studio built-ins that imported SMath worksheets use and the core library lacks, under
 // their SMath names: roots (a root from an initial value), subs (SMath's at: substitution), xy2pol / pol2xy
-// (polar coordinates) and minor. Semantics follow SMath's function reference, checked against values SMath saved
+// (polar coordinates), minor and Clear. Semantics follow SMath's function reference, checked against values SMath saved
 // with real worksheets.
 import type { MathNode } from 'mathjs';
 import { math, isUnit, splitUnit, joinUnit } from './math';
@@ -104,6 +104,22 @@ const subs: Raw = (args, _m, scope) => {
 };
 subs.rawArgs = true;
 
+/**
+ * Clear(x, y …) removes the worksheet's definitions of x, y …: what follows sees them as
+ * undefined (a fresh vector for x[1] := …, a symbol for SMath). Returns 1, as SMath shows.
+ */
+const Clear: Raw = (args, _m, scope) => {
+  for (const a of args) {
+    const n = unwrap(a);
+    if (n.type !== 'SymbolNode') throw new Error('Clear(x, y, …) takes variable names');
+    const name = (n as unknown as { name: string }).name;
+    // the worksheet's scope and any layer between (a function's or a range's local scope)
+    for (let s: ScopeLike | null = scope; s; s = s instanceof ChainScope ? s.parent : null) s.delete?.(name);
+  }
+  return 1;
+};
+Clear.rawArgs = true;
+
 /** An angle as a number in radians (SMath's angles are numbers; deg and rad quantities too). */
 function radians(v: unknown, what: string): number {
   if (isUnit(v)) {
@@ -143,7 +159,7 @@ function minor(M: unknown, i: unknown, j: unknown) {
   return math.det(math.matrix(sub as never));
 }
 
-const SMATH_LIBRARY: Record<string, unknown> = { roots, subs, xy2pol, pol2xy, minor };
+const SMATH_LIBRARY: Record<string, unknown> = { roots, subs, xy2pol, pol2xy, minor, Clear };
 
 const clashes = Object.keys(SMATH_LIBRARY).filter((k) => k in math || math.Unit.isValuelessUnit(k));
 if (clashes.length) throw new Error(`SMath library names clash: ${clashes.join(', ')}`);

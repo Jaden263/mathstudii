@@ -432,6 +432,17 @@ describe('SMath import: what SMath does not calculate, and how it rounds', () =>
     expect(ws.regions[1].disabled).toBe(true);
     expect(value(ws, 'a =')).toMatch(/= 1/);
   });
+  it('after Clear(x) what reads x waits for it again, and x[1] := … starts afresh', () => {
+    const { ws, saved } = one(
+      math(def(v('x'), v('2'))),
+      region(`<math><input>${v('x') + fn('Clear', 1)}</input><result action="numeric">${v('1')}</result></math>`),
+      math(def(v('y'), v('x') + v('3') + op('*'))),
+      math(def(v('x'), v('4'))),
+      region(`<math><input>${v('y')}</input><result action="numeric">${v('12')}</result></math>`),
+    );
+    expect(sources(ws)).toEqual(['x := 2', 'Clear(x) =', 'y(x) := x*3', 'x := 4', 'y(x) =']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
   it('11330 shown for 11333.3 (4 significant digits) agrees', () => {
     const { ws, saved } = one(region(`<math><input>${def(v('A'), v('34000') + v('3') + op('/'))}</input><result action="numeric">${v('11330')}</result></math>`));
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });

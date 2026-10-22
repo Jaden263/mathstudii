@@ -955,6 +955,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         // worksheet-level names only: locals of a function's program stay local
         if (disabled(at)) {
           /* defines nothing */
+        } else if (isFn(t, 'Clear')) {
+          // Clear(x, y): from here they are undefined again (symbols, fresh vectors)
+          for (const a of t.args) if (isVar(a)) definedBefore.delete(smName(a.text));
         } else if (isOp(t, ':')) {
           const n = targetName(t.args[0]);
           if (n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el'))) definedBefore.add(n);

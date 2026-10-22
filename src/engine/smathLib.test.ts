@@ -59,6 +59,13 @@ describe('SMath built-ins', () => {
     expect(last(['minor([1, 2, 3], 1, 1) ='])).toMatch(/ERR minor: the matrix must be square/);
   });
 
+  it('Clear(x, …) removes definitions: x[1] := … then starts a fresh vector', () => {
+    expect(last(['a := 5', 'Clear(a) ='])).toMatch(/= 1$/);
+    expect(last(['a := 5', 'Clear(a) =', 'a ='])).toMatch(/ERR "a" is not defined/);
+    expect(last(['t[1] := 3', 't[2] := 4', 'Clear(t) =', 't[1] := 7', 'length(t) ='])).toMatch(/= 1$/);
+    expect(last(['Clear(2) ='])).toMatch(/ERR Clear\(x, y, …\) takes variable names/);
+  });
+
   it('a worksheet variable may have the name of one', () => {
     expect(nums(last(['minor := 4', 'minor + 1 =']))).toEqual([5]);
   });
