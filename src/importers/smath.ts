@@ -258,6 +258,15 @@ class Converter {
   userUnits = new Set<string>();
   /** The comment written beside each variable's definition, for description(x). */
   descriptions = new Map<string, string>();
+  /**
+   * Columns of the worksheet's matrices whose shape their definition gives ([a, b; c, d], Zeros(m, n)):
+   * SMath's one index into a matrix counts its elements row by row.
+   */
+  matrixCols = new Map<string, number>();
+  /** Parameters of the function being converted (their names are not the worksheet's variables). */
+  params = new Set<string>();
+  /** Matrices read or written with one index (for the report). */
+  linearIndexed = new Set<string>();
 
   unit(raw: string): Ex {
     // a region marked "ignore units" calculates with every unit as 1
@@ -433,6 +442,13 @@ class Converter {
     switch (name) {
       case 'el': {
         const base = wrap(A(0), P.ATOM);
+        // one index into a matrix of n columns: element k counts row by row (row ⌈k/n⌉, column (k − 1) mod n + 1)
+        const cols = n === 2 && isVar(t.args[0]) && !this.params.has(smName(t.args[0].text)) ? this.matrixCols.get(smName(t.args[0].text)) : undefined;
+        if (cols && !isFn(t.args[1], 'range')) {
+          this.linearIndexed.add(base);
+          const k = this.expr(t.args[1]);
+          return { s: `${base}[ceil(${wrap(k, P.MUL)}/${cols}), mod(${wrap(k, P.ADD)} - 1, ${cols}) + 1]`, p: P.ATOM };
+        }
         // a range as a subscript takes those elements (v[2..4]): range(a, b) here is a vector a … b
         const index = (a: Tok) => (isFn(a, 'range') && (a.args.length === 2 || a.args.length === 3)
           ? `range(${this.expr(a.args[0]).s}, ${this.expr(a.args[1]).s}${a.args.length === 3 ? `, ${wrap(this.expr(a.args[2]), P.ADD + 1)} - ${wrap(this.expr(a.args[0]), P.ADD + 1)}` : ''})`
@@ -1170,8 +1186,16 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           }
           // a program shows its value with "x := =" (in the unit it has)
           conv.solveFrom = isFn(rhs, 'solve') && rhs.args.length === 2 && result && action !== 'symbolic' ? shownRoots(conv, result) : null;
+          conv.params = new Set(t.args[0].type === 'function' && !isFn(t.args[0], 'el') ? t.args[0].args.filter(isVar).map((a) => smName(a.text)) : []);
           const rhsSrc = isProgram(rhs) ? `${!late.length && show === ' =' ? ' =' : ''}\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
+          conv.params = new Set();
           conv.solveFrom = null;
+          // the shape of a matrix the definition gives; a program (A := … A[i] ← …) keeps it
+          if (name) {
+            const shape = matrixShape(rhs);
+            if (shape && shape.cols > 1 && shape.rows > 1) conv.matrixCols.set(name, shape.cols);
+            else if (!isProgram(rhs)) conv.matrixCols.delete(name);
+          }
           if (name) conv.lazy.delete(name);
           if (late.length && name) {
             lhs = `${lhs}(${late.map((n) => conv.name(n)).join(', ')})`;
@@ -1309,6 +1333,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     }
   });
   for (const note of conv.displayNotes) warnings.push(note);
+  if (conv.linearIndexed.size) {
+    const names = [...conv.linearIndexed];
+    warnings.push(`${names.join(', ')}[k]: one index into a matrix counts its elements row by row in SMath, so here it is row ⌈k/n⌉, column (k − 1) mod n + 1 of the n columns`);
+  }
   const sigDigits = calcSetting('significantDigitsMode') === 'true';
   const looks = [
     lostLook.borders ? `borders round ${lostLook.borders} region${lostLook.borders > 1 ? 's' : ''}` : '',
@@ -1387,6 +1415,13 @@ function topLevelProgram(conv: Converter, t: Tok, at: Placed, later: Set<string>
     createRegion('math', at.x, at.y, { source: `${tmp} :=\n${[...seed, ...body, ret].join('\n')}` }),
     ...keep.map((v, k) => createRegion('math', at.x, at.y + k + 1, { source: `${v} := ${tmp}.${v}` })),
   ];
+}
+
+/** Rows and columns of a matrix a formula writes out: mat(…, m, n), Zeros(m, n), Ones(m, n), matrix(m, n). */
+function matrixShape(t: Tok): { rows: number; cols: number } | null {
+  if (isFn(t, 'mat') && t.args.length >= 3) return { rows: Number(t.args[t.args.length - 2].text), cols: Number(t.args[t.args.length - 1].text) };
+  if (isFn(t, 'Zeros', 'Ones', 'matrix') && t.args.length === 2 && t.args.every((a) => a.type === 'operand' && NUMBER.test(a.text))) return { rows: Number(t.args[0].text), cols: Number(t.args[1].text) };
+  return null;
 }
 
 /** A function the worksheet defines: f(x, y) := body. */

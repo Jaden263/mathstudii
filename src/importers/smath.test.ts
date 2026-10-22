@@ -778,3 +778,31 @@ describe('SMath import: the Mathcad Toolbox solve block and interpolation', () =
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
   });
 });
+
+describe('SMath import: one index into a matrix', () => {
+  const at = (left: number, top: number, body: string) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="80" height="24" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const load = (...regions: string[]) => importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+
+  it('counts the elements row by row: A[k] of a 2 × 3 matrix is row ⌈k/3⌉, column (k − 1) mod 3 + 1', () => {
+    id = 0;
+    const zeros = Array.from({ length: 6 }, () => v('0')).join('') + v('2') + v('3') + fn('mat', 8);
+    // for(i := 1, i < 7, i := i + 1, el(A, i) := 10·i); A shown as SMath saved it; A[5] read back
+    const loop = v('i') + v('1') + op(':') + v('i') + v('7') + op('<') + v('i') + v('i') + v('1') + op('+') + op(':')
+      + v('A') + v('i') + fn('el', 2) + v('10') + v('i') + op('*') + op(':') + fn('for', 4);
+    const saved = ['10', '20', '30', '40', '50', '60'].map(v).join('') + v('2') + v('3') + fn('mat', 8);
+    const { ws, warnings, saved: s0 } = load(
+      at(9, 10, `<math><input>${def(v('A'), zeros)}</input></math>`),
+      at(9, 40, `<math><input>${loop}</input></math>`),
+      at(9, 70, `<math><input>${v('A')}</input><result action="numeric">${saved}</result></math>`),
+      at(9, 100, `<math><input>${v('A') + v('5') + fn('el', 2)}</input><result action="numeric">${v('50')}</result></math>`),
+      // a vector keeps its one index
+      at(9, 130, `<math><input>${def(v('w'), v('1') + v('2') + v('2') + v('1') + fn('mat', 4))}</input></math>`),
+      at(9, 160, `<math><input>${v('w') + v('2') + fn('el', 2)}</input><result action="numeric">${v('2')}</result></math>`),
+    );
+    expect(sources(ws)).toContain('A[ceil(5/3), mod(5 - 1, 3) + 1] =');
+    expect(sources(ws)).toContain('w[2] =');
+    expect(warnings.some((w) => /^A\[k\]: one index into a matrix counts its elements row by row/.test(w))).toBe(true);
+    expect(compareSaved(s0!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+});
