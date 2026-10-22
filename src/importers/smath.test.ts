@@ -396,6 +396,12 @@ describe('SMath import: functions and lists', () => {
     expect(value(ws, 'nthRoot(-8, 3) =')).toMatch(/= -2/);
   });
 
+  it('a range inside an expression is the vector of its values: (0..3)·2', () => {
+    const { ws } = one(math(def(v('φ'), v('0') + v('3') + fn('range', 2) + br + v('2') + op('*'))), math(def(v('i'), v('1') + v('3') + fn('range', 2))), math(v('φ'), { result: 'numeric' }));
+    expect(sources(ws)).toEqual(['φ := range(0, 3)*2', 'i := 1 .. 3', 'φ =']);
+    expect(value(ws, 'φ =')).toMatch(/0 \\\\ 2 \\\\ 4 \\\\ 6/);
+  });
+
   it('solve(f, x, a, b) gives every root between a and b; roots(f, x, x₀); at(f, x = a)', () => {
     const { ws, saved } = one(
       math(def(v('σ.x'), v('40') + u('MPa') + op('*'))),

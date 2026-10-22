@@ -272,8 +272,11 @@ class Converter {
     switch (t.type) {
       case 'operand':
         return this.operand(t);
-      case 'bracket':
-        return { s: `(${this.expr(t.args[0]).s})`, p: P.ATOM };
+      case 'bracket': {
+        const inner = this.expr(t.args[0]);
+        // (0 .. n) in an expression: the vector of the range
+        return inner.p === P.RANGE ? this.value(inner) : { s: `(${inner.s})`, p: P.ATOM };
+      }
       case 'operator':
         return this.operator(t);
       case 'function':
@@ -316,7 +319,7 @@ class Converter {
     const [a, b] = t.args;
     const op = t.text;
     if (t.args.length === 1) {
-      const x = this.expr(a);
+      const x = this.value(this.expr(a));
       if (op === '-') return { s: `-${wrap(x, P.NEG)}`, p: P.NEG };
       if (op === '+') return x;
       if (op === '!') return { s: `${wrap(x, P.POST)}!`, p: P.POST };
@@ -326,7 +329,7 @@ class Converter {
     if (op === ':') throw new Unsupported('a definition inside an expression');
     const bin = BINOPS[op];
     if (!bin || t.args.length !== 2) throw new Unsupported(`the “${op}” operator`);
-    const x = this.expr(a), y = this.expr(b);
+    const x = this.value(this.expr(a)), y = this.value(this.expr(b));
     // m^-1, not m^(-1): a display unit takes a plain exponent
     if (op === '^') return { s: `${wrap(x, P.POW + 1)}^${isNumberLiteral(y.s) ? y.s : wrap(y, P.POW)}`, p: P.POW };
     if (op === '*' && this.ignoreUnits && this.unitOnly(b)) return x;
@@ -338,7 +341,7 @@ class Converter {
   }
 
   args(t: Tok): string[] {
-    return t.args.map((a) => this.expr(a).s);
+    return t.args.map((a) => this.value(this.expr(a)).s);
   }
 
   matrix(t: Tok): Ex {
@@ -351,10 +354,21 @@ class Converter {
     return { s: `[${out.join('; ')}]`, p: P.ATOM };
   }
 
+  /** Ranges as written (a .. b), and the same range as a vector value (range(a, b)). */
+  private rangeValues = new Map<string, string>();
+
   range(t: Tok): Ex {
     // range(start, end) or range(start, end, second value)
-    const [a, b, c] = this.args(t);
-    return { s: c !== undefined ? `${a}, ${c} .. ${b}` : `${a} .. ${b}`, p: P.RANGE };
+    const [a, b, c] = t.args.map((x) => this.value(this.expr(x)).s);
+    const s = c !== undefined ? `${a}, ${c} .. ${b}` : `${a} .. ${b}`;
+    const step = c !== undefined ? `, ${wrap(this.expr(t.args[2]), P.ADD + 1)} - ${wrap(this.expr(t.args[0]), P.ADD + 1)}` : '';
+    this.rangeValues.set(s, `range(${a}, ${b}${step})`);
+    return { s, p: P.RANGE };
+  }
+
+  /** A range inside an expression or as an argument is the vector of its values ((0..n)·Δφ). */
+  value(e: Ex): Ex {
+    return e.p === P.RANGE && this.rangeValues.has(e.s) ? { s: this.rangeValues.get(e.s)!, p: P.ATOM } : e;
   }
 
   call(t: Tok): Ex {
