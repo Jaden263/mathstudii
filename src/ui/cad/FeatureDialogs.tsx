@@ -10,6 +10,12 @@ import {
 import { LazyInput } from '../sketch/SketchProps';
 import { sketchRegions } from './useDesign';
 import { ThreadTable, sizeChoices } from './threadParts';
+import { JOINT_DOFS, JOINT_LABEL, dofWord, type DofKey } from '../../cad/assembly';
+import type { DofValues } from '../../cad/kinematics';
+import { JointDofFields } from './AssemblyPanels';
+
+/** The joint types with what they move by. */
+const JOINT_TYPES = (Object.keys(JOINT_LABEL) as (keyof typeof JOINT_LABEL)[]).map((t) => [t, JOINT_DOFS[t].length ? `${JOINT_LABEL[t]} (${JOINT_DOFS[t].map((k) => dofWord(t, k)).join(', ')})` : JOINT_LABEL[t]] as [typeof t, string]);
 
 export function Dialog({ title, error, children, onOk, onCancel, okLabel = 'OK' }: { title: string; error?: string; children: ReactNode; onOk: () => void; onCancel: () => void; okLabel?: string }) {
   return (
@@ -361,13 +367,16 @@ export function originOptions(design: CadDesign, cid: string): { key: string; la
 
 export const originKey = (o: JointOrigin) => (o.kind === 'origin' ? 'origin' : o.kind === 'point' ? `${o.sketch}/${o.point}/${o.axis ?? 'n'}` : o.kind === 'datum' ? `datum/${o.id}` : o.kind);
 
-export function JointFields({ design, joint: j, picking, onPick, onChange, values }: {
+export function JointFields({ design, joint: j, picking, onPick, onChange, values, unit, onDrive }: {
   design: CadDesign;
   joint: CadJoint;
   picking: 'a' | 'b' | null;
   onPick: (side: 'a' | 'b' | null) => void;
   onChange: (patch: Partial<CadJoint>, coalesce?: string) => void;
-  values?: { angle: number; offset: number };
+  /** The joint's DOFs as placed. */
+  values?: DofValues;
+  unit: string;
+  onDrive?: (dof: DofKey) => void;
 }) {
   const occName = (id: string) => {
     const o = design.occurrences.find((q) => q.id === id);
@@ -400,22 +409,12 @@ export function JointFields({ design, joint: j, picking, onPick, onChange, value
   };
   return (
     <>
-      <Pick label="Type" value={j.type} options={[['rigid', 'Rigid'], ['revolute', 'Revolute (turns about Z)'], ['slider', 'Slider (slides along Z)'], ['cylindrical', 'Cylindrical (both)']]} onChange={(type) => onChange({ type })} />
+      <Pick label="Type" value={j.type} options={JOINT_TYPES} onChange={(type) => onChange({ type })} />
       {side('b', 'Moves (child)')}
       {side('a', 'Onto (parent)')}
-      <div className="row2">
-        <Expr label={j.type === 'revolute' || j.type === 'cylindrical' ? 'Angle (motion)' : 'Angle'} value={j.angle} onChange={(angle) => onChange({ angle }, 'angle')} />
-        <Expr label={j.type === 'slider' || j.type === 'cylindrical' ? 'Offset (motion)' : 'Offset'} value={j.offset} onChange={(offset) => onChange({ offset }, 'offset')} />
-      </div>
-      {(j.type === 'revolute' || j.type === 'cylindrical') && (
-        <label className="field">
-          <span>Drive: {values ? `${+((values.angle * 180) / Math.PI).toFixed(2)}°` : ''}</span>
-          <input type="range" min={-180} max={180} step={1} value={values ? Math.round((values.angle * 180) / Math.PI) : 0}
-            onChange={(e) => onChange({ angle: `${e.target.value} deg` }, 'drive')} />
-        </label>
-      )}
+      <JointDofFields joint={j} values={values} unit={unit} onChange={onChange} onDrive={onDrive} />
       <label className="check"><input type="checkbox" checked={!!j.flip} onChange={(e) => onChange({ flip: e.target.checked || undefined })} /> Flip (faces mate: the Z axes point at each other)</label>
-      <p className="hint">The child's joint origin is put on the parent's, Z on Z. Angle and offset accept worksheet expressions, so a calculation can drive the mechanism.</p>
+      <p className="hint">The child's joint origin is put on the parent's, Z on Z. The values accept worksheet expressions, so a calculation can drive the mechanism; set the DOFs a loop of joints finds (a four-bar's pins) to Solved.</p>
     </>
   );
 }

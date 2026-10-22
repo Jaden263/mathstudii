@@ -18,6 +18,10 @@ import { designKey } from './keys';
 import { dimensionValue } from './dimension';
 import { parseThread, threadIn } from './threads';
 import { occ, occFailure } from './occ/kernel';
+import type { KinState } from './kinematics';
+import type { MotionResult } from './motion';
+import { studyResult } from './occ/motion';
+import { assemblyParams, jointExport, jointParams, motionValue } from './assemblyParams';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
 
 export interface CadResult {
@@ -89,6 +93,10 @@ export interface DesignResult extends DesignNumbers {
   resolveSketches?: Record<string, CadResult>;
   /** Sketches whose projected references the build moved: the sketch with its references as built. */
   rebuilt?: Record<string, CadSketch>;
+  /** The joints' kinematic model and their values as placed (solved DOFs as found). */
+  kin?: KinState;
+  /** Motion study id → its frames sampled (and their clearance). */
+  motions?: Record<string, MotionResult>;
 }
 
 export { designNumbers } from './keys';
@@ -322,11 +330,12 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
   }
   for (const j of design.joints) {
     try {
-      params[j.id] = { angle: value(j.angle, '0', 'A', 'angle'), offset: value(j.offset, '0', 'L', 'offset') };
+      params[j.id] = jointParams(j, value);
     } catch (e) {
       errors[j.id] = msg(e);
     }
   }
+  assemblyParams(design, unit, value, evalExpr, params, errors);
   return { sketches, frames, params, errors, unit };
 }
 
@@ -390,6 +399,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     Object.assign(dr.frames, m.frames);
     rebuiltInto(dr, m.sketches);
     dr.placements = m.placements;
+    if (m.kin) dr.kin = m.kin;
     dr.box = m.box;
   } else if (K) {
     const built = buildDesign(K, design, numbers);
@@ -413,6 +423,7 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
       Object.assign(dr.errors, built.errors);
       Object.assign(dr.warnings!, built.warnings);
       dr.placements = built.placements;
+      if (built.kin) dr.kin = built.kin;
       dr.box = boxOf(design.occurrences.filter((o) => !o.hidden).flatMap((o) => placedSolids(built, design, o.id).map((p) => p.solid))) ?? undefined;
     } finally {
       built.free();
@@ -437,7 +448,14 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     }
     const placed = placeOccurrences(design, numbers);
     dr.placements = placed.placements;
+    dr.kin = placed.kin;
     Object.assign(dr.errors, placed.errors);
+    Object.assign(dr.warnings!, placed.warnings);
+  }
+  // motion studies: the frames sampled, and their clearance on the exact shapes
+  if (design.motions?.length && dr.kin) {
+    dr.motions = {};
+    for (const st of design.motions) if (!numbers.errors[st.id]) dr.motions[st.id] = studyResult(m ? oc : null, design, numbers, st, dr.kin);
   }
   // the part's own sketch readouts: the first sketch as the build solved it
   if (first && dr.rebuilt?.[first.id]) {
@@ -519,9 +537,13 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
       const p = d.params[j.id];
       const id = identifier(j.name);
       if (!p || !id || id in value) continue;
-      if (j.type === 'revolute') value[id] = math.unit((p.angle * 180) / Math.PI, 'deg');
-      else if (j.type === 'slider') value[id] = L(p.offset);
-      else if (j.type === 'cylindrical') value[id] = { θ: math.unit((p.angle * 180) / Math.PI, 'deg'), s: L(p.offset) };
+      // as placed: solved DOFs as the loops found them, driven ones where their limits stopped them
+      const v = jointExport(j.type, { ...p, ...d.kin?.values[j.id] }, u);
+      if (v) value[id] = v;
+    }
+    for (const st of design.motions ?? []) {
+      const mr = d.motions?.[st.id], id = identifier(st.name);
+      if (mr && d.kin && id && !(id in value)) value[id] = motionValue(st, mr, d.kin, u);
     }
   }
   for (const c of design.components) for (const i of c.items) {

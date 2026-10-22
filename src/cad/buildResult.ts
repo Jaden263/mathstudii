@@ -8,6 +8,7 @@
 // mesh and its edges the creases between them, so they look right but carry no exact
 // geometry beyond planes, and no names.
 import { buildDesign, type CadDesign, type Datum, type DesignNumbers, type Placement } from './design';
+import type { KinState } from './kinematics';
 import { meshBody, polylineMid } from './meshTopology';
 import type { Frame, ManifoldToplevel, Mass3, Vec3 } from './solid';
 import { edgeKey } from './topology';
@@ -111,13 +112,15 @@ export interface BuildResult {
   /** Joint and occurrence problems. */
   errors: Record<string, string>;
   warnings?: Record<string, string>;
+  /** The joints' kinematic model and values: the workspace drives and animates the assembly with it. */
+  kin?: KinState;
 }
 
 /** The design built with the mesh kernel, as a BuildResult. */
 export function meshBuildResult(K: ManifoldToplevel, design: CadDesign, numbers: DesignNumbers): BuildResult {
   const built = buildDesign(K, design, numbers);
   try {
-    const out: BuildResult = { kernel: 'mesh', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
+    const out: BuildResult = { kernel: 'mesh', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings, ...(built.kin ? { kin: built.kin } : {}) };
     for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map(meshBody), errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
     return out;
   } finally {

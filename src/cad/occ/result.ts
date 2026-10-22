@@ -106,7 +106,7 @@ const shown = new WeakMap<TopoDS_Shape, BodyResult>();
  * before are not tessellated again (only their names may differ).
  */
 export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
-  const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
+  const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings, ...(built.kin ? { kin: built.kin } : {}) };
   for (const [cid, cb] of built.components) {
     out.components[cid] = {
       bodies: cb.bodies.map((b) => {
@@ -122,7 +122,7 @@ export function cachedResultOcc(oc: OC, built: OccBuiltDesign): BuildResult {
 
 /** BuildResult of a built design (it stays built; free it yourself). */
 export function builtResultOcc(oc: OC, built: OccBuiltDesign, o: MeshOptions = {}): BuildResult {
-  const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings };
+  const out: BuildResult = { kernel: 'brep', components: {}, placements: built.placements, errors: built.errors, warnings: built.warnings, ...(built.kin ? { kin: built.kin } : {}) };
   for (const [cid, cb] of built.components) out.components[cid] = { bodies: cb.bodies.map((b) => bodyResultOcc(oc, b, o)), errors: cb.errors, warnings: cb.warnings, frames: cb.frames, datums: cb.datums };
   return out;
 }

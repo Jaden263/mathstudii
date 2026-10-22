@@ -18,6 +18,8 @@ export interface DrawViewRequest {
   hidden: boolean;
   /** A section view: only what lies beyond the plane through this point, square to `dir`, is kept. */
   cut?: Vec3;
+  /** Occurrences placed elsewhere than the build has them (an exploded drawing): id → column-major 4×4. */
+  placements?: Record<string, number[]>;
 }
 
 export type Prim =

@@ -131,18 +131,22 @@ export function drawViewFor(design: CadDesign, numbers: DesignNumbers, shown: Bu
     drawn.clear();
     drawnBy = oc;
   }
-  const k = `${key}|${shown.kernel}|${JSON.stringify([v.name, v.dir, v.up, v.hidden, v.cut ?? null])}`;
+  const k = `${key}|${shown.kernel}|${JSON.stringify([v.name, v.dir, v.up, v.hidden, v.cut ?? null, v.placements ?? null])}`;
   const hit = drawn.get(k);
   if (hit) return hit;
   let out: DrawView | null = null;
+  // an exploded view: the occurrences where it puts them
+  const moved = <T extends { placements: BuildResult['placements'] }>(b: T): T => (v.placements
+    ? { ...b, placements: Object.fromEntries(Object.entries(b.placements).map(([id, p]) => [id, v.placements![id] ? { ...p, matrix: v.placements![id] } : p])) }
+    : b);
   if (oc && shown.kernel === 'brep') {
     try {
-      out = drawViewOcc(oc, buildDesignCached(oc, design, numbers), design, v);
+      out = drawViewOcc(oc, moved(buildDesignCached(oc, design, numbers)), design, v);
     } catch (e) {
       console.warn('the exact drawing failed on this part; drawing the mesh', e);
     }
   }
-  out ??= meshDrawView(drawMeshes(shown, design), v);
+  out ??= meshDrawView(drawMeshes(moved(shown), design), v);
   drawn.set(k, out);
   return out;
 }

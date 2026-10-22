@@ -13,6 +13,7 @@ import {
   Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate, TriangleRight,
   LineSquiggle, SplinePointer, Ellipse as EllipseIcon, CircleDotDashed, Type, VectorSquare, CornerRightDown, MoveHorizontal, ScissorsLineDashed,
   Grid2x2, Rotate3d, ScanLine,
+  SlidersHorizontal, Cog, Group as GroupIcon, Link, Clapperboard, Expand, ClipboardList, Play, Film, Images,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
@@ -20,7 +21,7 @@ import { MATERIALS, cadId, reserveDimNames, type CadSketch, type ConstraintType,
 import { withReferencesOf } from '../../cad/reference';
 import { CONSTRAINT_TOOLS } from '../../cad/edit';
 import {
-  FEATURE_LABEL, MODIFY_KINDS, activeItems, designOf, facePlane, findSketch, isConstruct, isModify, isSketch, itemName, nextName, picksOnBodies, profileKey, sketchFace,
+  FEATURE_LABEL, MODIFY_KINDS, activeItems, designOf, facePlane, findSketch, isConstruct, isModify, isSketch, itemName, jointFrame, nextName, picksOnBodies, profileKey, sketchFace,
   type CadComponent, type CadDesign, type CadJoint, type CadOccurrence, type ConstructItem, type DesignFeature, type DesignItem, type DesignSketch, type JointOrigin,
   type ModifyFeature, type PlaneRef,
 } from '../../cad/design';
@@ -38,17 +39,26 @@ import { exportFile, pickFile } from '../../platform/files';
 import { LazyInput } from '../sketch/SketchProps';
 import { CadCanvas, type CadCanvasHandle, type CanvasStatus } from './CadCanvas';
 import { STANDARD_VIEWS, type Display } from './Cad3DView';
-import { Scene3D, type PickHit, type SceneView } from './Scene3D';
+import { Scene3D, sceneBounds, type Bounds, type PickHit, type SceneView } from './Scene3D';
 import { buildScene, editOccurrence, sketchRegions } from './useDesign';
 import { exportPart, type PartFormat } from './exportPart';
 import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
-import { Dialog, Expr, FeatureFields, JointFields, featureTitle } from './FeatureDialogs';
+import { Checks, Dialog, Expr, FeatureFields, JointFields, Pick, featureTitle } from './FeatureDialogs';
 import { ModifyFields, type PickTarget } from './ModifyDialogs';
 import { BuildFields, emptyDef, isBuildFeature, withPick, type FieldPick } from './ConstructDialogs';
 import { candidateGlyphs, jointCandidates, nearestCandidate, type JointCandidate } from './jointPick';
 import { MassTable, SketchPanel, num } from './SketchPanel';
 import { fmtNum } from './cadRender';
+import { JOINT_DOFS, JOINT_LABEL, dofLabel, isAngleDof, type DofKey } from '../../cad/assembly';
+import { bomCsv, bomTable, bomTsv } from '../../cad/bom';
+import { autoExplode } from '../../cad/explode';
+import { m4Mul } from '../../cad/solid';
+import { sampleTimes } from '../../cad/motion';
+import { asBuiltOrigin, placementsWithout } from '../../cad/kinematics';
+import { paintHits, useAssemblyView } from './assemblyView';
+import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivePatches, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
+import { canRecord, exportPngFrames, recordWebm } from './motionExport';
 
 interface Props {
   region: CadRegion;
@@ -70,7 +80,14 @@ type Dlg =
   | { kind: 'feature'; cid: string; id: string; mark: number; isNew: boolean; target?: PickTarget; set?: number; rollback?: { marker: number | undefined }; pick?: FieldPick }
   /** A new sketch: on an origin plane or a construction plane (its id). */
   | { kind: 'sketch'; ref: PlaneRef | string; offset: string }
-  | { kind: 'joint'; id: string; mark: number; isNew: boolean; picking: 'a' | 'b' | null; snap?: string }
+  /** `asBuilt`: one pick places both origins where the parts are now (nothing moves). */
+  | { kind: 'joint'; id: string; mark: number; isNew: boolean; picking: 'a' | 'b' | null; snap?: string; asBuilt?: boolean }
+  /** A DOF moved by hand: the view follows, the document only on Set as value. */
+  | { kind: 'drive'; joint: string; dof: DofKey; value: number }
+  | { kind: 'link'; id: string; mark: number; isNew: boolean }
+  /** Occurrences to lock together. */
+  | { kind: 'group'; occs: string[] }
+  | { kind: 'motion'; id: string; mark: number; isNew: boolean; busy?: string }
   | { kind: 'measure'; picks: Measured[]; result?: Distance | null; error?: string }
   | { kind: 'interference'; rows: Interference[] | null; error?: string };
 
@@ -256,7 +273,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const narrow = typeof window !== 'undefined' && window.innerWidth < 760;
   const [showTree, setShowTree] = useState(!narrow);
   const [showProps, setShowProps] = useState(!narrow);
-  const [open, setOpen] = useState<Record<string, boolean>>({ comps: true, occs: true, joints: true });
+  const [open, setOpen] = useState<Record<string, boolean>>({ comps: true, occs: true, joints: true, links: true, groups: true, motions: true });
+  // the exploded view: how far out (0…1), null while assembled; trails from where the parts were
+  const [explode, setExplode] = useState<number | null>(null);
+  const [trails, setTrails] = useState(true);
   const canvas = useRef<CadCanvasHandle>(null);
   const [viewRef, size] = useSize<HTMLDivElement>();
 
@@ -599,7 +619,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     setDesign({ ...d, occurrences: [...d.occurrences, { id, component: cid, pos: [box ? box.max[0] + w * 0.3 : 0, 0, 0] }] });
     setSel(`occ:${id}`);
   };
-  const startJoint = () => {
+  const startJoint = (asBuilt = false) => {
     const d = cur();
     if (d.occurrences.length < 2) return setMsg('A joint needs two occurrences: Assemble → New component or Insert copy first');
     const ground = d.occurrences.find((o) => o.grounded) ?? d.occurrences[0];
@@ -607,8 +627,77 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     const id = cadId('j');
     seal();
     const m = mark();
-    setDesign({ ...d, joints: [...d.joints, { id, name: nextName(d, 'Joint'), type: 'rigid', a: { occ: ground.id, origin: { kind: 'origin' } }, b: { occ: other.id, origin: { kind: 'origin' } }, angle: '0', offset: '0' }] });
-    openDialog({ kind: 'joint', id, mark: m, isNew: true, picking: 'b' });
+    // an as-built joint holds nothing until its origin is picked: a free part must not jump onto the other's origin first
+    setDesign({ ...d, joints: [...d.joints, { id, name: nextName(d, 'Joint'), type: 'rigid', a: { occ: ground.id, origin: { kind: 'origin' } }, b: { occ: other.id, origin: { kind: 'origin' } }, angle: '0', offset: '0', ...(asBuilt ? { suppressed: true } : {}) }] });
+    openDialog({ kind: 'joint', id, mark: m, isNew: true, picking: 'b', ...(asBuilt ? { asBuilt: true } : {}) });
+  };
+  /** An as-built joint: one origin picked, the other side's frame put where it is now, so nothing moves. */
+  const startAsBuilt = () => startJoint(true);
+
+  // ------------------------------------------------------------ motion
+
+  /** The values of a joint as placed (solved DOFs as found). */
+  const placedValues = (jid: string) => build?.kin?.values[jid] ?? dr?.kin?.values[jid];
+  const kinJoint = (jid: string) => (build?.kin ?? dr?.kin)?.model.joints.find((q) => q.id === jid);
+  /** Drive a DOF by hand, from where it is now. */
+  const startDrive = (jid?: string, dof?: DofKey) => {
+    const d = cur();
+    const j = d.joints.find((q) => q.id === jid) ?? d.joints.find((q) => drivenDofs(d, q).length);
+    const k = dof ?? (j && drivenDofs(d, j)[0]);
+    if (!j || !k) return setMsg('Drive moves a joint by hand: make a revolute, slider or other moving joint first');
+    if (!drivenDofs(d, j).includes(k)) return setMsg(`${j.name}: the ${dofLabel(j.type, k)} follows a motion link — drive the DOF it follows`);
+    if (!kinJoint(j.id)) return setMsg(dr?.errors[j.id] ? `${j.name}: ${dr.errors[j.id]}` : 'The joint is not placed yet');
+    openDialog({ kind: 'drive', joint: j.id, dof: k, value: placedValues(j.id)?.[k] ?? 0 });
+  };
+  const startLink = () => {
+    const d = cur();
+    const moving = d.joints.filter((j) => JOINT_DOFS[j.type].length);
+    if (moving.length < 2) return setMsg('A motion link makes one joint follow another (gears, rack and pinion): make two moving joints first');
+    const a = moving.find((j) => sel === `joint:${j.id}`) ?? moving[0], b = moving.find((j) => j.id !== a.id)!;
+    const id = cadId('l');
+    seal();
+    const m = mark();
+    setDesign({ ...d, links: [...(d.links ?? []), { id, name: nextName(d, 'Link'), a: { joint: a.id, dof: JOINT_DOFS[a.type][0] }, b: { joint: b.id, dof: JOINT_DOFS[b.type][0] }, ratio: '-1' }] });
+    openDialog({ kind: 'link', id, mark: m, isNew: true });
+  };
+  /** Lock occurrences together where they are now. */
+  const makeGroup = (occs: string[]) => {
+    const d = cur();
+    const at = (id: string) => build?.placements[id]?.matrix ?? dr?.placements[id]?.matrix;
+    const first = at(occs[0]);
+    if (occs.length < 2 || !first) return setMsg('Tick two occurrences or more to lock together');
+    const rel = Object.fromEntries(occs.slice(1).flatMap((o) => {
+      const M = at(o);
+      return M ? [[o, m4Mul(m4Inv(first), M).map((v) => +v.toPrecision(15))]] : [];
+    }));
+    setDesign({ ...d, groups: [...(d.groups ?? []), { id: cadId('g'), name: nextName(d, 'Group'), occs, rel }] });
+    setDialog(null);
+  };
+  const startMotion = () => {
+    const d = cur();
+    const j = d.joints.find((q) => JOINT_DOFS[q.type].some((k) => !q.dofs?.[k]?.free));
+    if (!j) return setMsg('A motion study moves a joint over time: make a revolute, slider or other moving joint first');
+    const k = JOINT_DOFS[j.type].find((x) => !j.dofs?.[x]?.free)!;
+    const id = cadId('m');
+    seal();
+    const m = mark();
+    const to = isAngleDof(k) ? '360 deg' : `${+(sceneSize / 2).toPrecision(2)} ${u}`;
+    setDesign({ ...d, motions: [...(d.motions ?? []), { id, name: nextName(d, 'Motion'), duration: 4, steps: 72, tracks: [{ joint: j.id, dof: k, keys: [{ t: 0, v: isAngleDof(k) ? '0 deg' : `0 ${u}` }, { t: 4, v: to }] }] }] });
+    openDialog({ kind: 'motion', id, mark: m, isNew: true });
+  };
+  const patchLink = (id: string, patch: Partial<NonNullable<CadDesign['links']>[number]>, coalesce?: string) =>
+    setDesign({ ...cur(), links: (cur().links ?? []).map((l) => (l.id === id ? { ...l, ...patch } : l)) }, coalesce);
+  const patchGroup = (id: string, patch: Partial<NonNullable<CadDesign['groups']>[number]>) =>
+    setDesign({ ...cur(), groups: (cur().groups ?? []).map((g) => (g.id === id ? { ...g, ...patch } : g)) });
+  const patchMotion = (id: string, patch: Partial<NonNullable<CadDesign['motions']>[number]>, coalesce?: string) =>
+    setDesign({ ...cur(), motions: (cur().motions ?? []).map((m) => (m.id === id ? { ...m, ...patch } : m)) }, coalesce);
+  const runAutoExplode = () => {
+    const kin = build?.kin ?? dr?.kin;
+    if (!build || !kin) return setMsg('The assembly is still being built');
+    const offsets = autoExplode(cur(), build, kin);
+    if (!Object.keys(offsets).length) return setMsg('Auto explode moves what joints place: no occurrence is placed by a joint');
+    setDesign({ ...cur(), occurrences: cur().occurrences.map((o) => (offsets[o.id] ? { ...o, explode: offsets[o.id] } : o)) });
+    setExplode(1);
   };
 
   useEffect(() => {
@@ -627,7 +716,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
   const closeDialog = (ok: boolean) => {
     if (!dialog) return;
-    if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint')) revertTo(dialog.mark);
+    if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint' || dialog.kind === 'link' || dialog.kind === 'motion')) revertTo(dialog.mark);
     if (ok) finishRollback();
     seal();
     setDialog(null);
@@ -636,8 +725,14 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ picking
 
   const occOf = (id: string) => design.occurrences.find((o) => o.id === id);
-  const placement = (occId: string) => build?.placements[occId]?.matrix ?? dr?.placements[occId]?.matrix;
+  // as shown: driven, played or exploded
+  const placement = (occId: string) => av.shown?.placements[occId]?.matrix ?? build?.placements[occId]?.matrix ?? dr?.placements[occId]?.matrix;
   const sceneSize = dr?.box ? Math.max(...[0, 1, 2].map((i) => dr.box!.max[i] - dr.box!.min[i]), 20) : 100;
+  const motionStudy = dialog?.kind === 'motion' ? design.motions?.find((m) => m.id === dialog.id) : undefined;
+  const player = useMotionPlayer(motionStudy?.duration ?? 1, !!motionStudy);
+  const linkOpen = dialog?.kind === 'link' ? design.links?.find((l) => l.id === dialog.id) : sel?.startsWith('link:') ? design.links?.find((l) => l.id === sel.slice(5)) : undefined;
+  const glyphs = dialog?.kind === 'joint' ? [dialog.id] : dialog?.kind === 'drive' ? [dialog.joint] : linkOpen ? [linkOpen.a.joint, linkOpen.b.joint] : sel?.startsWith('joint:') ? [sel.slice(6)] : [];
+  const av = useAssemblyView({ design, build, dr, size: sceneSize, drive: dialog?.kind === 'drive' ? dialog : null, motion: motionStudy ? { study: motionStudy, t: player.t } : null, explode, trails, glyphs });
   const occLabel = (o: CadOccurrence) => {
     const c = design.components.find((q) => q.id === o.component);
     return o.name || `${c?.name ?? '?'}:${design.occurrences.filter((q) => q.component === o.component).indexOf(o) + 1}`;
@@ -928,6 +1023,22 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const { occ } = picked;
       const other = dialog.picking === 'a' ? j.b.occ : j.a.occ;
       const origin: JointOrigin = c.origin;
+      if (dialog.asBuilt) {
+        // the other side's origin put where the picked one is now: the joint holds the parts as they stand
+        const side = dialog.picking, far = side === 'a' ? 'b' : 'a';
+        const farOcc = occ === other ? j[side].occ : other;
+        // where the parts stand without this joint (not where its present origins put them)
+        const kin = build?.kin ?? dr?.kin;
+        const now = kin && placementsWithout(kin.model, j.id);
+        const placed = (id: string) => now?.[id]?.matrix ?? build?.placements[id]?.matrix ?? dr?.placements[id]?.matrix;
+        const Mp = placed(occ), Mf = placed(farOcc), cid = occOf(occ)?.component;
+        if (farOcc === occ || !Mp || !Mf || !cid || !dr) return setMsg('Pick a part of one of the two occurrences the joint holds');
+        const at = asBuiltOrigin(Mf, Mp, jointFrame(designNumbers(dr), origin, build?.components[cid]?.bodies, dr.frames, undefined, build?.components[cid]?.datums));
+        patchJoint(j.id, { [side]: { occ, origin }, [far]: { occ: farOcc, origin: at }, angle: '0', offset: '0', x: undefined, y: undefined, angle2: undefined, angle3: undefined, flip: undefined, suppressed: undefined } as Partial<CadJoint>);
+        setSnapHover(null);
+        setDialog({ ...dialog, picking: null, snap: `As built on the ${c.label}: the parts stay where they are` });
+        return;
+      }
       // picking the part the other side already uses swaps the sides
       const patch: Partial<CadJoint> = occ === other
         ? { [dialog.picking]: { occ, origin }, [dialog.picking === 'a' ? 'b' : 'a']: dialog.picking === 'a' ? { ...j.a } : { ...j.b }, flip: true }
@@ -1085,7 +1196,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // a slider or a check box takes no typing: Esc still leaves the dialog (a drive's slider)
+    const typing = tag === 'SELECT' || tag === 'TEXTAREA' || (tag === 'INPUT' && !['range', 'checkbox'].includes((e.target as HTMLInputElement).type));
+    if (typing || (tag === 'INPUT' && e.key !== 'Escape')) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) onRedo(); else onUndo(); }
     else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); onRedo(); }
@@ -1224,10 +1337,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   }, [marked, hoverPick, modMarks, modified, held]);
   // origin and construction planes take clicks while a sketch or a plane field waits for one
   const planePicking = dialog?.kind === 'sketch' || (dialog?.kind === 'feature' && dialog.pick?.kind === 'plane');
-  const baseScene = useMemo(() => buildScene(design, result, build, {
+  const baseScene = useMemo(() => buildScene(design, result, av.shown, {
     active: comp?.id ?? '', highlight, showPlanes: (showPlanes || planePicking) && !section, pickProfiles, isolate, size: sceneSize,
     pickPlanes: planePicking, pickDatums: planePicking, section: section ? cut : undefined, marks,
-  }), [design, result, build, comp, highlight, showPlanes, planePicking, pickProfiles, isolate, sceneSize, section, cut, marks]);
+  }), [design, result, av.shown, comp, highlight, showPlanes, planePicking, pickProfiles, isolate, sceneSize, section, cut, marks]);
   // what is being measured (corner points) and the shortest line between the two, and the
   // joint origins a face or edge offers while a joint picks one, drawn on top
   const measuring = dialog?.kind === 'measure' ? dialog : null;
@@ -1244,8 +1357,22 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (d) segs.push(...d.a, ...d.b, ...cross3d(d.a), ...cross3d(d.b));
       if (segs.length) extra.push({ key: 'measure', segments: new Float32Array(segs), color: [0.95, 0.6, 0.05] as [number, number, number], overlay: true });
     }
-    return extra.length ? { ...baseScene, lines: [...baseScene.lines, ...extra] } : baseScene;
-  }, [baseScene, measuring, snapping, snapM, sceneSize]);
+    // joint glyphs, explode trails, and the parts a playing study finds overlapping, in red
+    extra.push(...av.lines);
+    const meshes = paintHits(baseScene.meshes, av.hits, build, design);
+    return extra.length || meshes !== baseScene.meshes ? { ...baseScene, meshes, lines: [...baseScene.lines, ...extra] } : baseScene;
+  }, [baseScene, measuring, snapping, snapM, sceneSize, av.lines, av.hits, build, design]);
+  // while a joint is driven or a study plays the view keeps its framing (a little room to move in)
+  const still = useRef<{ key: string; b: Bounds } | null>(null);
+  const movingKey = dialog?.kind === 'drive' ? `d:${dialog.joint}/${dialog.dof}` : motionStudy ? `m:${motionStudy.id}` : '';
+  if (!movingKey) still.current = null;
+  else if (still.current?.key !== movingKey) {
+    const b = sceneBounds(scene.meshes, scene.lines, scene.planes);
+    if (b) {
+      const r = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) * 0.15;
+      still.current = { key: movingKey, b: { min: [b.min[0] - r, b.min[1] - r, b.min[2] - r], max: [b.max[0] + r, b.max[1] + r, b.max[2] + r] } };
+    }
+  }
 
   // faces and edges are picked one by one, except while a feature dialog picks bodies
   // a modify dialog picks edges (fillet, chamfer, an axis), faces (shell, draft, press-pull, a plane) or bodies
@@ -1319,6 +1446,10 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       return at ? `Click: the ${at.label} · move over faces and edges for their snap points` : `Hover a face or edge of the ${dialog.picking === 'b' ? 'part that moves' : 'part it goes onto'}: its snap points show (centres, axes, midpoints, vertices)`;
     }
     if (dialog?.kind === 'measure') return 'Click two faces, edges or corners: the smallest distance between them';
+    if (dialog?.kind === 'drive') return 'Drag the slider or type a value: the joints follow · Set as value writes it into the joint · Esc leaves it as it was';
+    if (dialog?.kind === 'motion') return 'Play, scrub or step through the study · keys are times and values (worksheet expressions) · red: parts overlapping';
+    if (dialog?.kind === 'link') return 'b = ratio · a + offset: pick the DOF that drives and the one that follows';
+    if (dialog?.kind === 'group') return 'Tick the occurrences to lock together where they are';
     if (dialog?.kind === 'feature' && modified) {
       if (dialog.target) return dialog.target === 'plane' ? 'Click a flat face for the plane · Esc stops picking' : 'Click a straight edge, a circle, a cylinder or a flat face (its normal) for the axis · Esc stops picking';
       const what: Record<ModifyFeature['kind'], string> = {
@@ -1356,6 +1487,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ panels
 
   const material = (density: string) => MATERIALS.find((m) => m.density === density.trim());
+  /** The bill of materials: masses each from the components' (hidden occurrences are left out). */
+  const bom = () => bomTable(design, Object.fromEntries(Object.entries(dr?.components ?? {}).map(([k, v]) => [k, v?.m])), region.density);
 
   const dialogPanel = (() => {
     if (!dialog) return null;
@@ -1414,10 +1547,97 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     if (dialog.kind === 'joint' && activeJoint) {
       return (
         <Dialog title={`Joint — ${activeJoint.name}`} error={dr?.errors[activeJoint.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <label className="check" title="Pick one origin: the other side's goes where it is now, so the parts stay where they are">
+            <input type="checkbox" checked={!!dialog.asBuilt} onChange={(e) => {
+              // a new joint holds nothing until its as-built origin is picked
+              if (dialog.isNew) patchJoint(activeJoint.id, { suppressed: e.target.checked || undefined });
+              setDialog({ ...dialog, asBuilt: e.target.checked || undefined, picking: e.target.checked ? 'b' : dialog.picking });
+            }} /> As built (nothing moves)
+          </label>
           <JointFields design={design} joint={activeJoint} picking={dialog.picking} onPick={(p) => setDialog({ ...dialog, picking: p })}
             onChange={(p, k) => patchJoint(activeJoint.id, p, k ? `${activeJoint.id}:${k}` : undefined)}
-            values={dr?.params[activeJoint.id] as { angle: number; offset: number } | undefined} />
+            values={placedValues(activeJoint.id)} unit={u} onDrive={(dof) => startDrive(activeJoint.id, dof)} />
+          {dr?.warnings?.[activeJoint.id] && <div className="region-warn">{dr.warnings[activeJoint.id]}</div>}
           {dialog.snap && <p className="hint">{dialog.snap}</p>}
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'drive') {
+      const j = design.joints.find((q) => q.id === dialog.joint), kj = kinJoint(dialog.joint);
+      if (!j || !kj) return null;
+      const field = dialog.dof;
+      const sol = av.solution;
+      const problems = sol ? [...Object.entries(sol.errors).map(([id, e]) => [id, e, 'region-error']), ...Object.entries(sol.warnings).map(([id, e]) => [id, e, 'region-warn'])] : [];
+      // the driven value, or (a solved DOF driven) the values of the joints that drive its loop
+      const patches = sol ? drivePatches(design, sol.values, (build?.kin ?? dr?.kin)?.values ?? {}, dialog, u, sceneSize) : { [j.id]: { [field]: dofExpr(field, dialog.value, u) } };
+      const solvedDrive = !!j.dofs?.[dialog.dof]?.free;
+      const written = (p: Partial<CadJoint>) => Object.entries(p).flatMap(([k, v]) => (k === 'dofs' ? Object.values(v as NonNullable<CadJoint['dofs']>).flatMap((d) => (d?.rest ? [`rest ${d.rest}`] : [])) : [String(v)])).join(', ');
+      const alsoSet = Object.entries(patches).filter(([id]) => solvedDrive || id !== j.id).map(([id, p]) => `${design.joints.find((q) => q.id === id)?.name ?? id}: ${written(p)}`);
+      return (
+        <Dialog title={`Drive — ${j.name}`} okLabel="Set as value" onOk={() => {
+          if (Object.keys(patches).length) setDesign({ ...cur(), joints: cur().joints.map((q) => (patches[q.id] ? { ...q, ...patches[q.id] } : q)) });
+          setDialog(null);
+        }} onCancel={() => setDialog(null)}>
+          {drivenDofs(design, j).length > 1 && (
+            <Pick label="DOF" value={dialog.dof} options={drivenDofs(design, j).map((k) => [k, `${dofLabel(j.type, k)}${j.dofs?.[k]?.free ? ' (solved)' : ''}`] as [DofKey, string])}
+              onChange={(dof) => setDialog({ ...dialog, dof, value: placedValues(j.id)?.[dof] ?? 0 })} />
+          )}
+          <DrivePanel joint={j} dof={dialog.dof} value={dialog.value} unit={u} size={sceneSize} values={{ min: kj.min[dialog.dof], max: kj.max[dialog.dof], rest: kj.rest[dialog.dof] }}
+            onValue={(value) => setDialog((d) => (d?.kind === 'drive' ? { ...d, value } : d))} />
+          {sol && <p className="hint">Placed at {dofText(dialog.dof, sol.values[j.id]?.[dialog.dof], u)}{design.joints.filter((q) => q.id !== j.id && JOINT_DOFS[q.type].some((k) => q.dofs?.[k]?.free)).map((q) => ` · ${q.name} ${JOINT_DOFS[q.type].filter((k) => q.dofs?.[k]?.free).map((k) => dofText(k, sol.values[q.id]?.[k], u)).join(', ')}`).join('')}</p>}
+          {alsoSet.length > 0 && <p className="hint">{solvedDrive ? `${j.name} stays solved: Set as value writes ` : 'Set as value also writes '}{alsoSet.join(' · ')}.</p>}
+          {problems.map(([id, e, cls]) => <div key={`${cls}:${id}`} className={cls}>{design.joints.find((q) => q.id === id)?.name ?? id}: {e}</div>)}
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'link' && linkOpen) {
+      return (
+        <Dialog title={`Motion link — ${linkOpen.name}`} error={dr?.errors[linkOpen.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <LinkFields design={design} link={linkOpen} onChange={(p, k) => patchLink(linkOpen.id, p, k ? `${linkOpen.id}:${k}` : undefined)} />
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'group') {
+      return (
+        <Dialog title="Rigid group" okLabel="Group" onOk={() => makeGroup(dialog.occs)} onCancel={() => setDialog(null)}>
+          <p className="hint">The occurrences ticked are locked together where they are now: what moves one moves them all.</p>
+          <Checks label="Occurrences" items={design.occurrences.map((o) => [o.id, occLabel(o)])} value={dialog.occs} onChange={(v) => setDialog({ ...dialog, occs: v ?? [] })} empty="No occurrences" />
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'motion' && motionStudy) {
+      const m = motionStudy, r = dr?.motions?.[m.id];
+      const canvasOf = () => viewRef.current?.querySelector('canvas') ?? null;
+      const name = `${fileBase}-${m.name}`.replace(/[^\w.-]+/g, '_');
+      const exporting = async (what: string, run: (cv: HTMLCanvasElement) => Promise<void>) => {
+        const cv = canvasOf();
+        if (!cv) return setMsg('The 3-D view is not there to record');
+        player.setPlaying(false);
+        setDialog((d) => (d?.kind === 'motion' ? { ...d, busy: what } : d));
+        try {
+          await run(cv);
+        } catch (e) {
+          setMsg(`${what} failed: ${(e as Error).message}`);
+        } finally {
+          setDialog((d) => (d?.kind === 'motion' ? { ...d, busy: undefined } : d));
+        }
+      };
+      return (
+        <Dialog title={`Motion study — ${m.name}`} okLabel="Done" error={dr?.errors[m.id] ?? r?.error} onOk={() => { player.setPlaying(false); closeDialog(true); }} onCancel={() => { player.setPlaying(false); closeDialog(false); }}>
+          <MotionTransport player={player} duration={m.duration} steps={m.steps ?? 36} />
+          {av.solution && Object.keys(av.solution.warnings).length > 0 && <div className="region-warn">{Object.entries(av.solution.warnings).map(([id, w]) => `${design.joints.find((q) => q.id === id)?.name ?? id}: ${w}`)[0]}</div>}
+          {av.hits.size > 0 && <div className="region-error">Overlapping now: {[...av.hits].map((id) => { const o = occOf(id); return o ? occLabel(o) : id; }).join(' and ')}</div>}
+          {r && <ClearanceChart result={r} t={player.t} duration={m.duration} unit={u} />}
+          {r?.clearanceError && <div className="region-warn">{r.clearanceError}</div>}
+          {r?.warning && <div className="region-warn">{r.warning}</div>}
+          <MotionFields design={design} study={m} unit={u} onChange={(p, k) => patchMotion(m.id, p, k ? `${m.id}:${k}` : undefined)} />
+          <div className="cadd-actions">
+            <button className="btn" disabled={!r} title="The sampled frames, tab-separated: paste them into the worksheet for a table" onClick={() => r && void navigator.clipboard?.writeText(motionTsv(design, r, u)).then(() => setMsg('Copied: paste it into the worksheet for a table'), () => setMsg('The clipboard is not available here'))}>Copy table</button>
+            <button className="btn" disabled={!!dialog.busy} title="Every sampled frame as a PNG, in a zip" onClick={() => void exporting('PNG frames', (cv) => exportPngFrames(cv, sampleTimes(m), player.setT, name, (n) => setDialog((d) => (d?.kind === 'motion' ? { ...d, busy: `PNG ${n} / ${(m.steps ?? 36) + 1}` } : d))))}><Images size={13} /> PNG frames</button>
+            {canRecord() && <button className="btn" disabled={!!dialog.busy} title="Play the study once and record it as WebM video" onClick={() => void exporting('Recording', (cv) => recordWebm(cv, m.duration, player.setT, name))}><Film size={13} /> WebM</button>}
+          </div>
+          {dialog.busy && <p className="hint">{dialog.busy}…</p>}
+          <p className="hint">The worksheet reads <code>{region.name || 'part'}.{m.name}</code>: <code>.t</code>, <code>.table</code>, each joint per frame{m.clearance ? <>, <code>.c</code>, <code>.c_min</code>, <code>.V_int</code></> : ''}, and <code>.of.Joint(x)</code> solved at a value x of the first track.</p>
         </Dialog>
       );
     }
@@ -1570,6 +1790,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           <p className="hint">{by === 'joint' ? 'Placed by a joint.' : by === 'ground' ? 'Fixed where the values below put it.' : 'Free: placed by the values below.'}</p>
           <div className="row3">{vec(o.pos, 0, `X (${u})`, 'pos')}{vec(o.pos, 1, `Y (${u})`, 'pos')}{vec(o.pos, 2, `Z (${u})`, 'pos')}</div>
           <div className="row3">{vec(o.rot, 0, 'Rx (°)', 'rot')}{vec(o.rot, 1, 'Ry (°)', 'rot')}{vec(o.rot, 2, 'Rz (°)', 'rot')}</div>
+          <ExplodeFields value={o.explode} onChange={(explode) => patchOcc(o.id, { explode })} />
           {dr?.errors[o.id] && <div className="region-error">{dr.errors[o.id]}</div>}
           <div className="cadd-actions">
             <button className="btn" onClick={() => patchOcc(o.id, { hidden: o.hidden ? undefined : true })}>{o.hidden ? 'Show' : 'Hide'}</button>
@@ -1587,20 +1808,83 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (!j) return null;
       return (
         <div className="props">
-          <h3 className="sub">Joint · {j.type}</h3>
+          <h3 className="sub">Joint · {JOINT_LABEL[j.type]}</h3>
           <label className="field"><span>Name</span><LazyInput label="Joint name" mono={false} value={j.name} onCommit={(v) => v.trim() && patchJoint(j.id, { name: v.trim() })} /></label>
           {dr?.errors[j.id] && <div className="region-error">{dr.errors[j.id]}</div>}
           {dr?.warnings?.[j.id] && <div className="region-warn">{dr.warnings[j.id]}</div>}
-          <div className="row2">
-            <Expr label="Angle" value={j.angle} onChange={(angle) => patchJoint(j.id, { angle })} />
-            <Expr label="Offset" value={j.offset} onChange={(offset) => patchJoint(j.id, { offset })} />
-          </div>
+          <JointDofFields joint={j} values={placedValues(j.id)} unit={u} onChange={(p, k) => patchJoint(j.id, p, k ? `${j.id}:${k}` : undefined)} onDrive={(dof) => startDrive(j.id, dof)} />
+          {!!dr?.kin?.mobility && <p className="hint">The loops leave {dr.kin.mobility} DOF undetermined: the solved DOFs stay nearest where they started. Drive one more DOF to fix it.</p>}
           <p className="hint">In the worksheet: <code>{region.name || 'part'}.{j.name}</code> {j.type === 'rigid' ? '(rigid joints export nothing)' : ''}</p>
           <div className="cadd-actions">
             <button className="btn primary" onClick={() => { seal(); openDialog({ kind: 'joint', id: j.id, mark: mark(), isNew: false, picking: null }); }}>Edit joint</button>
+            {drivenDofs(design, j).length > 0 && <button className="btn" onClick={() => startDrive(j.id)}><SlidersHorizontal size={13} /> Drive</button>}
             <button className="btn" onClick={() => patchJoint(j.id, { suppressed: j.suppressed ? undefined : true })}>{j.suppressed ? 'Unsuppress' : 'Suppress'}</button>
             <button className="btn danger" onClick={() => { setDesign({ ...cur(), joints: cur().joints.filter((q) => q.id !== j.id) }); setSel(null); }}><Trash2 size={13} /> Delete</button>
           </div>
+        </div>
+      );
+    }
+    if (sel?.startsWith('link:') && linkOpen) {
+      const l = linkOpen;
+      return (
+        <div className="props">
+          <h3 className="sub">Motion link</h3>
+          <label className="field"><span>Name</span><LazyInput label="Link name" mono={false} value={l.name} onCommit={(v) => v.trim() && patchLink(l.id, { name: v.trim() })} /></label>
+          {dr?.errors[l.id] && <div className="region-error">{dr.errors[l.id]}</div>}
+          <LinkFields design={design} link={l} onChange={(p, k) => patchLink(l.id, p, k ? `${l.id}:${k}` : undefined)} />
+          <div className="cadd-actions">
+            <button className="btn" onClick={() => patchLink(l.id, { suppressed: l.suppressed ? undefined : true })}>{l.suppressed ? 'Unsuppress' : 'Suppress'}</button>
+            <button className="btn danger" onClick={() => { setDesign({ ...cur(), links: (cur().links ?? []).filter((q) => q.id !== l.id) }); setSel(null); }}><Trash2 size={13} /> Delete</button>
+          </div>
+        </div>
+      );
+    }
+    if (sel?.startsWith('group:')) {
+      const g = design.groups?.find((q) => q.id === sel.slice(6));
+      if (!g) return null;
+      return (
+        <div className="props">
+          <h3 className="sub">Rigid group</h3>
+          <label className="field"><span>Name</span><LazyInput label="Group name" mono={false} value={g.name} onCommit={(v) => v.trim() && patchGroup(g.id, { name: v.trim() })} /></label>
+          {dr?.errors[g.id] && <div className="region-error">{dr.errors[g.id]}</div>}
+          <p className="hint">Locked where they were when grouped: {g.occs.map((id) => { const o = occOf(id); return o ? occLabel(o) : '(gone)'; }).join(', ')}.</p>
+          <div className="cadd-actions">
+            <button className="btn" onClick={() => patchGroup(g.id, { suppressed: g.suppressed ? undefined : true })}>{g.suppressed ? 'Unsuppress' : 'Suppress'}</button>
+            <button className="btn danger" onClick={() => { setDesign({ ...cur(), groups: (cur().groups ?? []).filter((q) => q.id !== g.id) }); setSel(null); }}><Trash2 size={13} /> Ungroup</button>
+          </div>
+        </div>
+      );
+    }
+    if (sel?.startsWith('motion:')) {
+      const m = design.motions?.find((q) => q.id === sel.slice(7));
+      if (!m) return null;
+      const r = dr?.motions?.[m.id];
+      return (
+        <div className="props">
+          <h3 className="sub">Motion study</h3>
+          <label className="field"><span>Name</span><LazyInput label="Study name" mono={false} value={m.name} onCommit={(v) => v.trim() && patchMotion(m.id, { name: v.trim() })} /></label>
+          <p className="hint">{fmtNum(m.duration)} s, {m.tracks.length} track{m.tracks.length === 1 ? '' : 's'}, sampled at {(m.steps ?? 36) + 1} frames{m.clearance ? ', clearance tracked' : ''}.</p>
+          {dr?.errors[m.id] && <div className="region-error">{dr.errors[m.id]}</div>}
+          {r?.error && <div className="region-error">{r.error}</div>}
+          {r?.warning && <div className="region-warn">{r.warning}</div>}
+          {r?.clearanceError && <div className="region-warn">{r.clearanceError}</div>}
+          {r && <ClearanceChart result={r} t={0} duration={m.duration} unit={u} />}
+          <p className="hint">In the worksheet: <code>{region.name || 'part'}.{m.name}.t</code>, <code>.table</code>, a joint’s values per frame <code>.{design.joints.find((q) => JOINT_DOFS[q.type].length)?.name ?? 'Joint1'}</code>{m.clearance ? <>, <code>.c</code>, <code>.c_min</code>, <code>.V_int</code></> : ''} and <code>.of.Joint(x)</code> against the first track.</p>
+          <div className="cadd-actions">
+            <button className="btn primary" onClick={() => { seal(); openDialog({ kind: 'motion', id: m.id, mark: mark(), isNew: false }); }}><Play size={13} /> Open</button>
+            <button className="btn danger" onClick={() => { setDesign({ ...cur(), motions: (cur().motions ?? []).filter((q) => q.id !== m.id) }); setSel(null); }}><Trash2 size={13} /> Delete</button>
+          </div>
+        </div>
+      );
+    }
+    if (sel === 'bom') {
+      const table = bom();
+      return (
+        <div className="props">
+          <h3 className="sub">Bill of materials</h3>
+          <BomPanel table={table}
+            onCopy={() => void navigator.clipboard?.writeText(bomTsv(table)).then(() => setMsg('Copied: paste it into the worksheet for a table'), () => setMsg('The clipboard is not available here'))}
+            onCsv={() => void exportFile(`${fileBase}-bom.csv`, bomCsv(table), 'text/csv')} />
         </div>
       );
     }
@@ -1628,7 +1912,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           <>
             <h3 className="sub">Problems</h3>
             {[...Object.entries(dr!.errors).map(([id, e]) => [id, e, 'region-error']), ...Object.entries(dr!.warnings ?? {}).map(([id, e]) => [id, e, 'region-warn'])].map(([id, e, cls]) => {
-              const name = design.components.flatMap((c) => c.items).find((i) => i.id === id)?.name ?? design.joints.find((j) => j.id === id)?.name ?? design.components.find((c) => c.id === id)?.name ?? id;
+              const name = design.components.flatMap((c) => c.items).find((i) => i.id === id)?.name ?? design.joints.find((j) => j.id === id)?.name ?? design.components.find((c) => c.id === id)?.name
+                ?? [...(design.links ?? []), ...(design.groups ?? []), ...(design.motions ?? [])].find((x) => x.id === id)?.name ?? (occOf(id) ? occLabel(occOf(id)!) : id);
               return <div key={`${cls}:${id}`} className={cls}>{name}: {e}</div>;
             })}
           </>
@@ -1811,14 +2096,24 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <RibbonButton icon={<Box size={20} />} label="Insert copy" title="Another occurrence of the active component" onClick={() => insertOccurrence()} />
             </Group>
             <Group label="Position">
-              <RibbonButton icon={<Link2 size={20} />} label="Joint" title="Join two occurrences: rigid, revolute, slider, cylindrical (J)" onClick={startJoint} />
+              <RibbonButton icon={<Link2 size={20} />} label="Joint" title="Join two occurrences: rigid, revolute, slider, cylindrical, pin-slot, planar, ball (J)" onClick={() => startJoint()} />
+              <RibbonButton icon={<Link size={20} />} label="As-built" title="A joint where the parts are now: pick one origin, nothing moves" onClick={startAsBuilt} />
               <RibbonButton icon={<Anchor size={20} />} label="Ground" title="Fix the selected occurrence in place" disabled={!selOcc}
                 onClick={() => { const o = selOcc && occOf(selOcc); if (o) patchOcc(o.id, { grounded: o.grounded ? undefined : true }); }} />
               <RibbonButton icon={<Move3d size={20} />} label="Move" title="Position the selected occurrence" disabled={!selOcc} onClick={() => selOcc && setSel(`occ:${selOcc}`)} />
             </Group>
+            <Group label="Motion">
+              <RibbonButton icon={<SlidersHorizontal size={20} />} label="Drive" title="Move a joint by hand with a slider (the selected one): the others follow; the document changes only on Set" on={dialog?.kind === 'drive'}
+                onClick={() => startDrive(sel?.startsWith('joint:') ? sel.slice(6) : undefined)} />
+              <RibbonButton icon={<Cog size={20} />} label="Motion link" title="One joint follows another: gears, rack and pinion" on={dialog?.kind === 'link'} onClick={startLink} />
+              <RibbonButton icon={<GroupIcon size={20} />} label="Rigid group" title="Lock occurrences together where they are" on={dialog?.kind === 'group'} onClick={() => (design.occurrences.length < 2 ? setMsg('A rigid group locks two occurrences or more together') : openDialog({ kind: 'group', occs: selOcc ? [selOcc] : [] }))} />
+              <RibbonButton icon={<Clapperboard size={20} />} label="Motion study" title="Keyframes of joints over time: play, clearance per frame, results to the worksheet, video" on={dialog?.kind === 'motion'} onClick={startMotion} />
+            </Group>
             <Group label="Check">
               <RibbonButton icon={<ScanSearch size={20} />} label="Interference" title="Find overlapping occurrences" onClick={runInterference} />
               <RibbonButton icon={<Layers size={20} />} label="Isolate" title="Dim everything outside the active component" on={isolate} onClick={() => setIsolate(!isolate)} />
+              <RibbonButton icon={<Expand size={20} />} label="Explode" title="Exploded view: each occurrence out by its offset (Auto: along the joints)" on={explode !== null} onClick={() => setExplode(explode === null ? 1 : null)} />
+              <RibbonButton icon={<ClipboardList size={20} />} label="BOM" title="Bill of materials: components, quantities, materials, masses" on={sel === 'bom'} onClick={() => { setDialog(null); setSel(sel === 'bom' ? null : 'bom'); }} />
             </Group>
           </>
         )}
@@ -1896,9 +2191,25 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               </Node>
               <Node k="joints" icon={<Link2 size={14} />} label={`Joints (${design.joints.length})`}>
                 {design.joints.map((j) => (
-                  <Node key={j.id} k={`j:${j.id}`} icon={<Link2 size={12} />} label={`${j.name} · ${j.type}`} on={sel === `joint:${j.id}`} onClick={() => setSel(`joint:${j.id}`)} bad={!!dr?.errors[j.id]} warn={dr?.warnings?.[j.id]} />
+                  <Node key={j.id} k={`j:${j.id}`} icon={<Link2 size={12} />} label={`${j.name} · ${JOINT_LABEL[j.type].toLowerCase()}`} on={sel === `joint:${j.id}`} onClick={() => setSel(`joint:${j.id}`)} bad={!!dr?.errors[j.id]} warn={dr?.warnings?.[j.id]} />
                 ))}
               </Node>
+              {!!design.links?.length && (
+                <Node k="links" icon={<Cog size={14} />} label={`Motion links (${design.links.length})`}>
+                  {design.links.map((l) => <Node key={l.id} k={`l:${l.id}`} icon={<Cog size={12} />} label={l.name} on={sel === `link:${l.id}`} onClick={() => setSel(`link:${l.id}`)} bad={!!dr?.errors[l.id]} />)}
+                </Node>
+              )}
+              {!!design.groups?.length && (
+                <Node k="groups" icon={<GroupIcon size={14} />} label={`Rigid groups (${design.groups.length})`}>
+                  {design.groups.map((g) => <Node key={g.id} k={`g:${g.id}`} icon={<GroupIcon size={12} />} label={`${g.name} · ${g.occs.length}`} on={sel === `group:${g.id}`} onClick={() => setSel(`group:${g.id}`)} bad={!!dr?.errors[g.id]} warn={dr?.warnings?.[g.id]} />)}
+                </Node>
+              )}
+              {!!design.motions?.length && (
+                <Node k="motions" icon={<Clapperboard size={14} />} label={`Motion studies (${design.motions.length})`}>
+                  {design.motions.map((m) => <Node key={m.id} k={`m:${m.id}`} icon={<Clapperboard size={12} />} label={m.name} on={sel === `motion:${m.id}`} onClick={() => setSel(`motion:${m.id}`)} bad={!!dr?.errors[m.id] || !!dr?.motions?.[m.id]?.error} warn={dr?.motions?.[m.id]?.warning} />)}
+                </Node>
+              )}
+              {design.occurrences.length > 1 && <Node k="bom" icon={<ClipboardList size={14} />} label="Bill of materials" on={sel === 'bom'} onClick={() => setSel('bom')} />}
             </ul>
             {dr?.total && (
               <div className="cadw-summary">
@@ -1915,7 +2226,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               onStatus={setStatus} onUndo={onUndo} onRedo={onRedo} reference={reference} />
           ) : (
             <Scene3D
-              width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d}
+              width={size.w} height={size.h} meshes={scene.meshes} lines={scene.lines} planes={scene.planes} view={view3d} onView={setView3d} bounds={still.current?.b}
               navigation="full" display={display} onPick={(h, e) => onPick(h, e.shiftKey)} pickEdges={facePicking && dialog?.kind !== 'sketch' && modPick !== 'faces' && buildPick !== 'faces'}
               onHover={onHover}
               message={shown.state === 'loading' && !scene.meshes.length ? 'Loading the 3-D kernel…' : shown.state === 'none' && shown.notice && !scene.meshes.length ? shown.notice : !scene.meshes.length && !scene.lines.length && !scene.planes.length ? 'Solid → Sketch: pick a plane, draw a profile, then Extrude' : undefined}
@@ -1934,6 +2245,16 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
               <span className="cadw-inspect-val">{fmtLen(secRange[0] + (secRange[1] - secRange[0]) * section.at)} {region.unit}</span>
               <button className="btn" onClick={() => setSection({ ...section, flip: !section.flip })} title="Keep the other half">Flip</button>
               <button className="icon-btn" onClick={() => setSection(null)} aria-label="Close section"><X size={14} /></button>
+            </div>
+          )}
+          {!inSketch && explode !== null && (
+            <div className={`cadw-inspect cadj-explode${section ? ' below' : ''}`} onPointerDown={(e) => e.stopPropagation()}>
+              <b>Explode</b>
+              <input type="range" min={0} max={1} step={0.01} value={explode} aria-label="How far exploded" onChange={(e) => setExplode(Number(e.target.value))} />
+              <span className="cadw-inspect-val">{Math.round(explode * 100)} %</span>
+              <button className="btn" onClick={runAutoExplode} title="Offsets for every occurrence a joint places: along the joint's axis, away from what it hangs on">Auto</button>
+              <label className="check" title="Lines from where the parts are assembled"><input type="checkbox" checked={trails} onChange={(e) => setTrails(e.target.checked)} /> Trails</label>
+              <button className="icon-btn" onClick={() => setExplode(null)} aria-label="Close the exploded view"><X size={14} /></button>
             </div>
           )}
           {inSketch && projecting && (

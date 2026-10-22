@@ -13,6 +13,7 @@ import { newId } from '../../model/types';
 import type { CadResult } from '../../cad/evaluate';
 import type { Action } from '../store';
 import { designOf, type CadDesign } from '../../cad/design';
+import { explodedMatrices } from '../../cad/explode';
 import { designNumbers } from '../../cad/keys';
 import { scaleText } from '../../cad/drawing';
 import type { DrawView } from '../../cad/drawing2d';
@@ -139,7 +140,9 @@ function Overlay({ sheet, owner, className }: { sheet: Sheet; owner: string; cla
 function useDrawing(region: DrawingRegion, cad: CadRegion | undefined, cadResult: CadResult | undefined): { views: Record<string, DrawView> | null; busy: boolean; failed?: string; key?: string } {
   const [state, setState] = useState<{ views: Record<string, DrawView> | null; busy: boolean; failed?: string; key?: string }>({ views: null, busy: true });
   const dr = cadResult?.design;
-  const requests = useMemo(() => drawingRequests(region), [region]);
+  // an exploded drawing: every view of the assembly with the occurrences out by their offsets
+  const exploded = useMemo(() => (region.exploded && cad && dr ? explodedMatrices(designOf(cad), dr) : undefined), [region.exploded, cad, dr]);
+  const requests = useMemo(() => drawingRequests(region).map((v) => (exploded ? { ...v, placements: exploded } : v)), [region, exploded]);
   const reqKey = JSON.stringify(requests);
   const key = dr?.display;
   useEffect(() => {
@@ -250,7 +253,14 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
   const design = useMemo(() => (cad ? designOf(cad) : EMPTY), [cad]);
   const shownBuild = useBuildResult(region.id, design, cadResult);
   // the mesh kernel's faces and edges have no names nor exact circles: annotations need OpenCascade's
-  const latest = useMemo<DrawnPart[] | null>(() => (shownBuild.build?.kernel === 'brep' ? annotationParts(shownBuild.build, cad ? design : undefined) : null), [shownBuild.build, design, cad]);
+  // an exploded drawing picks the parts where it draws them
+  const explodedAt = useMemo(() => (region.exploded && cadResult?.design ? explodedMatrices(design, cadResult.design) : null), [region.exploded, cadResult?.design, design]);
+  const latest = useMemo<DrawnPart[] | null>(() => {
+    const b = shownBuild.build;
+    if (b?.kernel !== 'brep') return null;
+    const placed = explodedAt ? { ...b, placements: Object.fromEntries(Object.entries(b.placements).map(([id, p]) => [id, explodedAt[id] ? { ...p, matrix: explodedAt[id] } : p])) } : b;
+    return annotationParts(placed, cad ? design : undefined);
+  }, [shownBuild.build, design, cad, explodedAt]);
   // the edges of the build the views on the sheet were drawn from: a new build usually comes
   // before its views (hidden lines take longer), and its edges on the old views disagree
   const byBuild = useRef(new Map<string, DrawnPart[]>());
