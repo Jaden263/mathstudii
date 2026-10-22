@@ -4,6 +4,7 @@ import type { Region, ReportSettings, Worksheet as WS, WorksheetFormat } from '.
 import { GRID, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH } from '../model/types';
 import { AREA_BAR, hiddenIds, isArea, withContents } from '../model/areas';
 import { canEdit, isProtected, lockedIds, movableIds } from '../model/protect';
+import { fillFields, hasBand } from '../model/pageBand';
 import { AreaBar, areaWidth, useAreaFit, usePrintLayout } from './AreaBar';
 import type { RegionResult } from '../engine/evaluator';
 import { moveResult, type Action } from './store';
@@ -75,22 +76,48 @@ function PageFrame({ index, count, report, title }: { index: number; count: numb
   const date = report.date?.trim() || new Date().toISOString().slice(0, 10);
   const people = [report.author && `Made: ${report.author}`, report.checker && `Checked: ${report.checker}`, `Date: ${date}`].filter(Boolean).join('   ·   ');
   const doc = [report.docNo && `Doc. ${report.docNo}`, report.revision && `Rev. ${report.revision}`].filter(Boolean).join('   ');
+  // the page's own lines (a Mathcad worksheet's header and footer), with their fields filled in
+  const fields = { page: index + 1, pages: count, date, title };
+  const own = (t?: string) => fillFields(t ?? '', fields);
   return (
     <>
       <div className="page-header" style={{ top: top + Math.round(5 * 3.7795), left: PAGE_MARGIN, right: PAGE_MARGIN }} aria-hidden>
-        <div className="ph-left">
-          {report.logo && <img src={report.logo} alt="" />}
-          <span>{report.company}</span>
-        </div>
-        <div className="ph-mid">
-          <b>{report.project}</b>
-          <span>{report.subject?.trim() || title}</span>
-        </div>
-        <div className="ph-right">{doc}</div>
+        {hasBand(report.header) ? (
+          <>
+            <div className="ph-left own">
+              {report.logo && <img src={report.logo} alt="" />}
+              <span>{own(report.header.left)}</span>
+            </div>
+            <div className="ph-mid own">{own(report.header.center)}</div>
+            <div className="ph-right own">{own(report.header.right)}</div>
+          </>
+        ) : (
+          <>
+            <div className="ph-left">
+              {report.logo && <img src={report.logo} alt="" />}
+              <span>{report.company}</span>
+            </div>
+            <div className="ph-mid">
+              <b>{report.project}</b>
+              <span>{report.subject?.trim() || title}</span>
+            </div>
+            <div className="ph-right">{doc}</div>
+          </>
+        )}
       </div>
       <div className="page-footer" style={{ top: top + PAGE_HEIGHT - Math.round(11 * 3.7795), left: PAGE_MARGIN, right: PAGE_MARGIN }} aria-hidden>
-        <span>{people}</span>
-        <span>Page {index + 1} of {count}</span>
+        {hasBand(report.footer) ? (
+          <>
+            <span className="pf-left own">{own(report.footer.left)}</span>
+            <span className="pf-mid own">{own(report.footer.center)}</span>
+            <span className="pf-right own">{own(report.footer.right)}</span>
+          </>
+        ) : (
+          <>
+            <span>{people}</span>
+            <span>Page {index + 1} of {count}</span>
+          </>
+        )}
       </div>
     </>
   );

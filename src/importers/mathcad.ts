@@ -7,13 +7,14 @@
 import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
-  createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH,
-  type AreaRegion, type Region, type PlotTrace, type TextRegion,
+  createRegion, emptyWorksheet, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH,
+  type AreaRegion, type PageBand, type Region, type PlotTrace, type TextRegion,
 } from '../model/types';
 import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
 import { isUnitName, math } from '../engine/math';
 import { cssColor, normalSize, toMarkdown, type RunStyle, type TextPara, type TextRun } from './textFormat';
+import { bandOf, mc15Fields, mc15Text, primeField, type BandPiece } from './mathcadPage';
 import type { NumberFormat, NumberStyle } from '../engine/format';
 
 export type { ImportResult } from './common';
@@ -938,14 +939,12 @@ function findFile(files: Record<string, Uint8Array>, path: string): Uint8Array |
   return byName ? files[byName] : undefined;
 }
 
-function readMcdx(data: Uint8Array): Package {
-  const files = unzipSync(data);
-  const ws = Object.keys(files).find((k) => k.toLowerCase() === 'mathcad/worksheet.xml');
-  if (!ws) throw new Error('This zip file is not a Mathcad Prime worksheet (no mathcad/worksheet.xml)');
+/** The relationships of a part of the package (mathcad/_rels/<part>.rels): id → zip path. */
+function readRels(files: Record<string, Uint8Array>, part: string): Record<string, string> {
   const rels: Record<string, string> = {};
-  const relsKey = Object.keys(files).find((k) => k.toLowerCase() === 'mathcad/_rels/worksheet.xml.rels');
+  const relsKey = Object.keys(files).find((k) => k.toLowerCase() === `mathcad/_rels/${part}.rels`);
   if (relsKey) {
-    const doc = new DOMParser().parseFromString(strFromU8(files[relsKey]), 'text/xml');
+    const doc = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(files[relsKey]).replace(/^\uFEFF/, ''), 'text/xml');
     const list = doc.getElementsByTagNameNS('*', 'Relationship');
     for (let i = 0; i < list.length; i++) {
       const id = list[i].getAttribute('Id');
@@ -954,7 +953,14 @@ function readMcdx(data: Uint8Array): Package {
       if (id) rels[id] = target.replace(/^\//, '');
     }
   }
-  return { worksheet: strFromU8(files[ws]), rels, files };
+  return rels;
+}
+
+function readMcdx(data: Uint8Array): Package {
+  const files = unzipSync(data);
+  const ws = Object.keys(files).find((k) => k.toLowerCase() === 'mathcad/worksheet.xml');
+  if (!ws) throw new Error('This zip file is not a Mathcad Prime worksheet (no mathcad/worksheet.xml)');
+  return { worksheet: strFromU8(files[ws]), rels: readRels(files, 'worksheet.xml'), files };
 }
 
 // ------------------------------------------------------------ saved results
@@ -1245,7 +1251,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   /** Text regions, written once the whole worksheet's normal text size is known. */
   const texts: { region: TextRegion; paras: TextPara[]; highlight?: string }[] = [];
   const textStyles = pkg ? new Map<string, Mc15TextStyle>() : mc15TextStyles(doc);
-  let pageBreaks = 0;
+  /** Where the worksheet has page breaks (expanded layout). */
+  const pageBreaks: number[] = [];
   const fail = (what: string, e: unknown, at: Placed) => {
     const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet` : (e as Error).message;
     warnings.push(`${what} at ${Math.round(at.y)} px: ${msg}`);
@@ -1357,7 +1364,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           y += SPEC_ROW;
         }
       } else if (kind === 'pageBreak') {
-        pageBreaks++;
+        pageBreaks.push(at.y);
       } else if (kind === 'reference') {
         // Mathcad 15 "Reference": the definitions of another worksheet, read when this one calculates
         const href = body.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '';
@@ -1374,7 +1381,13 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     }
   }
   if (solve) warnings.push('A "Given" block has no Find/Minerr call; its constraints were dropped');
-  void pageBreaks; // page breaks follow from our own page layout
+  startPages(regions, areas, pageBreaks);
+
+  // the page header and footer: the page's own lines (Report tab), with their fields
+  const page = pkg ? primePage(pkg, pageWidth || 816, binary, warnings) : mc15Page(pageModel, binary);
+  if (page.header || page.footer) {
+    ws.settings.report = { enabled: true, ...(page.header ? { header: page.header } : {}), ...(page.footer ? { footer: page.footer } : {}), ...(page.logo ? { logo: page.logo } : {}) };
+  }
 
   // text: the size most of it has is the normal size here; a serif worksheet keeps its serif
   const normal = normalSize(texts.map((t) => t.paras));
@@ -1402,6 +1415,30 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     if (areas[i].collapsed) out = collapseArea(out, bars[i].id);
   }
   return { ws: out, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved };
+}
+
+/**
+ * A page break starts a new page: what follows it, if it would begin on the break's page here,
+ * moves down to the top of our next page (with everything below it). An area the break lies in
+ * grows by as much.
+ */
+function startPages(regions: Region[], areas: { y: number; height: number }[], breaks: number[]): void {
+  let moved = 0;
+  for (const at of [...breaks].sort((a, b) => a - b)) {
+    const b = at + moved;
+    const below = regions.filter((r) => r.y > b);
+    if (!below.length) break;
+    const first = Math.min(...below.map((r) => r.y));
+    const page = Math.floor(b / PAGE_HEIGHT);
+    if (first >= (page + 1) * PAGE_HEIGHT) continue;
+    const by = (page + 1) * PAGE_HEIGHT + PAGE_MARGIN - first;
+    for (const r of below) r.y += by;
+    for (const a of areas) {
+      if (a.y > b) a.y += by;
+      else if (a.y + a.height > b) a.height += by;
+    }
+    moved += by;
+  }
 }
 
 /** A Mathcad 15 shown result: the <result> inside the region's <ml:eval>. */
@@ -1450,6 +1487,79 @@ function picture(el: El, pkg: Package | null, binary: Record<string, { data: str
   const inline = kids(el).find((c) => /^(png|jpeg|jpg|gif|bmp)$/i.test(local(c)));
   if (inline) return `data:${sniffMime(new Uint8Array(0), 'x.' + local(inline))};base64,${(inline.textContent ?? '').replace(/\s+/g, '')}`;
   return null;
+}
+
+/** A Prime FlowDocument's plain text: its paragraphs as lines. */
+function xamlPlain(root: El | null | undefined): string {
+  return root ? textFromXaml(root).map((p) => p.runs.map((r) => r.text).join('')).join('\n') : '';
+}
+
+/** Mathcad 15's header and footer (<pageModel>): three RTF texts each, and an {image} as the logo. */
+function mc15Page(pageModel: El | undefined, binary: Record<string, { data: string; enc: string }>): { header?: PageBand; footer?: PageBand; logo?: string } {
+  const out: { header?: PageBand; footer?: PageBand; logo?: string } = {};
+  for (const part of ['header', 'footer'] as const) {
+    const el = pageModel ? child(pageModel, part) : undefined;
+    if (!el) continue;
+    const band: PageBand = {};
+    for (const slot of ['left', 'center', 'right'] as const) {
+      const s = child(el, slot);
+      if (!s) continue;
+      const rtf = Array.from({ length: s.childNodes.length }, (_, i) => s.childNodes[i]).filter((n) => n.nodeType === 3 || n.nodeType === 4).map((n) => n.nodeValue ?? '').join('');
+      const text = mc15Fields(mc15Text(rtf));
+      if (text) band[slot] = text;
+      const img = child(s, 'image')?.getAttribute('item-idref');
+      if (img && !out.logo) out.logo = binaryImage(binary[img]) ?? undefined;
+    }
+    if (band.left || band.center || band.right) out[part] = band;
+  }
+  return out;
+}
+
+/** Prime's header and footer (mathcad/header.xml, footer.xml): their text regions and fields by where they sit. */
+function primePage(pkg: Package, pageWidth: number, binary: Record<string, { data: string; enc: string }>, warnings: string[]): { header?: PageBand; footer?: PageBand; logo?: string } {
+  const out: { header?: PageBand; footer?: PageBand; logo?: string } = {};
+  for (const part of ['header', 'footer'] as const) {
+    const bytes = findFile(pkg.files, `mathcad/${part}.xml`);
+    if (!bytes) continue;
+    const root = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(bytes).replace(/^\uFEFF/, ''), 'text/xml').documentElement;
+    const regions = root ? child(root, 'regions') : undefined;
+    if (!regions) continue;
+    const rels = readRels(pkg.files, `${part}.xml`);
+    const pieces: BandPiece[] = [];
+    for (const r of kids(regions).filter((c) => local(c) === 'region')) {
+      const body = kids(r)[0];
+      if (!body) continue;
+      const kind = local(body);
+      let text = '';
+      let align: string | undefined;
+      if (kind === 'text') {
+        const idref = body.getAttribute('item-idref');
+        const flow = child(body, 'FlowDocument');
+        align = flow?.getAttribute('TextAlignment') ?? undefined;
+        const xaml = idref && rels[idref] ? findFile(pkg.files, rels[idref]) : undefined;
+        if (xaml) {
+          const inner = unzipSync(xaml);
+          const docKey = Object.keys(inner).find((k) => /document\.xaml$/i.test(k));
+          if (docKey) text = xamlPlain(new DOMParser({ onError: () => {} }).parseFromString(strFromU8(inner[docKey]), 'text/xml').documentElement as unknown as El);
+        } else text = xamlPlain(flow);
+      } else if (kind === 'fieldText') {
+        const field = kids(body).find((c) => local(c) !== 'text');
+        align = child(body, 'text') && kids(child(body, 'text')!)[0]?.getAttribute('TextAlignment') || undefined;
+        text = field ? primeField(local(field), field.getAttribute('template')) : xamlPlain(kids(child(body, 'text') ?? body)[0]);
+        if (field && !text) warnings.push(`The page ${part} has a ${local(field)} field, which is not imported`);
+      } else if (kind === 'picture') {
+        if (!out.logo) out.logo = picture(body, { ...pkg, rels }, binary) ?? undefined;
+        continue;
+      } else {
+        warnings.push(`The page ${part} has a ${kind === 'excelComponent' ? 'spreadsheet (Excel component)' : kind} region, which is not imported`);
+        continue;
+      }
+      pieces.push({ text, left: Number(r.getAttribute('left') ?? 0), top: Number(r.getAttribute('top') ?? 0), width: Number(r.getAttribute('width') ?? r.getAttribute('actualWidth') ?? 0), align });
+    }
+    const band = bandOf(pieces, pageWidth);
+    if (band) out[part] = band;
+  }
+  return out;
 }
 
 function plot(el: El, conv: Converter, at: { x: number; y: number }): Region {

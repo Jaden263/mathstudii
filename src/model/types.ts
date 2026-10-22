@@ -383,6 +383,19 @@ export interface ReportSettings {
   date?: string;
   /** Image as a data URL. */
   logo?: string;
+  /**
+   * The page's own header and footer lines (as a Mathcad worksheet has them), shown instead of the
+   * title block's: {page}, {pages}, {date} and {title} are filled in.
+   */
+  header?: PageBand;
+  footer?: PageBand;
+}
+
+/** Text at the left, centre and right of a page's header or footer; lines separated by \n. */
+export interface PageBand {
+  left?: string;
+  center?: string;
+  right?: string;
 }
 
 export interface WorksheetSettings {

@@ -4256,6 +4256,24 @@ kbd {
   text-align: right;
 }
 
+/* the page's own lines (imported from Mathcad): three columns, each keeping its line breaks */
+.page-header .own,
+.page-footer .own {
+  flex: 1;
+  white-space: pre-line;
+  min-width: 0;
+}
+
+.page-header .ph-mid.own,
+.page-footer .pf-mid.own {
+  text-align: center;
+}
+
+.page-header .ph-right.own,
+.page-footer .pf-right.own {
+  text-align: right;
+}
+
 .report-fields {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -4264,8 +4282,10 @@ kbd {
   font-size: 12px;
 }
 
-.report-fields input {
+.report-fields input,
+.report-fields textarea {
   min-width: 0;
+  resize: vertical;
   padding: 3px 6px;
   border: 1px solid var(--border);
   border-radius: 4px;

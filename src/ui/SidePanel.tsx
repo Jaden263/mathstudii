@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type Dispatch } from 'react';
+import { Fragment, useMemo, useRef, useState, type Dispatch } from 'react';
 import { Trash2, Plus, X } from 'lucide-react';
 import type { PlotRegion, PlotTrace, Region, RegionStyle, TraceStyle, TextRegion, ImageRegion, WorksheetFormat, ReportSettings } from '../model/types';
 import { PX_PER_MM } from '../model/types';
@@ -176,6 +176,23 @@ function ReportTab({ report, dispatch }: { report?: ReportSettings; dispatch: Di
             {field('checker', 'Checked by')}
             {field('date', 'Date', 'date of printing')}
           </div>
+          <div className="report-fields">
+            {(['header', 'footer'] as const).map((band) => (['left', 'center', 'right'] as const).map((at) => {
+              const label = `${band === 'header' ? 'Header' : 'Footer'} ${at === 'center' ? 'centre' : at}`;
+              return (
+                <Fragment key={`${band}-${at}`}>
+                  <span>{label}</span>
+                  <textarea
+                    rows={1}
+                    value={r[band]?.[at] ?? ''}
+                    placeholder={at === 'left' ? 'own text instead of the fields above' : ''}
+                    onChange={(e) => set({ [band]: { ...r[band], [at]: e.target.value } })}
+                    aria-label={label}
+                  />
+                </Fragment>
+              );
+            }))}
+          </div>
           <div className="fmt-row">
             <span>Logo</span>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -183,7 +200,7 @@ function ReportTab({ report, dispatch }: { report?: ReportSettings; dispatch: Di
               {r.logo && <button className="btn" onClick={() => set({ logo: undefined })}>Remove</button>}
             </div>
           </div>
-          <p className="hint">Page numbers count the pages that hold regions. Print (Ctrl+P) or “Save as PDF” in the print dialog for the report.</p>
+          <p className="hint">Header and footer lines of your own replace those made from the fields above; {'{page}'}, {'{pages}'}, {'{date}'} and {'{title}'} in them are filled in. Page numbers count the pages that hold regions. Print (Ctrl+P) or “Save as PDF” in the print dialog for the report.</p>
         </>
       )}
     </div>

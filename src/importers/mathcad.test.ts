@@ -4,7 +4,7 @@ import { importMathcad } from './mathcad';
 import { evaluateWorksheet, evaluateWithScope, type MathResult, type SolveResult } from '../engine/evaluator';
 import { compareSaved } from './saved';
 import { loadCas } from '../engine/symbolic';
-import type { AreaRegion, Region, Worksheet } from '../model/types';
+import { PAGE_HEIGHT, PAGE_MARGIN, type AreaRegion, type Region, type Worksheet } from '../model/types';
 import { expandArea } from '../model/areas';
 
 // ---------------------------------------------------------------- Mathcad Prime fixture
@@ -309,6 +309,19 @@ describe('Mathcad import: areas', () => {
     const opened = expandArea(ws, shut.id);
     const below = opened.regions.find((r) => r.id === show.id)!;
     expect(below.y).toBeGreaterThan(shut.y + shut.height - 1);
+  });
+  it('a page break starts a new page: what follows moves to the top of the next page', () => {
+    const { ws } = xmcdOf([
+      m15('1', 42, 40, define(id15('a'), real(2))),
+      '<region region-id="p" left="0" top="200" width="400" height="2"><pageBreak/></region>',
+      m15('2', 42, 220, define(id15('b'), real(3))),
+      m15('3', 42, 300, evalOf(id15('b'))),
+    ].join(''));
+    const at = (src: string) => ws.regions.find((r) => r.kind === 'math' && r.source === src)!.y;
+    expect(at('a := 2')).toBeLessThan(PAGE_HEIGHT);
+    expect(at('b := 3')).toBe(PAGE_HEIGHT + PAGE_MARGIN);
+    // what follows keeps its distance
+    expect(Math.abs(at('b =') - at('b := 3') - (300 - 220) * (96 / 72))).toBeLessThan(1);
   });
   it('Prime: regions relative to the area; IsCollapsed and IsLocked', () => {
     const { ws } = primeOf(
