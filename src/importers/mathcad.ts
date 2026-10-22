@@ -15,6 +15,9 @@ import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitNam
 import { isUnitName, math } from '../engine/math';
 import { cssColor, normalSize, toMarkdown, type RunStyle, type TextPara, type TextRun } from './textFormat';
 import { bandOf, mc15Fields, mc15Text, primeField, type BandPiece } from './mathcadPage';
+import { cfbStream } from './cfb';
+import { importWorkbook } from '../sheet/importBook';
+import type { SheetInput, SheetOutput, SpreadsheetData } from '../sheet/model';
 import type { NumberFormat, NumberStyle } from '../engine/format';
 
 export type { ImportResult } from './common';
@@ -1426,6 +1429,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         const file = href.split(/[\\/]/).pop() || 'another worksheet';
         warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: what that worksheet defines is not imported (import it too and copy the definitions here)`);
         regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported.*`, width: 300 }));
+      } else if (kind === 'excelComponent' && pkg) {
+        regions.push(excelComponent(body, pkg, conv, at, warnings));
       } else if (kind === 'component' && componentRead(body, at)) {
         // a File Read component: the function reading that file
       } else {
@@ -1560,6 +1565,45 @@ function savedOfEval(math: El): string | null {
   const ev = math.getElementsByTagNameNS('*', 'eval')[0];
   const res = ev ? kids(ev).find((c) => local(c) === 'result') : undefined;
   return res ? savedExpr(res) : null;
+}
+
+/**
+ * Prime's Excel component as a spreadsheet region: the workbook embedded in the package (the
+ * "Package" stream of its OLE part), excel["A1"] := … definitions as inputs written into cells
+ * and x := excel["B2"] as outputs read back.
+ */
+function excelComponent(el: El, pkg: Package, conv: Converter, at: { x: number; y: number }, warnings: string[]): Region {
+  const inputs: SheetInput[] = [], outputs: SheetOutput[] = [];
+  const cellRef = (e: El | undefined): string | null => {
+    if (!e || local(e) !== 'apply' || local(kids(e)[0] ?? e) !== 'indexer') return null;
+    const [, target, ref] = kids(e);
+    return target && ref && local(target) === 'id' && local(ref) === 'str' ? (ref.textContent ?? '').trim() : null;
+  };
+  let table: El | undefined;
+  for (const d of Array.from(el.getElementsByTagNameNS('*', 'define'))) {
+    const [lhs, rhs] = kids(d);
+    const into = cellRef(lhs), from = cellRef(rhs);
+    if (into && rhs) inputs.push({ expr: conv.expr(rhs).s, ref: into });
+    else if (from && lhs) outputs.push({ name: conv.target(lhs), ref: from });
+  }
+  for (const t of Array.from(el.getElementsByTagNameNS('*', 'excelTable'))) table = t;
+  const idref = table?.getAttribute('item-idref');
+  const ole = idref && pkg.rels[idref] ? findFile(pkg.files, pkg.rels[idref]) : undefined;
+  const book = ole ? cfbStream(ole, 'Package') : null;
+  const size = table ? child(table, 'OleViewportSize') : undefined;
+  const init: Partial<SpreadsheetData> = {
+    inputs, outputs,
+    width: Math.max(240, Math.round(Number(size?.getAttribute('width') ?? 0)) || 480),
+    height: Math.max(80, Math.round(Number(size?.getAttribute('height') ?? 0)) + 40 || 230),
+  };
+  if (book) {
+    try {
+      Object.assign(init, importWorkbook(book, 'the Excel component'));
+    } catch (e) {
+      warnings.push(`The Excel component at ${Math.round(at.y)} px: its workbook could not be read (${(e as Error).message}); the spreadsheet starts empty`);
+    }
+  } else warnings.push(`The Excel component at ${Math.round(at.y)} px: its workbook is not in the file (or not an .xlsx one); the spreadsheet starts empty`);
+  return createRegion('spreadsheet', at.x, at.y, init as Partial<Region>);
 }
 
 /** Embedded objects Mathcad 15 files hold, by their class id. */

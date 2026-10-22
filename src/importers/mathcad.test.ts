@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { zipSync, strToU8, gzipSync } from 'fflate';
 import { toBase64 } from './common';
+import { compoundFile } from './cfbFixture';
+import { writeXlsx } from '../sheet/xlsx';
 import { importMathcad, primeValue } from './mathcad';
 import { evaluateWorksheet, evaluateWithScope, type MathResult, type SolveResult } from '../engine/evaluator';
 import { compareSaved } from './saved';
@@ -499,5 +501,32 @@ describe('Mathcad 15 import: data files', () => {
     expect(res.warnings.join('\n')).toMatch(/File Read component for Pattern at \d+ px became Pattern := READCSV\("beam.csv"\): attach beam.csv in File ▸ Data files…/);
     const ws = { ...res.ws, settings: { ...res.ws.settings, dataFiles: { 'beam.csv': '4,5\n6,7\n' } } };
     expect(results(ws).by('Pattern =').tex).toMatch(/4[\s\S]*5[\s\S]*6[\s\S]*7/);
+  });
+});
+
+describe('Mathcad Prime import: Excel components', () => {
+  it('becomes a spreadsheet region with the embedded workbook, its inputs and its outputs', () => {
+    const book = writeXlsx({ sheets: [{ name: 'Calc', cells: { A1: { v: 2 }, B1: { v: 6, f: 'A1*3' } } }] });
+    const NS = 'xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"';
+    const cell = (ref: string) => ap('<ml:indexer/>', id('excel'), `<ml:str>${ref}</ml:str>`);
+    const ws = `<?xml version="1.0" encoding="utf-8"?><worksheet ${NS}><regions>
+      <region region-id="1" top="40" left="40"><math>${define(id('a'), real(5))}</math></region>
+      <region region-id="2" top="100" left="40"><excelComponent><regions>
+        <region region-id="3" top="10" left="10"><math>${define(cell('A1'), id('a'))}</math></region>
+        <region region-id="4" top="60" left="0"><excelTable item-idref="X1"><OleViewportSize width="400" height="60"/></excelTable></region>
+        <region region-id="5" top="130" left="10"><math>${define(id('b'), cell('B1'))}</math></region>
+      </regions></excelComponent></region>
+      <region region-id="6" top="300" left="40"><math>${evalOf(id('b'))}</math></region></regions></worksheet>`;
+    const rels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="X1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/excel" Target="/mathcad/excel/excel1.ole"/></Relationships>';
+    const res = importMathcad(zipSync({
+      'mathcad/worksheet.xml': strToU8(ws),
+      'mathcad/_rels/worksheet.xml.rels': strToU8(rels),
+      'mathcad/excel/excel1.ole': compoundFile('Package', book),
+    }), 'x.mcdx');
+    const sheet = res.ws.regions.find((r) => r.kind === 'spreadsheet') as Extract<Region, { kind: 'spreadsheet' }>;
+    expect(sheet.inputs).toEqual([{ expr: 'a', ref: 'A1' }]);
+    expect(sheet.outputs).toEqual([{ name: 'b', ref: 'B1' }]);
+    expect(sheet.sheets[0].name).toBe('Calc');
+    expect(results(res.ws).by('b =').tex).toMatch(/= 15$/);
   });
 });
