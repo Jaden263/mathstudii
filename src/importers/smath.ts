@@ -785,8 +785,12 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   }
   // where each name is last defined on the worksheet, to tell names defined further down
   const lastDefined = new Map<string, number>();
+  const disabled = (at: Placed) => {
+    const body = regionKinds(at.region)[0];
+    return body?.getAttribute('evaluate') === 'false' || at.region.getAttribute('evaluate') === 'false';
+  };
   inputs.forEach((toks, i) => {
-    for (const t of toks) for (const n of worksheetDefines(t)) lastDefined.set(n, i);
+    if (!disabled(placed[i])) for (const t of toks) for (const n of worksheetDefines(t)) lastDefined.set(n, i);
   });
   const lazyNotes: string[] = [];
   // functions only a plugin or SMath's computer has: say once which, and how many regions use them
@@ -872,7 +876,15 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           // them as symbols and calculates when the value is used, so it becomes a function of them
           const late: string[] = [];
           const name = isVar(t.args[0]) ? smName(t.args[0].text) : null;
-          if (name) {
+          // a number SMath showed for it: every name had a value there (or did not matter)
+          let numeric = false;
+          if (result && action !== 'symbolic') {
+            numeric = true;
+            for (const r of parseRpn(result)) walk(r, (n) => {
+              if (isVar(n)) numeric = false;
+            });
+          }
+          if (name && !numeric) {
             const bound = boundNames(rhs);
             const add = (n: string) => {
               if (!late.includes(n)) late.push(n);
@@ -922,7 +934,11 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             let hasUnit = false;
             walk(tok, (n) => { if (n.style === 'unit') hasUnit = true; });
             // rounded to the digits shown: half a unit in the last significant digit
-            const digits = (/\d[\d.]*/.exec(value)?.[0] ?? '').replace('.', '').replace(/^0+/, '').length || 1;
+            // (zeros ending a whole number, as 11330 shows 11333.3 to 4 significant digits, may be
+            // rounding: then the 4 digits SMath shows at the least)
+            const mantissa = /\d[\d.]*/.exec(value)?.[0] ?? '';
+            const sig = (m: string) => m.replace('.', '').replace(/^0+/, '').length || 1;
+            const digits = !mantissa.includes('.') && /[1-9]0+$/.test(mantissa) ? Math.max(4, sig(mantissa.replace(/0+$/, ''))) : sig(mantissa);
             const shownIn = unit.trim() === '%' ? '1/100' : contract ? conv.displayUnit(contract, true) : '';
             saved.push({ regionId: last.id, expr: shownIn && !hasUnit ? `(${value})*(${shownIn})` : value, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
           } catch {
@@ -930,15 +946,22 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           }
         }
         // worksheet-level names only: locals of a function's program stay local
-        if (isOp(t, ':')) {
+        if (disabled(at)) {
+          /* defines nothing */
+        } else if (isOp(t, ':')) {
           const n = targetName(t.args[0]);
           if (n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el'))) definedBefore.add(n);
         } else if (isProgram(t)) for (const n of assignments(t).all) definedBefore.add(n);
 
         // a comment attached to the formula
-        // the region's colours and size
+        // the region's colours and size; a region SMath does not calculate stays so
         const look = regionStyle(r);
-        for (let k = first; k < regions.length; k++) if (look && regions[k].kind === 'math') regions[k].style = look;
+        const off = disabled(at);
+        for (let k = first; k < regions.length; k++) {
+          if (regions[k].kind !== 'math') continue;
+          if (look) regions[k].style = look;
+          if (off) regions[k].disabled = true;
+        }
         // a comment attached to the formula
         const desc = pickLang(kids(body).filter((c) => local(c) === 'description' && c.getAttribute('active') !== 'false'));
         const note = desc ? richText(desc) : null;

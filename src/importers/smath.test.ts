@@ -420,3 +420,20 @@ describe('SMath import: functions and lists', () => {
     expect(warnings.some((w) => /lastError/.test(w))).toBe(true);
   });
 });
+
+describe('SMath import: what SMath does not calculate, and how it rounds', () => {
+  const one = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+  };
+  it('a region with evaluation off stays off, and defines nothing', () => {
+    const { ws } = one(math(def(v('a'), v('1'))), region(`<math evaluate="false"><input>${def(v('a'), v('5'))}</input></math>`), math(v('a'), { result: 'numeric' }));
+    expect(ws.regions[1].disabled).toBe(true);
+    expect(value(ws, 'a =')).toMatch(/= 1/);
+  });
+  it('11330 shown for 11333.3 (4 significant digits) agrees', () => {
+    const { ws, saved } = one(region(`<math><input>${def(v('A'), v('34000') + v('3') + op('/'))}</input><result action="numeric">${v('11330')}</result></math>`));
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+});
