@@ -392,6 +392,8 @@ class Converter {
   }
 
   args(t: Tok): string[] {
+    // max(a; b) written as a column of values in SMath: the values are its arguments
+    if (/^(max|min|Max|Min)$/.test(t.text) && t.args.length === 1 && isFn(t.args[0], 'line')) return listItems(t.args[0]).map((a) => this.value(this.expr(a)).s);
     return t.args.map((a) => this.value(this.expr(a)).s);
   }
 
@@ -510,7 +512,7 @@ class Converter {
 
   stmt(t: Tok, ind: string): string[] {
     const inner = ind + '  ';
-    if (isOp(t, ':')) return [`${ind}${this.target(t.args[0])} ← ${this.expr(t.args[1]).s}`];
+    if (isOp(t, ':')) return this.assign(this.target(t.args[0]), t.args[1], ind);
     if (t.type === 'operand' && (t.text === 'break' || t.text === 'continue')) return [`${ind}${t.text}`];
     if (t.type === 'function') {
       const a = t.args;
@@ -542,6 +544,23 @@ class Converter {
       }
     }
     return [`${ind}${this.expr(t).s}`];
+  }
+
+  /**
+   * x ← value in a program. A value that is itself a program (dd ← try(A, B), x ← line(…, v),
+   * x ← if(c, line(…), b)) becomes that program assigning its value to x in each branch.
+   */
+  assign(target: string, v: Tok, ind: string): string[] {
+    const inner = ind + '  ';
+    if (isFn(v, 'try') && v.args.length === 2) return [`${ind}try`, ...this.assign(target, v.args[0], inner), `${ind}on error`, ...this.assign(target, v.args[1], inner)];
+    if (isFn(v, 'line')) {
+      const items = listItems(v);
+      if (items.length) return [...items.slice(0, -1).flatMap((x) => this.stmt(x, ind)), ...this.assign(target, items[items.length - 1], ind)];
+    }
+    if (isFn(v, 'if') && v.args.length === 3 && isProgram(v)) {
+      return [`${ind}if ${this.expr(v.args[0]).s}`, ...this.assign(target, v.args[1], inner), `${ind}else`, ...this.assign(target, v.args[2], inner)];
+    }
+    return [`${ind}${target} ← ${this.expr(v).s}`];
   }
 
   /** for(init, condition, increment, body). The common counting loop becomes "for k ∈ a .. b". */

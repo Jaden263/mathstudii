@@ -634,6 +634,22 @@ describe('SMath import: programs that show their value', () => {
   });
 });
 
+describe('SMath import: values that are programs', () => {
+  it('x := try(A, B) inside a program assigns x in each branch; max of a column of values takes them as arguments', () => {
+    id = 0;
+    top = 0;
+    const line = (...xs: string[]) => xs.join('') + v(String(xs.length)) + v('1') + fn('line', xs.length + 2);
+    // f(a) := line(y := try(1/a, 0), y + 1)
+    const body = line(def(v('y'), v('1') + v('a') + op('/') + v('0') + fn('try', 2)), v('y') + v('1') + op('+'));
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('a') + fn('f', 1), body))}${region(`<math><input>${v('4') + fn('f', 1)}</input><result action="numeric">${v('1.25')}</result></math>`)}${
+      region(`<math><input>${line(v('2'), v('7'), v('3')) + fn('max', 1)}</input><result action="numeric">${v('7')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)[0]).toBe('f(a) :=\n  try\n    y ← 1/a\n  on error\n    y ← 0\n  y + 1');
+    expect(sources(ws)[2]).toBe('max(2, 7, 3) =');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+});
+
 describe('SMath import: page settings and what the report says', () => {
   it('a print layout with header and footer prints a header with the title and author', () => {
     const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><settings><metadata lang="eng"><title>Beam check</title><author>FCB</author></metadata>`
