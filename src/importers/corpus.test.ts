@@ -642,7 +642,8 @@ interface FileReport {
     unparseable: string[];
     checked: number;
     agree: number;
-    differ: { source: string; ours: string; theirs: string }[];
+    /** upstream: the failed definition this result reads through, when there is one. */
+    differ: { source: string; ours: string; theirs: string; upstream?: string }[];
     missing: { source: string; theirs: string; error: string; root: string; rootAt?: string }[];
     /** Values in the file the importer did not keep (by place); reason = a warning at that place. */
     lost: { kind: string; y: number; theirs: string; reason: string; unsure?: boolean }[];
@@ -943,6 +944,31 @@ function analyse(file: string): FileReport {
     e.rootAt = rootAt;
     delete e.id;
   }
+  // a result that differs may read a name whose (re)definition failed upstream: an older value is used
+  const upstream = (id: string): string | undefined => {
+    const seen = new Set([id]);
+    const queue = [id];
+    for (let steps = 0; queue.length && steps < 5000; steps++) {
+      const r = byId.get(queue.shift()!);
+      if (!r) continue;
+      for (const n of names(regionSource(r)).uses) {
+        for (const d of definers.get(n) ?? []) {
+          if (seen.has(d.id)) continue;
+          seen.add(d.id);
+          if (resultError(ev.results.get(d.id))) {
+            const root = rootCause(d.id, new Set([d.id]));
+            return `${short(root, 160)} ⇐ ${rootAt}`;
+          }
+          queue.push(d.id);
+        }
+      }
+    }
+    return undefined;
+  };
+  cmp.differ.forEach((d, i) => {
+    const u = upstream(d.regionId);
+    if (u) rep.saved.differ[i].upstream = short(u, 300);
+  });
 
   // calculation order: the program's rule on the matched math regions, against ours
   const calc = [...matchOf.entries()].filter(([s, r]) => category(s.kind) === 'math' && (r.kind === 'math' || r.kind === 'solve'));
@@ -1173,6 +1199,8 @@ async function runList(list: string[], tag: string, results: Map<string, FileRep
       const p = spawn(process.execPath, [cli, 'run', fileURLToPath(import.meta.url), '--testTimeout=0'], {
         env: { ...process.env, CORPUS_LIST: `${tag}.list`, CORPUS_OUT: tag },
         stdio: ['ignore', 'ignore', 'pipe'],
+        // a process group of its own: vitest runs the tests in worker processes, which must go too
+        detached: true,
       });
       p.stderr.on('data', (d: Buffer) => {
         err = (err + d.toString()).slice(-2000);
@@ -1182,9 +1210,13 @@ async function runList(list: string[], tag: string, results: Map<string, FileRep
         if (!existsSync(`${tag}.progress`)) return;
         const last = readFileSync(`${tag}.progress`, 'utf8').trim().split('\n').pop() ?? '';
         const [at, file] = last.split('\t');
-        if (file && Date.now() - Date.parse(at) > LIMIT) {
+        if (file && Date.now() - Date.parse(at) > LIMIT && !stuck) {
           stuck = file;
-          p.kill('SIGKILL');
+          try {
+            process.kill(-p.pid!, 'SIGKILL');
+          } catch {
+            p.kill('SIGKILL');
+          }
         }
       }, 1000);
       p.on('close', () => {
