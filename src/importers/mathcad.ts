@@ -13,6 +13,7 @@ import {
 import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
 import { isUnitName, math } from '../engine/math';
+import type { NumberFormat, NumberStyle } from '../engine/format';
 
 export type { ImportResult } from './common';
 
@@ -937,6 +938,23 @@ function definedNames(root: El): { sheet: Set<string>; inside: Set<string> } {
   return { sheet, inside };
 }
 
+/**
+ * A result format (<general>, <decimal>, <scientific>, <engineering> with precision,
+ * exponential-threshold, show-trailing-zeros), from a region's <resultFormat> or the
+ * worksheet's <results>.
+ */
+function numberFormat(el: El | undefined): NumberFormat | null {
+  const f = el ? kids(el).find((c) => /^(general|decimal|scientific|engineering)$/.test(local(c))) : undefined;
+  if (!f) return null;
+  const out: NumberFormat = { style: local(f) as NumberStyle };
+  const precision = f.getAttribute('precision');
+  if (precision !== null && precision !== '' && Number.isInteger(Number(precision))) out.precision = Math.max(0, Math.min(15, Number(precision)));
+  const threshold = f.getAttribute('exponential-threshold');
+  if (threshold !== null && threshold !== '' && Number.isInteger(Number(threshold))) out.expThreshold = Math.max(1, Math.min(15, Number(threshold)));
+  if (f.getAttribute('show-trailing-zeros') === 'true') out.trailingZeros = true;
+  return out;
+}
+
 /** Height of a row of a Prime spec table, which is imported as one math region a row. */
 const SPEC_ROW = 40;
 
@@ -971,6 +989,24 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   const settingsDoc = settingsXml ? new DOMParser({ onError: () => {} }).parseFromString(strFromU8(settingsXml).replace(/^﻿/, ''), 'text/xml') : doc;
   const biv = settingsDoc.getElementsByTagNameNS('*', 'builtInVariables')[0];
   if (biv?.getAttribute('array-origin') === '1') ws.settings.origin = 1;
+
+  // how numbers are shown: the worksheet's result format (Prime keeps it in presentation.xml)
+  const presentationXml = pkg ? findFile(pkg.files, 'mathcad/settings/presentation.xml') : undefined;
+  const presentation = presentationXml ? new DOMParser({ onError: () => {} }).parseFromString(strFromU8(presentationXml).replace(/^\uFEFF/, ''), 'text/xml') : doc;
+  const sheetFormat = numberFormat(presentation.getElementsByTagNameNS('*', 'results')[0]);
+  if (sheetFormat?.precision !== undefined) ws.settings.precision = sheetFormat.precision;
+  if (sheetFormat?.expThreshold !== undefined) ws.settings.expThreshold = sheetFormat.expThreshold;
+  /** A region's own result format: what differs from the worksheet's. */
+  const regionFormat = (math: El): NumberFormat | undefined => {
+    const f = numberFormat(child(math, 'resultFormat'));
+    if (!f) return undefined;
+    const out: NumberFormat = {};
+    if (f.precision !== undefined && f.precision !== ws.settings.precision) out.precision = f.precision;
+    if (f.expThreshold !== undefined && f.expThreshold !== ws.settings.expThreshold) out.expThreshold = f.expThreshold;
+    if (f.style && f.style !== 'general') out.style = f.style;
+    if (f.trailingZeros) out.trailingZeros = true;
+    return Object.keys(out).length ? out : undefined;
+  };
   let originSet = false;
 
   // the page width, beyond which Mathcad users keep side calculations
@@ -1139,7 +1175,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
             continue;
           }
         }
-        const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined });
+        const format = regionFormat(body);
+        const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined, ...(format ? { format } : {}) });
         regions.push(reg);
         const ref = body.getAttribute('resultRef');
         // a referenced worksheet's results are not in this file's result.xml

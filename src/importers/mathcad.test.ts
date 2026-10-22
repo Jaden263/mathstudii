@@ -423,3 +423,20 @@ describe('Mathcad 15 import: percent, saved values, value lists', () => {
     expect(results(ws).by('D[2] =').tex).toMatch(/= 2$/);
   });
 });
+
+describe('Mathcad import: how numbers are shown', () => {
+  it('the worksheet’s precision and exponential threshold, and a region’s own result format', () => {
+    top = 0;
+    const presentation = `<presentation xmlns:ws="http://schemas.mathsoft.com/worksheet50" xmlns="http://schemas.ptc.com/mathcad/settings/presentation10"><mathRendering><ws:results><general precision="2" exponential-threshold="3" xmlns="http://schemas.mathsoft.com/worksheet50"/></ws:results></mathRendering></presentation>`;
+    const fmt = '<resultFormat><engineering precision="3" show-trailing-zeros="false"/></resultFormat>';
+    const ws = `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>
+      <region region-id="1" top="40" left="40"><math>${evalOf(real(1234.5678))}</math></region>
+      <region region-id="2" top="80" left="40"><math>${evalOf(real(0.000160218))}${fmt}</math></region></regions></worksheet>`;
+    const res = importMathcad(zipSync({ 'mathcad/worksheet.xml': strToU8(ws), 'mathcad/settings/presentation.xml': strToU8(presentation) }), 'f.mcdx');
+    expect(res.ws.settings).toMatchObject({ precision: 2, expThreshold: 3 });
+    expect((res.ws.regions[1] as Extract<Region, { kind: 'math' }>).format).toEqual({ precision: 3, style: 'engineering' });
+    const { by } = results(res.ws);
+    expect(by('1234.5678 =').tex).toMatch(/= 1.23 \\cdot 10\^\{3\}$/);
+    expect(by('0.000160218 =').tex).toMatch(/= 160.218 \\cdot 10\^\{-6\}$/);
+  });
+});

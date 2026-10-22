@@ -154,7 +154,8 @@ class Evaluator {
   readonly symFunctions = new Map<string, SymFunction>();
   needsCas = false;
   needsPython = false;
-  readonly fmt: FormatOptions;
+  /** The worksheet's number format, or a region's own while that region is shown. */
+  fmt: FormatOptions;
   /** SMath semantics: function bodies read variables when called, not when defined. */
   readonly bindAtCall: boolean;
 
@@ -312,6 +313,17 @@ class Evaluator {
   }
 
   evaluateMath(r: MathRegion, pre?: Statement): void {
+    if (!r.format) return this.evaluateMathAs(r, pre);
+    const sheet = this.fmt;
+    this.fmt = { ...sheet, ...r.format };
+    try {
+      this.evaluateMathAs(r, pre);
+    } finally {
+      this.fmt = sheet;
+    }
+  }
+
+  private evaluateMathAs(r: MathRegion, pre?: Statement): void {
     let st: Statement;
     try {
       st = pre ?? parseStatement(r.source);

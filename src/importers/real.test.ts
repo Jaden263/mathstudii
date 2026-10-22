@@ -52,7 +52,8 @@ describe('real worksheets: recalculated results agree with the saved ones', () =
     expect(src).toEqual(expect.arrayContaining(['elementaryCharge = pC', 'reducedPlanckConstant = kg*m^2/s', 'avogadro =']));
     expect(res.warnings.join('\n')).toMatch(/shown in the unit alone/);
     const r = math(res.ws).find((m) => m.source === 'elementaryCharge = pC')!;
-    expect((ev.results.get(r.id) as MathResult).tex).toContain('1.6022');
+    // in the region's own engineering format, at the worksheet's 3 decimals
+    expect((ev.results.get(r.id) as MathResult).tex).toContain('160.218 \\cdot 10^{-9}');
   });
 
   it('Mathcad 15: an align-y ordering, units without labels, regions kept off the page', () => {

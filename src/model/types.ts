@@ -8,6 +8,7 @@ import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
 import { newSpreadsheet, type SpreadsheetData } from '../sheet/model';
+import type { NumberFormat } from '../engine/format';
 
 export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate' | 'area' | 'spreadsheet';
 
@@ -52,6 +53,8 @@ export interface WorksheetFormat {
 export interface MathRegion extends RegionBase {
   kind: 'math';
   source: string;
+  /** How this region shows numbers, over the worksheet's (Mathcad's result format of a region). */
+  format?: NumberFormat;
 }
 
 export interface TextRegion extends RegionBase {

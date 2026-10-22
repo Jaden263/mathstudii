@@ -140,3 +140,21 @@ describe('programs', () => {
     expect((res[0] as MathResult).tex).toMatch(/= 2500\\ \\mathrm\{mm\}$/);
   });
 });
+
+describe('number formats', () => {
+  const fmtRegion = (source: string, format: object) => createRegion('math', 40, 0, { source, format });
+  it('general, decimal, scientific and engineering, with or without trailing zeros', () => {
+    expect(shown(['x := 1234.5678', 'x ='], { precision: 3 })).toBe('1234.568');
+    expect(shown([fmtRegion('0.000012345 =', { style: 'decimal', precision: 6 })])).toBe('0.000012');
+    expect(shown([fmtRegion('12345.6 =', { style: 'scientific', precision: 2 })])).toBe('1.23 \\cdot 10^{4}');
+    expect(shown([fmtRegion('12345.6 =', { style: 'engineering', precision: 2 })])).toBe('12.35 \\cdot 10^{3}');
+    expect(shown([fmtRegion('0.000160218 =', { style: 'engineering', precision: 3 })])).toBe('160.218 \\cdot 10^{-6}');
+    expect(shown([fmtRegion('1.5 =', { style: 'decimal', precision: 3, trailingZeros: true })])).toBe('1.500');
+    expect(shown([fmtRegion('12.3 =', { style: 'engineering', precision: 1 })])).toBe('12.3');
+  });
+  it('a region’s format does not change the others', () => {
+    const res = run([fmtRegion('1.23456 =', { precision: 1 }), '1.23456 =']);
+    expect((res[0] as MathResult).tex).toMatch(/= 1\.2$/);
+    expect((res[1] as MathResult).tex).toMatch(/= 1\.2346$/);
+  });
+});
