@@ -1,8 +1,8 @@
 // More Mathcad built-ins that public worksheets use: max and min over all their arguments,
 // SIUnitsOf, error, IsNaN, the coordinate
 // conversions (xy2pol, pol2xy, xyz2sph, sph2xyz, xyz2cyl, cyl2xyz), gmean and hmean, Spearman's
-// and Kendall's rank correlations; and the product of two vectors, which in Mathcad is their dot
-// product. Semantics follow PTC's reference pages, checked against values Mathcad saved with real
+// and Kendall's rank correlations; the product of two vectors, which in Mathcad is their dot
+// product, and their quotient, element by element. Semantics follow PTC's reference pages, checked against values Mathcad saved with real
 // worksheets (the sph2xyz convention against Lab01.xmcd, for one).
 import type { Unit } from 'mathjs';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
@@ -193,12 +193,21 @@ function extreme(fn: (...xs: unknown[]) => unknown, name: string) {
   };
 }
 
+/**
+ * traceText(S, x, y …): Mathcad's trace and pause, which show the message S with {0}, {1} …
+ * replaced by x, y … while a program is debugged; here they give that message and go on.
+ */
+function traceText(s: unknown, ...values: unknown[]): string {
+  const show = (v: unknown) => (typeof v === 'string' ? v : math.format(v as never, { precision: 6 }));
+  return String(s).replace(/\{(\d+)\}/g, (m, k: string) => (Number(k) < values.length ? show(values[Number(k)]) : m));
+}
+
 const FUNCTIONS: Record<string, unknown> = {
   mcMax: extreme(math.max as unknown as (...xs: unknown[]) => unknown, 'max'),
   mcMin: extreme(math.min as unknown as (...xs: unknown[]) => unknown, 'min'),
   SIUnitsOf: siUnitsOf, mcError: error, IsNaN,
   xy2pol, pol2xy, xyz2sph, sph2xyz, xyz2cyl, cyl2xyz,
-  gmean, hmean, Spear, kendltau,
+  gmean, hmean, Spear, kendltau, traceText,
 };
 
 /**
@@ -224,7 +233,26 @@ const vectorProduct = (() => {
   return math.typed('multiply', sigs as never);
 })();
 
+/**
+ * u/v of two vectors of one size is their quotient element by element in Mathcad (F·(y/y) is a
+ * vector of F); a matrix divisor is still inverted (A/B = A·B⁻¹ of a square B).
+ */
+const vectorQuotient = (() => {
+  const old = math.divide as unknown as { signatures: Record<string, (x: unknown, y: unknown) => unknown> };
+  const vectorSize = (v: unknown) => {
+    const s = math.size(v as never) as unknown as number[];
+    return s.length === 1 ? `${s[0]}` : s.length === 2 && (s[0] === 1 || s[1] === 1) && s[0] * s[1] > 1 ? s.join('x') : '';
+  };
+  const wrap = (f: (x: unknown, y: unknown) => unknown) => (x: unknown, y: unknown) => {
+    const n = vectorSize(x);
+    return n && n === vectorSize(y) ? math.dotDivide(x as never, y as never) : f(x, y);
+  };
+  const sigs = { ...old.signatures };
+  for (const k of ['Array,Array', 'Matrix,Matrix', 'Matrix,Array', 'Array,Matrix']) if (sigs[k]) sigs[k] = wrap(sigs[k]);
+  return math.typed('divide', sigs as never);
+})();
+
 const clashes = Object.keys(FUNCTIONS).filter((k) => k in math);
 if (clashes.length) throw new Error(`Mathcad function names clash: ${clashes.join(', ')}`);
 // UnitsOf, Mathcad 15's name, takes arrays too
-math.import({ ...FUNCTIONS, UnitsOf: siUnitsOf, multiply: vectorProduct }, { override: true });
+math.import({ ...FUNCTIONS, UnitsOf: siUnitsOf, multiply: vectorProduct, divide: vectorQuotient }, { override: true });

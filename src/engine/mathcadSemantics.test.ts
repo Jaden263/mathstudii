@@ -256,3 +256,115 @@ describe('mod', () => {
     expect(shown(['mod(250 mm, 0.1 m) = mm'])).toBe('50\\ \\mathrm{mm}');
   });
 });
+
+describe('scalar functions of arrays', () => {
+  it('apply element by element, as Mathcad does: F·cos(θ) of a vector of angles', () => {
+    expect(shown(['θ := [0; 60]*deg', 'F := 10 kN', 'F*cos(θ) = kN'])).toBe('\\begin{bmatrix} 10 \\\\ 5 \\end{bmatrix}\\ \\mathrm{kN}');
+    expect(shown(['sqrt([4, 9; 16, 25]) ='])).toBe('\\begin{bmatrix} 2 & 3 \\\\ 4 & 5 \\end{bmatrix}');
+    expect(shown(['ln([1; e]) ='])).toBe('\\begin{bmatrix} 0 \\\\ 1 \\end{bmatrix}');
+    expect(shown(['log([10; 100]) ='])).toBe('\\begin{bmatrix} 1 \\\\ 2 \\end{bmatrix}');
+  });
+});
+
+describe('quotient of two vectors', () => {
+  it('is taken element by element; a square matrix divisor is still inverted', () => {
+    expect(shown(['y := [1; 2; 4] m', 'F := 3 kN', 'F*(y/y) = kN'])).toBe('\\begin{bmatrix} 3 \\\\ 3 \\\\ 3 \\end{bmatrix}\\ \\mathrm{kN}');
+    expect(shown(['[6; 8]/[2; 4] ='])).toBe('\\begin{bmatrix} 3 \\\\ 2 \\end{bmatrix}');
+    expect(shown(['[2, 0; 0, 4]/[2, 0; 0, 4] ='])).toBe('\\begin{bmatrix} 1 & 0 \\\\ 0 & 1 \\end{bmatrix}');
+  });
+});
+
+describe('Mathcad 11–15 rules (mathcad15)', () => {
+  const m15 = { mathcad15: true };
+  it('a function called with its first arguments only is the function of the others', () => {
+    const lines = ['f(x, y) := x + 10*y', 'apply(v, g) := g(v)', 'apply(2, f(1)) ='];
+    expect(shown(lines, m15)).toBe('21');
+    expect(() => shown(lines)).toThrow(/f expects 2 arguments/);
+  });
+  it('a program’s local is 0 until it is assigned, unless the worksheet defines the name', () => {
+    const lines = ['n(v) :=\n  for i ∈ 0 .. 2\n    if v[i] > 1\n      count ← count + 1\n  count', 'n([1; 2; 3]) ='];
+    expect(shown(lines, m15)).toBe('2');
+    expect(() => shown(lines)).toThrow();
+    expect(shown(['k := 5', 'p(v) :=\n  k ← k + v\n  k', 'p(1) ='], m15)).toBe('6');
+    // a built-in the program calls stays the built-in until assigned
+    expect(shown(['q(v) :=\n  max ← max(v)\n  max', 'q([1; 4; 2]) ='], m15)).toBe('4');
+  });
+});
+
+describe('Re and Im', () => {
+  it('of a quantity are its parts in its unit', () => {
+    expect(shown(['Im(5 m) = m'])).toBe('0\\ \\mathrm{m}');
+    expect(shown(['Re((3 + 4i) V) = V'])).toBe('3\\ \\mathrm{V}');
+    expect(shown(['Im((3 + 4i) V) = V'])).toBe('4\\ \\mathrm{V}');
+  });
+});
+
+describe('trace and pause', () => {
+  it('give their message with the values in it', () => {
+    const res = run(['traceText("v = {0}, a = {1}", 2, "x") =']);
+    expect((res[0] as MathResult).tex).toContain('v = 2, a = x');
+  });
+});
+
+describe('element definitions over a range', () => {
+  it('write what writing element after element gives, in any shape', async () => {
+    const { assignMany, assignIndex } = await import('./library');
+    const { math } = await import('./math');
+    const cases: [unknown, unknown[][]][] = [
+      [undefined, [[2], [0], [5]]],
+      [math.matrix([[1, 2, 3]]), [[4], [1]]],
+      [math.matrix([[1], [2]]), [[3], [0]]],
+      [math.matrix([1, 2]), [[2, 1], [0, 3]]],
+      [undefined, [[1, 2], [0, 0], [3, 1]]],
+    ];
+    for (const [start, idx] of cases) {
+      const entries = idx.map((i, n) => ({ idx: i, value: n + 10 }));
+      const one = entries.reduce((cur: unknown, e) => assignIndex(cur, e.idx, e.value), start);
+      expect((assignMany(start, entries) as { toArray(): unknown }).toArray()).toEqual((one as { toArray(): unknown }).toArray());
+    }
+  });
+  it('of 50 000 elements take a moment, not minutes', () => {
+    const t0 = performance.now();
+    expect(shown(['N := 50000', 'i := 1 .. N', 't[i] := (i - 1)*0.01 s', 't[N] ='])).toBe('499.99\\ \\mathrm{s}');
+    expect(performance.now() - t0).toBeLessThan(10000);
+  });
+});
+
+describe('text in arrays and comparisons', () => {
+  it('a string is written into an array as an element', () => {
+    const res = run(['M :=\n  M[1, 1] ← "Csg"\n  M[1, 2] ← 2\n  M', 'M[1, 1] =', 'M[1, 2] =']);
+    expect((res[1] as MathResult).tex).toContain('Csg');
+    expect((res[2] as MathResult).tex).toMatch(/= 2$/);
+  });
+  it('text and a number are never equal', () => {
+    expect(shown(['("" ≠ 0) + ("A" ≠ 0) + ("5" == 5) ='])).toBe('2');
+  });
+});
+
+describe('programs', () => {
+  it('[a[i]; b[i]] ← v writes elements of several arrays at once', () => {
+    expect(shown(['p :=\n  for i ∈ 0 .. 2\n    [a[i]; b[i]] ← [i; 10*i]\n  a + b', 'p ='])).toBe('\\begin{bmatrix} 0 \\\\ 11 \\\\ 22 \\end{bmatrix}');
+  });
+});
+
+describe('recurrences over a range', () => {
+  it('step from the elements written before, quickly even for many', () => {
+    const t0 = performance.now();
+    expect(shown(['N := 30000', 'n := 0 .. N - 1', 't[0] := 0 s', 't[n + 1] := t[n] + 0.5 s/(1 + 0*n)', 't[N] = s'])).toBe('15\\,000\\ \\mathrm{s}');
+    expect(performance.now() - t0).toBeLessThan(10000);
+    expect(shown(['k := 1 .. 4', 'f[0] := 1', 'f[k] := f[k - 1]*k', 'f ='])).toBe('\\begin{bmatrix} 1 \\\\ 1 \\\\ 2 \\\\ 6 \\\\ 24 \\end{bmatrix}');
+    // the array a recurrence starts from is not changed where it came from
+    expect(shown(['a := [1; 2; 3]', 'b := a', 'j := 1 .. 2', 'b[j] := b[j - 1] + 10', 'a ='])).toBe('\\begin{bmatrix} 1 \\\\ 2 \\\\ 3 \\end{bmatrix}');
+  });
+});
+
+describe('programs that fill arrays element by element', () => {
+  it('are linear, and an array given to another local or array keeps its values', () => {
+    const t0 = performance.now();
+    expect(shown(['fill(n) :=\n  for k ∈ 0 .. n - 1\n    v[k] ← 2*k\n  v', 'w := fill(40000)', 'w[39999] ='])).toBe('79\\,998');
+    expect(performance.now() - t0).toBeLessThan(10000);
+    expect(shown(['g :=\n  v[0] ← 1\n  a ← v\n  v[0] ← 2\n  v[1] ← 3\n  [a[0]; v[0]; v[1]]', 'g ='])).toBe('\\begin{bmatrix} 1 \\\\ 2 \\\\ 3 \\end{bmatrix}');
+    expect(shown(['h :=\n  v[0] ← 1\n  N[0] ← v\n  v[0] ← 5\n  (N[0])[0] + v[0]', 'h ='])).toBe('6');
+    expect(shown(['r :=\n  for i ∈ 0 .. 2\n    m[i, 0] ← i\n    m[i, 1] ← 10*i\n  m', 'r ='])).toBe('\\begin{bmatrix} 0 & 0 \\\\ 1 & 10 \\\\ 2 & 20 \\end{bmatrix}');
+  });
+});

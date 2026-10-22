@@ -95,11 +95,17 @@ export function operatorName(raw: string): string | null {
 
 /**
  * A name as Mathcad 15 tells names apart: by its spelling and its math style (font). The
- * function in(x, v) in a style of its own is not the unit in.
+ * function in(x, v) in a style of its own is not the unit in. The first two styles, Variables
+ * (font 0) and Constants (font 1), make no name of their own: f(F) ← … defined in Constants is
+ * the f a program then passes on, π in Constants is π.
  */
-function nameKey(el: El): string {
+const styleOf = (el: El): string => {
   const font = el.getAttribute('font');
-  return font && font !== '0' ? `${rawName(el)}#${font}` : rawName(el);
+  return font && font !== '0' && font !== '1' ? font : '';
+};
+function nameKey(el: El): string {
+  const font = styleOf(el);
+  return font ? `${rawName(el)}#${font}` : rawName(el);
 }
 
 // ------------------------------------------------------------ expressions
@@ -167,7 +173,7 @@ class Converter {
     if (nameKey(el) === raw) return s;
     const taken = this.plainNames.has(raw) || typeof (math as unknown as Record<string, unknown>)[raw] === 'function' || isUnitName(unitName(raw));
     const styles = this.styledNames.get(raw) ?? [];
-    const slot = Math.max(0, styles.indexOf(el.getAttribute('font') ?? '')) + (taken ? 1 : 0);
+    const slot = Math.max(0, styles.indexOf(styleOf(el))) + (taken ? 1 : 0);
     if (slot === 0) return s;
     if (s.endsWith('_')) return slot === 1 ? s : `${s}${slot}`;
     return slot === 1 ? `${s}_` : `${s}_${slot}`;
@@ -460,6 +466,8 @@ class Converter {
     if (raw === 'Γ') fn = 'gamma';
     if (raw === 'mod') fn = 'mod'; // a function here, not the reserved operator
     if (raw === 'if') fn = 'if'; // Mathcad's inline if(cond, a, b), labelled KEYWORD
+    // Mathcad's trace(S, x, …) and pause(S, x, …) show a message while debugging (the matrix trace is tr)
+    if ((raw === 'trace' || raw === 'pause') && !this.defined.has(nameKey(head))) fn = 'traceText';
     if (/^(Find|Minerr|Minimize|Maximize)$/.test(raw)) fn = raw.toLowerCase();
     if (raw === 'atan2' && args.length === 2) return { s: `atan2(${args[1]}, ${args[0]})`, p: P.ATOM }; // Mathcad: atan2(x, y)
     if (raw === 'angle' && args.length === 2) return { s: `mod(atan2(${args[1]}, ${args[0]}), 2 π)`, p: P.ATOM };
@@ -636,8 +644,15 @@ class Converter {
         const names = items.map((c) => this.name(c));
         return `[${Array.from({ length: rows * cols }, (_, k) => names[(k % cols) * rows + Math.floor(k / cols)]).join('; ')}]`;
       }
-      case 'apply':
+      case 'apply': {
+        // (M)[i, j] ← …: an element of M, the parentheses only drawn around its name
+        const [head, base, ...rest] = kids(el);
+        if (head && local(head) === 'indexer' && base && local(base) === 'parens' && kids(base).length === 1 && local(kids(base)[0]) === 'id') {
+          const idx = rest[0] && local(rest[0]) === 'sequence' ? kids(rest[0]).map((c) => this.expr(c).s).join(', ') : rest[0] ? this.expr(rest[0]).s : '';
+          return `${this.name(kids(base)[0])}[${idx}]`;
+        }
         return this.expr(el).s;
+      }
       default:
         throw new Unsupported(`a definition of “${local(el)}”`);
     }
@@ -1161,15 +1176,73 @@ function numberFormat(el: El | undefined): NumberFormat | null {
 /** Height of a row of a Prime spec table, which is imported as one math region a row. */
 const SPEC_ROW = 40;
 
-export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportResult {
+/** What a worksheet file holds as XML: Prime's package's worksheet.xml, or the .xmcd itself. */
+function worksheetXml(data: Uint8Array): string {
+  const xml = data[0] === 0x50 && data[1] === 0x4b ? readMcdx(data).worksheet : strFromU8(data).replace(/^\uFEFF/, '');
+  if (!/<\s*([\w-]+:)?worksheet[\s>]/.test(xml)) throw new Error('Not a Mathcad worksheet (.mcdx or .xmcd)');
+  return xml;
+}
+
+/** Options of an import. */
+export interface MathcadImportOptions {
+  /**
+   * Worksheets the file references (Insert ▸ Reference), by file name, as the user picked them:
+   * their definitions are imported where the reference is, in a locked, collapsed area.
+   */
+  references?: Record<string, Uint8Array>;
+}
+
+/** The base name of a referenced file, to look it up whatever folder the reference names. */
+const refKey = (file: string) => (file.split(/[\\/]/).pop() ?? file).toLowerCase();
+
+export function importMathcad(data: Uint8Array, fileName = 'worksheet', options: MathcadImportOptions = {}): ImportResult {
   const isZip = data[0] === 0x50 && data[1] === 0x4b;
   const pkg: Package | null = isZip ? readMcdx(data) : null;
-  const xml = pkg ? pkg.worksheet : strFromU8(data).replace(/^﻿/, '');
-  if (!/<\s*([\w-]+:)?worksheet[\s>]/.test(xml)) throw new Error('Not a Mathcad worksheet (.mcdx or .xmcd)');
+  const xml = pkg ? pkg.worksheet : worksheetXml(data);
   const doc = new DOMParser({ onError: () => {} }).parseFromString(xml, 'text/xml');
   const root = doc.documentElement;
   if (!root) throw new Error('The file is not valid XML');
   const conv = new Converter();
+  // the referenced worksheets the user gave, read once each (a file another one references too)
+  const givenRefs = new Map(Object.entries(options.references ?? {}).map(([k, v]) => [refKey(k), v]));
+  const refDocs = new Map<string, El | null>();
+  const refFileOf = (ref: El) => (ref.getAttribute('href') ?? ref.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '').split(/[\\/]/).pop() || 'another worksheet';
+  const givenReference = (ref: El): El | null => {
+    const key = refKey(refFileOf(ref));
+    if (!refDocs.has(key)) {
+      const bytes = givenRefs.get(key);
+      let regions: El | null = null;
+      if (bytes) {
+        try {
+          const top = new DOMParser({ onError: () => {} }).parseFromString(worksheetXml(bytes), 'text/xml').documentElement;
+          regions = top ? kids(top).find((c) => local(c) === 'regions') ?? null : null;
+        } catch (e) {
+          conv.warnings.push(`The referenced worksheet ${refFileOf(ref)} you picked could not be read: ${(e as Error).message}`);
+        }
+      }
+      refDocs.set(key, regions);
+    }
+    return refDocs.get(key) ?? null;
+  };
+  // the names of every worksheet that calculates here: this one and those it references
+  const nameRoots: El[] = [root];
+  {
+    const seen = new Set<string>();
+    const visit = (el: El) => {
+      for (const ref of el.getElementsByTagNameNS('*', 'reference')) {
+        const key = refKey(refFileOf(ref));
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const given = givenRefs.has(key) ? givenReference(ref) : null;
+        if (given) {
+          nameRoots.push(given);
+          visit(given);
+        }
+      }
+    };
+    visit(root);
+  }
+  const allIds = () => nameRoots.flatMap((r) => [...r.getElementsByTagNameNS('*', 'id')]);
   const warnings = conv.warnings;
   const ws = emptyWorksheet();
   ws.title = fileName.replace(/\.(mcdx|xmcd)$/i, '');
@@ -1178,18 +1251,18 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   // Mathcad 15 does not label units: a name is a unit unless the worksheet has defined it above
   // (or the region defines it itself); global definitions (≡) come first
   const sheetNames = new Set<string>();
-  for (const d of doc.getElementsByTagNameNS('*', 'globalDefine')) definedNames(d).sheet.forEach((n) => sheetNames.add(n));
+  for (const r of nameRoots) for (const d of r.getElementsByTagNameNS('*', 'globalDefine')) definedNames(d).sheet.forEach((n) => sheetNames.add(n));
   let insideNames = new Set<string>();
   conv.defined = { has: (n: string) => sheetNames.has(n) || insideNames.has(n) };
-  for (const id of doc.getElementsByTagNameNS('*', 'id')) {
+  for (const id of allIds()) {
     const raw = rawName(id);
     if (nameKey(id) === raw) conv.plainNames.add(raw);
     else {
       const styles = conv.styledNames.get(raw) ?? [];
-      if (!styles.includes(id.getAttribute('font')!)) conv.styledNames.set(raw, [...styles, id.getAttribute('font')!]);
+      if (!styles.includes(styleOf(id))) conv.styledNames.set(raw, [...styles, styleOf(id)]);
     }
   }
-  for (const d of doc.getElementsByTagNameNS('*', 'define')) {
+  for (const r of nameRoots) for (const d of r.getElementsByTagNameNS('*', 'define')) {
     const t = kids(d)[0];
     if (t && local(t) === 'id') conv.variables.add(rawName(t));
   }
@@ -1199,6 +1272,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   const settingsDoc = settingsXml ? new DOMParser({ onError: () => {} }).parseFromString(strFromU8(settingsXml).replace(/^﻿/, ''), 'text/xml') : doc;
   const biv = settingsDoc.getElementsByTagNameNS('*', 'builtInVariables')[0];
   if (biv?.getAttribute('array-origin') === '1') ws.settings.origin = 1;
+  // Mathcad 11–15 calculate a little differently from Prime (partial calls, programs' locals)
+  if (!pkg) ws.settings.mathcad15 = true;
 
   // how numbers are shown: the worksheet's result format (Prime keeps it in presentation.xml)
   const presentationXml = pkg ? findFile(pkg.files, 'mathcad/settings/presentation.xml') : undefined;
@@ -1261,7 +1336,9 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     const cached = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(bytes).replace(/^\uFEFF/, ''), 'text/xml').documentElement;
     return cached ? child(cached, 'regions') ?? null : null;
   };
-  const refFile = (ref: El) => (ref.getAttribute('href') ?? ref.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '').split(/[\\/]/).pop() || 'another worksheet';
+  const refFile = refFileOf;
+  /** The files being included, outermost first (a worksheet referencing itself is not followed). */
+  const including: string[] = [];
   const layout = (container: El, ox: number, oy: number, depth: number, out: Placed[], included?: string): number => {
     const items = kids(container).filter((c) => local(c) === 'region').sort((a, b) => Number(a.getAttribute('top') ?? 0) - Number(b.getAttribute('top') ?? 0));
     const pushes: { at: number; by: number }[] = [];
@@ -1274,17 +1351,21 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
       const alignY = r.getAttribute('align-y');
       const order = !pkg && alignY !== null ? oy + Number(alignY) * PX + shift : y;
       const area = child(r, 'Area') ?? child(r, 'area');
-      // a reference whose worksheet Prime cached: its definitions in a collapsed, locked area there
+      // a reference whose worksheet Prime cached, or which the user picked: its definitions in a
+      // collapsed, locked area there
       const ref = child(r, 'reference');
       const cached = ref ? cachedReference(ref) : null;
-      if (ref && cached) {
+      const given = ref && !cached ? givenReference(ref) : null;
+      if (ref && (cached || given) && !including.includes(refKey(refFile(ref)))) {
         const file = refFile(ref);
         const at = areas.length;
         areas.push({ x, y, height: 0, collapsed: true, locked: true, title: `Reference: ${file}`, depth });
-        const end = layout(cached, x, y + AREA_BAR, depth + 1, out, file);
+        including.push(refKey(file));
+        const end = layout((cached ?? given)!, x, y + AREA_BAR, depth + 1, out, file);
+        including.pop();
         areas[at].height = Math.max(AREA_BAR + AREA_PAD, end - y + AREA_PAD);
         pushes.push({ at: top, by: areas[at].height - AREA_BAR });
-        referenced.push(file);
+        (cached ? referenced : picked).push(file);
         bottom = Math.max(bottom, y + areas[at].height);
         continue;
       }
@@ -1314,10 +1395,16 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   };
   const flat: Placed[] = [];
   const referenced: string[] = [];
+  const picked: string[] = [];
   layout(regionsEl, 0, 0, 0, flat);
-  for (const file of referenced) {
+  for (const file of new Set(referenced)) {
     warnings.push(`The worksheet references ${file}: its definitions come from the copy Prime saved with this file, in the collapsed area “Reference: ${file}” (locked; they do not change when ${file} does)`);
   }
+  for (const file of new Set(picked)) {
+    warnings.push(`The worksheet references ${file}: its definitions come from the copy you picked, in the collapsed area “Reference: ${file}” (locked; they do not change when ${file} does)`);
+  }
+  /** Referenced worksheets neither cached in the file nor picked: their definitions are missing. */
+  const missingRefs = new Set<string>();
   const placed = flat.sort((a, b) => a.order - b.order || a.x - b.x);
 
   const regions: Region[] = [];
@@ -1489,10 +1576,11 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         regions.push(mark);
       } else if (kind === 'reference') {
         // Mathcad 15 "Reference": the definitions of another worksheet, read when this one calculates
-        const href = body.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '';
-        const file = href.split(/[\\/]/).pop() || 'another worksheet';
-        warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: what that worksheet defines is not imported (import it too and copy the definitions here)`);
-        regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported.*`, width: 300 }));
+        // (Prime: href on the reference itself; Mathcad 15: on its originRef)
+        const file = refFile(body);
+        missingRefs.add(file);
+        warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: the file does not keep what ${file} defines, so what uses it does not calculate. Pick ${file} in this report (Pick referenced worksheets…) to import its definitions`);
+        regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported (pick the file when importing).*`, width: 300 }));
       } else if (kind === 'oleObject' && pkg && oleText(body, at)) {
         // an embedded Word document: its text
       } else if (kind === 'excelComponent' && pkg) {
@@ -1543,7 +1631,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     if (areas[i].collapsed) out = collapseArea(out, bars[i].id);
   }
   out = startPages(out, pageBreaks);
-  return { ws: out, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved };
+  return { ws: out, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved, ...(missingRefs.size ? { references: [...missingRefs] } : {}) };
 }
 
 /**

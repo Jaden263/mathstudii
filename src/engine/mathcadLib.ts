@@ -396,3 +396,25 @@ math.import({
   acot: ((f) => (x: unknown) => (typeof x === 'number' ? Math.PI / 2 - Math.atan(x) : f(x)))(math.acot as unknown as (x: unknown) => unknown),
 }, { override: true });
 
+
+/**
+ * Mathcad applies its scalar functions to an array element by element: F·cos(θ) of a vector of
+ * angles is a vector of forces, √A and e^A of a matrix are taken of each element (mathjs keeps
+ * them for scalars and asks for map()). Further arguments (log(v, b)) stay as they are.
+ */
+const ELEMENTWISE = [
+  'sin', 'cos', 'tan', 'sec', 'csc', 'cot', 'asin', 'acos', 'atan', 'asec', 'acsc', 'acot',
+  'sinh', 'cosh', 'tanh', 'sech', 'csch', 'coth', 'asinh', 'acosh', 'atanh', 'asech', 'acsch', 'acoth',
+  'exp', 'sqrt', 'cbrt', 'gamma', 'mcLn', 'mcLog',
+];
+{
+  const fns = math as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const lifted: Record<string, unknown> = {};
+  for (const name of ELEMENTWISE) {
+    const f = fns[name];
+    if (typeof f !== 'function') continue;
+    const each = (x: unknown, ...rest: unknown[]): unknown => (isArrayValue(x) ? math.map(x as never, ((e: unknown) => each(e, ...rest)) as never) : f(x, ...rest));
+    lifted[name] = each;
+  }
+  math.import(lifted, { override: true });
+}

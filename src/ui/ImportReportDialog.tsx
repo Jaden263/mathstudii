@@ -8,10 +8,14 @@ export interface ImportReport {
   count: number;
   /** Data files the worksheet reads that are not attached yet. */
   missingFiles?: string[];
+  /** Worksheets it references whose definitions the file does not keep. */
+  references?: string[];
 }
 
-export function ImportReportDialog({ report, onClose, onDataFiles }: { report: ImportReport; onClose: () => void; onDataFiles?: () => void }) {
+export function ImportReportDialog({ report, onClose, onDataFiles, onReferences }: { report: ImportReport; onClose: () => void; onDataFiles?: () => void; onReferences?: (files: File[]) => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const pick = useRef<HTMLInputElement>(null);
+  const refs = report.references ?? [];
   useEffect(() => {
     const d = ref.current;
     if (d && !d.open) d.showModal();
@@ -34,13 +38,27 @@ export function ImportReportDialog({ report, onClose, onDataFiles }: { report: I
             {onDataFiles && <button className="btn" onClick={onDataFiles}>Attach data files…</button>}
           </p>
         )}
+        {!!refs.length && (
+          <p className="import-files">
+            It references {refs.length === 1 ? 'a worksheet' : `${refs.length} worksheets`} whose definitions it does not keep: {refs.join(', ')}. Pick {refs.length === 1 ? 'it' : 'them'} to import {refs.length === 1 ? 'its' : 'their'} definitions where the references are (in a locked, collapsed area; the worksheet keeps them).{' '}
+            {onReferences && (
+              <>
+                <button className="btn" onClick={() => pick.current?.click()}>Pick referenced worksheets…</button>
+                <input ref={pick} type="file" accept=".mcdx,.xmcd" multiple hidden onChange={(e) => {
+                  const files = [...(e.target.files ?? [])];
+                  if (files.length) onReferences(files);
+                }} />
+              </>
+            )}
+          </p>
+        )}
         {!ok && (
           <ul className="import-warnings">
             {report.warnings.map((w, i) => <li key={i}>{w}</li>)}
           </ul>
         )}
         <p className="hint">
-          The import converts the math, programs, solve blocks, text with its formatting, images, X-Y plots, areas, input controls, page headers and footers. Results are recalculated here rather than copied, so check them
+          The import converts the math, programs, solve blocks, text with its formatting, images, X-Y plots, areas, input controls, references, page headers and footers. Results are recalculated here rather than copied, so check them
           against the original. Regions that could not be converted are marked ⚠️ on the page. Saving creates a new <code>.mstd</code> file; the original file is not changed.
         </p>
       </div>

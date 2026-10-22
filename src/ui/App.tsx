@@ -476,13 +476,16 @@ export function App() {
     }
   };
 
+  /** The file just imported and the worksheets it references that were picked (while its report is open). */
+  const lastImport = useRef<{ bytes: Uint8Array; name: string; references: Record<string, Uint8Array> } | null>(null);
   /** Convert a Mathcad or SMath file; it opens as a new, unsaved mathstudii worksheet. */
-  const importForeignFile = async (bytes: Uint8Array, name: string) => {
+  const importForeignFile = async (bytes: Uint8Array, name: string, references: Record<string, Uint8Array> = {}) => {
     const res = foreignFormat(name) === 'smath'
       ? (await import('../importers/smath')).importSmath(bytes, name)
-      : (await import('../importers/mathcad')).importMathcad(bytes, name);
+      : (await import('../importers/mathcad')).importMathcad(bytes, name, { references });
     loadDoc(res.ws, null);
-    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length, missingFiles: dataFileNames(res.ws).filter((f) => !f.attached).map((f) => f.name) });
+    lastImport.current = res.references?.length || Object.keys(references).length ? { bytes, name, references } : null;
+    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length, missingFiles: dataFileNames(res.ws).filter((f) => !f.attached).map((f) => f.name), references: res.references });
     // the source program lays out math at different sizes: push overlaps apart once rendered,
     // keeping the order in which the regions calculate
     window.setTimeout(() => separateRef.current(true, 'separate', true), 400);
@@ -1381,7 +1384,22 @@ export function App() {
           />
         </div>
       )}
-      {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} onDataFiles={() => { setImportReport(null); setDataFilesDlg(true); }} />}
+      {importReport && (
+        <ImportReportDialog
+          report={importReport}
+          onClose={() => { setImportReport(null); lastImport.current = null; }}
+          onDataFiles={() => { setImportReport(null); setDataFilesDlg(true); }}
+          onReferences={async (files) => {
+            // import again with the referenced worksheets picked: their definitions in the worksheet
+            const last = lastImport.current;
+            if (!last) return;
+            const references = { ...last.references };
+            for (const f of files) references[f.name] = new Uint8Array(await f.arrayBuffer());
+            setImportReport(null);
+            await importForeignFile(last.bytes, last.name, references);
+          }}
+        />
+      )}
       {dataFilesDlg && <DataFilesDialog ws={ws} dispatch={dispatch} onClose={() => setDataFilesDlg(false)} />}
       {exportReport && <ExportReportDialog report={exportReport} onClose={() => setExportReport(null)} />}
       {protectDlg && (

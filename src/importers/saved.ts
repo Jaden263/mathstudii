@@ -19,14 +19,20 @@ export interface SavedComparison {
 
 const ANGLE = 7; // mathjs base dimension index of angles
 
-/** SI magnitude and dimensions; angles count as plain numbers, as in Mathcad. */
-function si(v: unknown): { value: number; dims: number[] } | null {
+/** SI magnitude (real and imaginary part) and dimensions; angles count as plain numbers, as in Mathcad. */
+function si(v: unknown): { value: number; im: number; dims: number[] } | null {
   try {
-    if (isComplex(v)) return null;
+    if (isComplex(v)) return { value: v.re, im: v.im, dims: [] };
+    // a complex quantity, (5 + 2i) mm: mathjs keeps its value in SI
+    if (isUnit(v) && isComplex(v.value)) {
+      const dims = [...(v as unknown as { dimensions: number[] }).dimensions];
+      if (dims.length > ANGLE) dims[ANGLE] = 0;
+      return { value: v.value.re, im: v.value.im, dims };
+    }
     const s = splitUnit(v);
     const dims = s.unit ? [...(s.unit as unknown as { dimensions: number[] }).dimensions] : [];
     if (dims.length > ANGLE) dims[ANGLE] = 0;
-    return { value: s.value, dims };
+    return { value: s.value, im: 0, dims };
   } catch {
     return null;
   }
@@ -48,22 +54,20 @@ export function agrees(ours: unknown, theirs: unknown, tol = 1e-6): boolean {
   const a = flat(ours), b = flat(theirs);
   if (a.length !== b.length) return false;
   if (a.some((x) => typeof x === 'string') || b.some((x) => typeof x === 'string')) return a.every((x, i) => x === b[i]);
-  if (a.some(isComplex) || b.some(isComplex)) {
-    return a.every((x, i) => {
-      const p = math.complex(x as never) as unknown as { re: number; im: number }, q = math.complex(b[i] as never) as unknown as { re: number; im: number };
-      return Math.hypot(p.re - q.re, p.im - q.im) <= tol * Math.max(Math.hypot(q.re, q.im), 1e-300);
-    });
-  }
   const sa = a.map(si), sb = b.map(si);
   if (sa.some((x) => !x) || sb.some((x) => !x)) return false;
-  const scale = Math.max(...sb.map((x) => Math.abs(x!.value)), ...sa.map((x) => Math.abs(x!.value)));
+  const size = (x: { value: number; im: number } | null) => Math.hypot(x!.value, x!.im);
+  const finite = (x: { value: number; im: number } | null) => (Number.isFinite(size(x)) ? size(x) : 0);
+  const scale = Math.max(...sb.map(finite), ...sa.map(finite));
   return sa.every((x, i) => {
     const y = sb[i]!;
+    // NaN (Mathcad's "no number") and ∞ agree with themselves only
+    if (!Number.isFinite(size(x)) || !Number.isFinite(size(y))) return Object.is(x!.value, y.value) && Object.is(x!.im, y.im) && (Number.isNaN(x!.value) || sameDims(x!.dims, y.dims));
     // a zero has any unit
-    if (!sameDims(x!.dims, y.dims) && x!.value !== 0 && y.value !== 0) return false;
-    const d = Math.abs(x!.value - y.value);
+    if (!sameDims(x!.dims, y.dims) && size(x) !== 0 && size(y) !== 0) return false;
+    const d = Math.hypot(x!.value - y.value, x!.im - y.im);
     // Mathcad shows (and saves) values below 1e-15 of 1 as 0
-    return d <= tol * scale || d <= 1e-300 || (Math.min(Math.abs(x!.value), Math.abs(y.value)) === 0 && d < 1e-12);
+    return d <= tol * scale || d <= 1e-300 || (Math.min(size(x), size(y)) === 0 && d < 1e-12);
   });
 }
 

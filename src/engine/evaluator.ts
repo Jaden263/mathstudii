@@ -7,7 +7,7 @@ import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { compileExpr, parseExpr, freeSymbols, RENAME } from './compile';
 import { parseStatement, parseRange, splitComparison, splitChain, logicAtTop, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
-import { engineCtx, toVector, vec, assignIndex, normalize, int, elementsOf } from './library';
+import { engineCtx, toVector, vec, assignIndex, assignInPlace, assignMany, normalize, int, elementsOf, wrongArity } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, valueText, unitParts, type FormatOptions } from './format';
 import { dimsOf, closestName, unitNames, compatibleUnits, quantityName } from './unitCatalog';
@@ -191,6 +191,8 @@ class Evaluator {
     engineCtx.tol = this.ws.settings.tol;
     engineCtx.iterationBudget = 1e8;
     engineCtx.deadline = performance.now() + 20000;
+    engineCtx.partialCalls = this.ws.settings.mathcad15 === true;
+    engineCtx.zeroLocals = this.ws.settings.mathcad15 === true;
     // the data files the worksheet reads (READPRN …) are kept in it
     dataFileCtx.files = this.ws.settings.dataFiles ?? {};
     // random numbers start where Mathcad's do, so a recalculation draws the same ones
@@ -578,8 +580,8 @@ class Evaluator {
         this.symFunctions.set(name, { params, body: rhs });
         const compiled = compileExpr(rhs);
         const snap = this.bindAtCall ? scope : snapshot(scope);
-        const fn = (...args: unknown[]) => {
-          if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+        const fn = (...args: unknown[]): unknown => {
+          if (args.length !== params.length) return wrongArity(name, params, args, fn);
           const local = new ChainScope(snap);
           // a column vector argument is a vector here as everywhere (n×1 + vector broadcast to a matrix)
           params.forEach((p, i) => local.set(p, normalize(args[i])));
@@ -604,13 +606,21 @@ class Evaluator {
         if (typeof cur === 'function' || (!isMatrix(cur) && !Array.isArray(cur))) cur = undefined;
         const local = new ChainScope(scope);
         const recurrence = syms.has(name);
+        // a recurrence (x[i + 1] := f(x[i])) reads the elements written in the steps before, so
+        // it writes them at once; the elements of any other definition are written together
+        // (after its first element the recurrence's array is its own copy: written in place)
+        const pending: { idx: unknown[]; value: unknown }[] = [];
+        let own = false;
         const assignOnce = () => {
-          // a recurrence (x[i + 1] := f(x[i])) reads the elements written in the steps before
           if (recurrence && cur !== undefined) local.set(name, normalize(cur));
           const idx = cIdx.map((c) => c.evaluate(local));
           const value = normalize(cRhs.evaluate(local));
           assigned.push(value);
-          cur = assignIndex(cur, idx, value);
+          if (!recurrence) pending.push({ idx, value });
+          else if (!(own && assignInPlace(cur, idx, value))) {
+            cur = assignIndex(cur, idx, value);
+            own = true;
+          }
         };
         const assigned: unknown[] = [];
         if (rv.length === 0) assignOnce();
@@ -628,6 +638,7 @@ class Evaluator {
             }
           }
         }
+        if (pending.length) cur = assignMany(cur, pending);
         const v = normalize(cur);
         scope.set(name, v);
         this.ranges.delete(name);
@@ -710,8 +721,8 @@ class Evaluator {
     if (lhs.kind === 'func') {
       const { name, params } = lhs;
       const snap = this.bindAtCall ? scope : snapshot(scope);
-      const fn = (...args: unknown[]) => {
-        if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+      const fn = (...args: unknown[]): unknown => {
+        if (args.length !== params.length) return wrongArity(name, params, args, fn);
         const locals: Record<string, unknown> = {};
         params.forEach((p, i) => (locals[p] = normalize(args[i])));
         return runProgram(stmts, snap, locals);
@@ -909,8 +920,8 @@ class Evaluator {
     if (lhs && lhs.kind === 'func') {
       const { name, params } = lhs;
       const guesses = new ChainScope(local);
-      const solver = (...vals: unknown[]) => {
-        if (vals.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+      const solver = (...vals: unknown[]): unknown => {
+        if (vals.length !== params.length) return wrongArity(name, params, vals, solver);
         const sc = new ChainScope(guesses);
         params.forEach((q, i) => sc.set(q, normalize(vals[i])));
         args.forEach((n) => {

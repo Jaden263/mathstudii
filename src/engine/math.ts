@@ -27,6 +27,29 @@ export const math: MathJsInstance = create(all, { number: 'number', precision: 6
       },
     }),
   }, { override: true });
+  // A temperature in °C or °F is an absolute temperature, as in Mathcad and SMath: 72 °F is
+  // 295.37 K from the moment it is written, so 2·T, T⁴ and 300 K − T calculate in kelvin
+  // (a difference of temperatures is Δ°C, which is K). Shown in °F it is 72 °F again.
+  const absolute = (v: unknown): unknown => {
+    if (!v || (v as Unit).type !== 'Unit') return v;
+    const u = v as Unit & { units: { unit: { offset: number }; power: number }[] };
+    if (u.value === null || !u.units.some((x) => x.unit.offset !== 0)) return v;
+    if (u.units.length !== 1 || u.units[0].power !== 1) return v;
+    return math.unit(u.toNumber('K'), 'K');
+  };
+  const withAbsolute = (name: string, keys: string[]) => {
+    const old = fns[name] as { signatures: Record<string, (...a: unknown[]) => unknown> };
+    const sigs = { ...old.signatures };
+    for (const k of keys) {
+      const f = sigs[k];
+      if (f) sigs[k] = (...a: unknown[]) => absolute(f(...a));
+    }
+    return typed(name, sigs);
+  };
+  math.import({
+    multiply: withAbsolute('multiply', ['number,Unit', 'Unit,number']),
+    unit: withAbsolute('unit', ['number,string']),
+  }, { override: true });
   // mod(t, T) of quantities of one kind (10 s, 3 s): the remainder, in the unit of t
   const mod = fns.mod;
   math.import({
@@ -58,9 +81,10 @@ export const math: MathJsInstance = create(all, { number: 'number', precision: 6
     smaller: compareWithZero('smaller', (d) => d < 0),
     largerEq: compareWithZero('largerEq', (d) => d >= 0),
     smallerEq: compareWithZero('smallerEq', (d) => d <= 0),
-    // and text equals text ("fixed" == "fixed"), as in Mathcad, rather than as numbers
-    equal: compareWithZero('equal', (d) => d === 0, { 'string, string': (a: string, b: string) => a === b }),
-    unequal: compareWithZero('unequal', (d) => d !== 0, { 'string, string': (a: string, b: string) => a !== b }),
+    // and text equals text ("fixed" == "fixed"), as in Mathcad, rather than as numbers; text and
+    // a number are never equal ("" ≠ 0, "5" ≠ 5)
+    equal: compareWithZero('equal', (d) => d === 0, { 'string, string': (a: string, b: string) => a === b, 'string, number': () => false, 'number, string': () => false }),
+    unequal: compareWithZero('unequal', (d) => d !== 0, { 'string, string': (a: string, b: string) => a !== b, 'string, number': () => true, 'number, string': () => true }),
     compare: compareWithZero('compare', (d) => Math.sign(d)),
   }, { override: true });
 }

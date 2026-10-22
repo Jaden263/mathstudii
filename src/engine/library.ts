@@ -6,7 +6,27 @@ import { compileNode } from './compile';
 import * as N from './numeric';
 
 /** Worksheet-level settings the library needs (set by the evaluator before each run). */
-export const engineCtx = { origin: 0, tol: 1e-9, iterationBudget: 5e6, deadline: Infinity };
+export const engineCtx = {
+  origin: 0, tol: 1e-9, iterationBudget: 5e6, deadline: Infinity,
+  /** Mathcad 11–15: a function called with its first arguments only is the function of the rest. */
+  partialCalls: false,
+  /** Mathcad 11–15: a program's local read before it is assigned is 0. */
+  zeroLocals: false,
+};
+
+/**
+ * A user function called with a number of arguments other than its parameters': an error, or
+ * (Mathcad 11–15, partialCalls) with fewer, the function of the parameters left, f(a) of
+ * f(x, y) being y ↦ f(a, y).
+ */
+export function wrongArity(name: string, params: string[], args: unknown[], fn: (...a: unknown[]) => unknown): (...more: unknown[]) => unknown {
+  if (engineCtx.partialCalls && args.length > 0 && args.length < params.length) {
+    // the arguments as they are now (an array a program goes on writing is not the one given)
+    const given = args.map((a) => (isMatrix(a) ? a.clone() : a));
+    return (...more: unknown[]) => fn(...given, ...more);
+  }
+  throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+}
 
 type Raw = ((args: MathNode[], m: unknown, scope: ScopeLike) => unknown) & { rawArgs?: boolean };
 
@@ -100,6 +120,19 @@ function truthy(v: unknown): boolean {
   if (isUnit(v)) return (v.value as number) !== 0;
   if (isMatrix(v) || Array.isArray(v)) return toVector(v).every(truthy);
   return !!v;
+}
+
+/** The real or imaginary part of a number, a quantity (in its unit) or each element of an array. */
+function complexPart(z: unknown, part: 're' | 'im'): unknown {
+  if (isMatrix(z) || Array.isArray(z)) return math.map(z as never, ((e: unknown) => complexPart(e, part)) as never);
+  if (isUnit(z)) {
+    const v = z.value as unknown;
+    const p = isComplex(v) ? v[part] : part === 're' ? (v as number) : 0;
+    const c = z.clone();
+    (c as unknown as { value: number }).value = p;
+    return c;
+  }
+  return math[part](z as never);
 }
 
 export function tick(n = 1) {
@@ -305,8 +338,9 @@ export function assignIndex(current: unknown, idx: unknown[], value: unknown): M
     if (M.size()[0] === 0) M = math.zeros([0, 0], 'dense') as Matrix;
     else M = math.reshape(M, [M.size()[0], 1]) as Matrix;
   }
-  if ((isMatrix(value) || Array.isArray(value)) && M.size().length === ks.length) {
-    // an array as an element makes a nested array (Mathcad): grow to the place, then put it there
+  if ((isMatrix(value) || Array.isArray(value) || typeof value === 'string') && M.size().length === ks.length) {
+    // an array as an element makes a nested array (Mathcad): grow to the place, then put it
+    // there; so does a string, which mathjs would otherwise take for characters to spread
     const grown = math.subset(M, math.index(...ks), 0 as never, 0 as never) as Matrix;
     const size = grown.size();
     const data = grown.toArray() as unknown as unknown[];
@@ -317,6 +351,90 @@ export function assignIndex(current: unknown, idx: unknown[], value: unknown): M
     return new Dense({ data, size });
   }
   return math.subset(M, math.index(...ks), value as never, 0 as never) as Matrix;
+}
+
+/**
+ * Write one element of an array the caller owns (made by assignIndex for it, seen by no one
+ * else) in place: within its size, past the end of a vector, or in a new last row of a
+ * matrix (zeros filling the rest, as assignIndex fills them). False when that is not possible
+ * here (a column past the last, a vector given two subscripts, an array or a function as the
+ * value); assignIndex does it then.
+ */
+export function assignInPlace(M: unknown, idx: unknown[], value: unknown): boolean {
+  if (!isMatrix(M) || isMatrix(value) || Array.isArray(value) || typeof value === 'function') return false;
+  const m = M as unknown as { _data: unknown[]; _size: number[] };
+  if (!Array.isArray(m._data) || !Array.isArray(m._size)) return false;
+  const o = engineCtx.origin;
+  const ks = idx.map((i) => int(i, 'index') - o);
+  if (ks.some((k) => k < 0)) return false;
+  const size = m._size;
+  if (size.length === 1 && ks.length === 1) {
+    while (size[0] < ks[0]) {
+      m._data.push(0);
+      size[0]++;
+    }
+    if (ks[0] === size[0]) {
+      m._data.push(value);
+      size[0]++;
+    } else m._data[ks[0]] = value;
+    return true;
+  }
+  if (size.length === 2 && ks.length === 2 && ks[1] < size[1] && size[1] > 0) {
+    while (size[0] <= ks[0]) {
+      m._data.push(new Array(size[1]).fill(0));
+      size[0]++;
+    }
+    (m._data[ks[0]] as unknown[])[ks[1]] = value;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Many elements written one after the other, x[i] := f(i) over a range: what assignIndex gives
+ * element by element, with the array copied once instead of at every element (65 536 elements
+ * in a fraction of a second, not minutes). Arrays as values fall back to assignIndex.
+ */
+export function assignMany(current: unknown, entries: { idx: unknown[]; value: unknown }[]): unknown {
+  if (!entries.length) return current;
+  const k = entries[0].idx.length;
+  if (k < 1 || k > 2 || entries.some((e) => e.idx.length !== k || isMatrix(e.value) || Array.isArray(e.value))) {
+    return entries.reduce((cur: unknown, e) => assignIndex(cur, e.idx, e.value), current);
+  }
+  const o = engineCtx.origin;
+  const at = (i: unknown) => {
+    const n = int(i, 'index') - o;
+    if (n < 0) throw new Error(`Index below ORIGIN (${o})`);
+    return n;
+  };
+  // the array as assignIndex starts from it: a copy of the current one, or an empty one
+  let M: Matrix = isMatrix(current) ? current : Array.isArray(current) ? math.matrix(current as never) : ((k === 1 ? math.matrix([]) : math.zeros([0, 0], 'dense')) as Matrix);
+  let size = M.size();
+  let place: (idx: unknown[]) => number[];
+  if (k === 1 && size.length === 2) {
+    if (size[1] === 1) place = (idx) => [at(idx[0]), 0];
+    else if (size[0] === 1) place = (idx) => [0, at(idx[0])];
+    else throw new Error('Matrices take two subscripts [row, col]');
+  } else {
+    if (k === 2 && size.length === 1) {
+      M = size[0] === 0 ? (math.zeros([0, 0], 'dense') as Matrix) : (math.reshape(M, [size[0], 1]) as Matrix);
+      size = M.size();
+    }
+    place = (idx) => idx.map(at);
+  }
+  const spots = entries.map((e) => place(e.idx));
+  const dims = size.map((d, j) => Math.max(d, ...spots.map((s) => s[j] + 1)));
+  const old = M.toArray() as unknown[];
+  let data: unknown[];
+  if (dims.length === 1) {
+    data = Array.from({ length: dims[0] }, (_, i) => (i < size[0] ? old[i] : 0));
+    spots.forEach((s, n) => (data[s[0]] = entries[n].value));
+  } else {
+    data = Array.from({ length: dims[0] }, (_, i) => Array.from({ length: dims[1] }, (_, j) => (i < size[0] && j < size[1] ? (old[i] as unknown[])[j] : 0)));
+    spots.forEach((s, n) => ((data[s[0]] as unknown[])[s[1]] = entries[n].value));
+  }
+  const Dense = (math as unknown as { DenseMatrix: new (d: { data: unknown[]; size: number[] }) => Matrix }).DenseMatrix;
+  return new Dense({ data, size: dims });
 }
 
 /** Column vectors (n×1) become 1-D vectors so subscripts and products behave like Mathcad. */
@@ -779,8 +897,9 @@ const LIBRARY: Record<string, unknown> = {
     mcStdevS: (v: unknown) => stat(v, (xs) => Math.sqrt(varOf(xs, true))),
     mcVarP: (v: unknown) => stat(v, (xs) => varOf(xs, false), 2),
     mcVarS: (v: unknown) => stat(v, (xs) => varOf(xs, true), 2),
-    Re: (z: unknown) => math.re(z as never),
-    Im: (z: unknown) => math.im(z as never),
+    // of a quantity, the part times its unit: Im(5 m) = 0 m, Re((3 + 4i) V) = 3 V
+    Re: (z: unknown) => complexPart(z, 're'),
+    Im: (z: unknown) => complexPart(z, 'im'),
     trunc: (x: unknown) => math.fix(x as never),
     combin: (n: unknown, k: unknown) => math.combinations(int(n) as never, int(k) as never),
     permut: (n: unknown, k: unknown) => math.permutations(int(n) as never, int(k) as never),

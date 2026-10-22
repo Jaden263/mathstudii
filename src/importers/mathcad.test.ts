@@ -407,6 +407,26 @@ describe('Mathcad import: programs as operands, references, Mathcad 15 names', (
     expect(results(ws).by('2*f_ck =').tex).toContain('60');
   });
 
+  it('a reference the file does not cache: listed to pick; once picked, its definitions in a locked, collapsed area', () => {
+    top = 0;
+    const main = `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>
+      <region region-id="1" top="40" left="0"><reference used-cache="false" href=".\\..\\Inputs.mcdx"/></region>
+      <region region-id="2" top="70" left="40"><math>${evalOf(ap('<ml:mult/>', real(2), id('Q')))}</math></region></regions></worksheet>`;
+    const inputs = `<?xml version="1.0" encoding="utf-8"?><worksheet xmlns="http://schemas.mathsoft.com/worksheet50" xmlns:ml="http://schemas.mathsoft.com/math50"><regions>
+      <region region-id="5" top="20" left="20"><math>${define(id('Q'), unit(3, 'm'))}</math></region>
+      <region region-id="6" top="60" left="20"><reference href="Inputs.mcdx"/></region></regions></worksheet>`;
+    const file = zipSync({ 'mathcad/worksheet.xml': strToU8(main) });
+    const without = importMathcad(file, 'x.mcdx');
+    expect(without.references).toEqual(['Inputs.mcdx']);
+    expect(without.warnings.join('\n')).toMatch(/A reference to Inputs\.mcdx .*Pick Inputs\.mcdx in this report/);
+    const withRef = importMathcad(file, 'x.mcdx', { references: { 'Inputs.mcdx': zipSync({ 'mathcad/worksheet.xml': strToU8(inputs) }) } });
+    expect(withRef.references).toBeUndefined();
+    expect(withRef.warnings.join('\n')).toMatch(/references Inputs\.mcdx: its definitions come from the copy you picked/);
+    const bar = withRef.ws.regions.find((r): r is AreaRegion => r.kind === 'area')!;
+    expect(bar).toMatchObject({ title: 'Reference: Inputs.mcdx', collapsed: true, locked: true });
+    expect(results(withRef.ws).by('2*Q =').tex).toMatch(/= 6\\ \\mathrm\{m\}$/);
+  });
+
   it('Mathcad 15: a name is a unit until the worksheet defines it, and a name in a style of its own is another name', () => {
     const font = (n: string) => `<ml:id xml:space="preserve" font="17">${n}</ml:id>`;
     const { ws } = importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
@@ -603,6 +623,28 @@ describe('Mathcad 15 import: custom operators, names in several styles, program 
     ].join(''));
     expect(sources(ws).slice(0, 3)).toEqual(['F := 1', 'F_ := 2', 'F_2 := 3']);
     expect(results(ws).by('F + 10*F_ + 100*F_2 =').tex).toMatch(/= 321$/);
+  });
+  it('a name in the Constants style (font 1) is the plain name; trace(S, …) is a message; the worksheet calculates as Mathcad 15', () => {
+    const constant = (n: string) => `<ml:id xml:space="preserve" font="1">${n}</ml:id>`;
+    const { ws } = xmcdOf([
+      m15(1, fn15('twice', ['x'], program(
+        `<ml:localDefine><ml:function>${constant('f')}<ml:boundVars>${id15('y')}</ml:boundVars></ml:function>${ap('<ml:mult/>', real(2), id15('y'))}</ml:localDefine>`,
+        ap(id15('trace'), `<ml:sequence><ml:str>x = {0}</ml:str>${id15('x')}</ml:sequence>`),
+        ap(id15('f'), id15('x')),
+      ))),
+      m15(2, evalOf(ap(id15('twice'), ap('<ml:mult/>', constant('π'), real(1))))),
+    ].join(''));
+    expect(sources(ws)[0]).toBe('twice(x) :=\n  f(y) ← 2*y\n  traceText("x = {0}", x)\n  f(x)');
+    expect(ws.settings.mathcad15).toBe(true);
+    expect(results(ws).by('twice(π*1) =').tex).toMatch(/= 6\.2832$/);
+  });
+  it('(M)[i] ← v: an element of M whose name is drawn in parentheses', () => {
+    const { ws } = xmcdOf(m15(1, define(id15('M'), program(
+      `<ml:localDefine>${ap('<ml:indexer/>', `<ml:parens>${id15('v')}</ml:parens>`, real(1))}${real(7)}</ml:localDefine>`,
+      id15('v'),
+    ))) + m15(2, evalOf(ap('<ml:indexer/>', id15('M'), real(1)))));
+    expect(sources(ws)[0]).toBe('M :=\n  v[1] ← 7\n  v');
+    expect(results(ws).by('M[1] =').tex).toMatch(/= 7$/);
   });
   it('(break) and (return x): a program statement in parentheses is that statement', () => {
     const { ws } = xmcdOf([

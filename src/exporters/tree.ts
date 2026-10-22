@@ -223,6 +223,13 @@ export class TreeReader {
           if (s.block) return { k: 'localProgram', target, body: walk(s.block) };
           return { k: 'local', target, value: this.expr(s.expr, local) };
         }
+        case 'elements': {
+          // [a[i]; b[i]] ← v: the indices read before the names become locals
+          const target: Target = { k: 'elements', items: s.targets.map((t) => ({ name: t.name, idx: t.index ? t.index.map((i) => this.expr(i, local)) : [] })) };
+          s.targets.forEach((t) => local.add(t.name));
+          if (s.block) return { k: 'localProgram', target, body: walk(s.block) };
+          return { k: 'local', target, value: this.expr(s.expr, local) };
+        }
         case 'if':
           // a condition's lone = is a comparison (if x = 0), as in Mathcad
           return { k: 'if', branches: s.branches.map((b) => ({ cond: b.cond === null ? null : this.equation(b.cond, local), body: walk(b.body) })) };

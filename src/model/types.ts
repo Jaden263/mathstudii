@@ -424,6 +424,12 @@ export interface WorksheetSettings {
    * capturing them when they are defined (Mathcad, the default).
    */
   lateBinding?: boolean;
+  /**
+   * Calculate with the rules of Mathcad 11–15 where they differ from Mathcad Prime's (set for
+   * worksheets imported from .xmcd): a function called with its first arguments only is the
+   * function of the others, and a program's local read before it is assigned is 0.
+   */
+  mathcad15?: boolean;
   /** Font size, line thickness and text font of the whole worksheet. */
   format?: WorksheetFormat;
   /** Header and footer on every page. */
