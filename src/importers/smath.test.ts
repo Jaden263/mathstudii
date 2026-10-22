@@ -287,7 +287,7 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
       + `<region id="1d44faa63ab44d5597c0a27d0d17358f" left="80" top="0" width="52" height="24" color="#000000" fontSize="10"><math><input>${def(v('t'), v('10') + u('mm') + op('*'))}</input></math></region></regions></text></region>`;
     const { ws } = load(textRegion, math(v('t') + v('2') + op('^'), { result: 'numeric', unit: u('mm') + v('2') + op('^') }));
     const text = ws.regions.find((r) => r.kind === 'text') as Region & { markdown: string };
-    expect(text.markdown).toBe('Thickness \u2003\u2003\u2003\u2003 of the plate  \n**Note** 2\\*a\\_b  \nsecond line');
+    expect(text.markdown).toBe('Thickness \u2003\u2003\u2003\u2003 of the plate  \n**Note** 2\\*a_b  \nsecond line');
     // blue on yellow, 20 px = 15 pt against SMath's 10 pt
     expect(text.style).toEqual({ color: '#0000ff', background: '#ffff80', fontScale: 1.5 });
     // the math in the text defines t, at its place on the page

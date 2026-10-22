@@ -515,8 +515,22 @@ function pickLang(els: El[]): El | undefined {
   return els.find((e) => (e.getAttribute('lang') ?? '') === 'eng') ?? els.find((e) => !e.getAttribute('lang')) ?? els[0];
 }
 
-/** Characters Markdown (and the $TeX$ and {{value}} syntax of text regions) would read as formatting. */
-const mdEscape = (s: string) => s.replace(/[\\`*_[\]<>#|~]/g, '\\$&').replace(/\$/g, '&#36;').replace(/\{(?=\{)/g, '&#123;').replace(/^(\s*)(\d+)\.(?=\s)/, '$1$2\\.').replace(/^(\s*)([-+])(?=\s)/, '$1\\$2');
+/**
+ * Text as Markdown that shows it as written: only what Markdown would read as formatting is
+ * escaped (emphasis, code, links, HTML tags, strike-through), and $ and {{ that start TeX and values.
+ */
+const mdEscape = (s: string) => s
+  .replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\')
+  .replace(/[*`]/g, '\\$&')
+  .replace(/(?<![\p{L}\p{N}])_|_(?![\p{L}\p{N}])/gu, '\\_')
+  .replace(/\](?=[([:])/g, '\\]')
+  .replace(/<(?=[A-Za-z/!?])/g, '\\<')
+  .replace(/~(?=~)|(?<=~)~/g, '\\~')
+  .replace(/\$/g, '&#36;')
+  .replace(/\{(?=\{)/g, '&#123;');
+
+/** A line that does not start a heading, quote or list (#, >, -, +, 1.). */
+const mdLine = (s: string) => s.replace(/^(\s*)(#|>|[-+](?=\s)|\d+\.(?=\s))/, (_m, sp: string, mark: string) => `${sp}${mark.replace(/^(\d+)\./, '$1\\.').replace(/^([#>+-])/, '\\$1')}`);
 
 /** Inline formatting of a run of SMath text (an HTML-like style attribute, or the 0.9x p attributes). */
 interface Look {
@@ -646,7 +660,7 @@ function richText(el: El, base: Look = {}): RichText {
     }).join('').trim();
   };
   const out = lines.map((l) => {
-    const md = render(l);
+    const md = mdLine(render(l));
     const href = links.get(l);
     return href && md ? `[${md}](${href.replace(/[()\s]/g, encodeURIComponent)})` : md;
   });
@@ -977,7 +991,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         } else if (!result && isOp(t, '≈')) {
           // "R ≈ 14.02 Ω" is a note of a rounded value: text here (≈ calculates nothing)
           const [l, rr] = t.args.map((a) => conv.expr(a).s);
-          regions.push(createRegion('text', at.x, at.y, { markdown: `${mdEscape(l)} ≈ ${mdEscape(rr)}`, width: Math.max(120, width + 20) }));
+          regions.push(createRegion('text', at.x, at.y, { markdown: mdLine(`${mdEscape(l)} ≈ ${mdEscape(rr)}`), width: Math.max(120, width + 20) }));
         } else if (!result && isOp(t, '≡')) {
           // a formula shown for documentation, e.g. "A·x = d"
           try {
