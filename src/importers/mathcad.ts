@@ -8,8 +8,9 @@ import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
   createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH,
-  type Region, type PlotTrace,
+  type AreaRegion, type Region, type PlotTrace,
 } from '../model/types';
+import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
 import { isUnitName } from '../engine/math';
 
@@ -835,22 +836,54 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   // order: Prime by the region's top; Mathcad 15 by the baseline of its math (align-y), so that
   // h := (b − a)/N, whose fraction rises above the line, comes after N := 5 to its left
   type Placed = { region: El; x: number; y: number; order: number };
-  const flatten = (container: El, dx: number, dy: number): Placed[] => {
-    const out: Placed[] = [];
-    for (const r of kids(container).filter((c) => local(c) === 'region')) {
-      const x = dx + Number(r.getAttribute('left') ?? 0) * PX;
-      const y = dy + Number(r.getAttribute('top') ?? 0) * PX;
+  /** An area as it is expanded: its bar at (x, y), its band `height` tall. */
+  type AreaPlace = { x: number; y: number; height: number; collapsed: boolean; locked: boolean; title: string; depth: number };
+  const areas: AreaPlace[] = [];
+  const sizeOf = (r: El) => Number(r.getAttribute('height') ?? r.getAttribute('actualHeight') ?? 0) * PX || 20;
+  /**
+   * The regions of a container placed as on the expanded page. Prime places an area's regions
+   * relative to the area; Mathcad 15 relative to a collapsed area but on the page in an open
+   * one. Both save what follows a collapsed area where it is with the area collapsed, so that
+   * moves down by what the area hides; the import collapses the area again afterwards.
+   * Returns the bottom of what it placed.
+   */
+  const layout = (container: El, ox: number, oy: number, depth: number, out: Placed[]): number => {
+    const items = kids(container).filter((c) => local(c) === 'region').sort((a, b) => Number(a.getAttribute('top') ?? 0) - Number(b.getAttribute('top') ?? 0));
+    const pushes: { at: number; by: number }[] = [];
+    let bottom = oy;
+    for (const r of items) {
+      const top = Number(r.getAttribute('top') ?? 0) * PX;
+      const shift = pushes.reduce((acc, p) => acc + (p.at < top - 0.5 ? p.by : 0), 0);
+      const x = ox + Number(r.getAttribute('left') ?? 0) * PX;
+      const y = oy + top + shift;
       const alignY = r.getAttribute('align-y');
-      const order = !pkg && alignY !== null ? dy + Number(alignY) * PX : y;
+      const order = !pkg && alignY !== null ? oy + Number(alignY) * PX + shift : y;
       const area = child(r, 'Area') ?? child(r, 'area');
-      // Prime: <Area><regions>…; Mathcad 15: a collapsed <area> holds its regions itself
-      const inner = area ? child(area, 'regions') ?? (kids(area).some((c) => local(c) === 'region') ? area : undefined) : undefined;
-      if (inner) out.push(...flatten(inner, x, y));
-      else if (!area) out.push({ region: r, x, y, order });
+      if (!area) {
+        out.push({ region: r, x, y, order });
+        bottom = Math.max(bottom, y + sizeOf(r));
+        continue;
+      }
+      // Prime: <Area><regions>…; Mathcad 15: the area holds its regions itself
+      const inner = child(area, 'regions') ?? area;
+      const collapsed = /^true$/i.test(area.getAttribute('IsCollapsed') ?? area.getAttribute('is-collapsed') ?? '');
+      const locked = /^true$/i.test(area.getAttribute('IsLocked') ?? area.getAttribute('is-locked') ?? '');
+      const relative = !!pkg || collapsed;
+      const at = areas.length;
+      areas.push({ x, y, height: 0, collapsed, locked, title: area.getAttribute('show-name') === 'false' ? '' : area.getAttribute('name') ?? '', depth });
+      const end = layout(inner, relative ? x : ox, relative ? y : oy + shift, depth + 1, out);
+      // the band holds the contents; an open area of Mathcad 15 also saves its own height
+      const saved = !collapsed && !pkg ? sizeOf(r) : 0;
+      const height = Math.max(AREA_BAR + AREA_PAD, end - y + AREA_PAD, saved);
+      areas[at].height = height;
+      if (collapsed) pushes.push({ at: top, by: height - AREA_BAR });
+      bottom = Math.max(bottom, y + height);
     }
-    return out;
+    return bottom;
   };
-  const placed = flatten(regionsEl, 0, 0).sort((a, b) => a.order - b.order || a.x - b.x);
+  const flat: Placed[] = [];
+  layout(regionsEl, 0, 0, 0, flat);
+  const placed = flat.sort((a, b) => a.order - b.order || a.x - b.x);
 
   const regions: Region[] = [];
   let pageBreaks = 0;
@@ -971,10 +1004,20 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   if (solve) warnings.push('A "Given" block has no Find/Minerr call; its constraints were dropped');
   void pageBreaks; // page breaks follow from our own page layout
 
+  // areas: their bars (drawn first, under the regions), collapsed again as in the file
+  const bars = areas.map((a) => createRegion('area', a.x, a.y, { title: a.title, height: Math.round(a.height) }) as AreaRegion);
+  regions.unshift(...bars);
   const moved = fitToPage(regions, pageWidth);
   if (moved) warnings.push(`${moved} region${moved > 1 ? 's' : ''} to the right of Mathcad's page ${moved > 1 ? 'were' : 'was'} moved onto the page`);
   ws.regions = regions;
-  return { ws, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved };
+  let out = nestBands(ws);
+  // a locked area's regions cannot be edited (Mathcad asks for its password to unlock it)
+  const locked = new Set(bars.filter((_, i) => areas[i].locked).flatMap((b) => [...withContents(out.regions, [b.id])]));
+  if (locked.size) out = { ...out, regions: out.regions.map((r) => (locked.has(r.id) ? { ...r, locked: true } : r)) };
+  for (const i of areas.map((_, k) => k).sort((p, q) => areas[q].depth - areas[p].depth)) {
+    if (areas[i].collapsed) out = collapseArea(out, bars[i].id);
+  }
+  return { ws: out, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved };
 }
 
 /** A Mathcad 15 shown result: the <result> inside the region's <ml:eval>. */

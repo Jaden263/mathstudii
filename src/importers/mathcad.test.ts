@@ -3,7 +3,8 @@ import { zipSync, strToU8 } from 'fflate';
 import { importMathcad } from './mathcad';
 import { evaluateWorksheet, type MathResult, type SolveResult } from '../engine/evaluator';
 import { loadCas } from '../engine/symbolic';
-import type { Region, Worksheet } from '../model/types';
+import type { AreaRegion, Region, Worksheet } from '../model/types';
+import { expandArea } from '../model/areas';
 
 // ---------------------------------------------------------------- Mathcad Prime fixture
 
@@ -275,5 +276,49 @@ describe('Mathcad import: constructs met in public worksheets', () => {
     // Lab01.xmcd saved 47.620698 for this vector
     expect(by('mag([-36.13; 5.98; -30.44]) =').tex).toMatch(/= 47\.6207$/);
     expect(by('mag([1, 2; 3, 4]) =').tex).toMatch(/= -2$/);
+  });
+});
+
+describe('Mathcad import: areas', () => {
+  const xmcdOf = (regions: string) => importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>${regions}</regions></worksheet>`), 'a.xmcd');
+  const m15 = (rid: string, left: number, top: number, inner: string) => `<region region-id="${rid}" left="${left}" top="${top}" width="60" height="15"><math>${inner}</math></region>`;
+  it('Mathcad 15: an open area holds its regions on the page, a collapsed one relative to itself', () => {
+    const { ws } = xmcdOf([
+      `<region region-id="a1" left="0" top="39" width="500" height="120"><area is-collapsed="false" name="Inputs" show-name="true">${m15('1', 42, 60, define(id15('a'), real(2)))}</area></region>`,
+      // collapsed: its regions at 20 pt below its own top, and what follows saved where it is with it collapsed
+      `<region region-id="a2" left="0" top="300" width="500" height="200"><area is-collapsed="true" name="Hidden">${m15('2', 42, 20, define(id15('b'), ap('<ml:mult/>', id15('a'), real(3))))}</area></region>`,
+      m15('3', 42, 330, evalOf(id15('b'))),
+    ].join(''));
+    const PX = 96 / 72;
+    const [open, shut] = ws.regions.filter((r): r is AreaRegion => r.kind === 'area');
+    expect(open).toMatchObject({ title: 'Inputs', y: Math.round(39 * PX) });
+    expect(open.collapsed).toBeUndefined();
+    const a = ws.regions.find((r) => r.kind === 'math' && r.source === 'a := 2')!;
+    expect(Math.abs(a.y - 60 * PX)).toBeLessThan(13); // on the page, inside the open band
+    expect(a.y > open.y && a.y < open.y + open.height).toBe(true);
+    const b = ws.regions.find((r) => r.kind === 'math' && r.source === 'b := a*3')!;
+    expect(shut).toMatchObject({ title: 'Hidden', collapsed: true, hidden: [b.id] });
+    // hidden at its place in the open band; what follows stays where Mathcad shows it
+    expect(b.y).toBeGreaterThan(shut.y);
+    const show = ws.regions.find((r) => r.kind === 'math' && r.source === 'b =')!;
+    expect(Math.abs(show.y - 330 * PX)).toBeLessThan(13);
+    expect((results(ws).by('b =')).tex).toMatch(/= 6$/);
+    // open, the area holds b and pushes the result below its end line
+    const opened = expandArea(ws, shut.id);
+    const below = opened.regions.find((r) => r.id === show.id)!;
+    expect(below.y).toBeGreaterThan(shut.y + shut.height - 1);
+  });
+  it('Prime: regions relative to the area; IsCollapsed and IsLocked', () => {
+    const { ws } = primeOf(
+      `<region region-id="a" left="0" top="100"><Area IsCollapsed="true" IsLocked="true"><regions>${math(define(id('k'), real(4)), 20)}</regions></Area></region>`,
+      `<region region-id="n" left="40" top="190"><math>${evalOf(id('k'))}</math></region>`,
+    );
+    const bar = ws.regions.find((r): r is AreaRegion => r.kind === 'area')!;
+    const k = ws.regions.find((r) => r.kind === 'math' && r.source === 'k := 4')!;
+    expect(bar).toMatchObject({ collapsed: true, hidden: [k.id], locked: true });
+    expect(k.locked).toBe(true);
+    expect(ws.regions.find((r) => r.kind === 'math' && r.source === 'k =')!.y).toBe(190);
+    expect(results(ws).by('k =').tex).toMatch(/= 4$/);
   });
 });
