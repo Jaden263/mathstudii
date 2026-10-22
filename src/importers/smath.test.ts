@@ -881,3 +881,15 @@ describe('SMath import: display units', () => {
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
   });
 });
+
+describe('SMath import: several names defined at once', () => {
+  it('mat(a, b, 2, 1) := v assigns each element of v to its name', () => {
+    id = 0;
+    top = 0;
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('a') + v('b') + v('2') + v('1') + fn('mat', 4), v('3') + v('4') + u('N') + op('*') + v('2') + v('1') + fn('mat', 4)))}${
+      region(`<math><input>${v('a') + v('b') + op('*')}</input><result action="numeric">${v('12') + u('N') + op('*')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)).toEqual(['[a; b] := [3; 4 N]', 'a*b =']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+});

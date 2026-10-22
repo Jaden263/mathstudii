@@ -87,9 +87,19 @@ const isUserUnit = (t: Tok | undefined) => !!t && t.type === 'operand' && t.styl
 function targetName(t: Tok): string | null {
   if (isVar(t) || isUserUnit(t)) return smName(t.text);
   if (isFn(t, 'el') && isVar(t.args[0])) return smName(t.args[0].text);
-  if (t.type === 'function') return smName(t.text);
+  if (t.type === 'function' && !destructured(t)) return smName(t.text);
   return null;
 }
+
+/** The names of mat(a, b, …, m, n) := v (or sys(…)): SMath assigns each element of v to its name. */
+function destructured(t: Tok): string[] | null {
+  if (!isFn(t, 'mat', 'sys')) return null;
+  const items = listItems(t);
+  return items.length > 1 && items.every(isVar) ? items.map((a) => smName(a.text)) : null;
+}
+
+/** The left side of f(x, y) := …: a function definition (not x[i] := … nor [a; b] := …). */
+const isFunctionDef = (t: Tok) => t.type === 'function' && !isFn(t, 'el') && !destructured(t);
 
 /** Names a tree assigns with ":" (anywhere inside it), and the loop counters among them. */
 function assignments(t: Tok): { all: string[]; element: Set<string>; counters: Set<string> } {
@@ -97,6 +107,7 @@ function assignments(t: Tok): { all: string[]; element: Set<string>; counters: S
   const element = new Set<string>(), counters = new Set<string>();
   walk(t, (n) => {
     if (isOp(n, ':')) {
+      for (const d of destructured(n.args[0]) ?? []) if (!all.includes(d)) all.push(d);
       const name = targetName(n.args[0]);
       if (name && !all.includes(name)) all.push(name);
       if (name && isFn(n.args[0], 'el')) element.add(name);
@@ -124,6 +135,7 @@ const ELSEWHERE: { test: RegExp; what: string }[] = [
 
 /** Names a top-level formula defines on the worksheet: x := …, x[i] := …, a unit of its own, a loop's variables. */
 function worksheetDefines(t: Tok): string[] {
+  if (isOp(t, ':') && destructured(t.args[0])) return destructured(t.args[0])!;
   if (isOp(t, ':')) {
     const n = targetName(t.args[0]);
     return n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el')) ? [n] : [];
@@ -543,6 +555,9 @@ class Converter {
   target(t: Tok): string {
     if (isVar(t) || isUserUnit(t)) return this.name(t.text);
     if (isFn(t, 'el')) return this.expr(t).s;
+    // mat(a, b, c, 3, 1) := v assigns each element of v to its name
+    const names = destructured(t);
+    if (names) return `[${listItems(t).map((a) => this.name(a.text)).join('; ')}]`;
     if (t.type === 'function') {
       if (!t.args.every(isVar)) throw new Unsupported('a function definition with non-name parameters');
       return `${this.arity(t.text, this.functionNames[smName(t.text)] ?? this.name(t.text), t.args.length)}(${t.args.map((a) => this.name(a.text)).join(', ')})`;
@@ -1010,7 +1025,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
   {
     const fns = new Set<string>(), vars = new Set<string>();
     for (const toks of inputs) for (const t of toks) {
-      if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) fns.add(smName(t.args[0].text));
+      if (isOp(t, ':') && isFunctionDef(t.args[0])) fns.add(smName(t.args[0].text));
       else for (const n of worksheetDefines(t)) vars.add(n);
     }
     conv.userFunctions = fns;
@@ -1051,7 +1066,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
     if (!arities.has(name)) arities.set(name, new Set());
     arities.get(name)!.add(n);
   };
-  for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) addArity(t.args[0].text, t.args[0].args.length);
+  for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isFunctionDef(t.args[0])) addArity(t.args[0].text, t.args[0].args.length);
   for (const { sheet } of includes.values()) if (sheet) for (const [f, ns] of sheet.defines.functions) for (const n of ns) addArity(f, n);
   for (const [f, ns] of arities) if (ns.size > 1) conv.overloads.set(f, [...ns].sort((a, b) => a - b));
   if (conv.overloads.size) {
@@ -1082,7 +1097,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
   const functionsAt = (i: number) => {
     const out = new Map<string, FnDef>();
     const take = (j: number) => {
-      for (const t of inputs[j]) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el') && t.args[0].args.every(isVar)) out.set(t.args[0].text, { params: t.args[0].args, body: t.args[1] });
+      for (const t of inputs[j]) if (isOp(t, ':') && isFunctionDef(t.args[0]) && t.args[0].args.every(isVar)) out.set(t.args[0].text, { params: t.args[0].args, body: t.args[1] });
     };
     for (let j = inputs.length - 1; j > i; j--) take(j);
     for (let j = 0; j < i; j++) take(j);
@@ -1113,7 +1128,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
   for (const toks of inputs) {
     for (const t of toks) {
       for (const n of assignments(t).all) conv.assigned.add(n);
-      if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) for (const p of t.args[0].args) if (isVar(p)) conv.assigned.add(smName(p.text));
+      if (isOp(t, ':') && isFunctionDef(t.args[0])) for (const p of t.args[0].args) if (isVar(p)) conv.assigned.add(smName(p.text));
     }
   }
   // SMath collects plot items in a variable a plot draws: plotter := sys(a, b, c, n, 1)
@@ -1152,7 +1167,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
   // functions only a plugin or SMath's computer has: say once which, and how many regions use them
   {
     const defined = new Set<string>();
-    for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) defined.add(t.args[0].text);
+    for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isFunctionDef(t.args[0])) defined.add(t.args[0].text);
     const hits = ELSEWHERE.map(() => ({ names: new Set<string>(), regions: 0 }));
     inputs.forEach((toks, i) => {
       // an include(…) of a worksheet is reported where it is
@@ -1306,7 +1321,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
           }
           // a program shows its value with "x := =" (in the unit it has)
           conv.solveFrom = isFn(rhs, 'solve') && rhs.args.length === 2 && result && action !== 'symbolic' ? shownRoots(conv, result) : null;
-          conv.params = new Set(t.args[0].type === 'function' && !isFn(t.args[0], 'el') ? t.args[0].args.filter(isVar).map((a) => smName(a.text)) : []);
+          conv.params = new Set(isFunctionDef(t.args[0]) ? t.args[0].args.filter(isVar).map((a) => smName(a.text)) : []);
           const rhsSrc = isProgram(rhs) ? `${!late.length && show === ' =' ? ' =' : ''}\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
           conv.params = new Set();
           conv.solveFrom = null;
@@ -1379,6 +1394,11 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
           // Clear(x, y): from here they are undefined again (symbols, fresh vectors)
           for (const a of t.args) if (isVar(a)) definedBefore.delete(smName(a.text));
           for (const a of t.args) if (isVar(a)) conv.scalars.delete(smName(a.text));
+        } else if (isOp(t, ':') && destructured(t.args[0])) {
+          for (const n of destructured(t.args[0])!) {
+            definedBefore.add(n);
+            conv.scalars.delete(n);
+          }
         } else if (isOp(t, ':')) {
           const n = targetName(t.args[0]);
           if (n && (isVar(t.args[0]) || isUserUnit(t.args[0]) || isFn(t.args[0], 'el'))) definedBefore.add(n);
@@ -1494,7 +1514,7 @@ function importSheet(data: Uint8Array, fileName: string, file: (name: string) =>
   inputs.forEach((toks, i) => {
     if (disabled(placed[i])) return;
     for (const t of toks) {
-      if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) {
+      if (isOp(t, ':') && isFunctionDef(t.args[0])) {
         if (!defines.functions.has(t.args[0].text)) defines.functions.set(t.args[0].text, new Set());
         defines.functions.get(t.args[0].text)!.add(t.args[0].args.length);
       } else for (const n of worksheetDefines(t)) defines.variables.add(n);
