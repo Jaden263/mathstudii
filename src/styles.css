@@ -7075,3 +7075,15 @@ div.pl-cutplot {
   font: inherit;
   cursor: pointer;
 }
+
+.import-references {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-references p {
+  flex-basis: 100%;
+  margin: 0;
+}

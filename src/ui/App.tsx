@@ -210,6 +210,7 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [sketchUI, setSketchUI] = useState<SketchUI>(INITIAL_SKETCH_UI);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const importSource = useRef<{ bytes: Uint8Array; name: string; picked: Map<string, Uint8Array> } | null>(null);
   const [exportReport, setExportReport] = useState<ExportReport | null>(null);
   const separateRef = useRef<(quiet?: boolean, coalesce?: string, keepOrder?: boolean) => void>(() => {});
   const separateTimer = useRef<number | undefined>(undefined);
@@ -475,13 +476,18 @@ export function App() {
     }
   };
 
-  /** Convert a Mathcad or SMath file; it opens as a new, unsaved mathstudii worksheet. */
-  const importForeignFile = async (bytes: Uint8Array, name: string) => {
+  /**
+   * Convert a Mathcad or SMath file; it opens as a new, unsaved mathstudii worksheet. `picked` are
+   * worksheets it includes that the user picked (by lower-case file name).
+   */
+  const importForeignFile = async (bytes: Uint8Array, name: string, picked = new Map<string, Uint8Array>()) => {
     const res = foreignFormat(name) === 'smath'
-      ? (await import('../importers/smath')).importSmath(bytes, name)
+      ? (await import('../importers/smath')).importSmath(bytes, name, { file: (n) => picked.get(n.toLowerCase()) })
       : (await import('../importers/mathcad')).importMathcad(bytes, name);
     loadDoc(res.ws, null);
-    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
+    // the file is kept only while the report can still ask for the worksheets it includes
+    importSource.current = res.references?.some((r) => !r.found) ? { bytes, name, picked } : null;
+    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length, references: res.references });
     // the source program lays out math at different sizes: push overlaps apart once rendered,
     // keeping the order in which the regions calculate
     window.setTimeout(() => separateRef.current(true, 'separate', true), 400);
@@ -1378,7 +1384,23 @@ export function App() {
           />
         </div>
       )}
-      {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
+      {importReport && (
+        <ImportReportDialog
+          report={importReport}
+          onClose={() => { setImportReport(null); importSource.current = null; }}
+          onPickReference={async (ref, file) => {
+            const src = importSource.current;
+            if (!src) return;
+            src.picked.set(ref.toLowerCase(), new Uint8Array(await file.arrayBuffer()));
+            setImportReport(null);
+            try {
+              await importForeignFile(src.bytes, src.name, src.picked);
+            } catch (err) {
+              window.alert(`Could not import ${src.name} with ${file.name}: ${(err as Error).message}`);
+            }
+          }}
+        />
+      )}
       {exportReport && <ExportReportDialog report={exportReport} onClose={() => setExportReport(null)} />}
       {protectDlg && (
         <ProtectDialog
