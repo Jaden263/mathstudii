@@ -23,6 +23,10 @@ describe('SMath built-ins', () => {
     expect(nums(last(['σ(φ) := 10 MPa + 30 MPa*cos(2*φ)', 'roots(σ(φ) == 0, φ, 1) =']))[0]).toBeCloseTo(0.5 * Math.acos(-1 / 3), 3);
     expect(last(['L := roots(x^2 == 4 m^2, x, 1 m)', 'L = m'])).toMatch(/= 2\\ \\mathrm\{m\}/);
     expect(last(['roots(x^2 - 2, x) ='])).toMatch(/ERR roots: give an initial value/);
+    // SMath saved V_BE = 1.231 V: f takes a number x (x·V in it), the initial value v_x is in V
+    const diode = ['I_s := 0.05 pA', 'V_T := 25.865 mV', 'f(x) := I_s/(A*76)*(e^(x*V/(1.8*V_T)) - 1) - (15 - x)/68000', 'v_x := 1.2355 V'];
+    expect(nums(last([...diode, 'roots(f(x), x, v_x) =']))[0]).toBeCloseTo(1.2312, 3);
+    expect(last(['roots(x - 1 s, x, 1 m) ='])).toMatch(/ERR/);
   });
 
   it('roots(f, x, a, b) gives every root between a and b (SMath solve(f, x, a, b))', () => {

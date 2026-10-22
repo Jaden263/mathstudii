@@ -186,6 +186,9 @@ const SMATH_UNITS: Record<string, string> = {
   ksi: 'ksi', kph: 'kph',
 };
 
+/** Temperatures with an offset: SMath converts 27 °C to 300.15 K where it is the unit of a value. */
+const ABSOLUTE_TEMPERATURE = new Set(['°C', '°F']);
+
 /** Display units that cannot be written as a unit here, and the unit shown instead. */
 const SMATH_DISPLAY: Record<string, { unit: string; why: string }> = {
   tonnef: { unit: 'kgf', why: 'tonnef (tonne-force) is not a unit here: shown in kgf (1 tonnef = 1000 kgf)' },
@@ -234,12 +237,15 @@ class Converter {
   /** Inside a display unit, where every name is a unit even when a variable has its name. */
   private inContract = false;
   private exactUnits = false;
+  private inResult = false;
 
   /**
    * Variables whose definition reads names only defined further down (SMath keeps those as
    * symbols until the value is used): here functions of those names, called where they are used.
    */
   lazy = new Map<string, string[]>();
+  /** The roots SMath showed for x := solve(f, x): where the root is looked for again. */
+  solveFrom: string[] | null = null;
   /** Why a display unit is shown in another unit (once per worksheet). */
   displayNotes = new Set<string>();
   /** Units the worksheet defines itself (kcf := 1 kip/ft³): variables here. */
@@ -268,6 +274,19 @@ class Converter {
     } finally {
       this.inContract = false;
       this.exactUnits = false;
+    }
+  }
+
+  /**
+   * A value SMath showed: its unit as SMath worked it out, so a °C in it is a difference
+   * (2 W·23 °C/W shows 46 °C, which is 46 K).
+   */
+  shownValue(t: Tok): string {
+    this.inResult = true;
+    try {
+      return this.expr(t).s;
+    } finally {
+      this.inResult = false;
     }
   }
 
@@ -310,6 +329,11 @@ class Converter {
     return `${name}(${late.map((p) => this.lazyCall(p, seen)).join(', ')})`;
   }
 
+  /** °C or °F as the unit of a value: an absolute temperature (not in a display unit, not a worksheet's own unit). */
+  absolute(t: Tok): boolean {
+    return t.type === 'operand' && t.style === 'unit' && ABSOLUTE_TEMPERATURE.has(t.text) && !this.inContract && !this.inResult && !this.ignoreUnits && !this.userUnits.has(t.text);
+  }
+
   /** True when every leaf is a unit (or an exponent): such factors read naturally as "5 kN/m". */
   unitOnly(t: Tok): boolean {
     let units = 0, other = 0;
@@ -344,11 +368,18 @@ class Converter {
     const bin = BINOPS[op];
     if (!bin || t.args.length !== 2) throw new Unsupported(`the “${op}” operator`);
     const x = this.value(this.expr(a)), y = this.value(this.expr(b));
+    // Fluid = "S": SMath compares text with text (= here compares numbers)
+    if ((op === '≡' || op === '=' || op === '≠') && (a.style === 'string' || b.style === 'string')) {
+      const same = `equalText(${x.s}, ${y.s})`;
+      return { s: op === '≠' ? `not(${same})` : same, p: P.ATOM };
+    }
     // m^-1, not m^(-1): a display unit takes a plain exponent
     if (op === '^') return { s: `${wrap(x, P.POW + 1)}^${isNumberLiteral(y.s) ? y.s : wrap(y, P.POW)}`, p: P.POW };
     if (op === '*' && this.ignoreUnits && this.unitOnly(b)) return x;
     // 10 % is 10/100 here (% is a display unit only)
     if (op === '*' && y.s === '%') return { s: `${wrap(x, P.MUL)}/100`, p: P.MUL };
+    // SMath's 27 °C is the temperature 300.15 K (k·T with T = 27 °C is k·300.15 K); in a compound unit (°C/W) °C is a difference
+    if (op === '*' && this.absolute(b)) return { s: `(${isNumberLiteral(x.s) ? `${x.s} ${y.s}` : `${wrap(x, P.MUL)}*${y.s}`} to K)`, p: P.ATOM };
     // 2·(300 kN) is not "2 300 kN": only a unit (numbers as its exponents) joins a number
     if (op === '*' && isNumberLiteral(x.s) && this.unitOnly(b) && !/^[\d.]/.test(y.s)) return { s: `${x.s} ${y.s}`, p: P.MUL };
     return { s: `${wrap(x, bin.p)}${bin.op}${wrap(y, bin.p + 1)}`, p: bin.p };
@@ -431,6 +462,12 @@ class Converter {
       case 'solve':
         // solve(f, x, a, b): every root between a and b
         if (n === 4) return { s: `roots(${this.args(t).join(', ')})`, p: P.ATOM };
+        // x := solve(f, x) as SMath showed it: each root found again from the value shown
+        if (n === 2 && this.solveFrom?.length) {
+          const [f, x] = this.args(t);
+          const near = (g: string) => `roots(${f}, ${x}, ${g})`;
+          return { s: this.solveFrom.length === 1 ? near(this.solveFrom[0]) : `[${this.solveFrom.map(near).join('; ')}]`, p: P.ATOM };
+        }
         throw new Unsupported('solve(…) inside an expression');
       case 'line':
       case 'for':
@@ -714,6 +751,59 @@ function readXml(data: Uint8Array): string {
   return strFromU8(data).replace(/^﻿/, '');
 }
 
+/** SMath's order of calculation: top to bottom, then left to right. */
+const readingSort = (list: Placed[]) => list.sort((a, b) => (Math.abs(a.y - b.y) < 4 ? a.x - b.x : a.y - b.y));
+
+/**
+ * SMath keeps a name it does not know yet as a symbol and calculates it where the value is used.
+ * A value defined before definitions beside it on the same line that it reads (Q₀ := −F with
+ * F := 2 kN to its right, N[1] := m·g·sin(φ[1]) a little above φ[1] := 0) is placed just under
+ * them, so that it is calculated after them; not when a region it would move past reads it.
+ */
+function sameRowOrder(placed: Placed[]): Placed[] {
+  const toks = new Map<Placed, Tok[]>();
+  for (const at of placed) {
+    const body = regionKinds(at.region)[0];
+    let t: Tok[] = [];
+    if (body && local(body) === 'math' && body.getAttribute('evaluate') !== 'false') {
+      try {
+        t = parseRpn(child(body, 'input'));
+      } catch {
+        /* reported where it is converted */
+      }
+    }
+    toks.set(at, t);
+  }
+  const defs = (at: Placed) => toks.get(at)!.flatMap(worksheetDefines);
+  const reads = (at: Placed) => {
+    const s = new Set<string>();
+    for (const t of toks.get(at)!) namesUsed(t, s);
+    return s;
+  };
+  for (const at of [...placed]) {
+    const t = toks.get(at)![0];
+    if (!t || toks.get(at)!.length !== 1 || !isOp(t, ':') || !(isVar(t.args[0]) || isFn(t.args[0], 'el'))) continue;
+    const i = placed.indexOf(at);
+    const own = new Set(defs(at)), bound = boundNames(t);
+    const before = new Set(placed.slice(0, i).flatMap(defs));
+    const late = [...reads(at)].filter((n) => !own.has(n) && !bound.has(n) && !before.has(n));
+    if (!late.length) continue;
+    const bottom = at.y + num(at.region, 'height');
+    let target: Placed | null = null;
+    for (let j = i + 1; j < placed.length && placed[j].y < bottom; j++) if (defs(placed[j]).some((n) => late.includes(n))) target = placed[j];
+    if (!target) continue;
+    const was = at.y, after = new Set(placed.slice(i + 1));
+    at.y = target.y + 4;
+    readingSort(placed);
+    const passed = placed.slice(0, placed.indexOf(at)).filter((p) => after.has(p));
+    if (!passed.includes(target) || passed.some((p) => [...reads(p)].some((n) => own.has(n)))) {
+      at.y = was;
+      readingSort(placed);
+    }
+  }
+  return placed;
+}
+
 interface Placed {
   region: El;
   x: number;
@@ -794,7 +884,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     }
   }
 
-  const placed = flatten(regionsEl).sort((a, b) => (Math.abs(a.y - b.y) < 4 ? a.x - b.x : a.y - b.y));
+  const placed = sameRowOrder(readingSort(flatten(regionsEl)));
 
   // pass 1: parse every formula once; collect what each region reads and what the worksheet assigns
   const inputs = placed.map((at) => {
@@ -984,7 +1074,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             });
           }
           // a program shows its value with "x := =" (in the unit it has)
+          conv.solveFrom = isFn(rhs, 'solve') && rhs.args.length === 2 && result && action !== 'symbolic' ? shownRoots(conv, result) : null;
           const rhsSrc = isProgram(rhs) ? `${!late.length && show === ' =' ? ' =' : ''}\n${conv.stmt(rhs, '  ').join('\n')}` : ` ${conv.expr(rhs).s}`;
+          conv.solveFrom = null;
           if (name) conv.lazy.delete(name);
           if (late.length && name) {
             lhs = `${lhs}(${late.map((n) => conv.name(n)).join(', ')})`;
@@ -1018,7 +1110,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         if (result && action !== 'symbolic' && last?.kind === 'math' && / =( |$)/.test(last.source.split('\n')[0])) {
           try {
             const tok = parseRpn(result)[0];
-            const value = conv.expr(tok).s;
+            const value = conv.shownValue(tok);
             // the result has its unit when SMath chose it, else it is a number in the display unit
             let hasUnit = false;
             walk(tok, (n) => { if (n.style === 'unit') hasUnit = true; });
@@ -1031,7 +1123,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             const places = Number(body.getAttribute('decimalPlaces') ?? calcSetting('precision') ?? 4) || 4;
             const digits = sigMode && !mantissa.includes('.') && /[1-9]0+$/.test(mantissa) ? Math.max(sig(mantissa.replace(/0+$/, '')), Math.min(places, sig(mantissa))) : sig(mantissa);
             const shownIn = unit.trim() === '%' ? '1/100' : contract ? conv.displayUnit(contract, true) : '';
-            saved.push({ regionId: last.id, expr: shownIn && !hasUnit ? `(${value})*(${shownIn})` : value, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
+            // a temperature shown in °C is that temperature (27 °C is 300.15 K), not 27 K
+            const absolute = !!contract && contract.type === 'operand' && contract.style === 'unit' && ABSOLUTE_TEMPERATURE.has(contract.text);
+            const expr = !shownIn || hasUnit ? value : absolute ? `(${value} ${shownIn} to K)` : `(${value})*(${shownIn})`;
+            saved.push({ regionId: last.id, expr, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
           } catch {
             /* a result we cannot read (a matrix of text, a placeholder) is not compared */
           }
@@ -1257,6 +1352,18 @@ function plot(
     xExpr, traces,
     width: Math.max(200, width || 300), height: Math.max(150, height || 240),
   });
+}
+
+/** The values SMath showed for solve(f, x): one root, or a column of them (none when it is not numbers). */
+function shownRoots(conv: Converter, result: El): string[] | null {
+  const tok = parseRpn(result)[0];
+  if (!tok) return null;
+  const items = isFn(tok, 'mat') ? listItems(tok) : [tok];
+  let symbolic = false;
+  for (const it of items) walk(it, (n) => {
+    if (isVar(n)) symbolic = true;
+  });
+  return symbolic ? null : items.map((it) => conv.shownValue(it));
 }
 
 /** .NET colour names of the X-Y Plot plugin as CSS colours (black stays the default). */

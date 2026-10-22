@@ -80,10 +80,19 @@ const roots: Raw = (args, _m, scope) => {
   const name = (v as unknown as { name: string }).name;
   const f = difference(args[0]);
   const local = new ChainScope(scope);
-  if (args.length === 3) local.set(name, compileNode(args[2]).evaluate(scope));
+  const x0 = args.length === 3 ? compileNode(args[2]).evaluate(scope) : undefined;
+  if (args.length === 3) local.set(name, x0);
   else if (!scope.has(name)) throw new Error(`roots: give an initial value, roots(f(${name}), ${name}, ${name}₀)`);
   const root = (math as unknown as Record<string, Raw>).root;
-  return root([f, v], math, local);
+  try {
+    return root([f, v], math, local);
+  } catch (e) {
+    // SMath solves from the number of an initial value whose unit the expression cannot take
+    // (f(x) with x·V in it, started from v_x in V): its root is a number then
+    if (!isUnit(x0) || !/unit|type of argument/i.test((e as Error).message)) throw e;
+    local.set(name, splitUnit(x0).value);
+    return root([f, v], math, local);
+  }
 };
 roots.rawArgs = true;
 

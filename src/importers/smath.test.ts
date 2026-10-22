@@ -257,6 +257,18 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
     expect(value(ws, '0.6 speedOfLight =')).toMatch(/1\.7988/);
   });
 
+  it('reads 27 °C as the temperature 300.15 K, °C in a compound unit as a difference', () => {
+    // SMath saved V_T = 25.865 mV for T = 27 °C, and 93.0325 °C for a temperature it showed in °C
+    const { ws, saved } = load(math(def(v('T.k'), v('27') + u('°C') + op('*'))),
+      result(def(v('V.T'), u('k') + v('T.k') + op('*') + u('e') + op('/')), v('25.865'), u('mV')),
+      result(v('T.k'), v('27'), u('°C')),
+      math(def(v('R'), v('23') + u('°C') + u('W') + op('/') + op('*'))),
+      result(v('2') + u('W') + op('*') + v('R') + op('*'), v('46') + u('°C') + op('*')));
+    expect(sources(ws).slice(0, 3)).toEqual(['T_k := (27 degC to K)', 'V_T := boltzmann*T_k/elementaryCharge = mV', 'T_k = degC']);
+    expect(value(ws, 'T_k = degC')).toMatch(/= 27\\ \{\}\^\{\\circ\}\\mathrm\{C\}/);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
   it('defines a unit of the worksheet as a variable of its name (k.1 := 17.5 N/mm, kcf := kip/ft³)', () => {
     const { ws } = load(
       math(def(u('k.1'), v('17.5') + u('N') + u('mm') + op('/') + op('*'))),
@@ -500,6 +512,53 @@ describe('SMath import: the X-Y Plot plugin', () => {
     const res = evaluateWorksheet(ws).results.get(p.id) as { error?: string; series: { xs: number[] }[] };
     expect(res.error).toBeUndefined();
     expect(res.series[0].xs[res.series[0].xs.length - 1]).toBeCloseTo(6.28, 6);
+  });
+});
+
+describe('SMath import: text comparisons, solve, and definitions beside what they read', () => {
+  const at = (left: number, top: number, body: string, h = 24) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="80" height="${h}" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const shown = (input: string, saved: string) => `<math><input>${input}</input><result action="numeric">${saved}</result></math>`;
+  const load = (...regions: string[]) => importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+
+  it('compares text with text: Fluid = "S"', () => {
+    id = 0;
+    const { ws, saved } = load(
+      at(9, 10, `<math><input>${def(v('Fluid'), s('S'))}</input></math>`),
+      at(9, 40, `<math><input>${def(v('F'), v('Fluid') + s('V') + op('≡') + s('X') + v('Fluid') + s('S') + op('≡') + s('O') + s('?') + fn('if', 3) + fn('if', 3))}</input></math>`),
+      at(9, 70, shown(v('F'), s('O'))),
+      at(9, 100, shown(v('Fluid') + s('S') + op('≠'), v('0'))),
+    );
+    expect(sources(ws)[1]).toBe('F := if(equalText(Fluid, "V"), "X", if(equalText(Fluid, "S"), "O", "?"))');
+    expect(sources(ws)[3]).toBe('not(equalText(Fluid, "S")) =');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+
+  it('x := solve(f, x) finds the root again from the value SMath showed', () => {
+    id = 0;
+    // D/(1 − D) = 40/19.5: SMath showed 0.6722
+    const { ws, saved, warnings } = load(
+      at(9, 10, `<math><input>${def(v('D'), v('40') + v('19.5') + op('/') + v('D') + v('1') + v('D') + op('-') + op('/') + op('≡') + v('D') + fn('solve', 2))}</input><result action="numeric">${v('0.6722')}</result></math>`),
+    );
+    expect(sources(ws)[0]).toBe('D := roots(40/19.5 == D/(1 - D), D, 0.6722) =');
+    expect(warnings.some((w) => /solve/.test(w))).toBe(false);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
+  it('a value defined before what it reads on the same line is calculated after it', () => {
+    id = 0;
+    // Q₀ := −F to the left of F := 2 kN; N[1] := 2·φ[1] a little above φ[1] := 3 (taller, the same line)
+    const { ws, saved } = load(
+      at(225, 513, `<math><input>${def(v('Q.0'), v('F') + op('-', 1))}</input></math>`),
+      at(432, 513, `<math><input>${def(v('F'), v('2') + u('kN') + op('*'))}</input></math>`),
+      at(405, 600, `<math><input>${def(v('N') + v('1') + fn('el', 2), v('2') + v('φ') + v('1') + fn('el', 2) + op('*'))}</input></math>`, 43),
+      at(270, 609, `<math><input>${def(v('φ') + v('1') + fn('el', 2), v('3'))}</input></math>`, 33),
+      at(9, 700, shown(v('Q.0'), v('2') + u('kN') + op('*') + op('-', 1))),
+      at(9, 730, shown(v('N') + v('1') + fn('el', 2), v('6'))),
+    );
+    const math = ws.regions.filter((r) => r.kind === 'math') as { source: string; y: number }[];
+    expect(math.map((r) => [r.source, r.y]).slice(0, 4)).toEqual([['F := 2 kN', 513], ['Q_0 := -F', 517], ['φ[1] := 3', 609], ['N[1] := 2*φ[1]', 613]]);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
   });
 });
 
