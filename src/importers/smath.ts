@@ -9,6 +9,7 @@ import { unzipSync, gunzipSync, decompressSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import { createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH, type Region, type RegionStyle, type PlotTrace } from '../model/types';
 import { AREA_BAR, AREA_PAD, collapseArea } from '../model/areas';
+import { isUnitName } from '../engine/math';
 import { fitToPage, isNumberLiteral, P, sanitize, Unsupported, unitName, wrap, type Ex, type ImportResult, type SavedResult } from './common';
 
 type El = XElement;
@@ -204,6 +205,11 @@ const CONSTANTS: Record<string, string> = { π: 'π', e: 'e', '∞': '∞' };
 
 /** Names that are values without a definition: SMath's constants and imaginary unit (j as engineers write it). */
 const SYMBOLS = new Set(['π', 'e', '∞', 'i', 'j']);
+/**
+ * A name of two or more letters the worksheet never defines that is a unit (mm, kN, MPa typed
+ * without SMath's unit mark): that unit, not a symbol. One letter (l, t, g …) is a symbol.
+ */
+const unitWord = (name: string) => [...name].length > 1 && isUnitName(name);
 
 class Converter {
   warnings: string[] = [];
@@ -963,6 +969,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
           }
           if (name && !numeric) {
             const bound = boundNames(rhs);
+            const unitOperand = (m: string) => !lastDefined.has(m) && unitWord(conv.name(m));
             const add = (n: string) => {
               if (!late.includes(n)) late.push(n);
             };
@@ -973,7 +980,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
               const waits = conv.lazy.get(m);
               if (waits) for (const p of waits) if (!definedBefore.has(p) && !bound.has(p)) add(p);
               // defined further down, or nowhere on the worksheet (a symbol, as in σ(φ) := … cos(2·φ) solved for φ later)
-              if (!waits && m !== name && !definedBefore.has(m) && !SYMBOLS.has(m) && (lastDefined.get(m) ?? Infinity) > i) add(m);
+              if (!waits && m !== name && !definedBefore.has(m) && !SYMBOLS.has(m) && !unitOperand(m) && (lastDefined.get(m) ?? Infinity) > i) add(m);
             });
           }
           // a program shows its value with "x := =" (in the unit it has)
@@ -1270,7 +1277,7 @@ function xyPlot(conv: Converter, body: El, at: Placed, before: Set<string>, list
     const m = smName(n.text);
     const late = conv.lazy.get(m);
     if (late) for (const p of late) if (!before.has(p)) free.add(p);
-    if (!late && !before.has(m)) free.add(m);
+    if (!late && !before.has(m) && !unitWord(conv.name(m))) free.add(m);
   });
   const v = free.has('x') || !free.size ? 'x' : [...free][0];
   if (free.size > 1) conv.warnings.push(`X-Y plot at ${Math.round(at.y)} px: its functions read ${[...free].join(', ')}, which have no value above it; ${v} is taken as the plot variable`);

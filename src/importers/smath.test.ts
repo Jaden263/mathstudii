@@ -364,6 +364,21 @@ describe('SMath import: definitions that read names defined further down', () =>
     const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
     expect(cmp).toMatchObject({ checked: 4, agree: 4 });
   });
+
+  it('a unit name typed without the unit mark is that unit; a one-letter name stays a symbol', () => {
+    id = 0;
+    top = 0;
+    const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${[
+      math(def(v('L1'), v('350') + v('mm') + op('*'))),
+      math(def(v('P'), v('10'))),
+      // τ := P/(2·l): l, the weld length, is solved for further down
+      math(def(v('τ'), v('P') + v('2') + v('l') + op('*') + op('/'))),
+      region(`<math><input>${v('L1')}</input><result action="numeric">${v('0.35') + u('m') + op('*')}</result></math>`),
+    ].join('')}</regions></worksheet>`;
+    const { ws, saved } = importSmath(strToU8(xml), 'x.sm');
+    expect(sources(ws).slice(0, 3)).toEqual(['L1 := 350*mm', 'P := 10', 'τ(l) := P/(2*l)']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
 });
 
 describe('SMath import: functions and lists', () => {
