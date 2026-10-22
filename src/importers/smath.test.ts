@@ -299,6 +299,8 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
       result(v('2') + u('W') + op('*') + v('R') + op('*'), v('46') + u('°C') + op('*')));
     expect(sources(ws).slice(0, 3)).toEqual(['T_k := (27 degC to K)', 'V_T := boltzmann*T_k/elementaryCharge = mV', 'T_k = degC']);
     expect(value(ws, 'T_k = degC')).toMatch(/= 27\\ \{\}\^\{\\circ\}\\mathrm\{C\}/);
+    // the 46 °C SMath showed for 2 W·R is a difference: 46 K
+    expect(saved![2].expr).toBe('46 K');
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
   });
 

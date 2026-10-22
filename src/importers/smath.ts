@@ -284,6 +284,8 @@ class Converter {
       return { s: SMATH_DISPLAY[raw].unit, p: P.ATOM };
     }
     if (SMATH_CONSTANTS[raw] && !this.inContract) return { s: SMATH_CONSTANTS[raw], p: P.ATOM };
+    // °C in a value SMath showed is a difference (2 W·23 °C/W shows 46 °C): in kelvin, which says so
+    if (this.inResult && ABSOLUTE_TEMPERATURE.has(raw) && !this.userUnits.has(raw)) return { s: raw === '°C' ? 'K' : '(5/9 K)', p: P.ATOM };
     const name = SMATH_UNITS[raw] ?? unitName(raw);
     if (!this.inContract && (this.assigned.has(name) || this.assigned.has(raw))) return { s: `unit(1, "${name}")`, p: P.ATOM };
     return { s: name, p: P.ATOM };
