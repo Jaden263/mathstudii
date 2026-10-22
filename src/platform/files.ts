@@ -152,6 +152,27 @@ export function pickFile(accept: string): Promise<File | null> {
   });
 }
 
+/** CAD files to import (STEP, STL, OBJ with its MTL, 3MF): a native dialog in the desktop app, a file input in the browser. */
+export async function pickImportFiles(): Promise<{ name: string; bytes: Uint8Array }[]> {
+  const ext = ['step', 'stp', 'stl', 'obj', 'mtl', '3mf'];
+  if (isTauri) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { readFile } = await import('@tauri-apps/plugin-fs');
+    const picked = await open({ multiple: true, filters: [{ name: 'CAD files (STEP, STL, OBJ, 3MF)', extensions: ext }] });
+    const paths = !picked ? [] : Array.isArray(picked) ? picked : [picked];
+    return Promise.all(paths.map(async (p) => ({ name: baseName(p), bytes: await readFile(p) })));
+  }
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = ext.map((e) => `.${e}`).join(',');
+    input.onchange = () => void Promise.all([...(input.files ?? [])].map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) }))).then(resolve);
+    input.addEventListener('cancel', () => resolve([]));
+    input.click();
+  });
+}
+
 export function readAsDataURL(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();

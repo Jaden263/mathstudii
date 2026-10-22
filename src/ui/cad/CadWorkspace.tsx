@@ -9,10 +9,10 @@ import {
   SquareRoundCorner, Scissors, SquareSplitHorizontal, Construction, Trash2, Box, PenTool, FileUp, FileDown, Undo2, Redo2, X,
   ArrowUpFromLine, RotateCw, ChevronRight, ChevronDown, ListTree, PanelRight, CircleDot, Grid3x3, FlipHorizontal2, Combine,
   Boxes, Link2, Anchor, Move3d, ScanSearch, Eye, EyeOff, CheckCircle2, SkipBack, StepBack, StepForward, SkipForward,
-  Layers, Crosshair, Download, Magnet, Waypoints, Cone, SquareSlash, FileBox,
+  Layers, Crosshair, Magnet, Waypoints, Cone, SquareSlash,
   Radius, Octagon, PackageOpen, Pyramid, ArrowUpDown, Slice, Move, Route, Tornado, Screw, Diamond, MoveDiagonal, Locate, TriangleRight,
   LineSquiggle, SplinePointer, Ellipse as EllipseIcon, CircleDotDashed, Type, VectorSquare, CornerRightDown, MoveHorizontal, ScissorsLineDashed,
-  Grid2x2, Rotate3d, ScanLine,
+  Grid2x2, Rotate3d, ScanLine, FileInput,
   SlidersHorizontal, Cog, Group as GroupIcon, Link, Clapperboard, Expand, ClipboardList, Play, Film, Images,
 } from 'lucide-react';
 import type { CadRegion } from '../../model/types';
@@ -41,7 +41,8 @@ import { CadCanvas, type CadCanvasHandle, type CanvasStatus } from './CadCanvas'
 import { STANDARD_VIEWS, type Display } from './Cad3DView';
 import { Scene3D, sceneBounds, type Bounds, type PickHit, type SceneView } from './Scene3D';
 import { buildScene, editOccurrence, sketchRegions } from './useDesign';
-import { exportPart, type PartFormat } from './exportPart';
+import { useImportExport } from './ImportExport';
+import { prunedFiles } from '../../cad/imported';
 import { pickLabel, SelectionPanel } from './SelectionPanel';
 import { isSuperseded, kernelRequest, useBuildResult, warmKernel } from './kernelClient';
 import { Checks, Dialog, Expr, FeatureFields, JointFields, Pick, featureTitle } from './FeatureDialogs';
@@ -59,6 +60,9 @@ import { asBuiltOrigin, placementsWithout } from '../../cad/kinematics';
 import { paintHits, useAssemblyView } from './assemblyView';
 import { BomPanel, ClearanceChart, DrivePanel, ExplodeFields, JointDofFields, LinkFields, MotionFields, MotionTransport, dofExpr, dofText, drivePatches, drivenDofs, motionTsv, useMotionPlayer } from './AssemblyPanels';
 import { canRecord, exportPngFrames, recordWebm } from './motionExport';
+import { BendIcon, EdgeFlangeIcon, FlangeIcon, HemIcon } from './sheetIcons';
+import { FlatPanel, RulesFields, SheetFields, SheetRibbon, exportFlat, pickSheetEdge, pickingEdges, sheetBodiesOf, sheetHint, startSheet } from './SheetMetalUI';
+import { DEFAULT_RULES, isSheetFeature } from '../../cad/sheetMetal';
 
 interface Props {
   region: CadRegion;
@@ -69,7 +73,7 @@ interface Props {
   connected?: boolean;
 }
 
-type Tab = 'solid' | 'assemble' | 'inspect' | 'file' | 'sketch' | 'constrain';
+type Tab = 'solid' | 'assemble' | 'inspect' | 'file' | 'sketch' | 'constrain' | 'sheet';
 
 type Dlg =
   /**
@@ -89,7 +93,9 @@ type Dlg =
   | { kind: 'group'; occs: string[] }
   | { kind: 'motion'; id: string; mark: number; isNew: boolean; busy?: string }
   | { kind: 'measure'; picks: Measured[]; result?: Distance | null; error?: string }
-  | { kind: 'interference'; rows: Interference[] | null; error?: string };
+  | { kind: 'interference'; rows: Interference[] | null; error?: string }
+  /** The sheet-metal rules of a component (Cancel puts them back). */
+  | { kind: 'sheetRules'; cid: string; mark: number };
 
 /** Something picked to measure, with what the panel says about it. */
 interface Measured {
@@ -209,6 +215,8 @@ const ICON: Record<DesignItem['kind'], ReactNode> = {
   presspull: <ArrowUpDown size={14} />, split: <Slice size={14} />, move: <Move size={14} />,
   sweep: <Route size={14} />, coil: <Tornado size={14} />, thread: <Screw size={14} />, rib: <TriangleRight size={14} />,
   plane: <Diamond size={14} />, axis: <MoveDiagonal size={14} />, point: <Locate size={14} />,
+  import: <FileInput size={14} />,
+  flange: <FlangeIcon size={14} />, edgeflange: <EdgeFlangeIcon size={14} />, hem: <HemIcon size={14} />, bend: <BendIcon size={14} />,
 };
 
 /** Where a sketch is: "the XY plane", "the end face of Extrude1", "face of Body1" (made before sketches followed faces). */
@@ -269,6 +277,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const [isolate, setIsolate] = useState(false);
   // inspection: a section plane through the model
   const [section, setSection] = useState<{ plane: 'XY' | 'XZ' | 'YZ'; at: number; flip: boolean } | null>(null);
+  // the flat pattern of the active component's sheet-metal body, over the 3-D view
+  const [flatOpen, setFlatOpen] = useState(false);
   // phones start with the panels folded away; they open over the view
   const narrow = typeof window !== 'undefined' && window.innerWidth < 760;
   const [showTree, setShowTree] = useState(!narrow);
@@ -295,7 +305,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
 
   // ------------------------------------------------------------ edits
 
-  const setDesign = useCallback((d: CadDesign, coalesce?: string, history = true) => {
+  const setDesign = useCallback((d0: CadDesign, coalesce?: string, history = true) => {
+    // an imported file goes with the last import feature that used it
+    const d = prunedFiles(d0);
     designRef.current = d;
     dispatch({ type: 'update', id: region.id, patch: { design: d }, coalesce, ...(history ? {} : { history: false as const }) });
   }, [dispatch, region.id]);
@@ -392,7 +404,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ creating things
 
   const items = comp ? activeItems(comp) : [];
-  const bodiesNow = (comp && dr?.bodies[comp.id]) ?? [];
+  // the bodies the features work on (imported mesh bodies are none of them)
+  const bodiesNow = ((comp && dr?.bodies[comp.id]) ?? []).filter((b) => !b.mesh);
   const lastSketch = (pred: (s: DesignSketch) => boolean) => [...items].reverse().find((i): i is DesignSketch => isSketch(i) && pred(i));
   const selProfile = sel?.startsWith('p:') ? parseProfile(sel) : null;
   const selSketch = sel?.startsWith('item:') ? (items.find((i) => i.id === sel.slice(5) && isSketch(i)) as DesignSketch | undefined) : undefined;
@@ -548,6 +561,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       const m = startBuild(kind, id, name, op);
       if (!m) return;
       f = m;
+    } else if (isSheetFeature({ kind })) {
+      const m = startSheet(kind as 'flange', {
+        design: cur(), comp, id, name, items, result, selSketch, selProfile,
+        edges: () => usePicks('edge', (e) => !!(e as { line?: unknown }).line), sheetBodies: sheetBodiesOf(dr, comp.id).map((b) => b.id),
+      });
+      if (typeof m === 'string') return setMsg(m);
+      f = m;
     } else if (MODIFY_KINDS.has(kind)) {
       const m = startModify(kind as ModifyFeature['kind'], id, name);
       if (!m) return;
@@ -561,6 +581,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     seal();
     const m = mark();
     insertItem(comp.id, f);
+    // the first sheet-metal feature brings the default rules (steel, 2 mm)
+    if (isSheetFeature(f) && !comp.sheet) patchComp(comp.id, { sheet: DEFAULT_RULES });
     setSel(null);
     setDialog({ kind: 'feature', cid: comp.id, id, mark: m, isNew: true });
   };
@@ -716,7 +738,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   };
   const closeDialog = (ok: boolean) => {
     if (!dialog) return;
-    if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint' || dialog.kind === 'link' || dialog.kind === 'motion')) revertTo(dialog.mark);
+    if (!ok && (dialog.kind === 'feature' || dialog.kind === 'joint' || dialog.kind === 'link' || dialog.kind === 'motion' || dialog.kind === 'sheetRules')) revertTo(dialog.mark);
     if (ok) finishRollback();
     seal();
     setDialog(null);
@@ -973,6 +995,13 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
       if (!c || !f) return;
       if (isModify(f)) return pickForModify(c, f, hit);
       if (isBuildFeature(f)) return pickForBuild(c, f, hit);
+      if (pickingEdges(f)) {
+        const on = hitBody(hit);
+        if (!on) return;
+        if (occOf(on.occ)?.component !== c.id) return setMsg('That body belongs to another component');
+        const r = pickSheetEdge(f, on.b, hit.edge, build?.components[c.id]?.bodies ?? [], sheetBodiesOf(dr, c.id).some((b) => b.id === on.body));
+        return typeof r === 'string' ? setMsg(r) : patchItem(c.id, f.id, r);
+      }
       if (key.startsWith('p:') && (f.kind === 'extrude' || f.kind === 'revolve')) {
         const p = parseProfile(key);
         if (p.sketch !== f.sketch) return patchItem(c.id, f.id, { sketch: p.sketch, profiles: [p.key] } as Partial<DesignItem>);
@@ -1087,16 +1116,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // ------------------------------------------------------------ files
 
   const fileBase = (region.name.trim() || 'part').replace(/[^\w.-]+/g, '_');
-  const exportAs = async (format: PartFormat) => {
-    setBusy(`Writing ${format.toUpperCase()}…`);
-    try {
-      await exportPart(region, result, format);
-    } catch (e) {
-      setMsg(`Export failed: ${(e as Error).message}`);
-    } finally {
-      setBusy('');
-    }
-  };
+  // STEP, STL, OBJ and 3MF in (Insert → Import, or dropped on the workspace); every format out
+  const exchange = useImportExport({ region, result, build, design: cur, setDesign: (d) => setDesign(d), active: comp?.id, setActive, picks, setMsg, busy, setBusy });
   const importDxf = async () => {
     if (!ds) return;
     const file = await pickFile('.dxf');
@@ -1111,6 +1132,21 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     } catch (err) {
       setMsg(`Could not read ${file.name}: ${(err as Error).message}`);
     }
+  };
+  /** The flat pattern of the active component's (first) sheet-metal body as DXF or SVG. */
+  const exportSheet = async (format: 'dxf' | 'svg') => {
+    const b = sheetBodiesOf(dr, comp?.id)[0];
+    if (!b || !dr || !comp) return setMsg('There is no sheet-metal body to unfold: make one with Sheet Metal → Flange (the flat pattern needs OpenCascade)');
+    try {
+      const fp = await kernelRequest({ op: 'flat', design: cur(), numbers: designNumbers(dr), component: comp.id, body: b.id });
+      await exportFlat(fp, format, region.unit, `${fileBase}-${b.name}`);
+    } catch (e) {
+      if (!isSuperseded(e)) setMsg(`The flat pattern failed: ${(e as Error).message}`);
+    }
+  };
+  const openRules = (cid: string) => {
+    seal();
+    openDialog({ kind: 'sheetRules', cid, mark: mark() });
   };
   const exportDxf = async () => {
     if (!ds) return;
@@ -1296,7 +1332,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   // references), its plane or axis if picked, and the roundings or chamfers it made
   const modified = activeFeature && isModify(activeFeature) ? activeFeature : null;
   // a sweep, coil, thread or construction item: what it holds is marked the same way
-  const held = activeFeature && isBuildFeature(activeFeature) ? activeFeature : null;
+  const held = activeFeature && (isBuildFeature(activeFeature) || pickingEdges(activeFeature)) ? activeFeature : null;
   const modMarks = useMemo(() => {
     const out = new Map<string, { faces: number[]; edges: number[] }>();
     const occ = (modified || held) && dialog?.kind === 'feature' ? editOccurrence(design, dialog.cid) : undefined;
@@ -1381,7 +1417,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     : null;
   // … and a sweep, coil, thread or construction dialog the faces or edges of its fields, a thread's faces, a sweep's path edges
   const buildPick = held && dialog?.kind === 'feature'
-    ? (dialog.pick ? (['plane', 'cylinder', 'face'].includes(dialog.pick.kind) ? 'faces' : 'edges') : held.kind === 'thread' ? 'faces' : held.kind === 'sweep' && held.path.kind === 'edges' ? 'edges' : null)
+    ? (dialog.pick ? (['plane', 'cylinder', 'face'].includes(dialog.pick.kind) ? 'faces' : 'edges') : held.kind === 'thread' ? 'faces' : held.kind === 'sweep' && held.path.kind === 'edges' ? 'edges' : pickingEdges(held) ? 'edges' : null)
     : null;
   const facePicking = !dialog || dialog.kind === 'measure' || dialog.kind === 'sketch' || dialog.kind === 'joint' || modPick === 'edges' || modPick === 'faces' || !!buildPick;
   const onHover = (h: PickHit) => {
@@ -1479,6 +1515,8 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
     }
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'coil' && !dialog.pick && activeFeature.op !== 'new' && !activeFeature.pathOnly) return 'Click bodies for the targets (none: every body it meets) · Pick fills a field from the view · Esc cancels';
     if (dialog?.kind === 'feature' && activeFeature?.kind === 'rib') return 'Pick the sketch and its curves in the dialog · click a body to join the rib to it · Esc cancels';
+    if (dialog?.kind === 'feature' && activeFeature && isSheetFeature(activeFeature)) return sheetHint(activeFeature);
+    if (dialog?.kind === 'sheetRules') return 'The rules apply to every flange, hem and bend of the component · Esc cancels';
     if (dialog?.kind === 'feature' && held) return 'Pick fills a field from the view (a face, an edge, a corner or a plane) · Esc cancels';
     if (dialog?.kind === 'feature') return 'Click profiles or bodies in the view to pick them · Esc cancels';
     return 'Drag: orbit · Shift/middle-drag: pan · wheel: zoom · E extrude · H hole · F fillet · Q press pull · J joint · M measure';
@@ -1516,6 +1554,39 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           {dialog.rollback && <p className="hint">The timeline is rolled back to {f.name} while you edit it.</p>}
         </Dialog>
       );
+    }
+    if (dialog.kind === 'feature' && activeFeature && isSheetFeature(activeFeature)) {
+      const c = design.components.find((q) => q.id === dialog.cid)!;
+      return (
+        <Dialog title={featureTitle(activeFeature)} error={dr?.errors[activeFeature.id]} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <SheetFields comp={c} feature={activeFeature} result={result} onRules={() => openRules(c.id)}
+            onChange={(p, k) => patchItem(c.id, activeFeature.id, p, k ? `${activeFeature.id}:${k}` : undefined)} />
+          {dr?.warnings?.[activeFeature.id] && <p className="hint warn">{dr.warnings[activeFeature.id]}</p>}
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'sheetRules') {
+      const c = design.components.find((q) => q.id === dialog.cid);
+      if (!c) return null;
+      // the numbers a sheet feature of the component resolved them to; none resolved: the rules are wrong, and every sheet feature says why
+      const used = c.items.find((i) => isSheetFeature(i) && dr?.params[i.id]?.t);
+      const first = c.items.find((i) => isSheetFeature(i));
+      return (
+        <Dialog title={`Sheet-metal rules — ${c.name}`} error={dr?.errors[(used ?? first)?.id ?? '']} onOk={() => closeDialog(true)} onCancel={() => closeDialog(false)}>
+          <RulesFields rules={c.sheet ?? DEFAULT_RULES} numbers={used ? dr?.params[used.id] : undefined}
+            onChange={(r, k) => {
+              const mat = r.material !== (c.sheet ?? DEFAULT_RULES).material ? MATERIALS.find((m) => m.name === ({ steel: 'Steel', aluminium: 'Aluminium', stainless: 'Stainless steel', copper: 'Copper' } as Record<string, string>)[r.material ?? '']) : undefined;
+              patchComp(c.id, { sheet: r, ...(mat ? { density: mat.density } : {}) }, k ? `${c.id}:sheet:${k}` : undefined);
+            }} />
+        </Dialog>
+      );
+    }
+    if (dialog.kind === 'feature' && activeFeature?.kind === 'import') {
+      const c = design.components.find((q) => q.id === dialog.cid)!;
+      return exchange.featureDialog(activeFeature, {
+        error: dr?.errors[activeFeature.id], warning: dr?.warnings?.[activeFeature.id], onOk: () => closeDialog(true), onCancel: () => closeDialog(false),
+        onChange: (p) => patchItem(c.id, activeFeature.id, p as Partial<DesignItem>),
+      });
     }
     if (dialog.kind === 'feature' && activeFeature) {
       const c = design.components.find((q) => q.id === dialog.cid)!;
@@ -1927,13 +1998,14 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
   const inSketch = !!(ds && sketchRegion);
   const tabs: { id: Tab; label: string }[] = inSketch
     ? [{ id: 'sketch', label: 'Sketch' }, { id: 'constrain', label: 'Constrain' }]
-    : [{ id: 'solid', label: 'Solid' }, { id: 'assemble', label: 'Assemble' }, { id: 'inspect', label: 'Inspect' }, { id: 'file', label: 'File' }];
+    : [{ id: 'solid', label: 'Solid' }, { id: 'sheet', label: 'Sheet Metal' }, { id: 'assemble', label: 'Assemble' }, { id: 'inspect', label: 'Inspect' }, { id: 'file', label: 'File' }];
   const shownTab = tabs.some((t) => t.id === tab) ? tab : tabs[0].id;
   const selIds = ui.regionId === region.id ? ui.selected : [];
   const selOcc = sel?.startsWith('occ:') ? sel.slice(4) : sel?.startsWith('body:') ? parseBody(`b:${sel.slice(5)}`).occ : null;
 
   return (
-    <div className="cadw" onPointerDown={(e) => e.stopPropagation()}>
+    <div className="cadw" onPointerDown={(e) => e.stopPropagation()} {...exchange.dropProps}>
+      {exchange.dropOverlay}
       <header className="cadw-head">
         <div className="cadw-brand"><Box size={18} /> <b>mathstudii CAD</b></div>
         <input className="cadw-name" value={region.name} placeholder="Part name (variable)" aria-label="Part name"
@@ -2079,6 +2151,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             <Group label="Inspect">
               <RibbonButton icon={<SquareSlash size={20} />} label="Section" title="Cut the model with a plane to look inside" on={!!section} onClick={() => setSection(section ? null : { plane: 'XZ', at: 0.5, flip: false })} />
             </Group>
+            <Group label="Insert">{exchange.importButton}</Group>
             <Group label="View">
               <RibbonButton icon={<Crosshair size={20} />} label="Planes" title="Show the origin planes" on={showPlanes} onClick={() => setShowPlanes(!showPlanes)} />
               <div className="cadw-options">
@@ -2133,13 +2206,11 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
             </Group>
           </>
         )}
-        {shownTab === 'file' && (
-          <Group label="Export">
-            <RibbonButton icon={<FileBox size={20} />} label="STEP"
-              title={shown.build?.kernel === 'mesh' ? 'STEP needs the exact B-rep kernel, which could not load' : 'Export the exact solids as STEP AP214 (other CAD programs), with names, colours and the assembly'}
-              disabled={!!busy || shown.build?.kernel === 'mesh'} onClick={() => void exportAs('step')} />
-            <RibbonButton icon={<Download size={20} />} label="STL" title="Export as STL (3-D printing), tessellated finely from the exact surfaces" disabled={!!busy} onClick={() => void exportAs('stl')} />
-          </Group>
+        {shownTab === 'file' && exchange.ribbon}
+        {shownTab === 'sheet' && (
+          <SheetRibbon Group={Group} Button={RibbonButton} active={activeFeature?.kind} flatOn={flatOpen}
+            onSketch={() => openDialog({ kind: 'sketch', ref: 'XY', offset: '' })} onStart={startFeature} onRules={() => comp && openRules(comp.id)}
+            onFlat={() => setFlatOpen(!flatOpen)} onExport={exportSheet} />
         )}
       </div>
 
@@ -2235,6 +2306,7 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           {!inSketch && (shown.notice || (shown.state !== 'ready' && shown.state !== 'none' && scene.meshes.length > 0)) && (
             <span className={`cadw-kernel${shown.notice ? ' warn' : ''}`} title={shown.notice}>{shown.notice ? (shown.noticeShort === 'Mesh kernel' ? 'Mesh kernel (approximate)' : shown.noticeShort) : shown.state === 'loading' ? 'Loading the 3-D kernel…' : 'Rebuilding…'}</span>
           )}
+          {!inSketch && flatOpen && <FlatPanel design={cur()} dr={dr} comp={comp} unit={region.unit} base={fileBase} onClose={() => setFlatOpen(false)} />}
           {!inSketch && section && (
             <div className="cadw-inspect" onPointerDown={(e) => e.stopPropagation()}>
               <b>Section</b>
@@ -2282,9 +2354,9 @@ export function CadWorkspace({ region, result, dispatch: rawDispatch, onClose, c
           )}
         </section>
 
-        {showProps && (
+        {(showProps || exchange.dialog) && (
           <aside className="cadw-props" aria-label="Properties">
-            {dialogPanel ?? (inSketch ? (
+            {exchange.dialog ?? dialogPanel ?? (inSketch ? (
               <>
                 <h3 className="sub">{ds!.name}</h3>
                 <SketchPanel sketch={ds!.sketch} result={sketchResult} unit={u} partName={region.name} selected={selIds}

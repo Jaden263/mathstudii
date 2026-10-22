@@ -31,8 +31,8 @@ export function lineGroup(sheet: SheetName): LineGroup {
   return sheet === 'A0' || sheet === 'A1' ? { wide: 0.7, narrow: 0.35, dim: 5, label: 7 } : { wide: 0.5, narrow: 0.25, dim: 3.5, label: 5 };
 }
 
-export type Layer = 'VISIBLE' | 'HIDDEN' | 'CENTER' | 'TANGENT' | 'THIN' | 'HATCH' | 'DIM' | 'TEXT' | 'BORDER';
-export const LAYERS: Layer[] = ['VISIBLE', 'HIDDEN', 'CENTER', 'TANGENT', 'THIN', 'HATCH', 'DIM', 'TEXT', 'BORDER'];
+export type Layer = 'VISIBLE' | 'HIDDEN' | 'CENTER' | 'TANGENT' | 'THIN' | 'HATCH' | 'DIM' | 'TEXT' | 'BORDER' | 'BEND';
+export const LAYERS: Layer[] = ['VISIBLE', 'HIDDEN', 'CENTER', 'TANGENT', 'THIN', 'HATCH', 'DIM', 'TEXT', 'BORDER', 'BEND'];
 
 /**
  * The ISO 128-20 line of a layer: its width and dash pattern (mm; empty: continuous).
@@ -43,6 +43,8 @@ export function layerStyle(layer: Layer, g: LineGroup): { width: number; dash: n
   if (layer === 'VISIBLE') return { width: g.wide, dash: [] };
   if (layer === 'BORDER') return { width: 0.7, dash: [] };
   if (layer === 'HIDDEN') return { width: n, dash: [12 * n, 3 * n] };
+  // bend lines of a flat pattern: narrow dashed, on a layer of their own (as in the flat's DXF)
+  if (layer === 'BEND') return { width: n, dash: [12 * n, 3 * n] };
   if (layer === 'CENTER') return { width: n, dash: [24 * n, 3 * n, 0.5 * n, 3 * n] };
   return { width: n, dash: [] };
 }
@@ -83,9 +85,9 @@ export interface Fill {
 }
 
 export interface PlacedView {
-  /** Standard view key, `sec:${id}` or `det:${id}`. */
+  /** Standard view key, `sec:${id}`, `det:${id}` or `flat`. */
   key: string;
-  kind: 'base' | 'section' | 'detail';
+  kind: 'base' | 'section' | 'detail' | 'flat';
   /** On the paper: x = ox + k·X, y = oy + k·Y for view coordinates X, Y (model units; k is paper mm per unit). */
   ox: number;
   oy: number;
@@ -161,7 +163,10 @@ export function sectionRequest(r: DrawingRegion, s: DrawingSection): DrawViewReq
 export const sectionSide = (r: DrawingRegion, s: DrawingSection) => sectionGeometry(r, s).sg;
 
 /** Every view the drawing needs from the kernel. */
-export const drawingRequests = (r: DrawingRegion): DrawViewRequest[] => [...baseRequests(r), ...(r.sections ?? []).map((s) => sectionRequest(r, s))];
+export const drawingRequests = (r: DrawingRegion): DrawViewRequest[] => [...baseRequests(r), ...(r.sections ?? []).map((s) => sectionRequest(r, s)), ...flatRequest(r)];
+
+/** The flat pattern view a drawing asks for, if it shows one. */
+const flatRequest = (r: DrawingRegion): DrawViewRequest[] => (r.flat ? [{ key: 'flat', name: 'Flat pattern', dir: [0, 0, -1], up: [0, 1, 0], hidden: false, flat: { body: r.flat.body } }] : []);
 
 /** Millimetres in a model unit (a drawing's scale is of true size, whatever the part is drawn in). */
 export const unitMm = (unit: string): number => ({ mm: 1, cm: 10, m: 1000, in: 25.4 } as Record<string, number>)[unit] ?? 1;
@@ -220,7 +225,7 @@ const boxH = (v: DrawView) => v.box.y1 - v.box.y0;
 
 interface Extra {
   key: string;
-  kind: 'section' | 'detail';
+  kind: 'section' | 'detail' | 'flat';
   view: DrawView;
   /** Paper millimetres per model unit in this view (a detail's own scale, a section's the sheet's). */
   k: (s: number) => number;
@@ -228,7 +233,7 @@ interface Extra {
   box: DrawView['box'];
   at?: { x: number; y: number };
   label: string;
-  def: DrawingSection | DrawingDetail;
+  def?: DrawingSection | DrawingDetail;
 }
 
 /**
@@ -246,7 +251,8 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
   // rows from the top: first angle puts the top view under the front and the left view right of it
   const grid: (BaseKey | null)[][] = first ? [['front', 'side'], ['top', 'iso']] : [['top', 'iso'], ['front', 'side']];
   const base = (k: BaseKey | null) => (k && r.views[k] && hasLines(views[k]) ? views[k] : null);
-  if (!grid.flat().some((k) => base(k))) return null;
+  // a flat pattern alone is a drawing too (a blank for the laser)
+  if (!grid.flat().some((k) => base(k)) && !(r.flat && hasLines(views.flat))) return null;
 
   // scales are of true size: a part in centimetres at 1:1 is drawn 10 paper millimetres to its unit
   const mm = unitMm(info.unit);
@@ -262,6 +268,7 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     if (!v || !hasLines(v) || !(d.r > 0) || !(d.scale > 0)) continue;
     extras.push({ key: `det:${d.id}`, kind: 'detail', view: v, k: () => d.scale * mm, box: { x0: d.c.x - d.r, y0: d.c.y - d.r, x1: d.c.x + d.r, y1: d.c.y + d.r }, at: onSheet(d.at), label: `${d.letter} (${scaleText(d.scale)})`, def: d });
   }
+  if (r.flat && hasLines(views.flat)) extras.push({ key: 'flat', kind: 'flat', view: views.flat, k: (sc) => sc * mm, box: views.flat.box, at: onSheet(r.flat.at), label: 'Flat pattern' });
 
   // the parts list and the revision table take the room above the title block
   const bomH = r.bom?.show && info.bom?.length ? (info.bom.length + 1) * BOM_ROW : 0;
@@ -356,9 +363,16 @@ export function layoutSheet(r: DrawingRegion, views: Record<string, DrawView>, i
     const e = extras.find((q) => q.key === pv.key);
     if (pv.kind === 'detail') drawDetail(sheet, r, pv, e!.def as DrawingDetail);
     else drawView(sheet, r, pv);
+    // a flat pattern's bend notes along its bend lines
+    for (const n of pv.view.notes ?? []) {
+      const [x, y] = toPaper(pv, n.x, n.y), a = (n.rot * Math.PI) / 180;
+      sheet.labels.push({ layer: 'TEXT', x: x - Math.sin(a) * 1.5, y: y + Math.cos(a) * 1.5, h: group.dim * 0.7, text: n.text, anchor: 'middle', rot: n.rot });
+    }
     if (e) sheet.labels.push({ layer: 'TEXT', x: (pv.box.x0 + pv.box.x1) / 2, y: pv.box.y1 + 5, h: group.label, text: e.label, anchor: 'middle' });
     // a cutting line's arrows and letters sit past the view's edges: its dimensions stand further off
     if (pv.kind === 'base' && r.dims && info.overall !== false && pv.key !== 'iso') dimension(sheet, pv, (r.sections ?? []).some((s) => s.view === pv.key) ? 15 : 8);
+    // the blank's length and width on a flat pattern (the automatic dimensions from the model size only the standard views)
+    if (pv.kind === 'flat' && r.dims) dimension(sheet, pv, 8);
   }
   // the cutting lines and detail circles on their parents
   for (const s of r.sections ?? []) {
@@ -423,6 +437,7 @@ function viewInks(r: DrawingRegion, key: string, v: DrawView, put: (layer: Layer
   if (r.hidden) for (const p of v.hidden) put('HIDDEN', p);
   if (r.tangent !== false) for (const p of v.tangent) put('TANGENT', p);
   for (const p of v.thin) put('THIN', p);
+  for (const p of v.bends ?? []) put('BEND', p);
   if (r.noCentres?.includes(key)) return;
   const m = AXIS_PAST / k;
   // centre marks taken away one by one (a centre annotation that hides one)

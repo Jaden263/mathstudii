@@ -63,6 +63,10 @@ describe('names', () => {
     // a thread's groove, and that of a tapped hole
     expect(faceWords('f1/thread0:groove#3', name)).toBe('the thread of Extrude1');
     expect(faceWords('f2/hole0:thread:groove', name)).toBe('the thread of hole 1 of Hole1');
+    // sheet metal: the faces of an edge flange's flange and bend
+    expect(faceWords('f2/fl:3fa9c1/start', name)).toBe('the face A of the flange of Hole1');
+    expect(faceWords('f2/fl:3fa9c1/side:far', name)).toBe('the far edge face of the flange of Hole1');
+    expect(faceWords('f2/bend:3fa9c1/side:b#1', name)).toBe('the face B of the bend of Hole1');
   });
 });
 

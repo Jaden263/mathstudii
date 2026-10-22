@@ -39,7 +39,7 @@ interface Props {
 }
 
 /** Layers drawn bottom up: hatching under the lines, wide lines over the narrow ones. */
-const ORDER: Layer[] = ['HATCH', 'THIN', 'TANGENT', 'HIDDEN', 'CENTER', 'DIM', 'TEXT', 'VISIBLE', 'BORDER'];
+const ORDER: Layer[] = ['HATCH', 'THIN', 'TANGENT', 'HIDDEN', 'CENTER', 'BEND', 'DIM', 'TEXT', 'VISIBLE', 'BORDER'];
 
 /** The colour of an annotation that lost its geometry, in the files too (no stylesheet there). */
 const WARN = '#d9480f';
@@ -300,7 +300,8 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
       const id = drag.key.slice(4);
       r = drag.key.startsWith('sec:')
         ? { ...r, sections: r.sections?.map((s) => (s.id === id ? { ...s, at: drag.at } : s)) }
-        : { ...r, details: r.details?.map((d) => (d.id === id ? { ...d, at: drag.at } : d)) };
+        : drag.key === 'flat' ? { ...r, flat: { ...r.flat, at: drag.at } }
+          : { ...r, details: r.details?.map((d) => (d.id === id ? { ...d, at: drag.at } : d)) };
     }
     if (adrag) {
       const p = adrag.from;
@@ -514,6 +515,7 @@ export function DrawingView({ region, cad, cadResult, selected, dispatch }: Prop
       if (at === c0) return;
       const id = pv.key.slice(4);
       if (pv.kind === 'section') set({ sections: region.sections?.map((s) => (s.id === id ? { ...s, at } : s)) });
+      else if (pv.kind === 'flat') set({ flat: { ...region.flat, at } });
       else set({ details: region.details?.map((d) => (d.id === id ? { ...d, at } : d)) });
     };
     window.addEventListener('pointermove', move);

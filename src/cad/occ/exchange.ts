@@ -5,9 +5,11 @@ import type { TDF_Label, TDocStd_Document } from 'replicad-opencascadejs';
 import type { CadUnit } from '../model';
 import type { CadDesign } from '../design';
 import { meshToStl } from '../stl';
+import { linearRgb, type ExportModel, type ExportPart } from '../meshExport';
+import { meshBodyResult } from '../meshBody';
 import { Arena, m4Point, IDENTITY, type M4 } from '../solid';
 import type { OccBuiltDesign } from './build';
-import { compound, guard, scratch, trsf, type OC, type TopoDS_Shape } from './kernel';
+import { compound, guard, hasSolid, scratch, trsf, type OC, type TopoDS_Shape } from './kernel';
 
 /** What to export: one body, one component (in its own coordinates) or the assembly. */
 export type ExportScope =
@@ -37,6 +39,8 @@ function rgb(hex?: string): [number, number, number] | undefined {
   const n = parseInt(m[1], 16);
   return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
+
+
 
 /** The visible bodies of a component (all bodies when asked for one). */
 function partOf(built: OccBuiltDesign, design: CadDesign, cid: string, only?: string): Part | null {
@@ -113,7 +117,8 @@ function stepDocument(oc: OC, t: Arena, built: OccBuiltDesign, design: CadDesign
   const addPart = (p: Part) => {
     const label = t.add(shapes.AddShape(compound(oc, t, p.shapes), false, true));
     name(label, p.name);
-    if (p.color) colors.SetColor(label, t.add(new oc.Quantity_ColorRGBA(p.color[0], p.color[1], p.color[2], 1)), oc.XCAFDoc_ColorType.XCAFDoc_ColorSurf);
+    // OCCT's colours are linear: its writer turns them back into the sRGB numbers of COLOUR_RGB
+    if (p.color) colors.SetColor(label, t.add(new oc.Quantity_ColorRGBA(linearRgb(p.color[0]), linearRgb(p.color[1]), linearRgb(p.color[2]), 1)), oc.XCAFDoc_ColorType.XCAFDoc_ColorSurf);
     return label;
   };
   if (scope.kind === 'assembly') {
@@ -216,4 +221,71 @@ function boxSize(oc: OC, t: Arena, shapes: TopoDS_Shape[]): number {
   for (const s of shapes) oc.BRepBndLib.Add(s, bb, false);
   if (bb.IsVoid()) return 1;
   return Math.hypot(bb.GetXMax() - bb.GetXMin(), bb.GetYMax() - bb.GetYMin(), bb.GetZMax() - bb.GetZMin());
+}
+
+// ------------------------------------------------------------ meshes (3MF, OBJ, glTF, STL)
+
+export interface MeshExportOptions {
+  /** Largest distance of the facets from the true surface, part units (default 10⁻⁴ of the size). */
+  tolerance?: number;
+  /** Largest angle between neighbouring facets on a curved face, radians (default 0.1). */
+  angle?: number;
+  name?: string;
+  unit?: CadUnit;
+}
+
+/**
+ * The scope as meshes for the mesh formats: each component's visible bodies tessellated
+ * once from the exact surfaces (with their normals), mesh bodies as they are, and the
+ * occurrences placing them (an assembly) or the component in its own coordinates.
+ */
+export function exportModelOcc(oc: OC, built: OccBuiltDesign, design: CadDesign, scope: ExportScope, o: MeshExportOptions = {}): ExportModel {
+  const parts: ExportPart[] = [];
+  const instances: ExportModel['instances'] = [];
+  const shapes: TopoDS_Shape[] = [];
+  const of = new Map<string, number>();
+  /** A component (or one of its bodies) as a part: its B-rep shapes to tessellate and its mesh bodies. */
+  const partFor = (cid: string, only?: string): number => {
+    const key = `${cid}/${only ?? ''}`;
+    if (of.has(key)) return of.get(key)!;
+    const comp = design.components.find((c) => c.id === cid);
+    const cb = built.components.get(cid);
+    const shown = (id: string) => (only ? id === only : !comp?.hiddenBodies?.includes(id));
+    const bodies = (cb?.bodies ?? []).filter((b) => shown(b.id) && hasSolid(oc, b.solid.shape));
+    const meshes = (cb?.meshes ?? []).filter((m) => shown(m.id));
+    const name = only ? (bodies[0]?.name ?? meshes[0]?.name ?? 'Body') : comp?.name ?? 'Part';
+    const part: ExportPart & { brep: { name: string; shape: TopoDS_Shape }[] } = {
+      name, ...(comp?.color ? { color: comp.color } : {}), brep: bodies.map((b) => ({ name: b.name, shape: b.solid.shape })),
+      meshes: meshes.map((m) => {
+        const r = meshBodyResult(m);
+        return { name: m.name, positions: r.mesh.positions, normals: r.mesh.normals, indices: r.mesh.indices };
+      }),
+    };
+    shapes.push(...part.brep.map((b) => b.shape));
+    of.set(key, parts.length);
+    parts.push(part);
+    return parts.length - 1;
+  };
+  if (scope.kind === 'assembly') {
+    for (const occ of placed(built, design)) instances.push({ name: occ.name, part: partFor(occ.component), M: occ.M });
+  } else {
+    const comp = design.components.find((c) => c.id === scope.component);
+    const p = partFor(scope.component, scope.kind === 'body' ? scope.body : undefined);
+    instances.push({ name: scope.kind === 'body' ? parts[p].name : comp?.name ?? 'Part', part: p, M: IDENTITY });
+  }
+  scratch((t) => {
+    const size = boxSize(oc, t, shapes);
+    const tol = o.tolerance ?? Math.max(size * 1e-4, 1e-9);
+    for (const p of parts as (ExportPart & { brep: { name: string; shape: TopoDS_Shape }[] })[]) {
+      const exact = p.brep.map((b) => {
+        const raw = t.add(oc.ReplicadMeshExtractor.extract(b.shape, tol, o.angle ?? 0.1, false));
+        const copy = <A extends Float32Array | Uint32Array>(K: { new (b: ArrayBuffer, o: number, n: number): A }, ptr: number, n: number) => new K(oc.wasmMemory.buffer as ArrayBuffer, ptr >>> 0, n).slice() as A;
+        return { name: b.name, positions: copy(Float32Array, raw.getVerticesPtr(), raw.getVerticesSize()), normals: copy(Float32Array, raw.getNormalsPtr(), raw.getNormalsSize()), indices: copy(Uint32Array, raw.getTrianglesPtr(), raw.getTrianglesSize()) };
+      });
+      p.meshes = [...exact, ...p.meshes];
+      delete (p as Partial<typeof p>).brep;
+    }
+  });
+  if (!instances.some((x) => parts[x.part]?.meshes.some((m) => m.indices.length))) throw new Error('there is nothing to export');
+  return { name: o.name?.trim() || (scope.kind === 'assembly' ? 'Assembly' : parts[0]?.name ?? 'Part'), parts, instances, mm: mmPerUnit(o.unit ?? 'mm') };
 }

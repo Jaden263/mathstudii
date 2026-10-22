@@ -30,7 +30,7 @@ const deg = (a: number) => {
 };
 
 /** ACI colours: visible white/black, hidden grey, centre lines red, hatching blue, dimensions green. */
-const COLOUR: Record<Layer, number> = { VISIBLE: 7, HIDDEN: 8, CENTER: 1, TANGENT: 9, THIN: 7, HATCH: 5, DIM: 3, TEXT: 7, BORDER: 7 };
+const COLOUR: Record<Layer, number> = { VISIBLE: 7, HIDDEN: 8, CENTER: 1, TANGENT: 9, THIN: 7, HATCH: 5, DIM: 3, TEXT: 7, BORDER: 7, BEND: 6 };
 
 /** Lineweights DXF knows (1/100 mm): the nearest at or above a width. */
 const WEIGHTS = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
@@ -91,7 +91,7 @@ export function sheetDxf(sheet: Sheet): string {
   layer('0', 7, 'Continuous', -3);
   for (const L of LAYERS) {
     const st = layerStyle(L, sheet.group);
-    layer(L, COLOUR[L], L === 'HIDDEN' ? 'DASHED' : L === 'CENTER' ? 'CENTER' : 'Continuous', lineweight(st.width));
+    layer(L, COLOUR[L], L === 'HIDDEN' || L === 'BEND' ? 'DASHED' : L === 'CENTER' ? 'CENTER' : 'Continuous', lineweight(st.width));
   }
   t(0, 'ENDTAB');
   table('STYLE', H.style, 1);

@@ -6,7 +6,7 @@
 // pieces and every piece is tested against all triangles in front of it (a 2-D grid
 // keeps that fast), so lines come out split into visible and hidden runs.
 import earcut from 'earcut';
-import type { M4, Vec3 } from './solid';
+import { cross3, dot3, type M4, type Vec3 } from './solid';
 import { overlayPrims, pointInLoop, primsBox, type DrawView, type DrawViewRequest, type Prim } from './drawing2d';
 import { chainLoops } from './outline';
 
@@ -386,7 +386,7 @@ export function meshDrawView(meshes: DrawMesh[], req: DrawViewRequest): DrawView
  * The part of a mesh beyond the plane through o square to n, closed by caps where the
  * plane cut it; the caps' outlines in view coordinates. Null when nothing is left.
  */
-function clipMesh(m: DrawMesh, o: Vec3, n: Vec3, right: Vec3, up: Vec3): { mesh: DrawMesh; loops: number[][] } | null {
+export function clipMesh(m: DrawMesh, o: Vec3, n: Vec3, right: Vec3, up: Vec3): { mesh: DrawMesh; loops: number[][] } | null {
   const { pos, tri } = m;
   const nv = pos.length / 3;
   const side = new Float64Array(nv);
@@ -456,7 +456,11 @@ function clipMesh(m: DrawMesh, o: Vec3, n: Vec3, right: Vec3, up: Vec3): { mesh:
       const x = flat[k], y = flat[k + 1];
       for (let c = 0; c < 3; c++) out.push(x * right[c] + y * up[c] + depth * n[c]);
     }
-    for (const q of earcut(flat, starts, 2)) tris.push(base + q);
+    // turned to face the side cut away, as the outside of what is kept
+    const cap = earcut(flat, starts, 2);
+    const [a, b, c] = cap.slice(0, 3).map((q) => [flat[2 * q], flat[2 * q + 1]]);
+    const facesN = a && ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * dot3(cross3(right, up), n) > 0;
+    for (let k = 0; k < cap.length; k += 3) tris.push(base + cap[k], base + cap[facesN ? k + 2 : k + 1], base + cap[facesN ? k + 1 : k + 2]);
   });
   return { mesh: { pos: new Float64Array(out), tri: Uint32Array.from(tris) }, loops };
 }

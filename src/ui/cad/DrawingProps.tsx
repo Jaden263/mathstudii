@@ -53,6 +53,9 @@ export function DrawingProps({ region, dispatch }: { region: DrawingRegion; disp
           {view('iso', 'Isometric')}
         </div>
       </div>
+      <label className="check" title="The flat blank of the part's sheet-metal body, with its bend lines (dashed, layer BEND in the DXF) and bend notes">
+        <input type="checkbox" checked={!!region.flat} onChange={(e) => set({ flat: e.target.checked ? {} : undefined })} /> Flat pattern (sheet metal)
+      </label>
       <label className="check"><input type="checkbox" checked={region.hidden} onChange={(e) => set({ hidden: e.target.checked })} /> Hidden lines (dashed)</label>
       <label className="check"><input type="checkbox" checked={region.tangent !== false} onChange={(e) => set({ tangent: e.target.checked ? undefined : false })} /> Tangent edges (narrow)</label>
       <label className="check" title="Each occurrence out by its explode offset (set in the CAD window: Assemble → Explode → Auto, or per occurrence)"><input type="checkbox" checked={!!region.exploded} onChange={(e) => set({ exploded: e.target.checked || undefined })} /> Exploded assembly</label>

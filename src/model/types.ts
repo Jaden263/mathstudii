@@ -227,6 +227,8 @@ export interface DrawingRegion extends RegionBase {
   noCentres?: string[];
   sections?: DrawingSection[];
   details?: DrawingDetail[];
+  /** The flat pattern of a sheet-metal body (the first one when none is named), and where its view sits. */
+  flat?: { body?: string; at?: { x: number; y: number } };
   title?: string;
   partNo?: string;
   material?: string;

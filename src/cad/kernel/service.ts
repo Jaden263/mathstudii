@@ -14,14 +14,21 @@ import { approxDistance } from '../inspect';
 import { designKey } from '../keys';
 import { initKernel, kernel } from '../solid';
 import { buildDesignCached } from '../occ/build';
-import { mmPerUnit, stepFile, stlFile } from '../occ/exchange';
+import { exportModelOcc, mmPerUnit, stepFile } from '../occ/exchange';
+import { faceDxf } from '../occ/faceDxf';
+import { glbFile, objFile, stlOfModel, threeMF } from '../meshExport';
+import { strToU8, zipSync } from 'fflate';
 import { initOcc, occ, occFailure, onOccRenewed, renewOcc, type OC } from '../occ/kernel';
 import { ByteLru } from '../../model/lru';
 import { distanceOcc, interferenceOcc, outlineOcc, sectionOcc } from '../occ/query';
 import { cachedResultOcc } from '../occ/result';
 import { drawViewOcc } from '../occ/drawing';
-import { interferenceMesh, meshBuilt, outlineMesh, sectionMesh, stlMesh } from './meshFallback';
+import { exportModelMesh, interferenceMesh, meshBuilt, outlineMesh, sectionMesh } from './meshFallback';
+import { addInterference, hasMeshBodies, meshInterference, sectionMeshBodies } from '../meshQueries';
 import { buffersOf, NO_KERNEL, type KernelCall, type KernelReply, type KernelRequest } from './protocol';
+import { flatPatternOcc } from '../occ/flat';
+import { flatView } from '../flatExport';
+import type { FlatPattern } from '../sheetMetal';
 
 let loadBrep: () => Promise<unknown> = () => initOcc();
 let loadMesh: () => Promise<unknown> = () => initKernel();
@@ -170,19 +177,27 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
     if (!shown) return { value: null, kernel: which, transfer: [] };
     const key = designKey(design, numbers);
     const views: Record<string, DrawView> = {};
-    for (const v of req.views) views[v.key] = drawViewFor(design, numbers, shown, v, key);
+    for (const v of req.views) views[v.key] = v.flat ? flatViewFor(design, numbers, v.flat.body) : drawViewFor(design, numbers, shown, v, key);
     return { value: views, kernel: which, transfer: [] };
   }
   if (!oc && !K) throw new Error(NO_KERNEL);
   switch (req.op) {
     case 'section': {
       const value = oc ? sectionOcc(oc, buildDesignCached(oc, design, numbers), design, req.plane) : sectionMesh(meshBuilt(K!, design, numbers), design, req.plane);
+      // imported mesh bodies are clipped here, whichever kernel built the rest
+      const shown = displayFor(design, numbers);
+      if (hasMeshBodies(shown)) value.push(...sectionMeshBodies(shown!, design, req.plane));
       return { value, kernel: which, transfer: buffersOf(value) };
     }
     case 'outline':
       return { value: oc ? outlineOcc(oc, buildDesignCached(oc, design, numbers), req.component, req.frame) : outlineMesh(meshBuilt(K!, design, numbers), req.component, req.frame), kernel: which, transfer: [] };
-    case 'interference':
-      return { value: oc ? interferenceOcc(oc, buildDesignCached(oc, design, numbers), design) : interferenceMesh(meshBuilt(K!, design, numbers), design), kernel: which, transfer: [] };
+    case 'interference': {
+      let rows = oc ? interferenceOcc(oc, buildDesignCached(oc, design, numbers), design) : interferenceMesh(meshBuilt(K!, design, numbers), design);
+      // pairs with an imported mesh body: Manifold's booleans on the closed meshes
+      const shown = displayFor(design, numbers);
+      if (hasMeshBodies(shown) && (await ensureMesh()) && kernel()) rows = addInterference(rows, meshInterference(kernel()!, shown!, design).rows);
+      return { value: rows, kernel: which, transfer: [] };
+    }
     case 'distance': {
       if (oc) return { value: distanceOcc(oc, buildDesignCached(oc, design, numbers), design, req.a, req.b), kernel: which, transfer: [] };
       const shown = displayFor(design, numbers);
@@ -194,12 +209,55 @@ export async function answer(req: KernelRequest): Promise<{ value: unknown; kern
         if (!oc) throw new Error('STEP export needs the B-rep kernel (OpenCascade did not load)');
         data = new TextEncoder().encode(stepFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { unit: req.unit, name: req.name }));
       } else {
-        // STL has no units: written in millimetres, which slicers assume
-        const scale = mmPerUnit(req.unit);
-        data = oc ? stlFile(oc, buildDesignCached(oc, design, numbers), design, req.scope, { name: req.name, scale }) : stlMesh(meshBuilt(K!, design, numbers), design, req.scope, req.name, scale);
+        // the mesh formats are written in millimetres (STL and OBJ have no unit, and slicers read millimetres)
+        const model = oc
+          ? exportModelOcc(oc, buildDesignCached(oc, design, numbers), design, req.scope, { name: req.name, unit: req.unit })
+          : exportModelMesh(meshBuilt(K!, design, numbers), design, req.scope, { name: req.name, mm: mmPerUnit(req.unit) });
+        if (req.format === 'stl') data = stlOfModel(model);
+        else if (req.format === '3mf') data = threeMF(model);
+        else if (req.format === 'glb') data = glbFile(model);
+        else {
+          const base = req.name.replace(/[^\w.-]+/g, '_') || 'part';
+          const { obj, mtl } = objFile(model, `${base}.mtl`);
+          data = zipSync({ [`${base}.obj`]: strToU8(obj), [`${base}.mtl`]: strToU8(mtl) });
+        }
       }
       return { value: data, kernel: which, transfer: [data.buffer as ArrayBuffer] };
     }
+    case 'faceDxf': {
+      if (!oc) throw new Error('a face DXF needs the B-rep kernel (OpenCascade did not load)');
+      return { value: faceDxf(oc, buildDesignCached(oc, design, numbers), req.component, req.body, req.face, req.unit), kernel: which, transfer: [] };
+    }
+    case 'flat':
+      return { value: sheetFlat(design, numbers, req.component, req.body).fp, kernel: which, transfer: [] };
+  }
+}
+
+/**
+ * The flat pattern of a sheet-metal body (the first one of the design when none is named):
+ * from the B-rep kernel's build (it is kept with the body's solid, so asking again costs nothing).
+ */
+function sheetFlat(design: CadDesign, numbers: DesignNumbers, component: string | undefined, body: string | undefined): { fp: FlatPattern; name: string } {
+  const oc = brepNow();
+  if (!oc) throw new Error('the flat pattern needs the B-rep kernel (OpenCascade did not load)');
+  const built = buildDesignCached(oc, design, numbers);
+  for (const [cid, cb] of built.components) {
+    if (component && cid !== component) continue;
+    for (const b of cb.bodies) {
+      const m = cb.sheets?.[b.id];
+      if (m && (!body || b.id === body)) return { fp: flatPatternOcc(oc, b.solid.shape, m), name: b.name };
+    }
+  }
+  throw new Error(body ? 'that body is not sheet metal (or is gone)' : 'the part has no sheet-metal body: make one with Sheet Metal → Flange');
+}
+
+/** A drawing's flat pattern view; empty, with a note, when there is none to draw. */
+function flatViewFor(design: CadDesign, numbers: DesignNumbers, body: string | undefined): DrawView {
+  try {
+    const { fp, name } = sheetFlat(design, numbers, undefined, body);
+    return flatView(fp, `Flat pattern of ${name}`);
+  } catch (e) {
+    return { name: 'Flat pattern', visible: [], hidden: [], tangent: [], thin: [], axes: [], box: { x0: 0, y0: 0, x1: 0, y1: 0 }, note: e instanceof Error ? e.message : String(e) };
   }
 }
 

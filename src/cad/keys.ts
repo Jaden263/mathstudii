@@ -53,7 +53,11 @@ const solved = (s: SolvedSketch) => [
 
 /** Key of a built design: its display data and measured values are the same for equal keys. */
 export function designKey(design: CadDesign, numbers: DesignNumbers): string {
-  const bare = { ...design, components: design.components.map((c) => ({ ...c, items: c.items.map((i) => (i.kind === 'sketch' ? { ...i, sketch: curves(i.sketch) } : i)) })) };
+  const bare = {
+    ...design, components: design.components.map((c) => ({ ...c, items: c.items.map((i) => (i.kind === 'sketch' ? { ...i, sketch: curves(i.sketch) } : i)) })),
+    // an imported file is its hash (which the import features name): its megabytes stay out of the key
+    files: design.files && Object.keys(design.files).sort(),
+  };
   // only the solved geometry of each sketch counts, not its dimension readouts
   const sketches = Object.fromEntries(Object.entries(numbers.sketches).map(([id, s]) => [id, solved(s)]));
   return `d${hashString(solidJson([bare, sketches, numbers.frames, numbers.params, numbers.errors, numbers.unit]))}`;

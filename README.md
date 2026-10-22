@@ -1527,16 +1527,127 @@ features and the selection store these names:
   - The worksheet shows the message too. Nothing is ever moved to some other face.
 - **Order:** a sketch can only refer to faces built before it in the timeline.
 
+**Sheet metal** (Sheet Metal tab; the flat pattern and edge flanges need the B-rep kernel):
+
+- **Rules** per component: thickness t, inner bend radius R, K-factor, bend relief
+  (rectangular, round or tear, with width and depth, default t × t) and corner relief (none,
+  square or round, default size R + t). All are worksheet expressions with units, so
+  `t_s` from the worksheet can drive them. The K-factor defaults from the material: steel
+  0.44 (the K-factor of Autodesk Fusion's built-in rules), aluminium 0.43, stainless steel
+  0.45 and copper 0.44, typical for air bending at R from t to 3t (generic K-factor charts
+  give 0.40–0.45 there, softer metals lower). A test bend gives the K-factor of your own
+  tooling.
+- **Flange** on a sketch: a closed profile becomes a plate t thick, below the sketch plane
+  or flipped. Open lines end to end become a strip, bent at every corner with the rules'
+  radius; the lines are one face of the sheet.
+- **Edge flange** on straight edges picked in the view (an edge on the top face bends up):
+  height to the outer or inner virtual sharp, bend angle, bend position (inside, outside,
+  centre or adjacent), offsets from both ends (with bend reliefs) and the other way.
+  Where the end of the new bend meets another bend, the rules' corner relief is cut.
+- **Hem** (open with a gap, or closed) on picked edges, and **Bend** along a sketch line
+  across a flat face (centred on the line, or with either tangent line on it).
+- **Flat pattern** (ribbon, or `part.flat` in the worksheet): the blank with its
+  cut-outs, the bend lines (the middle of each bend) with notes like *UP 90° R2*, and a bend
+  table with angle, radius, direction, BA and DIN 6935's correction v (information
+  only: the flat uses BA). The developed length is the sum of the flat lengths and of
+  BA = θ·(R + K·t) for every bend. An L bracket with outer legs a and b gives
+  (a − t − R) + (b − t − R) + BA.
+- **Worksheet:** `part.flat.L` and `W` (blank length and width), `Lx`, `Ly`, `A` (blank area
+  less cut-outs), `m` (A·t·ρ), `n` (number of bends), `BA` (sum of the allowances), `v`,
+  `t` and `K`, also per body (`part.Body1.flat.L`, with the component's name between them in
+  an assembly).
+- **Exports:** **DXF** (R12, 1:1 in the part's unit) has the outer contour on layer OUTER,
+  the cut-outs on INNER, bend lines on BEND (DASHED) and their notes as TEXT on
+  BEND_NOTES. Arcs and circles stay ARC and CIRCLE entities. **SVG** is at true size. A
+  drawing can show the flat pattern as a view: tick *Flat pattern* in its properties (with
+  overall dimensions on, it gets the blank's length and width).
+- **How it is built:** each flange is a prism of its flat outline. Each bend is its
+  cross-section revolved about the bend axis, so its faces are exact cylinders. Faces are
+  named after the feature and piece, so sketches, holes and drawing dimensions on a flange
+  stay on it when heights, angles or rules change. Holes and cuts through a flange (made
+  with the usual Solid features after folding) are mapped back into the flat.
+- **The limits:**
+  - Cuts across a bend are not unrolled into the flat: the flat pattern warns and leaves
+    them out. The same applies to cuts that only go part way into the sheet.
+  - Bend refolds the sheet from its flanges. Cut-outs through it are carried along, but
+    other features made on the sheet before the bend are dropped (the Bend warns), and
+    the faces of the carried cut-outs get new names. A cut-out across the bend line is
+    refused: make that cut after the bend.
+  - Open profiles take lines only (no arcs). A Bend line must cross the face square to
+    two straight edges, and must not run through a hole.
+  - Corner reliefs are made only where the end of one bend meets the tangent line of
+    another bend.
+  - No forming tools, louvres, lofted or rolled flanges, and no unfold/refold feature. The
+    flat view of a drawing shows the first sheet-metal body of the part, and its
+    dimensions are not associative.
+
 **Exchange:**
 
 - **DXF:** import and export per sketch (lines, arcs, circles, points, LWPOLYLINE and
   POLYLINE with bulges). Splines, ellipses and text are exported as fine polylines.
-- **STEP AP214:** exact solids with names, colours and the assembly structure.
+- **STEP AP214:** exact solids with names, colours (sRGB, as other programs read them) and
+  the assembly structure.
 - **STL:** binary, tessellated finely from the exact surfaces, always in millimetres (STL
   has no units, and slicers read millimetres), whatever the part's unit.
+- **3MF** (core specification 1.3, checked against its schema): millimetres, an object
+  per component with its colour, a build item per occurrence with its placement.
+- **OBJ + MTL:** every occurrence placed, millimetres, smooth normals, a material per
+  colour (two files: the .obj and its .mtl).
+- **glTF 2.0 binary (.glb):** a node per occurrence, PBR base colours, metres and Y up as
+  glTF has it (web viewers, AR).
+- **Face DXF:** pick one flat face and press **Face DXF**: its outer loop and holes as
+  LINE, true ARC and CIRCLE entities (a B-spline that is a circle to 10⁻⁶ of the face's
+  size, as some writers send holes, as its circle or arc; other curves as fine polylines),
+  seen from outside, in the part's unit: a profile for laser, waterjet or plasma cutting.
 
-STEP and STL are on the CAD window's **File** tab and in the part's right-click menu.
-They download in the browser and open a save dialog in the desktop app.
+File → **Export…** writes any of them for the assembly, one component or one body; STEP,
+STL and 3MF have buttons of their own, and STEP, STL, 3MF and glTF are in the part's
+right-click menu. They download in the browser and open a save dialog in the desktop app.
+
+**Importing** (File or Solid → **Import**, or drop the file on the CAD window):
+
+- **STEP** (AP203, AP214, AP242 B-rep): the exact solids with the product names and
+  colours, converted from the file's unit to the part's. A file of one part placed at the
+  origin becomes an **Import** feature in the active component's timeline (a new, empty
+  part takes its name and colour); an assembly becomes a component per part with a
+  grounded occurrence for every instance where the file places it (nested assemblies are
+  flattened, their placements multiplied out; an assembly's own bodies beside its
+  sub-assemblies, as Fusion writes a root component's, become a component of their own).
+  Occurrences take the file's instance names where each is unique, else the part's name
+  and a count (Creo calls every instance "Next assembly relationship"). The CAx-IF AS1
+  assembly, as Creo (AP203, inches) and OpenCascade (AP214) write it, comes in as 5
+  components and 18 occurrences with the volume and centre OpenCascade's own reader gives.
+  A 5 MB file (a plate with 576 counterbored holes) is read and measured in about 3.5 s,
+  once: rebuilds reuse it.
+- Imported faces have no history, so they are named after their body and their surface: a
+  plane by its normal and offset, a cylinder by its axis and radius, and so on. Sketches on
+  them, fillets, holes, joints and drawing dimensions hold on through every rebuild.
+- **Replace file** (double-click the Import feature) reads a new version under it: each
+  feature keeps its part by the product's id, the occurrences the import placed move to
+  the new placements (unless you have moved one since: it stays where you put it), new
+  parts are added. A face on the same surface keeps its name, so a
+  sketch on the top of a plate stays there when the new version has a hole in it; a face
+  whose surface changed (the plate made thicker) is reported lost and the sketch stays where
+  it was, never moved to another face.
+- **STL** (binary and ASCII), **OBJ** (pick its .mtl with it for colours) and **3MF**
+  (unit, colours, objects placed by the build, objects kept in model parts of their own as
+  Bambu Studio writes them) become **mesh bodies**: welded, checked
+  closed (every edge between two triangles running along it opposite ways), their volume,
+  centre and inertia by the divergence theorem over the triangles (exact for the polyhedron
+  the mesh is). They are shown, measured, placed in assemblies, checked for interference,
+  cut by the section view and drawn from their facets, and exported with the rest; a
+  sketch can sit on one of their flat faces, but the features do not work on them (a fillet
+  on a mesh edge says so). An open mesh says so and has no volume. STL and OBJ have no
+  unit: the dialog asks (millimetres by default). An OBJ's colours colour its component as
+  a whole (the first material's), not body by body.
+- **Convert to solid** sews a closed mesh of up to 20 000 triangles into a B-rep solid, its
+  coplanar triangles merged into faces (a cube's twelve triangles become six faces), which
+  the features can then round, cut and drill. It takes seconds (about 10 s at 20 000
+  triangles); its volume is the mesh's to 10⁻⁸.
+- The file is kept in the worksheet (deflated, in base64, once however many components use
+  it, and dropped with the last Import feature that uses it), so the worksheet opens
+  anywhere; above 5 MB the dialog warns that the file grows by about as much and that
+  saving in the browser's storage may then fail.
 
 The **CAD part design** example covers three things:
 
@@ -1678,6 +1789,19 @@ What it is not, honestly:
     stops at its limit without holding its leader back.
   - A drawing explodes all its views or none; there are no explode steps. The BOM has
     one level (no sub-assemblies).
+- **Interchange, the limits:**
+  - This OpenCascade build has no XCAF reader: names, colours and the assembly are read
+    from the STEP text itself (products, styled items, usages and their placements), not
+    from layers, PMI, validation properties or per-face colours (a part takes its solid's
+    colour, else that of most of its faces). A mirrored or scaled placement puts its part where
+    the file has it, but not turned. There is no IGES.
+  - Imported faces are found again by their surface: a face whose surface moved is lost,
+    even when a human would call it the same face.
+  - Mesh bodies are not B-rep: no feature works on them, joints snap to their faces by
+    place only (they never move), STEP export leaves them out, and an open mesh takes no
+    part in the interference check. The mesh kernel cannot read STEP or sew meshes.
+  - The mesh formats are tessellations (the facets within 10⁻⁴ of the part's size of the
+    exact surfaces); glTF has no units of its own beyond metres, OBJ none at all.
 - **Drawings:** no tolerance stack-up or GD&T analysis; one sheet per drawing (sheet n of m
   is written as entered).
 
@@ -1859,7 +1983,7 @@ src/frame3d/  3-D frame analysis (no UI): model, substructured stiffness solver,
 src/ui/frame3d/ 3-D frame region: orbit view (SVG), tables, properties panel
 src/cad/      CAD engine (no UI): sketch model and solver, profiles, design (components, timeline,
               joints), solid kernels (OpenCascade B-rep in occ/, Manifold mesh), mass
-              properties, DXF, STL, STEP
+              properties, DXF, STL, STEP, 3MF, OBJ, glTF; STEP and mesh import
 src/ui/cad/   CAD window (Fusion-style workspace, sketch canvas, WebGL scene, ViewCube, dialogs,
               window link) and the page preview
 src/ui/sketch/ the drawing editor (SVG), symbols and section rendering

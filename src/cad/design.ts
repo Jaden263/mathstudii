@@ -36,12 +36,17 @@ import { ribCurve, ribRegion, type RibCurve } from './rib';
 import { reproject, sameReferences, type ReferenceContext, type RefCurve3 } from './reference';
 import { sketchSolution } from './sketchSolve';
 import type { CadResult } from './evaluate';
+import type { CadUnit } from './model';
+import { meshBodyTopology, type MeshBody } from './meshBody';
+import { runImport } from './importFeature';
 import { loopPolygon, segDeriv, segPoint } from './profile';
 import { entitySegs } from './sketchCurves';
 import type { DofKey, ExplodeOffset, JointDof, MotionLink, MotionStudy, RigidGroup } from './assembly';
 import { kinModel, solveKinematics, type KinState } from './kinematics';
+import type { SheetCutouts, SheetFeature, SheetModel, SheetRules } from './sheetMetal';
+import { sheetStep } from './sheetSteps';
 
-export type { Helix };
+export type { Helix, MeshBody };
 
 // ------------------------------------------------------------ document
 
@@ -446,8 +451,42 @@ export type Datum =
   | { kind: 'point'; p: Vec3 }
   | { kind: 'helix'; helix: Helix };
 
+// ------------------------------------------------------------ imported geometry
+
+export type ImportFormat = 'step' | 'stl' | 'obj' | '3mf';
+
+/** A file imported into the design, kept in the document (imported.ts): deflated, in base64, filed under `hash`. */
+export interface ImportedFile {
+  name: string;
+  format: ImportFormat;
+  /** Bytes before compression. */
+  size: number;
+  /** `${format}:${hash of the bytes}`, its key in `CadDesign.files`. */
+  hash: string;
+  data: string;
+  /** Occurrences the import placed, by their path in the file's assembly (Replace file moves them along). */
+  placed?: Record<string, string>;
+}
+
+/**
+ * Fusion's Insert → Import: the bodies of one part of an imported file as the base of a
+ * component. STEP parts become exact B-rep bodies; STL, OBJ and 3MF meshes become mesh
+ * bodies (meshBody.ts), or B-rep solids sewn from their triangles (`solid`).
+ */
+export interface ImportFeature extends FeatureBase {
+  kind: 'import';
+  /** Key (hash) of the file in `CadDesign.files`. */
+  file: string;
+  /** Which part of the file: its key there (product id or name, 3MF object id) and, should the key be gone, its place. */
+  part?: { key: string; index: number };
+  /** Unit of the numbers of a file that has none (STL, OBJ); default mm. */
+  unit?: CadUnit;
+  /** Sew closed meshes into B-rep solids (small meshes only). */
+  solid?: boolean;
+}
+
 export type DesignFeature = ExtrudeFeature | RevolveFeature | HoleFeature | PatternFeature | MirrorFeature | CombineFeature | LoftFeature | ModifyFeature
-  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem;
+  | SweepFeature | CoilFeature | ThreadFeature | RibFeature | ConstructItem | ImportFeature | SheetFeature;
 export type DesignItem = DesignSketch | DesignFeature;
 
 export interface CadComponent {
@@ -461,6 +500,8 @@ export interface CadComponent {
   marker?: number;
   bodyNames?: Record<string, string>;
   hiddenBodies?: string[];
+  /** Sheet-metal rules of its flanges, hems and bends (sheetMetal.ts). */
+  sheet?: SheetRules;
 }
 
 export interface CadOccurrence {
@@ -523,6 +564,8 @@ export interface CadDesign {
   links?: MotionLink[];
   groups?: RigidGroup[];
   motions?: MotionStudy[];
+  /** Imported files by their hash (import features build from them). */
+  files?: Record<string, ImportedFile>;
 }
 
 export const isSketch = (i: DesignItem): i is DesignSketch => i.kind === 'sketch';
@@ -530,6 +573,8 @@ export const FEATURE_LABEL: Record<DesignItem['kind'], string> = {
   sketch: 'Sketch', extrude: 'Extrude', revolve: 'Revolve', hole: 'Hole', pattern: 'Pattern', mirror: 'Mirror', combine: 'Combine', loft: 'Loft',
   fillet: 'Fillet', chamfer: 'Chamfer', shell: 'Shell', draft: 'Draft', presspull: 'Press pull', split: 'Split', move: 'Move',
   sweep: 'Sweep', coil: 'Coil', thread: 'Thread', rib: 'Rib', plane: 'Plane', axis: 'Axis', point: 'Point',
+  import: 'Import',
+  flange: 'Flange', edgeflange: 'Edge flange', hem: 'Hem', bend: 'Bend',
 };
 
 /** Features that work on what is picked on the bodies: they are edited with the timeline rolled back to them. */
@@ -541,7 +586,8 @@ export const isConstruct = (i: DesignItem): i is ConstructItem => CONSTRUCT_KIND
 
 /** Items that pick faces, edges or vertices of the bodies before them: edited with the timeline rolled back to them. */
 export const picksOnBodies = (i: DesignItem): boolean => isModify(i) || isConstruct(i) || i.kind === 'thread'
-  || (i.kind === 'sweep' && i.path.kind === 'edges') || (i.kind === 'coil' && (typeof i.plane !== 'string' || (i.centre !== undefined && typeof i.centre !== 'string')));
+  || (i.kind === 'sweep' && i.path.kind === 'edges') || (i.kind === 'coil' && (typeof i.plane !== 'string' || (i.centre !== undefined && typeof i.centre !== 'string')))
+  || i.kind === 'edgeflange' || i.kind === 'hem';
 
 /** Profiles are identified by the entities of their outer loop. */
 export function profileKey(r: ProfileRegion): string {
@@ -712,6 +758,8 @@ export interface ComponentBuild {
   tools: Map<string, ToolRec>;
   /** Sketches the timeline solved again (their projected references moved). */
   sketches: Record<string, RebuiltSketch>;
+  /** Imported mesh bodies. */
+  meshes?: MeshBody[];
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -869,6 +917,12 @@ export interface SolidOps<S> {
   edgeAt(s: S, edge: number, t: number): { p: Vec3; d: Vec3 };
   /** The curves the plane f cuts from a solid (component coordinates): lines, circles and ellipses exactly, other curves as points along them. */
   section(s: S, f: Frame): RefCurve3[];
+  /** The solids of one part of a STEP file in part units, their faces named after their body and surface (B-rep kernel only). */
+  stepBodies?(file: ImportedFile, part: { key: string; index: number } | undefined, unit: string, tag: string): { solids: S[]; warnings: string[] };
+  /** A closed mesh sewn into a solid of plane triangles merged into faces (B-rep kernel only). */
+  meshSolid?(mesh: MeshBody, body: number, unit: string, tag: string): S;
+  /** The cut-outs through each flange of a sheet-metal body, in flat coordinates, and what else changed its volume (B-rep kernel only). */
+  sheetCutouts?(s: S, m: SheetModel): SheetCutouts;
 }
 
 export interface TimelineBody<S> {
@@ -899,6 +953,10 @@ export interface Timeline<S> {
   /** Sketches the timeline solved again (their projected references moved). */
   sketches: Record<string, RebuiltSketch>;
   threads: ThreadMark[];
+  /** Imported mesh bodies (not B-rep: no feature works on them). */
+  meshes: MeshBody[];
+  /** Sheet-metal bodies' models, by body id. */
+  sheets?: Record<string, SheetModel>;
 }
 
 /** z-range of a box in a sketch frame. */
@@ -983,6 +1041,10 @@ export interface TimelineState<S> {
   sketches: Record<string, RebuiltSketch>;
   /** Cosmetic threads so far (drawings draw them per ISO 6410). */
   threads: ThreadMark[];
+  /** Imported mesh bodies so far. */
+  meshes?: MeshBody[];
+  /** Sheet-metal bodies' models so far, by body id. */
+  sheets?: Record<string, SheetModel>;
 }
 
 /**
@@ -1020,7 +1082,7 @@ export interface RebuiltSketch {
   result: CadResult;
 }
 
-export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {}, threads: [] });
+export const emptyTimeline = <S>(): TimelineState<S> => ({ bodies: [], tools: new Map(), errors: {}, warnings: {}, frames: {}, datums: {}, made: [], sketches: {}, threads: [], meshes: [] });
 
 /** The face a sketch follows, if it does (sketches made on faces before references existed do not). */
 export const sketchFace = (s: DesignSketch): TopoRef | undefined => ('frame' in s.plane ? s.plane.face : undefined);
@@ -1038,7 +1100,8 @@ export function itemName(design: CadDesign, id: string): string | undefined {
 function sketchOnFace<S>(ops: SolidOps<S>, design: CadDesign, inp: BuildInputs, prev: TimelineState<S>, item: DesignSketch, ref: TopoRef): TimelineState<S> {
   const captured = inp.numbers.frames[item.id];
   if (!captured || inp.numbers.errors[item.id]) return prev;
-  const bodies = prev.bodies.map((b) => ops.topology(b.solid, b.id));
+  // imported mesh bodies too: found by their geometry, which only a new file moves
+  const bodies = [...prev.bodies.map((b) => ops.topology(b.solid, b.id)), ...(prev.meshes ?? []).map(meshBodyTopology)];
   const r = resolveRef(ref, bodies);
   const face = resolvedEntity(bodies, 'face', r);
   // the origin goes with the vertex or circle centre it sits on; without one (or with it
@@ -1536,6 +1599,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   const made = [...prev.made];
   // old cached states (made before threads were kept) have none
   let threads = prev.threads ?? [];
+  let meshes = prev.meshes ?? [];
+  let sheets = prev.sheets ?? {};
   const built = prev.frames;
   // construction items and coils add planes and datums
   let frames = prev.frames, datums = prev.datums;
@@ -1547,6 +1612,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   };
   const targetsOf = (ids?: string[]) => {
     const ts = ids?.length ? bodies.filter((b) => ids.includes(b.id)) : bodies;
+    if (ids?.some((id) => meshes.some((m) => m.id === id))) throw new Error('a mesh body cannot be cut, joined or intersected: convert it to a solid in its import');
     if (ids?.length && ts.length < ids.length) throw new Error('a target body no longer exists');
     return ts;
   };
@@ -1569,6 +1635,10 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   const p = P[item.id] ?? {};
   try {
     if (inp.numbers.errors[item.id]) throw new Error(inp.numbers.errors[item.id]);
+    // a mesh body has no exact faces or edges for the features that work on what is picked
+    if ((MODIFY_KINDS.has(item.kind) || item.kind === 'hole' || item.kind === 'thread') && meshes.some((m) => JSON.stringify(item).includes(`"${m.id}"`))) {
+      throw new Error(`${FEATURE_LABEL[item.kind]} cannot work on a mesh body (it has no exact faces or edges): convert it to a solid in its import`);
+    }
     switch (item.kind) {
       case 'extrude': {
         const f = frameOf(item.sketch);
@@ -1774,6 +1844,13 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         }
         break;
       }
+      case 'import': {
+        const got = runImport(ops, design, item, inp.numbers.unit);
+        got.solids.forEach((solid, k) => created(k ? `${item.id}.b${k}` : item.id, item.id, solid));
+        if (got.meshes.length) meshes = [...meshes, ...got.meshes];
+        if (got.warnings.length) warnings[item.id] = got.warnings.join('; ');
+        break;
+      }
       case 'combine': {
         const t = bodies.find((b) => b.id === item.target);
         const ts = bodies.filter((b) => item.tools.includes(b.id) && b !== t);
@@ -1810,6 +1887,15 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
         threads = [...threads, ...pieces.slice(1).flatMap((_, k) => marks.map((m) => ({ ...m, body: `${item.id}.${k + 1}.${b.id}` })))];
         break;
       }
+      case 'flange':
+      case 'edgeflange':
+      case 'hem':
+      case 'bend':
+        sheets = sheetStep(ops, {
+          design, inp, bodies, sheets, created, frameOf, itemName: (id) => itemName(design, id), warn: (w) => (warnings[item.id] = w),
+          profiles: (sid, key) => selectedProfiles(inp, sid, key ? [key] : undefined).slice(0, key ? undefined : 1),
+        }, item, p);
+        break;
       case 'move': {
         if (!item.bodies.length) throw new Error('pick the bodies to move');
         let M = m4Translate([p.dx ?? 0, p.dy ?? 0, p.dz ?? 0]);
@@ -1823,6 +1909,8 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
           // a moved body keeps the names of its faces; a copy's carry a prefix, as a pattern's do
           if (item.copy) created(`${item.id}.1.${b.id}`, item.id, ops.transform(b.solid, M, `${item.id}.1.`));
           else b.solid = ops.transform(b.solid, M, '');
+          // a sheet-metal body's model moves with it (its flat pattern and edge flanges follow the solid)
+          if (!item.copy && sheets[b.id]) sheets = { ...sheets, [b.id]: { ...sheets[b.id], root: m4Mul(M, sheets[b.id].root) } };
           // the body's cosmetic threads go with it (a copy's are copied)
           const marks = threads.filter((m) => m.body === b.id).map((m) => movedMark(m, M, item.copy ? `${item.id}.1.${m.feature}` : m.feature, item.copy ? `${item.id}.1.${b.id}` : b.id));
           threads = item.copy ? [...threads, ...marks] : [...threads.filter((m) => m.body !== b.id), ...marks];
@@ -1833,7 +1921,7 @@ export function timelineStep<S>(ops: SolidOps<S>, design0: CadDesign, inp0: Buil
   } catch (e) {
     errors[item.id] = msg(e);
   }
-  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads };
+  return { ...prev, bodies, tools, errors, warnings, made, frames, datums, threads, meshes, sheets };
 }
 
 /**
@@ -1847,11 +1935,17 @@ export function namedBodies<S>(comp: CadComponent, st: TimelineState<S>): Timeli
   return st.bodies.map((b) => ({ ...b, name: names.get(b.id) ?? b.id }));
 }
 
+/** The mesh bodies of a finished timeline with their names: the component's own, else the file's, else Mesh1, Mesh2 … */
+export function namedMeshes<S>(comp: CadComponent, st: TimelineState<S>): MeshBody[] {
+  let n = 0;
+  return (st.meshes ?? []).map((m) => ({ ...m, name: comp.bodyNames?.[m.id] ?? (m.name || `Mesh${++n}`) }));
+}
+
 /** Run the timeline of one component with a solid kernel. */
 export function runTimeline<S>(ops: SolidOps<S>, design: CadDesign, comp: CadComponent, inp: BuildInputs): Timeline<S> {
   let st = emptyTimeline<S>();
   for (const item of activeItems(comp)) st = timelineStep(ops, design, inp, st, item);
-  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads };
+  return { bodies: namedBodies(comp, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads, meshes: namedMeshes(comp, st), sheets: st.sheets };
 }
 
 /** Build the bodies of one component with the mesh kernel. Every Manifold made goes into the arena. */
@@ -1859,7 +1953,7 @@ export function buildComponent(K: ManifoldToplevel, arena: Arena, design: CadDes
   const t = runTimeline(meshOps(K, arena), design, comp, inp);
   return {
     bodies: t.bodies.map((b) => ({ id: b.id, name: b.name, feature: b.feature, solid: b.solid.m, exact: b.solid.exact })),
-    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums, sketches: t.sketches,
+    errors: t.errors, warnings: t.warnings, frames: t.frames, datums: t.datums, sketches: t.sketches, meshes: t.meshes,
     tools: new Map([...t.tools].map(([id, r]) => [id, { tool: r.tool.m, exact: r.tool.exact, op: r.op, targets: r.targets }])),
   };
 }
@@ -2046,12 +2140,12 @@ export function buildDesign(K: ManifoldToplevel, design: CadDesign, numbers: Des
     try {
       components.set(c.id, buildComponent(K, arena, design, c, inp));
     } catch (e) {
-      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map(), sketches: {} });
+      components.set(c.id, { bodies: [], errors: { [c.id]: msg(e) }, warnings: {}, frames: {}, datums: {}, tools: new Map(), sketches: {}, meshes: [] });
     }
   }
   const { placements, errors, warnings, kin } = placeOccurrences(design, numbers, {
     frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
-    bodies: (cid) => (components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)),
+    bodies: (cid) => [...(components.get(cid)?.bodies ?? []).map((b) => meshTopology(b.solid, b.id)), ...(components.get(cid)?.meshes ?? []).map(meshBodyTopology)],
     datums: (cid) => components.get(cid)?.datums ?? {},
   });
   return { arena, components, placements, errors, warnings, kin, free: () => arena.free() };

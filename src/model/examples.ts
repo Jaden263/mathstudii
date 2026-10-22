@@ -1331,3 +1331,90 @@ export function fourBarExample(): Worksheet {
 }
 
 EXAMPLES.push({ name: 'CAD: four-bar linkage (motion)', make: fourBarExample });
+// ------------------------------------------------------------ CAD: sheet metal
+
+/**
+ * A U bracket of 2 mm steel: a base a × b (a Flange on a rectangle) with an edge flange h
+ * high on each end (Inside: their outer faces on the base's ends), two Ø9 holes in the base
+ * and a Ø10 hole for a pin through both flanges. The edges the flanges stand on are named
+ * after the base's face B and its end lines, so they follow a and b.
+ */
+function bracketDesign(): CadDesign {
+  const base = outline('m', [[0, 0], [120, 0], [120, 60], [0, 60]]);
+  base.constraints.push(
+    { id: 'mfix', type: 'fix', refs: ['mp0'], at: { x: 0, y: 0 } },
+    { id: 'mh0', type: 'horizontal', refs: ['ml0'] }, { id: 'mv1', type: 'vertical', refs: ['ml1'] },
+    { id: 'mh2', type: 'horizontal', refs: ['ml2'] }, { id: 'mv3', type: 'vertical', refs: ['ml3'] },
+    { id: 'mda', type: 'length', refs: ['ml0'], value: 'a', offset: { x: 0, y: -14 } },
+    { id: 'mdb', type: 'length', refs: ['ml1'], value: 'b', offset: { x: 14, y: 0 } },
+  );
+  // the base's holes, a/4 in from its ends on its middle line
+  const holes: CadSketch = {
+    points: [{ id: 'hq0', x: 30, y: 30 }, { id: 'hq1', x: 90, y: 30 }, { id: 'ho', x: 0, y: 0 }],
+    entities: [{ id: 'he0', type: 'point', p: 'hq0' }, { id: 'he1', type: 'point', p: 'hq1' }],
+    constraints: [
+      { id: 'hfo', type: 'fix', refs: ['ho'], at: { x: 0, y: 0 } },
+      { id: 'hx0', type: 'distanceX', refs: ['ho', 'hq0'], value: 'a/4' }, { id: 'hy0', type: 'distanceY', refs: ['ho', 'hq0'], value: 'b/2' },
+      { id: 'hx1', type: 'distanceX', refs: ['ho', 'hq1'], value: '3*a/4' }, { id: 'hy1', type: 'distanceY', refs: ['ho', 'hq1'], value: 'b/2' },
+    ],
+  };
+  // the pin's centre on the YZ plane: halfway across, h/2 up
+  const pin: CadSketch = {
+    points: [{ id: 'pq', x: 30, y: 25 }, { id: 'po', x: 0, y: 0 }],
+    entities: [{ id: 'pe', type: 'point', p: 'pq' }],
+    constraints: [
+      { id: 'pfo', type: 'fix', refs: ['po'], at: { x: 0, y: 0 } },
+      { id: 'px', type: 'distanceX', refs: ['po', 'pq'], value: 'b/2' }, { id: 'py', type: 'distanceY', refs: ['po', 'pq'], value: 'h/2 + 5 mm' },
+    ],
+  };
+  const edge = (key: string, x: number) => ({ kind: 'edge' as const, body: 'mf1', key, hint: { p: [x, 30, 2] as [number, number, number], d: [0, 1, 0] as [number, number, number], type: 'line' as const, size: 60 } });
+  return {
+    version: 2,
+    components: [{
+      id: 'mc', name: 'Bracket', color: '#9aa5b1',
+      sheet: { material: 'steel', t: 't_s', r: 'R_i', relief: 'rect', corner: 'none' },
+      items: [
+        { kind: 'sketch', id: 'ms1', name: 'Base', plane: { ref: 'XY' }, sketch: base },
+        { kind: 'flange', id: 'mf1', name: 'Flange1', sketch: 'ms1' },
+        { kind: 'edgeflange', id: 'mf2', name: 'Flange2', edges: [edge('mf1/end|mf1/side:ml1', 120)], height: 'h' },
+        { kind: 'edgeflange', id: 'mf3', name: 'Flange3', edges: [edge('mf1/end|mf1/side:ml3', 0)], height: 'h' },
+        { kind: 'sketch', id: 'ms2', name: 'Holes', plane: { ref: 'XY' }, sketch: holes },
+        { kind: 'hole', id: 'mh1', name: 'Hole1', sketch: 'ms2', d: '9 mm', depth: '10', through: true, style: 'simple' },
+        { kind: 'sketch', id: 'ms3', name: 'Pin', plane: { ref: 'YZ' }, sketch: pin },
+        { kind: 'hole', id: 'mh2', name: 'Hole2', sketch: 'ms3', d: '10 mm', depth: '10', through: true, style: 'simple' },
+      ],
+    }],
+    occurrences: [{ id: 'mo', component: 'mc', grounded: true }],
+    joints: [],
+  };
+}
+
+export function sheetMetalExample(): Worksheet {
+  const ws = build('CAD: sheet-metal bracket', [
+    ['text', L, mm(12), { width: mm(170), markdown: '# Sheet-metal bracket and its flat pattern\nA U bracket: a **Flange** on a rectangle and an **Edge flange** on each end, with holes. The sheet-metal **rules** (Sheet Metal → Rules) take the thickness and bend radius from here; steel bends with K = 0.44. Open the part and press **Flat pattern** for the blank, its bend table and the DXF for the laser.' }],
+    ['math', L, mm(48), { source: 'a := 120 mm' }],
+    ['math', mm(55), mm(48), { source: 'b := 60 mm' }],
+    ['math', mm(90), mm(48), { source: 'h := 40 mm' }],
+    ['math', mm(125), mm(48), { source: 't_s := 2 mm' }],
+    ['math', mm(160), mm(48), { source: 'R_i := 3 mm' }],
+    ['cad', L, mm(60), { name: 'br', width: mm(170), height: mm(84), mode: '3d', view3d: { yaw: -35, pitch: 28 }, density: '7850 kg/m^3', design: bracketDesign() }],
+    ['text', L, mm(146), { width: mm(80), markdown: '**The blank**: the legs h and the base a are outer sizes; each bend takes (R + t) off both legs at it and adds its bend allowance BA = (π/2)(R + K·t).' }],
+    ['math', mm(105), mm(146), { source: 'br.flat.L = mm' }],
+    ['math', mm(105), mm(157), { source: 'br.flat.W = mm' }],
+    ['math', mm(105), mm(168), { source: 'br.flat.n =' }],
+    ['math', mm(105), mm(179), { source: 'br.flat.BA = mm' }],
+    ['text', L, mm(192), { width: mm(30), markdown: 'By hand:' }],
+    ['math', mm(45), mm(192), { source: '2 (h - t_s - R_i) + (a - 2 (t_s + R_i)) + 2 * π/2 * (R_i + 0.44 t_s) = mm' }],
+    ['text', L, mm(207), { width: mm(80), markdown: '**Blank and part**: the blank\'s area less its four holes, its mass, and the mass of the bent part (CAD keeps t in the bends, so it is a little heavier: t²(1/2 − K) per bend and unit of θ·width).' }],
+    ['math', mm(105), mm(207), { source: 'br.flat.A = cm^2' }],
+    ['math', mm(105), mm(218), { source: 'br.flat.m = g' }],
+    ['math', mm(105), mm(229), { source: 'br.m = g' }],
+    ['text', L, mm(243), { width: mm(80), markdown: '**DIN 6935** for comparison: its compensation v for the two bends (legs measured outside), with its own k = 0.65 + 0.5 lg(R/t).' }],
+    ['math', mm(105), mm(243), { source: 'br.flat.v = mm' }],
+    ['text', L, mm(259), { width: mm(170), markdown: '## Drawing of the blank\nThe flat pattern view: its contour and holes, the bend lines dashed with their notes (UP 90° R3). Its DXF has them on layers OUTER, INNER, BEND and BEND_NOTES.' }],
+  ]);
+  const br = ws.regions.find((r) => r.kind === 'cad' && r.name === 'br');
+  if (br) ws.regions.push(createRegion('drawing', L, mm(277), { cad: br.id, title: 'U bracket, flat pattern', partNo: 'SM-001', material: 'S235, t = 2', sheet: 'A4', views: { front: true, top: false, side: false, iso: false }, flat: {} }));
+  return ws;
+}
+EXAMPLES.push({ name: 'CAD: sheet-metal bracket, flat pattern', make: sheetMetalExample });

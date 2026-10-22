@@ -28,7 +28,7 @@ export function polylineMid(p: Float32Array): Vec3 {
   return [p[0], p[1], p[2]];
 }
 
-type MeshParts = Pick<BodyResult, 'mesh' | 'faces' | 'edges' | 'vertices' | 'area' | 'box'>;
+export type MeshParts = Pick<BodyResult, 'mesh' | 'faces' | 'edges' | 'vertices' | 'area' | 'box'>;
 
 /** Faces, edges, vertices and an indexed mesh of a Manifold solid: smooth patches and the creases between them. */
 export function meshBody(body: Body): BodyResult {
@@ -55,9 +55,17 @@ export function meshTopology(m: Manifold, id: string): BodyTopology {
 }
 
 function meshParts(m: Manifold): MeshParts {
-  const out = emptyParts();
   const mesh = m.getMesh();
-  const np = mesh.numProp, vp = mesh.vertProperties, tv = mesh.triVerts;
+  const bb = m.boundingBox();
+  return triangleParts(mesh.vertProperties, mesh.numProp, mesh.triVerts, { min: [...bb.min] as Vec3, max: [...bb.max] as Vec3 });
+}
+
+/**
+ * Smooth patches, creases and an indexed display mesh of a welded triangle mesh: `np`
+ * numbers per vertex in `vp` (x, y, z first), three vertex indices per triangle in `tv`.
+ */
+export function triangleParts(vp: ArrayLike<number>, np: number, tv: ArrayLike<number>, box: { min: Vec3; max: Vec3 } | null): MeshParts {
+  const out = emptyParts();
   const nt = tv.length / 3;
   const P = (i: number): Vec3 => [vp[i * np], vp[i * np + 1], vp[i * np + 2]];
   const tn = new Float64Array(nt * 3), ta = new Float64Array(nt);
@@ -177,8 +185,7 @@ function meshParts(m: Manifold): MeshParts {
       out.edges.push(e);
     }
   }
-  const bb = m.boundingBox();
-  out.box = { min: [...bb.min] as Vec3, max: [...bb.max] as Vec3 };
+  out.box = box;
   return out;
 }
 

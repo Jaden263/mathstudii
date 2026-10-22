@@ -90,7 +90,8 @@ interface FeatureProps {
 
 /** Bodies of the component before this feature (by the latest result). */
 export function bodyOptions(comp: CadComponent, result: CadResult | undefined): [string, string][] {
-  return (result?.design?.bodies[comp.id] ?? []).map((b) => [b.id, b.name]);
+  // mesh bodies are no targets of the features
+  return (result?.design?.bodies[comp.id] ?? []).filter((b) => !b.mesh).map((b) => [b.id, b.name]);
 }
 
 /** Rounded or chamfered edges at one end of an extrusion. */

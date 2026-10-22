@@ -23,6 +23,7 @@ import type { MotionResult } from './motion';
 import { studyResult } from './occ/motion';
 import { assemblyParams, jointExport, jointParams, motionValue } from './assemblyParams';
 import { measureDesignOcc, type MeasuredDesign } from './occ/build';
+import { sheetParams, type FlatSummary } from './sheetMetal';
 
 export interface CadResult {
   kind: 'cad';
@@ -62,6 +63,10 @@ export interface BodyInfo {
   feature: string;
   mass?: MassOut;
   empty?: boolean;
+  /** An imported mesh body: shown and measured, but no feature works on it. */
+  mesh?: boolean;
+  /** A sheet-metal body's flat pattern (B-rep kernel). */
+  flat?: FlatSummary;
 }
 
 export interface DesignResult extends DesignNumbers {
@@ -319,6 +324,12 @@ export function resolveDesign(design: CadDesign, unit: string, partDensity: stri
             }
             break;
           }
+          case 'flange':
+          case 'edgeflange':
+          case 'hem':
+          case 'bend':
+            Object.assign(p, sheetParams(comp.sheet, item, value, ratio));
+            break;
           default:
             break;
         }
@@ -388,9 +399,10 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
     for (const c of design.components) {
       const masses: Mass3[] = [];
       dr.bodies[c.id] = (m.bodies[c.id] ?? []).map((b) => {
-        if (!b.mass) return { id: b.id, name: b.name, feature: b.feature, empty: true };
+        const mesh = b.mesh ? { mesh: true } : {};
+        if (!b.mass) return { id: b.id, name: b.name, feature: b.feature, empty: true, ...mesh };
         masses.push(b.mass);
-        return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m: b.mass, rho: density(c.id) }]) ?? undefined };
+        return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m: b.mass, rho: density(c.id) }]) ?? undefined, ...mesh, ...(b.flat ? { flat: b.flat } : {}) };
       });
       compMass.set(c.id, masses);
     }
@@ -418,6 +430,11 @@ export function solveCad(r: CadRegion, evalExpr: Eval): { result: CadResult } {
           masses.push(m);
           return { id: b.id, name: b.name, feature: b.feature, mass: massOut([{ m, rho: density(c.id) }]) ?? undefined };
         });
+        // imported mesh bodies: volume properties only when closed
+        for (const mb of cb.meshes ?? []) {
+          if (mb.mass) masses.push(mb.mass);
+          dr.bodies[c.id].push({ id: mb.id, name: mb.name, feature: mb.feature, mesh: true, ...(mb.mass ? { mass: massOut([{ m: mb.mass, rho: density(c.id) }]) ?? undefined } : { empty: true }) });
+        }
         compMass.set(c.id, masses);
       }
       Object.assign(dr.errors, built.errors);
@@ -517,7 +534,7 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
       const id = identifier(c.name);
       const m = d.components[c.id];
       const sub: Record<string, unknown> = m ? solid(m) : {};
-      for (const b of d.bodies[c.id] ?? []) if (b.mass && identifier(b.name)) sub[identifier(b.name)] = solid(b.mass);
+      for (const b of d.bodies[c.id] ?? []) if (b.mass && identifier(b.name)) sub[identifier(b.name)] = { ...solid(b.mass), ...(b.flat ? { flat: flatValue(b.flat, L, d.params[c.id]?.density) } : {}) };
       for (const i of c.items) {
         const s = isSketch(i) ? d.sketches[i.id]?.section : undefined;
         if (s && identifier(i.name)) sub[identifier(i.name)] = section(s);
@@ -546,6 +563,9 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
       if (mr && d.kin && id && !(id in value)) value[id] = motionValue(st, mr, d.kin, u);
     }
   }
+  // the flat pattern of a part with one sheet-metal body sits on the part too: part.flat.L
+  const flats = design.components.flatMap((c) => (d?.bodies[c.id] ?? []).filter((b) => b.flat).map((b) => ({ f: b.flat!, rho: d?.params[c.id]?.density })));
+  if (flats.length === 1 && !('flat' in value)) value.flat = flatValue(flats[0].f, L, flats[0].rho);
   for (const c of design.components) for (const i of c.items) {
     if (!isSketch(i)) continue;
     const sr = d?.sketches[i.id] ?? (i === design.components[0].items.find(isSketch) ? res : undefined);
@@ -558,4 +578,16 @@ export function cadValue(r: CadRegion, res: CadResult): Record<string, unknown> 
     }
   }
   return value;
+}
+
+/**
+ * A flat pattern for the worksheet: the blank's length and width (the larger and smaller of
+ * its extents Lx, Ly), its area A and mass m (A·t·ρ, with the component's density), the number
+ * of bends n, the sum of their bend allowances BA and of DIN 6935's v, t and K.
+ */
+function flatValue(f: FlatSummary, L: (v: number, p?: number) => Unit, rho?: number): Record<string, unknown> {
+  return {
+    L: L(f.L), W: L(f.W), Lx: L(f.Lx), Ly: L(f.Ly), A: L(f.A, 2), n: f.n, BA: L(f.BA), v: L(f.v), t: L(f.t), K: f.K,
+    ...(rho ? { m: math.unit(f.A * f.t * rho, 'kg') } : {}),
+  };
 }

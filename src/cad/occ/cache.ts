@@ -8,7 +8,7 @@
 // step's solids are used by the steps after it, so only the ends of branches are evicted,
 // least recently used first.
 import {
-  activeItems, buildInputs, emptyTimeline, findSketch, namedBodies, placeOccurrences, timelineStep,
+  activeItems, buildInputs, emptyTimeline, findSketch, namedBodies, namedMeshes, placeOccurrences, timelineStep,
   type CadDesign, type DesignNumbers, type SolidOps, type TimelineState,
 } from '../design';
 import { stepKey } from '../keys';
@@ -17,6 +17,7 @@ import type { OccBuiltDesign, OccComponentBuild } from './build';
 import { hasSolid, onOccRenewed, type OC } from './kernel';
 import { occOps, type OccSolid } from './ops';
 import { topologyOcc } from './topology';
+import { meshBodyTopology } from '../meshBody';
 
 interface Step {
   key: string;
@@ -65,7 +66,10 @@ export const failedComponent = (id: string, e: unknown): OccComponentBuild => ({
 export function placeBuilt(oc: OC, design: CadDesign, numbers: DesignNumbers, components: Map<string, OccComponentBuild>) {
   return placeOccurrences(design, numbers, {
     frames: Object.assign({}, ...[...components.values()].map((cb) => cb.frames)),
-    bodies: (cid) => (components.get(cid)?.bodies ?? []).filter((b) => hasSolid(oc, b.solid.shape)).map((b) => topologyOcc(oc, b.solid, b.id)),
+    bodies: (cid) => [
+      ...(components.get(cid)?.bodies ?? []).filter((b) => hasSolid(oc, b.solid.shape)).map((b) => topologyOcc(oc, b.solid, b.id)),
+      ...(components.get(cid)?.meshes ?? []).map(meshBodyTopology),
+    ],
     datums: (cid) => components.get(cid)?.datums ?? {},
   });
 }
@@ -134,7 +138,7 @@ export class TimelineCache {
             at = next;
           }
           const st = at.state;
-          components.set(c.id, { bodies: namedBodies(c, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads });
+          components.set(c.id, { bodies: namedBodies(c, st), errors: st.errors, warnings: st.warnings, frames: st.frames, datums: st.datums, tools: st.tools, sketches: st.sketches, threads: st.threads, meshes: namedMeshes(c, st), sheets: st.sheets });
         } catch (e) {
           components.set(c.id, failedComponent(c.id, e));
         }
