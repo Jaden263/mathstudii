@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { gzipSync, strToU8, zipSync } from 'fflate';
 import { importSmath } from './smath';
-import { compareSaved } from './saved';
+import { agrees, compareSaved } from './saved';
+import { compileExpr } from '../engine/compile';
+import { ChainScope } from '../engine/scope';
 import { evaluateWorksheet, evaluateWithScope, type MathResult } from '../engine/evaluator';
 import { loadCas } from '../engine/symbolic';
 import type { Region, Worksheet } from '../model/types';
@@ -255,6 +257,22 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
     expect(sources(ws)).toContain('V_T := boltzmann*T/elementaryCharge = mV');
     expect(value(ws, 'V_T := boltzmann*T/elementaryCharge = mV')).toMatch(/25\.85\d*\\ \\mathrm\{mV\}/);
     expect(value(ws, '0.6 speedOfLight =')).toMatch(/1\.7988/);
+  });
+
+  it('shows a value in its display unit and the unit SMath left beside it (G = mS shows 0.5 mS·1/m)', () => {
+    const { ws, saved } = load(math(def(v('α'), v('0.04') + u('m') + op('/'))), math(def(v('Z.o'), v('80') + u('Ω') + op('*'))),
+      result(def(v('G'), v('α') + v('Z.o') + op('/')), v('0.5') + v('1') + u('m') + op('/') + op('*'), u('mS')));
+    expect(sources(ws)).toContain('G := α/Z_o = mS/m');
+    expect(value(ws, 'G := α/Z_o = mS/m')).toMatch(/0\.5\\ \\frac\{\\mathrm\{mS\}\}\{\\mathrm\{m\}\}/);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
+  it('compares complex values with units (a line impedance SMath showed as 55.1303 + 45.8575i Ω)', () => {
+    const val = (src: string) => compileExpr(src).evaluate(new ChainScope(null));
+    const ours = val('sqrt((6.5 ohm/m + i*2*π*2 MHz*3.4 uH/m)/(8.4 mS/m + i*2*π*2 MHz*21.5 pF/m))');
+    expect(agrees(ours, val('(55.1303 + 45.8575*i)*ohm'), 1e-5)).toBe(true);
+    expect(agrees(ours, val('(55.1303 + 45.9575*i)*ohm'), 1e-5)).toBe(false);
+    expect(agrees(ours, val('(55.1303 + 45.8575*i)*m'), 1e-5)).toBe(false);
   });
 
   it('reads 27 °C as the temperature 300.15 K, °C in a compound unit as a difference', () => {

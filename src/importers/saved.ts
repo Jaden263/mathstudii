@@ -32,6 +32,19 @@ function si(v: unknown): { value: number; dims: number[] } | null {
   }
 }
 
+/** A quantity with a complex value (55.1 + 45.9i Ω): its SI parts and dimensions; a real one with im = 0. */
+function complexSi(v: unknown): { re: number; im: number; dims: number[] } | null {
+  const c = isUnit(v) ? (v as unknown as { value: unknown }).value : null;
+  if (isComplex(c)) {
+    const dims = [...(v as unknown as { dimensions: number[] }).dimensions];
+    if (dims.length > ANGLE) dims[ANGLE] = 0;
+    return { re: c.re, im: c.im, dims };
+  }
+  if (isComplex(v)) return { re: v.re, im: v.im, dims: [] };
+  const r = si(v);
+  return r && { re: r.value, im: 0, dims: r.dims };
+}
+
 const sameDims = (a: number[], b: number[]) => {
   for (let i = 0; i < Math.max(a.length, b.length); i++) if (Math.abs((a[i] ?? 0) - (b[i] ?? 0)) > 1e-9) return false;
   return true;
@@ -44,6 +57,16 @@ export function agrees(ours: unknown, theirs: unknown, tol = 1e-6): boolean {
   const a = flat(ours), b = flat(theirs);
   if (a.length !== b.length) return false;
   if (a.some((x) => typeof x === 'string') || b.some((x) => typeof x === 'string')) return a.every((x, i) => x === b[i]);
+  const complexUnit = (x: unknown) => isUnit(x) && isComplex((x as unknown as { value: unknown }).value);
+  if (a.some(complexUnit) || b.some(complexUnit)) {
+    return a.every((x, i) => {
+      const p = complexSi(x), q = complexSi(b[i]);
+      if (!p || !q) return false;
+      const size = Math.hypot(q.re, q.im);
+      if (!sameDims(p.dims, q.dims) && Math.hypot(p.re, p.im) !== 0 && size !== 0) return false;
+      return Math.hypot(p.re - q.re, p.im - q.im) <= tol * Math.max(size, 1e-300);
+    });
+  }
   if (a.some(isComplex) || b.some(isComplex)) {
     return a.every((x, i) => {
       const p = math.complex(x as never) as unknown as { re: number; im: number }, q = math.complex(b[i] as never) as unknown as { re: number; im: number };

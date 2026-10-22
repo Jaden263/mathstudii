@@ -1033,7 +1033,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         const result = child(body, 'result');
         const action = result?.getAttribute('action') ?? '';
         const contract = parseRpn(child(body, 'contract'))[0];
-        const unit = contract && !conv.ignoreUnits ? ` ${conv.displayUnit(contract)}` : '';
+        // a unit SMath could not show the value in leaves the rest beside it (G = mS shows 0.5 mS·1/m)
+        const rest = contract && result && action !== 'symbolic' ? leftoverUnit(conv, result) : '';
+        const unit = contract && !conv.ignoreUnits ? ` ${withLeftover(conv.displayUnit(contract), rest)}` : '';
         const show = result ? (action === 'symbolic' ? ' →' : ` =${unit}`) : '';
 
         if (isOp(t, ':') && isFn(t.args[1], 'sys') && plotLists.has(targetName(t.args[0]) ?? '')) {
@@ -1125,7 +1127,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             const shownIn = unit.trim() === '%' ? '1/100' : contract ? conv.displayUnit(contract, true) : '';
             // a temperature shown in °C is that temperature (27 °C is 300.15 K), not 27 K
             const absolute = !!contract && contract.type === 'operand' && contract.style === 'unit' && ABSOLUTE_TEMPERATURE.has(contract.text);
-            const expr = !shownIn || hasUnit ? value : absolute ? `(${value} ${shownIn} to K)` : `(${value})*(${shownIn})`;
+            const expr = !shownIn || (hasUnit && !rest) ? value : absolute ? `(${value} ${shownIn} to K)` : `(${value})*(${shownIn})`;
             saved.push({ regionId: last.id, expr, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
           } catch {
             /* a result we cannot read (a matrix of text, a placeholder) is not compared */
@@ -1352,6 +1354,27 @@ function plot(
     xExpr, traces,
     width: Math.max(200, width || 300), height: Math.max(150, height || 240),
   });
+}
+
+/** The unit factor of a value SMath showed beside its display unit (0.5·1/m for G = mS), or "". */
+function leftoverUnit(conv: Converter, result: El): string {
+  let tok = parseRpn(result)[0];
+  if (tok && isOp(tok, '-') && tok.args.length === 1) tok = tok.args[0];
+  if (!tok || !isOp(tok, '*') || tok.args.length !== 2) return '';
+  const [a, b] = tok.args;
+  let plain = true;
+  walk(a, (n) => {
+    if (n.style === 'unit' || isVar(n) || n.type === 'function') plain = false;
+  });
+  return plain && conv.unitOnly(b) ? conv.displayUnit(b, true) : '';
+}
+
+/** A display unit with the factor SMath left beside it: mS and 1/m make mS/m. */
+function withLeftover(unit: string, rest: string): string {
+  if (!rest) return unit;
+  const per = /^1\/(.+)$/.exec(rest);
+  if (per) return `${unit}/${/^[\p{L}_]\w*$/u.test(per[1]) ? per[1] : `(${per[1]})`}`;
+  return `${unit}*${/^[\p{L}_][\w^]*$/u.test(rest) ? rest : `(${rest})`}`;
 }
 
 /** The values SMath showed for solve(f, x): one root, or a column of them (none when it is not numbers). */
