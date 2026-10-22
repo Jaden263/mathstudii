@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import { importMathcad } from './mathcad';
-import { evaluateWorksheet, type MathResult, type SolveResult } from '../engine/evaluator';
+import { evaluateWorksheet, evaluateWithScope, type MathResult, type SolveResult } from '../engine/evaluator';
+import { compareSaved } from './saved';
 import { loadCas } from '../engine/symbolic';
 import type { AreaRegion, Region, Worksheet } from '../model/types';
 import { expandArea } from '../model/areas';
@@ -391,5 +392,34 @@ describe('Mathcad import: programs as operands, references, Mathcad 15 names', (
     expect(by('6*inch = mm').tex).toMatch(/152\.4/);
     expect(by('in_(1, [10; 20]) =').tex).toMatch(/= 20$/);
     expect(by('2*N =').tex).toMatch(/= 10$/);
+  });
+});
+
+describe('Mathcad 15 import: percent, saved values, value lists', () => {
+  const xmcdOf = (regions: string) => importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>${regions}</regions></worksheet>`), 'p.xmcd');
+  const m15 = (rid: number, inner: string) => `<region region-id="${rid}" left="24" top="${rid * 30}"><math>${inner}</math></region>`;
+  const result = (inner: string) => `<result xmlns="http://schemas.mathsoft.com/math30">${inner}</result>`;
+  it('40·%·I is 40 % of I', () => {
+    const { ws } = xmcdOf(m15(1, define(id15('I'), real(20))) + m15(2, define(id15('ΔI'), evalOf(ap('<ml:mult/>', ap('<ml:mult/>', real(40), id15('%')), id15('I'))))));
+    expect(sources(ws)).toEqual(['I := 20', 'ΔI := 40 %*I =']);
+    expect(results(ws).by('ΔI := 40 %*I =').tex).toMatch(/= 8$/);
+  });
+  it('reads saved results in Mathcad’s unit names (megapascal, kips_per_sq_inch) and complex numbers with one part', () => {
+    const united = (v: number, unitName: string) => `<unitedValue>${real(v)}<unitMonomial><unitReference unit="${unitName}"/></unitMonomial></unitedValue>`;
+    const evalSaved = (e: string, saved: string) => `<ml:eval>${e}${result(saved)}</ml:eval>`;
+    const res = xmcdOf([
+      m15(1, evalSaved(ap('<ml:mult/>', real(30), id15('MPa')), united(30, 'megapascal'))),
+      m15(2, evalSaved(ap('<ml:mult/>', real(2), id15('ksi')), united(2, 'kips_per_sq_inch'))),
+      m15(3, evalSaved(ap('<ml:mult/>', real(3), id15('i')), '<complex><imag>3</imag></complex>')),
+    ].join(''));
+    expect(res.saved!.map((s) => s.expr)).toEqual(['(30)*MPa', '(2)*ksi', '(0 + 3i)']);
+    const cmp = compareSaved(res.saved!, res.ws.regions, evaluateWithScope(res.ws).shown);
+    expect(cmp).toMatchObject({ checked: 3, agree: 3 });
+  });
+  it('x[i] := 0.2, 1, 2 (a list of values) is the vector of them', () => {
+    const { ws } = xmcdOf(m15(1, define(ap('<ml:indexer/>', id15('D'), id15('z')), `<ml:sequence>${real(0.2)}${real(1)}${real(2)}</ml:sequence>`)) + m15(2, evalOf(ap('<ml:indexer/>', id15('D'), real(2)))));
+    expect(sources(ws)).toEqual(['D := [0.2; 1; 2]', 'D[2] =']);
+    expect(results(ws).by('D[2] =').tex).toMatch(/= 2$/);
   });
 });
