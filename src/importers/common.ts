@@ -23,7 +23,7 @@ export interface SavedResult {
 /** Thrown for constructs an importer recognises but cannot convert. */
 export class Unsupported extends Error {}
 
-export const RESERVED = new Set(['in', 'to', 'and', 'or', 'not', 'xor', 'mod', 'end', 'if', 'for', 'while', 'return', 'else', 'break', 'continue']);
+export const RESERVED = new Set(['in', 'to', 'and', 'or', 'not', 'xor', 'mod', 'end', 'if', 'for', 'while', 'return', 'else', 'break', 'continue', 'null', 'undefined', 'true', 'false']);
 
 export const UNIT_MAP: Record<string, string> = {
   '°': 'deg', '°C': 'degC', '°F': 'degF', 'Δ°C': 'K', 'Δ°F': '(5/9 K)', Ω: 'ohm', kΩ: 'kohm', MΩ: 'Mohm',

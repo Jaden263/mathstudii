@@ -12,7 +12,14 @@ export interface ImportReport {
   references?: string[];
 }
 
-export function ImportReportDialog({ report, onClose, onDataFiles, onReferences }: { report: ImportReport; onClose: () => void; onDataFiles?: () => void; onReferences?: (files: File[]) => void }) {
+export function ImportReportDialog({ report, onClose, onDataFiles, onReferences, missingFunctions }: {
+  report: ImportReport;
+  onClose: () => void;
+  onDataFiles?: () => void;
+  onReferences?: (files: File[]) => void;
+  /** Once the worksheet has calculated: the functions it calls that nothing defines (report.ts). */
+  missingFunctions?: string;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   const pick = useRef<HTMLInputElement>(null);
   const refs = report.references ?? [];
@@ -52,6 +59,7 @@ export function ImportReportDialog({ report, onClose, onDataFiles, onReferences 
             )}
           </p>
         )}
+        {!!missingFunctions && <p className="import-files">{missingFunctions}</p>}
         {!ok && (
           <ul className="import-warnings">
             {report.warnings.map((w, i) => <li key={i}>{w}</li>)}

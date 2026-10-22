@@ -7,6 +7,7 @@
 import type { Unit } from 'mathjs';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { toVector, vec, num } from './library';
+import { nelderMead } from './numeric';
 
 const isArrayValue = (v: unknown) => isMatrix(v) || Array.isArray(v);
 
@@ -202,12 +203,38 @@ function traceText(s: unknown, ...values: unknown[]): string {
   return String(s).replace(/\{(\d+)\}/g, (m, k: string) => (Number(k) < values.length ? show(values[Number(k)]) : m));
 }
 
+/**
+ * Minimize(f, x, y …) and Maximize(f, x, y …) outside a solve block: the arguments where f is
+ * least (greatest), searched from the values given (the guesses), each in its unit; one value,
+ * or a vector of them.
+ */
+function optimum(sign: 1 | -1, name: string) {
+  return (f: unknown, ...guesses: unknown[]) => {
+    if (typeof f !== 'function') throw new Error(`${name}(f, x, …): f must be a function`);
+    if (!guesses.length) throw new Error(`${name}(f, x, …) needs a guess value for each argument of f`);
+    const parts = guesses.map((g) => splitUnit(g));
+    const at = (xs: number[]) => xs.map((x, i) => joinUnit(x, parts[i].unit));
+    const value = (xs: number[]) => sign * splitUnit((f as (...a: unknown[]) => unknown)(...at(xs))).value;
+    let xs = parts.map((p) => p.value);
+    // restarted until it settles (a simplex can stall short of the optimum)
+    for (let k = 0; k < 4; k++) {
+      const next = nelderMead(value, xs, 4000);
+      const moved = next.some((x, i) => Math.abs(x - xs[i]) > 1e-12 * Math.max(1, Math.abs(x)));
+      xs = next;
+      if (!moved) break;
+    }
+    const out = at(xs);
+    return out.length === 1 ? out[0] : vec(out);
+  };
+}
+
 const FUNCTIONS: Record<string, unknown> = {
   mcMax: extreme(math.max as unknown as (...xs: unknown[]) => unknown, 'max'),
   mcMin: extreme(math.min as unknown as (...xs: unknown[]) => unknown, 'min'),
   SIUnitsOf: siUnitsOf, mcError: error, IsNaN,
   xy2pol, pol2xy, xyz2sph, sph2xyz, xyz2cyl, cyl2xyz,
   gmean, hmean, Spear, kendltau, traceText,
+  minimize: optimum(1, 'Minimize'), maximize: optimum(-1, 'Maximize'),
 };
 
 /**

@@ -88,6 +88,7 @@ function sourceOf(r: Region | undefined): string {
 function displayScale(src: string): unknown {
   const m = / =\s*([^=]+)$/.exec(src.split('\n')[0]);
   if (!m) return null;
+  if (m[1].trim() === '%') return 0.01;
   try {
     return math.evaluate(m[1]);
   } catch {
@@ -115,9 +116,9 @@ export function compareSaved(saved: SavedResult[], regions: Region[], shown: Map
     out.checked++;
     let ok = agrees(ours, theirs, s.tol ?? tol);
     if (!ok) {
-      // angles shown in deg are saved in deg
+      // angles shown in deg are saved in deg, a ratio shown in % in percent
       const unit = displayScale(source);
-      if (isUnit(unit)) {
+      if (isUnit(unit) || (typeof unit === 'number' && unit !== 0 && unit !== 1)) {
         try {
           ok = agrees(math.divide(ours as never, unit as never), theirs, s.tol ?? tol);
         } catch {

@@ -23,6 +23,7 @@ import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs,
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
+import { missingFunctions, missingFunctionsText } from '../importers/report';
 import { DataFilesDialog, dataFileNames } from './DataFilesDialog';
 import { ExportReportDialog, type ExportReport } from './ExportReportDialog';
 import { moveSteps, separateKeepingOrder } from './separateOrdered';
@@ -1387,6 +1388,7 @@ export function App() {
       {importReport && (
         <ImportReportDialog
           report={importReport}
+          missingFunctions={missingFunctionsText(missingFunctions(ws.regions, evaluation.results))}
           onClose={() => { setImportReport(null); lastImport.current = null; }}
           onDataFiles={() => { setImportReport(null); setDataFilesDlg(true); }}
           onReferences={async (files) => {

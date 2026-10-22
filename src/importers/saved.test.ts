@@ -17,3 +17,14 @@ describe('agrees: a recalculated value against the saved one', () => {
     expect(agrees(math.complex(3, 0), 3)).toBe(true);
   });
 });
+
+describe('compareSaved: a value saved in its display unit', () => {
+  it('a ratio shown in % is saved in percent', async () => {
+    const { compareSaved } = await import('./saved');
+    const { createRegion } = await import('../model/types');
+    const r = createRegion('math', 0, 0, { source: 'δ := 0.0243 = %' });
+    expect(compareSaved([{ regionId: r.id, expr: '2.43' }], [r], new Map([[r.id, 0.0243]]))).toMatchObject({ checked: 1, agree: 1 });
+    expect(compareSaved([{ regionId: r.id, expr: '0.0243' }], [r], new Map([[r.id, 0.0243]]))).toMatchObject({ checked: 1, agree: 1 });
+    expect(compareSaved([{ regionId: r.id, expr: '2.5' }], [r], new Map([[r.id, 0.0243]]))).toMatchObject({ checked: 1, agree: 0 });
+  });
+});

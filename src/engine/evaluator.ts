@@ -642,8 +642,9 @@ class Evaluator {
         const v = normalize(cur);
         scope.set(name, v);
         this.ranges.delete(name);
-        // x[i] := … = shows the elements it wrote (x[i] over the range), as Mathcad does
-        return rv.length === 1 ? normalize(vec(assigned)) : v;
+        // x[i] := … = shows the elements it wrote (x[i] over the range), x[3] := … = the one, as
+        // Mathcad does
+        return rv.length === 1 ? normalize(vec(assigned)) : rv.length === 0 ? assigned[0] : v;
       }
       case 'destructure': {
         const v = this.evalWithRanges(rhs, scope);

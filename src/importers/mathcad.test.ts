@@ -646,6 +646,11 @@ describe('Mathcad 15 import: custom operators, names in several styles, program 
     expect(sources(ws)[0]).toBe('M :=\n  v[1] ← 7\n  v');
     expect(results(ws).by('M[1] =').tex).toMatch(/= 7$/);
   });
+  it('a function named null (a word the expression language keeps) is renamed, and calls of it with it', () => {
+    const { ws } = xmcdOf(m15(1, fn15('null', ['i', 'j'], real(0))) + m15(2, evalOf(ap(id15('matrix'), `<ml:sequence>${real(2)}${real(2)}${id15('null')}</ml:sequence>`))));
+    expect(sources(ws)).toEqual(['null_(i, j) := 0', 'matrix(2, 2, null_) =']);
+    expect(results(ws).by('matrix(2, 2, null_) =').tex).toContain('\\begin{bmatrix} 0 & 0');
+  });
   it('(break) and (return x): a program statement in parentheses is that statement', () => {
     const { ws } = xmcdOf([
       m15(1, fn15('first', ['v'], program(

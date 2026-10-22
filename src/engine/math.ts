@@ -13,13 +13,33 @@ export const math: MathJsInstance = create(all, { number: 'number', precision: 6
     throw new TypeError(`Unexpected type of argument in function ${op} (expected: Unit, actual: number, index: 1)`);
   };
   const fns = math as unknown as Record<string, unknown>;
-  const addScalar = fns.addScalar, subtractScalar = fns.subtractScalar;
+  // and an angle is a plain number where it meets a quantity without one, as in Mathcad (rad is
+  // 1, deg is π/180): r_in²·α_ap·π/180 subtracts from an area
+  const ANGLE_DIM = 7;
+  const angleOnly = (a: Unit, b: Unit) => {
+    const da = (a as unknown as { dimensions: number[] }).dimensions, db = (b as unknown as { dimensions: number[] }).dimensions;
+    return da.some((x, i) => i === ANGLE_DIM && Math.abs(x - db[i]) > 1e-12) && da.every((x, i) => i === ANGLE_DIM || Math.abs(x - db[i]) < 1e-12);
+  };
+  const noAngle = (u: Unit): Unit => {
+    const k = (u as unknown as { dimensions: number[] }).dimensions[ANGLE_DIM];
+    return k ? (math.multiply(u, math.pow(math.unit(1, 'rad'), -k)) as Unit) : u;
+  };
+  const angleFree = (name: string) => {
+    const old = fns[name] as { signatures: Record<string, (a: unknown, b: unknown) => unknown> };
+    const f = old.signatures['Unit,Unit'];
+    return (a: Unit, b: Unit) => (angleOnly(a, b) ? f(noAngle(a), noAngle(b)) : f(a, b));
+  };
+  const addUnits = angleFree('addScalar'), subtractUnits = angleFree('subtractScalar');
+  const withUnits = (name: string, f: (a: Unit, b: Unit) => unknown) => {
+    const old = fns[name] as { signatures: Record<string, unknown> };
+    return typed(name, { ...old.signatures, 'Unit,Unit': f });
+  };
   math.import({
-    addScalar: typed('addScalar', addScalar, {
+    addScalar: typed('addScalar', withUnits('addScalar', addUnits), {
       'Unit, number': zeroOr('addScalar'),
       'number, Unit': (n: number, u: unknown) => zeroOr('addScalar')(u, n),
     }),
-    subtractScalar: typed('subtractScalar', subtractScalar, {
+    subtractScalar: typed('subtractScalar', withUnits('subtractScalar', subtractUnits), {
       'Unit, number': zeroOr('subtractScalar'),
       'number, Unit': (n: number, u: unknown) => {
         if (n === 0) return math.unaryMinus(u as never);
@@ -31,7 +51,7 @@ export const math: MathJsInstance = create(all, { number: 'number', precision: 6
   // 295.37 K from the moment it is written, so 2·T, T⁴ and 300 K − T calculate in kelvin
   // (a difference of temperatures is Δ°C, which is K). Shown in °F it is 72 °F again.
   const absolute = (v: unknown): unknown => {
-    if (!v || (v as Unit).type !== 'Unit') return v;
+    if (!v || (v as { type?: string }).type !== 'Unit') return v;
     const u = v as Unit & { units: { unit: { offset: number }; power: number }[] };
     if (u.value === null || !u.units.some((x) => x.unit.offset !== 0)) return v;
     if (u.units.length !== 1 || u.units[0].power !== 1) return v;

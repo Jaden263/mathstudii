@@ -368,3 +368,34 @@ describe('programs that fill arrays element by element', () => {
     expect(shown(['r :=\n  for i ∈ 0 .. 2\n    m[i, 0] ← i\n    m[i, 1] ← 10*i\n  m', 'r ='])).toBe('\\begin{bmatrix} 0 & 0 \\\\ 1 & 10 \\\\ 2 & 20 \\end{bmatrix}');
   });
 });
+
+describe('angles where they meet quantities without one', () => {
+  it('are plain numbers: an area less r²·α·π/180 of an angle in degrees', () => {
+    // 90° is π/2: 4 m² − 1 m²·(π/2)·π/180
+    expect(shown(['α := 90 deg', 'r := 1 m', '(2 m)^2 - r^2*(α*π/180) = m^2'])).toBe('3.9726\\ \\mathrm{m}^{2}');
+    expect(() => shown(['1 m + 2 s ='])).toThrow(/Units do not match/);
+  });
+});
+
+describe('an element definition with a fixed index', () => {
+  it('shows the element it wrote', () => {
+    expect(shown(['M[3] := 53 ='])).toBe('53');
+  });
+});
+
+describe('temperatures', () => {
+  it('in °C and °F are absolute, as in Mathcad: arithmetic in kelvin', () => {
+    expect(shown(['T := 72 degF', '300 K - T ='])).toBe('4.6278\\ \\mathrm{K}');
+    expect(shown(['T := 72 degF', '2*T ='])).toBe('590.7444\\ \\mathrm{K}');
+    expect(shown(['(150 degC - 25 degC)/(2 K/W) ='])).toBe('62.5\\ \\mathrm{W}');
+    expect(shown(['T := 72 degF', 'T = degF'])).toBe('72\\ {}^{\\circ}\\mathrm{F}');
+    expect(shown(['T := 20 degC', 'T ='])).toBe('293.15\\ \\mathrm{K}');
+  });
+});
+
+describe('Minimize and Maximize outside a solve block', () => {
+  it('give the argument where the function is least or greatest, from a guess, in its unit', () => {
+    expect(shown(['f(x) := -(x - 5)^2 + 3', 'x := 1', 'maximize(f, x) ='])).toBe('5');
+    expect(shown(['g(x, y) := (x - 1 m)^2/m^2 + (y - 2)^2', 'minimize(g, 0 m, 0) ='])).toBe('\\begin{bmatrix} 1\\ \\mathrm{m} \\\\ 2 \\end{bmatrix}');
+  });
+});
