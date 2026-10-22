@@ -233,6 +233,8 @@ class Converter {
 
   /** Plot variable renaming (x → x_plot when x is already a worksheet variable). */
   rename: Record<string, string> = {};
+  /** Functions with the name of a variable (SMath tells them apart by their arguments): their own names here. */
+  functionNames: Record<string, string> = {};
 
   /** Inside a display unit, where every name is a unit even when a variable has its name. */
   private inContract = false;
@@ -481,7 +483,7 @@ class Converter {
         return { s: `[${items.map((a) => this.expr(a).s).join('; ')}]`, p: P.ATOM };
       }
     }
-    const fn = FN_MAP[name] ?? this.name(name);
+    const fn = this.functionNames[smName(name)] ?? FN_MAP[name] ?? this.name(name);
     return { s: `${fn}(${this.args(t).join(', ')})`, p: P.ATOM };
   }
 
@@ -492,7 +494,7 @@ class Converter {
     if (isFn(t, 'el')) return this.expr(t).s;
     if (t.type === 'function') {
       if (!t.args.every(isVar)) throw new Unsupported('a function definition with non-name parameters');
-      return `${this.name(t.text)}(${t.args.map((a) => this.name(a.text)).join(', ')})`;
+      return `${this.functionNames[smName(t.text)] ?? this.name(t.text)}(${t.args.map((a) => this.name(a.text)).join(', ')})`;
     }
     throw new Unsupported('a definition of an expression');
   }
@@ -897,6 +899,18 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     }
     return [] as Tok[];
   });
+  // SMath tells a function from a variable of the same name by its arguments (v(Q, d, h) and
+  // v := v(Q, d, h_min)): here the function gets a name of its own
+  {
+    const fns = new Set<string>(), vars = new Set<string>();
+    for (const toks of inputs) for (const t of toks) {
+      if (isOp(t, ':') && t.args[0].type === 'function' && !isFn(t.args[0], 'el')) fns.add(smName(t.args[0].text));
+      else for (const n of worksheetDefines(t)) vars.add(n);
+    }
+    const both = [...fns].filter((n) => vars.has(n));
+    for (const n of both) conv.functionNames[n] = `${n}_fn`;
+    if (both.length) warnings.push(`${both.join(', ')} ${both.length > 1 ? 'are' : 'is'} both a function and a variable in SMath, which tells them apart by their arguments: the function${both.length > 1 ? 's are' : ' is'} ${both.map((n) => `${n}_fn`).join(', ')} here`);
+  }
   // units the worksheet defines (k.1 := 17.5 N/mm) are variables of that name
   for (const toks of inputs) for (const t of toks) if (isOp(t, ':') && isUserUnit(t.args[0])) conv.userUnits.add(t.args[0].text);
   const used = inputs.map((toks, i) => {

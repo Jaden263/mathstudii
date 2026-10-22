@@ -552,6 +552,20 @@ describe('SMath import: text comparisons, solve, and definitions beside what the
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
   });
 
+  it('a function with the name of a variable gets its own name (SMath tells them apart by their arguments)', () => {
+    id = 0;
+    const call = (x: string) => v(x) + fn('v', 1);
+    const { ws, saved, warnings } = load(
+      at(9, 10, `<math><input>${def(v('a') + fn('v', 1), v('2') + v('a') + op('*'))}</input></math>`),
+      at(9, 40, shown(def(v('v'), call('3')), v('6'))),
+      at(9, 70, shown(def(v('v'), call('4')), v('8'))),
+      at(9, 100, shown(v('v') + v('1') + op('+'), v('9'))),
+    );
+    expect(sources(ws)).toEqual(['v_fn(a) := 2*a', 'v := v_fn(3) =', 'v := v_fn(4) =', 'v + 1 =']);
+    expect(warnings).toContain('v is both a function and a variable in SMath, which tells them apart by their arguments: the function is v_fn here');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
   it('x := solve(f, x) finds the root again from the value SMath showed', () => {
     id = 0;
     // D/(1 − D) = 40/19.5: SMath showed 0.6722

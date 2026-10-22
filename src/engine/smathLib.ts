@@ -170,6 +170,8 @@ function minor(M: unknown, i: unknown, j: unknown) {
 
 const SMATH_LIBRARY: Record<string, unknown> = { roots, subs, xy2pol, pol2xy, minor, Clear };
 
-const clashes = Object.keys(SMATH_LIBRARY).filter((k) => k in math || math.Unit.isValuelessUnit(k));
-if (clashes.length) throw new Error(`SMath library names clash: ${clashes.join(', ')}`);
-math.import(SMATH_LIBRARY);
+// a function the shared library has by the same name and meaning (Mathcad's xy2pol, pol2xy) is
+// that one; a unit by the name is an error
+const units = Object.keys(SMATH_LIBRARY).filter((k) => math.Unit.isValuelessUnit(k));
+if (units.length) throw new Error(`SMath library names are units: ${units.join(', ')}`);
+math.import(Object.fromEntries(Object.entries(SMATH_LIBRARY).filter(([k]) => !(k in math))));
