@@ -110,6 +110,22 @@ function displayScale(src: string): unknown {
   }
 }
 
+/**
+ * The part of a matrix (a vector as a column) a saved view shows: where the saved part fills the
+ * view, the rows (columns) in view; where it does not, it is the whole matrix and so is ours.
+ */
+function shownPart(ours: unknown, theirs: unknown, view: { row: number; col: number; rows: number; cols: number }): unknown {
+  const rows = (v: unknown): unknown[][] | null => {
+    const a = isMatrix(v) ? (v.toArray() as unknown[]) : Array.isArray(v) ? v : null;
+    return a && (a.every(Array.isArray) ? (a as unknown[][]) : a.map((x) => [x]));
+  };
+  const o = rows(ours), t = rows(theirs);
+  if (!o || !t || !t.length) return ours;
+  const r = t.length >= view.rows ? [view.row, view.row + t.length] : [0, o.length];
+  const c = t[0].length >= view.cols ? [view.col, view.col + t[0].length] : [0, Infinity];
+  return o.slice(r[0], r[1]).map((x) => x.slice(c[0], c[1]));
+}
+
 export function compareSaved(saved: SavedResult[], regions: Region[], shown: Map<string, unknown>, tol = 1e-6): SavedComparison {
   const byId = new Map(regions.map((r) => [r.id, r]));
   const out: SavedComparison = { checked: 0, agree: 0, differ: [], missing: [] };
@@ -128,13 +144,14 @@ export function compareSaved(saved: SavedResult[], regions: Region[], shown: Map
       continue;
     }
     out.checked++;
-    let ok = agrees(ours, theirs, s.tol ?? tol);
+    const mine = s.window ? shownPart(ours, theirs, s.window) : ours;
+    let ok = agrees(mine, theirs, s.tol ?? tol);
     if (!ok) {
       // angles shown in deg are saved in deg
       const unit = displayScale(source);
       if (isUnit(unit)) {
         try {
-          ok = agrees(math.divide(ours as never, unit as never), theirs, s.tol ?? tol);
+          ok = agrees(math.divide(mine as never, unit as never), theirs, s.tol ?? tol);
         } catch {
           /* not a scale of ours */
         }

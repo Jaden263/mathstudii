@@ -578,6 +578,20 @@ describe('SMath import: text comparisons, solve, and definitions beside what the
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
   });
 
+  it('a matrix SMath saved as the rows in view compares by those rows', () => {
+    id = 0;
+    const col = (...xs: string[]) => xs.map(v).join('') + v(String(xs.length)) + v('1') + fn('mat', xs.length + 2);
+    const view = (opts: string, input: string, saved: string) => `<math matrixOptions="${opts}"><input>${input}</input><result action="numeric">${saved}</result></math>`;
+    const { ws, saved } = load(
+      at(9, 10, `<math><input>${def(v('x'), col('0', '1', '2', '3', '4', '5'))}</input></math>`),
+      // 4 rows in view: the first 4 of 6
+      at(9, 40, view('0,0,1,4', v('x'), col('0', '1', '2', '3'))),
+      // 26 rows in view, 4 saved: the whole matrix had 4 rows, ours has 6
+      at(9, 70, view('0,0,1,26', v('x'), col('0', '1', '2', '3'))),
+    );
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 1 });
+  });
+
   it('x := solve(f, x) finds the root again from the value SMath showed', () => {
     id = 0;
     // D/(1 − D) = 40/19.5: SMath showed 0.6722

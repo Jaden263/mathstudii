@@ -1152,7 +1152,10 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             // a temperature shown in °C is that temperature (27 °C is 300.15 K), not 27 K
             const absolute = !!contract && contract.type === 'operand' && contract.style === 'unit' && ABSOLUTE_TEMPERATURE.has(contract.text);
             const expr = !shownIn || (hasUnit && !rest) ? value : absolute ? `(${value} ${shownIn} to K)` : `(${value})*(${shownIn})`;
-            saved.push({ regionId: last.id, expr, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
+            // a big matrix is saved as the rows and columns in view (matrixOptions: first row, first column, columns, rows)
+            const view = /^(\d+),(\d+),(\d+),(\d+)$/.exec(body.getAttribute('matrixOptions') ?? '');
+            const window = view ? { row: +view[1], col: +view[2], cols: +view[3], rows: +view[4] } : undefined;
+            saved.push({ regionId: last.id, expr, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)), ...(window ? { window } : {}) });
           } catch {
             /* a result we cannot read (a matrix of text, a placeholder) is not compared */
           }
