@@ -307,10 +307,14 @@ class Converter {
    */
   shownValue(t: Tok): string {
     this.inResult = true;
+    // the units of a value SMath shows are units, also in a formula set to ignore units (32.89 s)
+    const ignore = this.ignoreUnits;
+    this.ignoreUnits = false;
     try {
       return this.expr(t).s;
     } finally {
       this.inResult = false;
+      this.ignoreUnits = ignore;
     }
   }
 

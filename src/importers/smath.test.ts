@@ -283,6 +283,13 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
   });
 
+  it('the value such a formula shows keeps its units: t/3600 of t := 118409 s is 32.8904 s', () => {
+    const ignoring = (input: string, saved: string) => region(`<math ignoreUnits="true"><input>${input}</input><result action="numeric">${saved}</result></math>`);
+    const { ws, saved } = load(math(def(v('t'), v('118409') + u('s') + op('*'))), ignoring(v('t') + v('3600') + op('/'), v('32.8904') + u('s') + op('*')));
+    expect(saved![0].expr).toBe('32.8904 s');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
   it('reads 27 °C as the temperature 300.15 K, °C in a compound unit as a difference', () => {
     // SMath saved V_T = 25.865 mV for T = 27 °C, and 93.0325 °C for a temperature it showed in °C
     const { ws, saved } = load(math(def(v('T.k'), v('27') + u('°C') + op('*'))),
