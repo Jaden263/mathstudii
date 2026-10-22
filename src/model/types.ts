@@ -55,6 +55,15 @@ export interface MathRegion extends RegionBase {
   source: string;
   /** How this region shows numbers, over the worksheet's (Mathcad's result format of a region). */
   format?: NumberFormat;
+  /** An input control (Mathcad's combo box): the definition's value is the picked choice's. */
+  choices?: MathChoices;
+}
+
+/** Choices of an input control: what each is called, its value (an expression) and which is picked. */
+export interface MathChoices {
+  labels: string[];
+  values: string[];
+  selected: number;
 }
 
 export interface TextRegion extends RegionBase {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
-import { importMathcad } from './mathcad';
+import { importMathcad, primeValue } from './mathcad';
 import { evaluateWorksheet, evaluateWithScope, type MathResult, type SolveResult } from '../engine/evaluator';
 import { compareSaved } from './saved';
 import { loadCas } from '../engine/symbolic';
@@ -451,5 +451,27 @@ describe('Mathcad import: how numbers are shown', () => {
     const { by } = results(res.ws);
     expect(by('1234.5678 =').tex).toMatch(/= 1.23 \\cdot 10\^\{3\}$/);
     expect(by('0.000160218 =').tex).toMatch(/= 160.218 \\cdot 10\^\{-6\}$/);
+  });
+});
+
+describe('Mathcad import: input controls', () => {
+  it('a combo box keeps its choices: the region shows them, the definition has the picked one', () => {
+    const combo = `<ml:ComboBoxControl rows="3" cols="2" SelectedRow="1" ComboBoxPrefix=""><ml:ComboBoxRowNames><ml:rowName>C12</ml:rowName><ml:rowName>C16</ml:rowName><ml:rowName>C20</ml:rowName></ml:ComboBoxRowNames><ml:ComboBoxScaleFactors>${id('MPa', 'UNIT')}<ml:placeholder /></ml:ComboBoxScaleFactors><ml:ComboBoxValues>${[12, 1.1, 16, 1.3, 20, 1.5].map(real).join('')}</ml:ComboBoxValues></ml:ComboBoxControl>`;
+    const res = primeOf(math(define(`<ml:matrix rows="2" cols="1">${id('f_ck')}${id('k')}</ml:matrix>`, combo)), math(evalOf(id('k'))));
+    const r = res.ws.regions[0] as Extract<Region, { kind: 'math' }>;
+    expect(r.source).toBe('[f_ck; k] := [16 MPa; 1.3]');
+    expect(r.choices).toEqual({ labels: ['C12', 'C16', 'C20'], values: ['[12 MPa; 1.1]', '[16 MPa; 1.3]', '[20 MPa; 1.5]'], selected: 1 });
+    expect(res.warnings.join('\n')).not.toMatch(/input control/);
+    expect(results(res.ws).by('k =').tex).toMatch(/= 1.3$/);
+  });
+  it('a list box run by a script: the value it gave when saved', () => {
+    const rl = btoa('(op_matrix:0x00000003 (unboxed 2) (unboxed 1) (list (number 3:0x00000004) (number 0.13:0x00000005)))');
+    const lb = `<ml:ListBoxScriptableControl Count="3" SelectedIndex="0" EngineType="JScript" RL="${rl}"><ml:vals><ml:val>Class S</ml:val><ml:val>Class N</ml:val><ml:val>Class R</ml:val></ml:vals></ml:ListBoxScriptableControl>`;
+    const res = primeOf(math(define(id('α'), lb)));
+    expect(sources(res.ws)).toEqual(['α := [3; 0.13]']);
+    expect(res.warnings.join('\n')).toMatch(/list box for α runs a script \(JScript\), which does not run here: it is imported as the value it gave for “Class S”, \[3; 0\.13\]; the other 2 choices are not offered/);
+    expect(primeValue('(op_matrix:0x1 (unboxed 2) (unboxed 2) (list (number 1:0x2) (number 3:0x3) (number 2:0x4) (number 4:0x5)))')).toBe('[1, 2; 3, 4]');
+    expect(primeValue('(string "Class S")')).toBe('"Class S"');
+    expect(primeValue('(unknown 1)')).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
   createRegion, emptyWorksheet, PAGE_HEIGHT, PAGE_MARGIN, PAGE_WIDTH,
-  type AreaRegion, type PageBand, type Region, type PlotTrace, type TextRegion,
+  type AreaRegion, type MathChoices, type PageBand, type Region, type PlotTrace, type TextRegion,
 } from '../model/types';
 import { AREA_BAR, AREA_PAD, collapseArea, nestBands, withContents } from '../model/areas';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
@@ -99,6 +99,8 @@ class Converter {
   scale = '';
   /** Inside a display unit (unitOverride, a plot axis unit), where unlabelled names are units. */
   private unitSlot = 0;
+  /** The input control of the last statement read: its choices (the region keeps them). */
+  choices: MathChoices | undefined;
 
   wrap(e: Ex, min: number): string {
     return e.p < min ? `(${e.s})` : e.s;
@@ -615,25 +617,51 @@ class Converter {
    * becomes the selected row's values; script controls run JScript and are not imported.
    */
   control(lhs: string, el: El): string {
+    if (local(el) === 'ListBoxScriptableControl') return this.listBox(lhs, el);
     if (local(el) !== 'ComboBoxControl') throw new Unsupported(`an input control (${local(el).replace(/Control$/, '')})`);
     const rows = Number(el.getAttribute('rows') ?? 0), cols = Number(el.getAttribute('cols') ?? 0);
     const sel = Number(el.getAttribute('SelectedRow') ?? 0);
     const names = kids(child(el, 'ComboBoxRowNames') ?? el).filter((c) => local(c) === 'rowName').map((c) => (c.textContent ?? '').trim());
     const values = kids(child(el, 'ComboBoxValues') ?? el);
     const scales = kids(child(el, 'ComboBoxScaleFactors') ?? el);
-    const picked = names[sel] ?? String(sel);
-    this.warnings.push(`The input control for ${lhs} (a list of ${names.length || rows} choices) is imported as its selected value, “${picked}”`);
+    const count = Math.max(names.length, rows);
+    const label = (i: number) => names[i] ?? String(i + 1);
     // without a table of values the choice itself is the value (a "Yes"/"No" flag)
-    if (!values.length) return JSON.stringify(picked);
-    const at = (j: number) => {
-      const v = values[sel * cols + j];
-      if (!v || isPlaceholder(v)) return '0';
-      const x = this.expr(v);
-      const sc = scales[j] && !isPlaceholder(scales[j]) ? this.unit(scales[j]) : '';
-      return sc ? `${this.wrap(x, P.MUL)} ${sc}` : x.s;
+    const row = (i: number) => {
+      if (!values.length) return JSON.stringify(label(i));
+      const at = (j: number) => {
+        const v = values[i * cols + j];
+        if (!v || isPlaceholder(v)) return '0';
+        const x = this.expr(v);
+        const sc = scales[j] && !isPlaceholder(scales[j]) ? this.unit(scales[j]) : '';
+        return sc ? `${this.wrap(x, P.MUL)} ${sc}` : x.s;
+      };
+      const vals = Array.from({ length: cols }, (_, j) => at(j));
+      return vals.length === 1 ? vals[0] : `[${vals.join('; ')}]`;
     };
-    const vals = Array.from({ length: cols }, (_, j) => at(j));
-    return vals.length === 1 ? vals[0] : `[${vals.join('; ')}]`;
+    // the region keeps the control: its choices, and the picked one's value as the definition's
+    if (count > 1) this.choices = { labels: Array.from({ length: count }, (_, i) => label(i)), values: Array.from({ length: count }, (_, i) => row(i)), selected: Math.min(sel, count - 1) };
+    return row(sel);
+  }
+
+  /**
+   * A list box whose script (JScript) gives the value: the value it gave when the worksheet was
+   * saved (its RL attribute), since the script does not run here.
+   */
+  listBox(lhs: string, el: El): string {
+    const items = el.getElementsByTagNameNS('*', 'val');
+    const sel = Number(el.getAttribute('SelectedIndex') ?? 0);
+    const picked = items[sel]?.textContent?.trim() ?? String(sel);
+    const rl = el.getAttribute('RL');
+    let value: string | null = null;
+    try {
+      value = rl ? primeValue(atob(rl)) : null;
+    } catch {
+      value = null;
+    }
+    if (value === null) throw new Unsupported('an input control (ListBoxScriptable) without a saved value');
+    this.warnings.push(`The list box for ${lhs} runs a script (JScript), which does not run here: it is imported as the value it gave for “${picked}”, ${value}; the other ${items.length - 1} choices are not offered`);
+    return value;
   }
 
   /** A script control on its own: its input expression, shown (often a check such as λ < λ_lim). */
@@ -1292,6 +1320,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           continue;
         }
         conv.scale = '';
+        conv.choices = undefined;
         const src = conv.statement(body);
         // ORIGIN := 1 is a setting here
         const om = /^ORIGIN := ([01])$/.exec(src);
@@ -1317,7 +1346,8 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           }
         }
         const format = regionFormat(body);
-        const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined, ...(format ? { format } : {}) });
+        const choices = conv.choices;
+        const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined, ...(format ? { format } : {}), ...(choices ? { choices } : {}) });
         regions.push(reg);
         const ref = body.getAttribute('resultRef');
         // a referenced worksheet's results are not in this file's result.xml
@@ -1439,6 +1469,62 @@ function startPages(regions: Region[], areas: { y: number; height: number }[], b
     }
     moved += by;
   }
+}
+
+/**
+ * A value Prime saved in its own notation (a script control's RL attribute):
+ * (number 3:0x…), (op_matrix:0x… (unboxed rows) (unboxed cols) (list …)) column by column,
+ * (string "…"). Null for anything else.
+ */
+export function primeValue(src: string): string | null {
+  type Node = string | Node[];
+  let i = 0;
+  const parse = (): Node => {
+    while (/\s/.test(src[i] ?? '')) i++;
+    if (src[i] === '(') {
+      i++;
+      const out: Node[] = [];
+      for (;;) {
+        while (/\s/.test(src[i] ?? '')) i++;
+        if (i >= src.length) throw new Error('unbalanced');
+        if (src[i] === ')') {
+          i++;
+          return out;
+        }
+        out.push(parse());
+      }
+    }
+    if (src[i] === '"') {
+      const m = /^"((?:[^"\\]|\\.)*)"/.exec(src.slice(i));
+      if (!m) throw new Error('string');
+      i += m[0].length;
+      return m[0];
+    }
+    const m = /^[^\s()]+/.exec(src.slice(i));
+    if (!m) throw new Error('atom');
+    i += m[0].length;
+    return m[0];
+  };
+  const head = (n: Node) => (Array.isArray(n) && typeof n[0] === 'string' ? n[0].replace(/:0x[0-9a-f]+$/i, '') : '');
+  const value = (n: Node): string | null => {
+    if (!Array.isArray(n)) return null;
+    const h = head(n);
+    if (h === 'number' && typeof n[1] === 'string') {
+      const v = n[1].replace(/:0x[0-9a-f]+$/i, '');
+      return isNumberLiteral(v) ? v : null;
+    }
+    if (h === 'string' && typeof n[1] === 'string') return n[1].startsWith('"') ? n[1] : JSON.stringify(n[1]);
+    if (h === 'op_matrix') {
+      const dim = (k: Node) => (Array.isArray(k) && head(k) === 'unboxed' ? Number(k[1]) : NaN);
+      const rows = dim(n[1]), cols = dim(n[2]), list = n[3];
+      if (!(rows > 0 && cols > 0) || !Array.isArray(list) || head(list) !== 'list' || list.length - 1 !== rows * cols) return null;
+      const items = list.slice(1).map(value);
+      if (items.some((v) => v === null)) return null;
+      return `[${Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => items[c * rows + r]).join(', ')).join('; ')}]`;
+    }
+    return null;
+  };
+  return value(parse());
 }
 
 /** A Mathcad 15 shown result: the <result> inside the region's <ml:eval>. */

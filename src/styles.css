@@ -599,6 +599,26 @@ select {
   min-height: 20px;
 }
 
+/* an input control: the definition's choices */
+.math-choice {
+  margin-left: 8px;
+  vertical-align: middle;
+  max-width: 220px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px var(--font);
+}
+
+@media print {
+  .math-choice {
+    border-color: transparent;
+    appearance: none;
+  }
+}
+
 .math-region.editing .math-display {
   opacity: 0.85;
   margin-top: 4px;
