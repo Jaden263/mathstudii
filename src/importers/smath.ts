@@ -991,6 +991,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
     if (!disabled(placed[i])) for (const t of toks) for (const n of worksheetDefines(t)) lastDefined.set(n, i);
   });
   const lazyNotes: string[] = [];
+  const unitless: number[] = [];
   // functions only a plugin or SMath's computer has: say once which, and how many regions use them
   {
     const defined = new Set<string>();
@@ -1067,7 +1068,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
         return;
       }
       conv.ignoreUnits = kind === 'math' && body.getAttribute('ignoreUnits') === 'true';
-      if (conv.ignoreUnits) warnings.push(`math at ${Math.round(at.y)} px: SMath ignores the units in this region (each counts as 1); so does the import`);
+      if (conv.ignoreUnits) unitless.push(Math.round(at.y));
       if (kind === 'math') {
         const toks = parseRpn(child(body, 'input'));
         if (!toks.length) return;
@@ -1266,6 +1267,9 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   if (maximaPlots) warnings.push(`${maximaPlots} Maxima plot${maximaPlots > 1 ? 's are' : ' is'} shown as the picture${maximaPlots > 1 ? 's' : ''} Maxima drew: the Maxima plugin is not part of mathstudii, so ${maximaPlots > 1 ? 'they are' : 'it is'} not redrawn when values change`);
   if (lazyNotes.length) {
     warnings.push(`${lazyNotes.length} definition${lazyNotes.length > 1 ? 's read names' : ' reads names'} defined only further down or not at all (${lazyNotes.slice(0, 4).join(', ')}${lazyNotes.length > 4 ? ' …' : ''}): SMath keeps such names as symbols and calculates when the value is used, so here each is a function of them, called with the values they have where it is used`);
+  }
+  if (unitless.length) {
+    warnings.push(`${unitless.length} formula${unitless.length > 1 ? 's' : ''} at ${unitless.slice(0, 5).join(', ')}${unitless.length > 5 ? ' …' : ''} px ${unitless.length > 1 ? 'are' : 'is'} set in SMath to ignore units (each unit counts as 1): so ${unitless.length > 1 ? 'are they' : 'is it'} here`);
   }
   if (plotRanges) warnings.push(`${plotRanges} plot${plotRanges > 1 ? 's' : ''}: SMath stores a view (zoom and pan), not axis limits, so the axes start from automatic ranges`);
 

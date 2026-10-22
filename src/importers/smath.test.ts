@@ -275,6 +275,14 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
     expect(agrees(ours, val('(55.1303 + 45.8575*i)*m'), 1e-5)).toBe(false);
   });
 
+  it('a formula set to ignore units counts each unit as 1, and the report says so once', () => {
+    const plain = (input: string, saved: string) => region(`<math ignoreUnits="true"><input>${input}</input><result action="numeric">${saved}</result></math>`);
+    const { ws, saved, warnings } = load(plain(def(v('P.1'), v('5') + u('bar') + op('*')), v('5')), plain(v('P.1') + v('2') + op('*'), v('10')));
+    expect(sources(ws)).toEqual(['P_1 := 5 =', 'P_1*2 =']);
+    expect(warnings.filter((w) => /ignore units/.test(w))).toEqual(['2 formulas at 30, 60 px are set in SMath to ignore units (each unit counts as 1): so are they here']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+
   it('reads 27 °C as the temperature 300.15 K, °C in a compound unit as a difference', () => {
     // SMath saved V_T = 25.865 mV for T = 27 °C, and 93.0325 °C for a temperature it showed in °C
     const { ws, saved } = load(math(def(v('T.k'), v('27') + u('°C') + op('*'))),
