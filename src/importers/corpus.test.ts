@@ -820,7 +820,14 @@ function analyse(file: string): FileReport {
       if (used.has(r.id) || category(r.kind) !== cat) continue;
       const d = Math.min(...ys(s).map((y) => Math.abs(Math.max(8, Math.round(y)) - r.y)));
       if (d > 2) continue;
-      const score = d + Math.abs(poolRank.get(r)! - sRank) * 10 + Math.abs(r.x - s.x) / 1e4;
+      // regions of collapsed areas overlap on the page: one defining another name (or one that
+      // defines nothing where the file's defines something, or the other way round) is not this one
+      let other = 0;
+      if (r.kind === 'math' && s.defines) {
+        const def = names(r.source).def;
+        if (!!def !== s.defines.length > 0 || (def && !s.defines.includes(def))) other = 5;
+      }
+      const score = d + other + Math.abs(poolRank.get(r)! - sRank) * 10 + Math.abs(r.x - s.x) / 1e4;
       if (score < bestD) {
         best = r;
         bestD = score;
