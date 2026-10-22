@@ -181,6 +181,8 @@ const FN_MAP: Record<string, string> = {
 const SMATH_UNITS: Record<string, string> = {
   g: 'gm', in: 'inch', h: 'hr', min: 'min', t: 'tonne', l: 'L', '°': 'deg', 'g.e': 'g',
   Gy: '(J/kg)', Sv: '(J/kg)', kat: '(mol/s)', tonnef: '(1000 kgf)',
+  // units the engine has by these names (the Mathcad import writes them out)
+  ksi: 'ksi', kph: 'kph',
 };
 
 /** Display units that cannot be written as a unit here, and the unit shown instead. */
@@ -745,6 +747,7 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
   ws.settings.origin = 1; // SMath indexes from 1
   ws.settings.lateBinding = true; // SMath functions see variables defined after them
   const calc = child(child(root, 'settings') ?? root, 'calculation');
+  const calcSetting = (name: string) => (calc && child(calc, name)?.textContent?.trim()) || undefined;
   const prec = Number(calc && child(calc, 'precision')?.textContent);
   if (prec >= 0 && prec <= 15) ws.settings.precision = prec;
   const thr = Number(calc && child(calc, 'exponentialThreshold')?.textContent);
@@ -954,12 +957,14 @@ export function importSmath(data: Uint8Array, fileName = 'worksheet'): ImportRes
             // the result has its unit when SMath chose it, else it is a number in the display unit
             let hasUnit = false;
             walk(tok, (n) => { if (n.style === 'unit') hasUnit = true; });
-            // rounded to the digits shown: half a unit in the last significant digit
-            // (zeros ending a whole number, as 11330 shows 11333.3 to 4 significant digits, may be
-            // rounding: then the 4 digits SMath shows at the least)
+            // rounded to the digits shown: half a unit in the last significant digit. In SMath's
+            // significant-digits mode zeros ending a whole number are rounding (11330 is 11333.3 to 4
+            // digits, 1220 is 1225 to 3, rounded half to even), so the precision set counts there
             const mantissa = /\d[\d.]*/.exec(value)?.[0] ?? '';
             const sig = (m: string) => m.replace('.', '').replace(/^0+/, '').length || 1;
-            const digits = !mantissa.includes('.') && /[1-9]0+$/.test(mantissa) ? Math.max(4, sig(mantissa.replace(/0+$/, ''))) : sig(mantissa);
+            const sigMode = (body.getAttribute('significantDigitsMode') ?? calcSetting('significantDigitsMode')) === 'true';
+            const places = Number(body.getAttribute('decimalPlaces') ?? calcSetting('precision') ?? 4) || 4;
+            const digits = sigMode && !mantissa.includes('.') && /[1-9]0+$/.test(mantissa) ? Math.max(sig(mantissa.replace(/0+$/, '')), Math.min(places, sig(mantissa))) : sig(mantissa);
             const shownIn = unit.trim() === '%' ? '1/100' : contract ? conv.displayUnit(contract, true) : '';
             saved.push({ regionId: last.id, expr: shownIn && !hasUnit ? `(${value})*(${shownIn})` : value, tol: Math.max(1e-4, 0.5 * 10 ** (1 - digits)) });
           } catch {

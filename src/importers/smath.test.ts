@@ -272,6 +272,7 @@ describe('SMath import: numbers, constants, units and text as SMath writes them'
       result(def(v('P'), v('9806.65') + u('N') + op('*')), v('1'), u('tonnef')),
       result(def(v('n'), v('2') + u('mol') + u('s') + op('/') + op('*')), v('2') + u('kat') + op('*')));
     expect(saved!.map((s) => s.expr)).toEqual(['2594387 (J/kg)', '(1)*((1000 kgf))', '2 (mol/s)']);
+    expect(sources(load(math(def(v('σ'), v('36') + u('ksi') + op('*')))).ws)).toEqual(['σ := 36 ksi']);
     // tonne-force is no unit here: shown in kgf, and the report says so
     expect(sources(ws)[1]).toBe('P := 9806.65 N = kgf');
     expect(warnings.some((w) => /tonnef.*kgf/.test(w))).toBe(true);
@@ -449,9 +450,16 @@ describe('SMath import: what SMath does not calculate, and how it rounds', () =>
     expect(sources(ws)).toEqual(['x := 2', 'Clear(x) =', 'y(x) := x*3', 'x := 4', 'y(x) =']);
     expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
   });
-  it('11330 shown for 11333.3 (4 significant digits) agrees', () => {
-    const { ws, saved } = one(region(`<math><input>${def(v('A'), v('34000') + v('3') + op('/'))}</input><result action="numeric">${v('11330')}</result></math>`));
-    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  it('in significant-digits mode 11330 is 11333.3 to 4 digits and 1220 is 1225 to 3; in decimal places a whole number is exact', () => {
+    const shown = (attrs: string, rhs: string, saved: string) => region(`<math ${attrs}><input>${def(v('A'), rhs)}</input><result action="numeric">${v(saved)}</result></math>`);
+    const { ws, saved } = one(
+      shown('significantDigitsMode="true" decimalPlaces="4"', v('34000') + v('3') + op('/'), '11330'),
+      shown('significantDigitsMode="true" decimalPlaces="3"', v('1225'), '1220'),
+      shown('significantDigitsMode="false" decimalPlaces="4"', v('1225'), '1220'),
+    );
+    const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
+    expect(cmp).toMatchObject({ checked: 3, agree: 2 });
+    expect(cmp.differ.map((d) => d.theirs)).toEqual(['1220']);
   });
 });
 
