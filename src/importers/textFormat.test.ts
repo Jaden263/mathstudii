@@ -55,6 +55,14 @@ describe('formatted text from Mathcad Prime', () => {
   });
 });
 
+describe('spaces in imported text', () => {
+  it('a tab and spaces starting a line stay spaces (four would make the line code in Markdown)', () => {
+    const [t] = primeText('<Paragraph><Run>    indented\tthen a tab</Run></Paragraph>');
+    expect(t.markdown).toBe('\u00a0\u00a0\u00a0\u00a0indented\u00a0\u00a0\u00a0\u00a0then a tab');
+    expect(marked.parse(t.markdown, { async: false })).not.toContain('<code>');
+  });
+});
+
 describe('formatted text from Mathcad 15', () => {
   const xmcd = (text: string, styles = '') => importMathcad(strToU8(`<?xml version="1.0" encoding="UTF-8"?>
 <worksheet version="3.0.3" xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">

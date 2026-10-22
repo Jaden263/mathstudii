@@ -117,10 +117,11 @@ function paragraph(p: TextPara, base: Base): string {
   const ratio = Math.min(...sizes) / base.size;
   const heading = p.heading ?? (p.list ? undefined : ratio >= 1.4 ? 1 : ratio >= 1.15 ? 2 : undefined);
   const html = !!p.align;
-  // Markdown (and HTML) collapse spaces: the extra ones Mathcad keeps are no-break spaces
+  // Markdown (and HTML) collapse spaces: the extra ones Mathcad keeps, a tab's and those
+  // starting a line (four would make it code) are no-break spaces
   // (not in inline math, which is `code`)
   let body = runs.map((r) => run(r, base, html, heading !== undefined)).join('')
-    .split(/((?<!\\)`[^`]*`)/).map((part, i) => (i % 2 ? part : part.replace(/ {2,}/g, (m) => ` ${'\u00a0'.repeat(m.length - 1)}`))).join('');
+    .split(/((?<!\\)`[^`]*`)/).map((part, i) => (i % 2 ? part : part.replace(/\t/g, '\u00a0'.repeat(4)).replace(/ {2,}/g, (m) => ` ${'\u00a0'.repeat(m.length - 1)}`).replace(/^ /, '\u00a0'))).join('');
   if (html) {
     body = body.replace(/\n/g, '<br>');
     const tag = heading ? `h${heading}` : 'p';
