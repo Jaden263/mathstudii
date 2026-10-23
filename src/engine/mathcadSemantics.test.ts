@@ -393,6 +393,13 @@ describe('temperatures', () => {
     expect(shown(['T := 72 degF', 'T = degF'])).toBe('72\\ {}^{\\circ}\\mathrm{F}');
     expect(shown(['T := 20 degC', 'T ='])).toBe('293.15\\ \\mathrm{K}');
   });
+
+  it('in a compound unit °C is a difference: a thermal resistance of 23 °C/W is 23 K/W', () => {
+    expect(shown(['R := 23 degC/W', '2 W*R ='])).toBe('46\\ \\mathrm{K}');
+    expect(shown(['R := 23 degC/W', 'R*1 W/K ='])).toBe('23');
+    // a temperature stored alone stays absolute when divided later
+    expect(shown(['T := 20 degC', 'T/(1 W) ='])).toMatch(/^293\.15/);
+  });
 });
 
 describe('Minimize and Maximize outside a solve block', () => {

@@ -129,9 +129,49 @@ export function transformForEval(node: MathNode): MathNode {
       if (fn === 'ctranspose' || fn === 'transpose') {
         return new math.FunctionNode(new math.SymbolNode('mcTranspose'), (any.args as MathNode[]).map(transformForEval));
       }
+      const compound = offsetCompound(n);
+      if (compound) return compound;
     }
     return n;
   });
+}
+
+/** A unit whose zero is not absolute zero (°C, °F): alone it is a temperature. */
+function isOffsetUnit(name: string): boolean {
+  try {
+    return math.Unit.isValuelessUnit(name) && new math.Unit(null as never, name).units.some((u) => (u.unit as unknown as { offset: number }).offset !== 0);
+  } catch {
+    return false;
+  }
+}
+
+/** Units only (W, m^2, kg/s …), no numbers or worksheet names. */
+function isUnitExpr(n: MathNode): boolean {
+  const any = n as unknown as Record<string, unknown>;
+  if (n.type === 'SymbolNode') return math.Unit.isValuelessUnit(any.name as string);
+  if (n.type === 'ParenthesisNode') return isUnitExpr(any.content as MathNode);
+  if (n.type !== 'OperatorNode') return false;
+  const [a, b] = any.args as MathNode[];
+  if (any.fn === 'pow') return isUnitExpr(a) && b.type === 'ConstantNode';
+  return (any.fn === 'multiply' || any.fn === 'divide') && !!b && isUnitExpr(a) && isUnitExpr(b);
+}
+
+/**
+ * 23 °C/W is a number with the compound unit °C/W, where °C is a difference (23 K/W), as a
+ * thermal resistance is meant; only a temperature written alone (20 °C) is absolute. The
+ * parser reads it as (23 °C)/W, which would make it 296.15 K/W, so the unit is regrouped.
+ */
+function offsetCompound(n: MathNode): MathNode | null {
+  const any = n as unknown as Record<string, unknown>;
+  if (any.fn !== 'divide' && any.fn !== 'multiply') return null;
+  const [left, right] = any.args as MathNode[];
+  if (!right || left.type !== 'OperatorNode' || !isUnitExpr(right)) return null;
+  const l = left as unknown as { fn: string; args: MathNode[] };
+  if (l.fn !== 'multiply' || l.args.length !== 2) return null;
+  const [num, unit] = l.args;
+  if (num.type !== 'ConstantNode' || unit.type !== 'SymbolNode' || !isOffsetUnit((unit as unknown as { name: string }).name)) return null;
+  const grouped = new math.OperatorNode(any.op as never, any.fn as never, [unit, transformForEval(right)]);
+  return new math.OperatorNode('*', 'multiply', [num, new math.ParenthesisNode(grouped)]);
 }
 
 /** Parse, transform and compile an expression (cached). */
