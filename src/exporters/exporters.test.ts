@@ -461,6 +461,24 @@ describe('against what the programs themselves write', () => {
     expect(r.warnings.join('\n')).toMatch(/u, w at \d+ px: SMath defines one name at a time/);
   });
 
+  it('SMath: what the SMath import calls at, solve(f, x, a, b), Zeros and text equality goes back by SMath’s names; an angle shown in deg is saved in degrees', () => {
+    const ws = sheet([
+      'p := subs(x^2, x == 3) =', 'r := nthRoot(27, 3) =', 'Z := zeros(2, 1)', 'Fluid := "S"', 'k := if(equalText(Fluid, "S"), 1, 2) =',
+      'x0 := roots(x^2 - 1, x, -2, 2) =', 'β := atan(1) = deg', 'φ := [atan(1); 0] = deg',
+    ]);
+    const text = written(ws, 'sm');
+    for (const f of ['at', 'Zeros', 'solve']) expect(text).toContain(`>${f}</e>`);
+    expect(text).not.toMatch(/>(subs|nthRoot|zeros|roots|equalText)<\/e>/);
+    expect(text).toContain('<e type="operand">Fluid</e><e type="operand" style="string">S</e><e type="operator" args="2">≡</e>');
+    // atan(1) = π/4 is 45°: the saved result is 45 in the display unit, as SMath shows it
+    expect(text).toMatch(/<contract><e type="operand" style="unit">deg<\/e><\/contract><result action="numeric"><e type="operand">45<\/e><\/result>/);
+    const back = importSmath(exportWorksheet(ws, 'sm').bytes, 'back.sm');
+    const cmp = compareSaved(back.saved ?? [], back.ws.regions, evaluateWithScope(back.ws).shown);
+    expect(cmp.differ).toEqual([]);
+    expect(cmp.missing).toEqual([]);
+    expect(cmp.agree).toBe(6);
+  });
+
   it('SMath: index arguments of submatrix and csort count from 1 there', () => {
     // first index 0: sorted by the second column, rows 0–1 of the second column
     const ws = sheet(['M := [3, 2; 1, 3; 2, 1]', 'S := csort(M, 1) =', 'B := submatrix(M, 0, 1, 1, 1) =']);

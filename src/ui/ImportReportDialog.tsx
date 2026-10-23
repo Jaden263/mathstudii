@@ -51,7 +51,7 @@ export function ImportReportDialog({ report, onClose, onDataFiles, onReferences,
             {onReferences && (
               <>
                 <button className="btn" onClick={() => pick.current?.click()}>Pick referenced worksheets…</button>
-                <input ref={pick} type="file" accept=".mcdx,.xmcd" multiple hidden onChange={(e) => {
+                <input ref={pick} type="file" accept=".mcdx,.xmcd,.sm,.smz" multiple hidden onChange={(e) => {
                   const files = [...(e.target.files ?? [])];
                   if (files.length) onReferences(files);
                 }} />

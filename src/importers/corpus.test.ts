@@ -738,6 +738,20 @@ function fileReport(file: string): { rep: FileReport; src: SrcRegion[]; bytes: U
   return { rep, src, bytes };
 }
 
+/** A worksheet another one includes, found in the corpus folder: the file of that name (saved as path__name) from the closest folder. */
+function sibling(file: string, name: string): Uint8Array | undefined {
+  const want = name.replace(/ /g, '__').toLowerCase();
+  const common = (a: string, b: string) => {
+    let k = 0;
+    while (k < a.length && a[k] === b[k]) k++;
+    return k;
+  };
+  const hit = readdirSync(DIR)
+    .filter((f) => f !== file && (f.toLowerCase() === want || f.toLowerCase().endsWith(`__${want}`)))
+    .sort((a, b) => common(b, file) - common(a, file))[0];
+  return hit ? new Uint8Array(readFileSync(join(DIR, hit))) : undefined;
+}
+
 function analyse(file: string): FileReport {
   const { rep, src, bytes } = fileReport(file);
   const format = rep.format;
@@ -745,6 +759,15 @@ function analyse(file: string): FileReport {
   const t0 = performance.now();
   try {
     res = format === 'sm' ? importSmath(bytes, file) : importMathcad(bytes, file);
+    // the worksheets it includes, picked from the corpus folder as a user would
+    if (format === 'sm' && res.references?.length) {
+      const references: Record<string, Uint8Array> = {};
+      for (const name of res.references) {
+        const b = sibling(file, name);
+        if (b) references[name] = b;
+      }
+      if (Object.keys(references).length) res = importSmath(bytes, file, { references });
+    }
   } catch (e) {
     rep.importError = (e as Error).message;
     rep.ms.import = performance.now() - t0;

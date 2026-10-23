@@ -30,6 +30,8 @@ import './mathcadLib';
 import './mathcadFunctions';
 import { dataFileCtx } from './dataFiles';
 import { resetRandom } from './random';
+// after the shared libraries: a function they have by an SMath name is theirs
+import './smathLib';
 
 export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult, SpreadsheetResult };
 

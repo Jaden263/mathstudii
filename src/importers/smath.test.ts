@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { gzipSync, strToU8, zipSync } from 'fflate';
 import { importSmath } from './smath';
-import { evaluateWorksheet, type MathResult } from '../engine/evaluator';
+import { agrees, compareSaved } from './saved';
+import { compileExpr } from '../engine/compile';
+import { ChainScope } from '../engine/scope';
+import { evaluateWorksheet, evaluateWithScope, type MathResult } from '../engine/evaluator';
 import { loadCas } from '../engine/symbolic';
 import type { Region, Worksheet } from '../model/types';
 
@@ -161,10 +164,17 @@ describe('SMath import', () => {
 
   it('keeps text, comments, pictures, plots, display formulas and reports plugins', () => {
     const { ws, warnings } = importSmath(strToU8(worksheet()), 'a.sm');
-    const texts = ws.regions.filter((r) => r.kind === 'text').map((r) => (r as { markdown: string }).markdown);
-    expect(texts[0]).toBe('**Beam on two supports: &#36; cost and *notes***');
-    expect(texts).toContain('*Beam length*');
+    const textRegions = ws.regions.filter((r) => r.kind === 'text');
+    const texts = textRegions.map((r) => (r as { markdown: string }).markdown);
+    // SMath shows *notes* with its asterisks; the bold paragraph makes the region bold
+    expect(texts[0]).toBe('Beam on two supports: &#36; cost and \\*notes\\*');
+    expect(textRegions[0].style).toEqual({ bold: true });
+    expect(texts).toContain('Beam length');
+    expect(textRegions.find((r) => (r as { markdown: string }).markdown === 'Beam length')?.style).toEqual({ italic: true });
     expect(texts).toContain('Hidden part');
+    // the collapsed area hides it
+    const area = ws.regions.find((r) => r.kind === 'area');
+    expect(area && area.kind === 'area' && area.collapsed && area.hidden).toEqual([textRegions.find((r) => (r as { markdown: string }).markdown === 'Hidden part')!.id]);
     expect(texts.some((t) => t.startsWith('⚠️') && t.includes('somePluginRegion'))).toBe(true);
     expect(ws.regions.some((r) => r.kind === 'image' && r.src.startsWith('data:image/png;base64,'))).toBe(true);
     const plot = ws.regions.find((r) => r.kind === 'plot');
@@ -221,5 +231,688 @@ describe('SMath import: what writing files for SMath showed', () => {
     }${region(`<math><input>${def(v('q'), v('12') + u('kN') + u('m') + op('/') + op('*'))}</input><contract>${u('kN') + u('m') + op('/')}</contract><result action="numeric">${v('12')}</result></math>`)}</regions></worksheet>`), 'x.sm').ws;
     expect(sources(ws)).toContain('q := 12 kN/unit(1, "m") = kN/m');
     expect(value(ws, 'q := 12 kN/unit(1, "m") = kN/m')).toMatch(/= 12\\/);
+  });
+});
+
+describe('SMath import: numbers, constants, units and text as SMath writes them', () => {
+  const sheet = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return `<?xml version="1.0" encoding="utf-8"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions type="content">${regions.join('')}</regions></worksheet>`;
+  };
+  const load = (...regions: string[]) => importSmath(strToU8(sheet(...regions)), 'x.sm');
+  const result = (input: string, saved: string, unit = '') =>
+    region(`<math><input>${input}</input>${unit ? `<contract>${unit}</contract>` : ''}<result action="numeric">${saved}</result></math>`);
+
+  it('reads "2." as the number 2', () => {
+    const { ws } = load(math(def(v('V'), v('10'))), result(v('V') + v('2.') + op('*'), v('20')));
+    expect(sources(ws)).toContain('V*2 =');
+    expect(value(ws, 'V*2 =')).toMatch(/= 20/);
+  });
+
+  it('takes SMath constants written as units: Boltzmann k, elementary charge e, light speed c', () => {
+    // V_T := k·T/e with T = 300 K is 25.852 mV
+    const { ws } = load(math(def(v('T'), v('300') + u('K') + op('*'))), result(def(v('V.T'), u('k') + v('T') + op('*') + u('e') + op('/')), v('25.852'), u('mV')),
+      result(v('0.6') + u('c') + op('*'), v('179875474.8') + u('m') + u('s') + op('/') + op('*')));
+    expect(sources(ws)).toContain('V_T := boltzmann*T/elementaryCharge = mV');
+    expect(value(ws, 'V_T := boltzmann*T/elementaryCharge = mV')).toMatch(/25\.85\d*\\ \\mathrm\{mV\}/);
+    expect(value(ws, '0.6 speedOfLight =')).toMatch(/1\.7988/);
+  });
+
+  it('shows a value in its display unit and the unit SMath left beside it (G = mS shows 0.5 mS·1/m)', () => {
+    const { ws, saved } = load(math(def(v('α'), v('0.04') + u('m') + op('/'))), math(def(v('Z.o'), v('80') + u('Ω') + op('*'))),
+      result(def(v('G'), v('α') + v('Z.o') + op('/')), v('0.5') + v('1') + u('m') + op('/') + op('*'), u('mS')));
+    expect(sources(ws)).toContain('G := α/Z_o = mS/m');
+    expect(value(ws, 'G := α/Z_o = mS/m')).toMatch(/0\.5\\ \\frac\{\\mathrm\{mS\}\}\{\\mathrm\{m\}\}/);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
+  it('compares complex values with units (a line impedance SMath showed as 55.1303 + 45.8575i Ω)', () => {
+    const val = (src: string) => compileExpr(src).evaluate(new ChainScope(null));
+    const ours = val('sqrt((6.5 ohm/m + i*2*π*2 MHz*3.4 uH/m)/(8.4 mS/m + i*2*π*2 MHz*21.5 pF/m))');
+    expect(agrees(ours, val('(55.1303 + 45.8575*i)*ohm'), 1e-5)).toBe(true);
+    expect(agrees(ours, val('(55.1303 + 45.9575*i)*ohm'), 1e-5)).toBe(false);
+    expect(agrees(ours, val('(55.1303 + 45.8575*i)*m'), 1e-5)).toBe(false);
+  });
+
+  it('a formula set to ignore units counts each unit as 1, and the report says so once', () => {
+    const plain = (input: string, saved: string) => region(`<math ignoreUnits="true"><input>${input}</input><result action="numeric">${saved}</result></math>`);
+    const { ws, saved, warnings } = load(plain(def(v('P.1'), v('5') + u('bar') + op('*')), v('5')), plain(v('P.1') + v('2') + op('*'), v('10')));
+    expect(sources(ws)).toEqual(['P_1 := 5 =', 'P_1*2 =']);
+    expect(warnings.filter((w) => /ignore units/.test(w))).toEqual(['2 formulas at 30, 60 px are set in SMath to ignore units (each unit counts as 1): so are they here']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+
+  it('the value such a formula shows keeps its units: t/3600 of t := 118409 s is 32.8904 s', () => {
+    const ignoring = (input: string, saved: string) => region(`<math ignoreUnits="true"><input>${input}</input><result action="numeric">${saved}</result></math>`);
+    const { ws, saved } = load(math(def(v('t'), v('118409') + u('s') + op('*'))), ignoring(v('t') + v('3600') + op('/'), v('32.8904') + u('s') + op('*')));
+    expect(saved![0].expr).toBe('32.8904 s');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
+  it('reads 27 °C as the temperature 300.15 K, °C in a compound unit as a difference', () => {
+    // SMath saved V_T = 25.865 mV for T = 27 °C, and 93.0325 °C for a temperature it showed in °C
+    const { ws, saved } = load(math(def(v('T.k'), v('27') + u('°C') + op('*'))),
+      result(def(v('V.T'), u('k') + v('T.k') + op('*') + u('e') + op('/')), v('25.865'), u('mV')),
+      result(v('T.k'), v('27'), u('°C')),
+      math(def(v('R'), v('23') + u('°C') + u('W') + op('/') + op('*'))),
+      result(v('2') + u('W') + op('*') + v('R') + op('*'), v('46') + u('°C') + op('*')));
+    expect(sources(ws).slice(0, 3)).toEqual(['T_k := (27 degC to K)', 'V_T := boltzmann*T_k/elementaryCharge = mV', 'T_k = degC']);
+    expect(value(ws, 'T_k = degC')).toMatch(/= 27\\ \{\}\^\{\\circ\}\\mathrm\{C\}/);
+    // the 46 °C SMath showed for 2 W·R is a difference: 46 K
+    expect(saved![2].expr).toBe('46 K');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('defines a unit of the worksheet as a variable of its name (k.1 := 17.5 N/mm, kcf := kip/ft³)', () => {
+    const { ws } = load(
+      math(def(u('k.1'), v('17.5') + u('N') + u('mm') + op('/') + op('*'))),
+      math(def(v('F'), v('35') + u('N') + op('*'))),
+      result(def(v('d'), v('2') + v('F') + op('*') + v('4') + u('k.1') + op('*') + op('/')), v('1'), u('mm')),
+    );
+    expect(sources(ws)).toEqual(['k_1 := 17.5 N/mm', 'F := 35 N', 'd := 2*F/(4 k_1) = mm']);
+    expect(value(ws, 'd := 2*F/(4 k_1) = mm')).toMatch(/= 1\\ \\mathrm\{mm\}/);
+  });
+
+  it('reads results SMath shows in gray (J/kg), katal and tonne-force', () => {
+    const { ws, saved, warnings } = load(result(def(v('h'), v('2594387') + u('J') + u('kg') + op('/') + op('*')), v('2594387') + u('Gy') + op('*')),
+      result(def(v('P'), v('9806.65') + u('N') + op('*')), v('1'), u('tonnef')),
+      result(def(v('n'), v('2') + u('mol') + u('s') + op('/') + op('*')), v('2') + u('kat') + op('*')));
+    expect(saved!.map((s) => s.expr)).toEqual(['2594387 (J/kg)', '(1)*((1000 kgf))', '2 (mol/s)']);
+    expect(sources(load(math(def(v('σ'), v('36') + u('ksi') + op('*')))).ws)).toEqual(['σ := 36 ksi']);
+    // tonne-force is no unit here: shown in kgf, and the report says so
+    expect(sources(ws)[1]).toBe('P := 9806.65 N = kgf');
+    expect(warnings.some((w) => /tonnef.*kgf/.test(w))).toBe(true);
+    const out = evaluateWorksheet(ws);
+    for (const r of ws.regions) expect((out.results.get(r.id) as MathResult).error).toBeUndefined();
+  });
+
+  it('reads SMath 1.x text: paragraphs, line breaks, bold and italic spans, colours, sizes and math placed in the text', () => {
+    const textRegion = `<region id="9" left="18" top="10" width="300" height="40" color="#0000ff" bgColor="#ffff80" fontSize="10"><text lang="eng" fontFamily="Arial" fontSize="10"><content>`
+      + `<p style="font-size: 20px;">Thickness \\[REGION[1d44faa63ab44d5597c0a27d0d17358f]]\\ of the plate</p>`
+      + `<p style="font-size: 20px;"><span style="font-weight: bold;">Note</span> 2*a_b<br />second line</p></content><regions>`
+      + `<region id="1d44faa63ab44d5597c0a27d0d17358f" left="80" top="0" width="52" height="24" color="#000000" fontSize="10"><math><input>${def(v('t'), v('10') + u('mm') + op('*'))}</input></math></region></regions></text></region>`;
+    const { ws } = load(textRegion, math(v('t') + v('2') + op('^'), { result: 'numeric', unit: u('mm') + v('2') + op('^') }));
+    const text = ws.regions.find((r) => r.kind === 'text') as Region & { markdown: string };
+    expect(text.markdown).toBe('Thickness \u2003\u2003\u2003\u2003 of the plate  \n**Note** 2\\*a_b  \nsecond line');
+    // blue on yellow, 20 px = 15 pt against SMath's 10 pt
+    expect(text.style).toEqual({ color: '#0000ff', background: '#ffff80', fontScale: 1.5 });
+    // the math in the text defines t, at its place on the page
+    const t = find(ws, 't := 10 mm');
+    expect(t && t.x > text.x && t.y === text.y).toBe(true);
+    expect(value(ws, 't^2 = mm^2')).toMatch(/= 100\\ \\mathrm\{mm\}\^\{2\}/);
+  });
+
+  it('keeps math regions\u2019 colours and sizes', () => {
+    id = 0;
+    top = 0;
+    const { ws } = importSmath(strToU8(sheet(`<region id="1" left="9" top="9" width="80" height="24" color="#ff0000" bgColor="#dddddd" fontSize="12"><math><input>${def(v('a'), v('1'))}</input></math></region>`)), 'x.sm');
+    expect(ws.regions[0].style).toEqual({ color: '#ff0000', background: '#dddddd', fontScale: 1.2 });
+  });
+
+  it('makes SMath areas areas, collapsed as they were saved', () => {
+    const area = (collapsed: boolean, y: number, inner: string) => `<region id="${++id}" top="${y}" color="#000000" bgColor="#ffff80"><area collapsed="${collapsed}"><title lang="eng"><p>Inputs</p></title></area>${inner}</region>`;
+    const inner = `<region id="${++id}" left="9" top="130" width="80" height="24"><math><input>${def(v('a'), v('2'))}</input></math></region>`;
+    for (const collapsed of [false, true]) {
+      id = 0;
+      const { ws } = importSmath(strToU8(sheet(area(collapsed, 100, inner), `<region id="${++id}" left="9" top="200" width="80" height="24"><math><input>${v('a')}</input><result action="numeric">${v('2')}</result></math></region>`)), 'x.sm');
+      const a = ws.regions.find((r) => r.kind === 'area')!;
+      expect(a.kind === 'area' && a.title).toBe('Inputs');
+      expect(a.kind === 'area' && !!a.collapsed).toBe(collapsed);
+      // collapsed, what is below moves up; the value is the same
+      const shown = find(ws, 'a =');
+      expect(shown.y < 200).toBe(collapsed);
+      expect(value(ws, 'a =')).toMatch(/= 2/);
+    }
+  });
+
+  it('imports the Image plugin\u2019s picture, the picture of a Maxima plot, Writer text and a slider\u2019s value', () => {
+    const { ws, warnings } = load(
+      region(`<image><imagefile filename="4ckidis5.png" lenght="718" width="108" height="149">${PNG}</imagefile><input>${v('#')}</input></image>`),
+      region(`<maximaplugin><ImageFile FileName="0jjv30dg.png" DataLenght="36139">${PNG}</ImageFile></maximaplugin>`),
+      region(`<writer lang="eng"><![CDATA[<span style="font-family: 'Arial'; font-size: 10pt; font-weight: bold;"><div>Current mirror – NPN</div></span>]]></writer>`),
+      region(`<slider orientation="Vertical" maxValue="100" minValue="0" value="97"><input>${v('v1')}</input></slider>`),
+      math(v('v1'), { result: 'numeric' }),
+    );
+    expect(ws.regions.filter((r) => r.kind === 'image')).toHaveLength(2);
+    const text = ws.regions.find((r) => r.kind === 'text') as Region & { markdown: string };
+    expect(text.markdown).toBe('Current mirror – NPN');
+    expect(text.style).toEqual({ bold: true });
+    expect(value(ws, 'v1 =')).toMatch(/= 97/);
+    expect(warnings.some((w) => /slider.*v1 := 97/.test(w))).toBe(true);
+    expect(warnings.some((w) => /Maxima plot.*picture/.test(w))).toBe(true);
+  });
+});
+
+describe('SMath import: definitions that read names defined further down', () => {
+  it('calculates them where they are used, with the values the names have there (SMath keeps them as symbols)', () => {
+    id = 0;
+    top = 0;
+    const show = (input: string, saved: string) => region(`<math><input>${input}</input><result action="numeric">${v(saved)}</result></math>`);
+    const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${[
+      math(def(v('q'), v('2'))),
+      // w := q·L/I before L and I are defined; σ := w/k reads w and k
+      math(def(v('w'), v('q') + v('L') + op('*') + v('I') + op('/'))),
+      math(def(v('σ'), v('w') + v('k') + op('/'))),
+      math(def(v('L'), v('3'))),
+      math(def(v('I'), v('2'))),
+      math(def(v('k'), v('3'))),
+      show(v('w'), '3'),
+      show(v('σ'), '1'),
+      // a second section: other I, the same formulas
+      math(def(v('I'), v('6'))),
+      show(v('w'), '1'),
+      show(v('σ'), '0.3333'),
+    ].join('')}</regions></worksheet>`;
+    const { ws, saved, warnings } = importSmath(strToU8(xml), 'x.sm');
+    expect(sources(ws).slice(1, 3)).toEqual(['w(L, I) := q*L/I', 'σ(L, I, k) := w(L, I)/k']);
+    expect(sources(ws).filter((x) => x.endsWith(' ='))).toEqual(['w(L, I) =', 'σ(L, I, k) =', 'w(L, I) =', 'σ(L, I, k) =']);
+    expect(warnings.some((w) => /2 definitions read names defined only further down or not at all \(w\(L, I\), σ\(L, I, k\)\)/.test(w))).toBe(true);
+    const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
+    expect(cmp).toMatchObject({ checked: 4, agree: 4 });
+  });
+
+  it('a unit name typed without the unit mark is that unit; a one-letter name stays a symbol', () => {
+    id = 0;
+    top = 0;
+    const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${[
+      math(def(v('L1'), v('350') + v('mm') + op('*'))),
+      math(def(v('P'), v('10'))),
+      // τ := P/(2·l): l, the weld length, is solved for further down
+      math(def(v('τ'), v('P') + v('2') + v('l') + op('*') + op('/'))),
+      region(`<math><input>${v('L1')}</input><result action="numeric">${v('0.35') + u('m') + op('*')}</result></math>`),
+    ].join('')}</regions></worksheet>`;
+    const { ws, saved } = importSmath(strToU8(xml), 'x.sm');
+    expect(sources(ws).slice(0, 3)).toEqual(['L1 := 350*mm', 'P := 10', 'τ(l) := P/(2*l)']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+});
+
+describe('SMath import: functions and lists', () => {
+  const one = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+  };
+  it('a system sys(a, b) as a value is a column vector; its saved result too', () => {
+    const { ws, saved } = one(region(`<math><input>${def(v('t') + fn('M', 1), v('t') + v('2') + op('*') + v('t') + v('2') + op('^') + v('2') + v('1') + fn('sys', 4))}</input></math>`),
+      region(`<math><input>${v('3') + fn('M', 1)}</input><result action="numeric">${v('6') + v('9') + v('2') + v('1') + fn('sys', 4)}</result></math>`));
+    expect(sources(ws)).toEqual(['M(t) := [t*2; t^2]', 'M(3) =']);
+    expect(saved![0].expr).toBe('[6; 9]');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+
+  it('a range as a subscript takes those elements; if without else in a program; nthroot', () => {
+    const { ws } = one(
+      math(def(v('v'), v('1') + v('2') + v('3') + v('4') + v('4') + v('1') + fn('mat', 6))),
+      math(v('v') + v('2') + v('3') + fn('range', 2) + fn('el', 2), { result: 'numeric' }),
+      // s := 0; for j ∈ 1..4: if v[j] > 2 then s := s + v[j]
+      math(def(v('s'), v('0'))),
+      math(v('j') + v('1') + v('4') + fn('range', 2) + v('v') + v('j') + fn('el', 2) + v('2') + op('>') + v('s') + v('s') + v('v') + v('j') + fn('el', 2) + op('+') + op(':') + fn('if', 2) + fn('for', 3)),
+      math(v('s'), { result: 'numeric' }),
+      math(v('8') + op('-', 1) + v('3') + fn('nthroot', 2), { result: 'numeric' }),
+    );
+    expect(sources(ws)[1]).toBe('v[range(2, 3)] =');
+    expect(value(ws, 'v[range(2, 3)] =')).toMatch(/2 \\\\ 3/);
+    expect(sources(ws).find((x) => x.startsWith('s :=\n'))).toContain('    if v[j] > 2\n      s ← s + v[j]');
+    expect(value(ws, 's =')).toMatch(/= 7/);
+    expect(value(ws, 'nthRoot(-8, 3) =')).toMatch(/= -2/);
+  });
+
+  it('description(x) is the comment beside the definition of x (plot labels set from it)', () => {
+    const { ws } = one(
+      math(def(v('text.phi'), v('1')), { desc: 'Angle in °' }),
+      math(def(v("VPlot'Labels'XLabel"), v('text.phi') + fn('description', 1)) + def(v("VPlot'Labels'YLabel"), v('t') + fn('description', 1)) + v('2') + v('1') + fn('line', 4)),
+    );
+    expect(sources(ws).some((x) => x.includes('← "Angle in °"') && x.includes('← ""'))).toBe(true);
+    const ev = evaluateWithScope(ws);
+    expect(ws.regions.filter((r) => r.kind === 'math').map((r) => (ev.results.get(r.id) as MathResult | undefined)?.error)).toEqual([undefined, undefined]);
+  });
+
+  it('a range inside an expression is the vector of its values: (0..3)·2', () => {
+    const { ws } = one(math(def(v('φ'), v('0') + v('3') + fn('range', 2) + br + v('2') + op('*'))), math(def(v('i'), v('1') + v('3') + fn('range', 2))), math(v('φ'), { result: 'numeric' }));
+    expect(sources(ws)).toEqual(['φ := range(0, 3)*2', 'i := 1 .. 3', 'φ =']);
+    expect(value(ws, 'φ =')).toMatch(/0 \\\\ 2 \\\\ 4 \\\\ 6/);
+  });
+
+  it('solve(f, x, a, b) gives every root between a and b; roots(f, x, x₀); at(f, x = a)', () => {
+    const { ws, saved } = one(
+      math(def(v('σ.x'), v('40') + u('MPa') + op('*'))),
+      // σ(φ) reads φ, which the worksheet never defines: a symbol, as in SMath
+      math(def(v('σ'), v('σ.x') + v('2') + v('φ') + op('*') + fn('cos', 1) + op('*'))),
+      region(`<math><input>${def(v('φ.0'), v('σ') + v('0') + op('≡') + v('φ') + v('0') + v('π') + fn('solve', 4))}</input><contract>${u('°')}</contract><result action="numeric">${v('45') + v('135') + v('2') + v('1') + fn('sys', 4)}</result></math>`),
+      region(`<math><input>${v('σ') + v('0') + op('≡') + v('φ') + v('1') + fn('roots', 3)}</input><contract>${u('°')}</contract><result action="numeric">${v('45')}</result></math>`),
+      region(`<math><input>${v('σ') + v('φ') + v('0') + op('≡') + fn('at', 2)}</input><contract>${u('MPa')}</contract><result action="numeric">${v('40')}</result></math>`),
+    );
+    expect(sources(ws).slice(1)).toEqual(['σ(φ) := σ_x*cos(2*φ)', 'φ_0 := roots(σ(φ) == 0, φ, 0, π) = deg', 'roots(σ(φ) == 0, φ, 1) = deg', 'subs(σ(φ), φ == 0) = MPa']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('says which regions need an SMath plugin or the computer SMath ran on', () => {
+    const { warnings } = one(
+      math(def(v('h'), s('H') + s('T') + v('300') + u('K') + op('*') + s('P') + v('1') + u('atm') + op('*') + s('Water') + fn('CoolProp_Props', 6))),
+      math(def(v('t0'), s('') + fn('time', 1))),
+      math(v('lastError'), { result: 'numeric' }),
+    );
+    expect(warnings).toContain('1 region uses functions of the CoolProp plugin (fluid properties), which mathstudii does not have (CoolProp_Props): it and what depends on it is not calculated');
+    expect(warnings.some((w) => /1 region uses functions whose value depends on the computer and the moment SMath ran .*\(time\)/.test(w))).toBe(true);
+    expect(warnings.some((w) => /lastError/.test(w))).toBe(true);
+  });
+});
+
+describe('SMath import: what SMath does not calculate, and how it rounds', () => {
+  const one = (...regions: string[]) => {
+    id = 0;
+    top = 0;
+    return importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+  };
+  it('a region with evaluation off stays off, and defines nothing', () => {
+    const { ws } = one(math(def(v('a'), v('1'))), region(`<math evaluate="false"><input>${def(v('a'), v('5'))}</input></math>`), math(v('a'), { result: 'numeric' }));
+    expect(ws.regions[1].disabled).toBe(true);
+    expect(value(ws, 'a =')).toMatch(/= 1/);
+  });
+  it('after Clear(x) what reads x waits for it again, and x[1] := … starts afresh', () => {
+    const { ws, saved } = one(
+      math(def(v('x'), v('2'))),
+      region(`<math><input>${v('x') + fn('Clear', 1)}</input><result action="numeric">${v('1')}</result></math>`),
+      math(def(v('y'), v('x') + v('3') + op('*'))),
+      math(def(v('x'), v('4'))),
+      region(`<math><input>${v('y')}</input><result action="numeric">${v('12')}</result></math>`),
+    );
+    expect(sources(ws)).toEqual(['x := 2', 'Clear(x) =', 'y(x) := x*3', 'x := 4', 'y(x) =']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+  it('in significant-digits mode 11330 is 11333.3 to 4 digits and 1220 is 1225 to 3; in decimal places a whole number is exact', () => {
+    const shown = (attrs: string, rhs: string, saved: string) => region(`<math ${attrs}><input>${def(v('A'), rhs)}</input><result action="numeric">${v(saved)}</result></math>`);
+    const { ws, saved } = one(
+      shown('significantDigitsMode="true" decimalPlaces="4"', v('34000') + v('3') + op('/'), '11330'),
+      shown('significantDigitsMode="true" decimalPlaces="3"', v('1225'), '1220'),
+      shown('significantDigitsMode="false" decimalPlaces="4"', v('1225'), '1220'),
+    );
+    const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
+    expect(cmp).toMatchObject({ checked: 3, agree: 2 });
+    expect(cmp.differ.map((d) => d.theirs)).toEqual(['1220']);
+  });
+  it('a value shown without its trailing zeros is as exact as the decimal places set: 0.5 at 4 places is not 0.6, 2 at 0 places is 2.475', () => {
+    const shown = (attrs: string, rhs: string, saved: string) => region(`<math ${attrs}><input>${def(v('A'), rhs)}</input><result action="numeric">${saved}</result></math>`);
+    const mat = (...xs: string[]) => xs.map(v).join('') + v(String(xs.length)) + v('1') + fn('mat', xs.length + 2);
+    const { ws, saved } = one(
+      // 4 decimal places, trailing zeros not shown: 0.5 is 0.5 ± 0.00005, so 0.6 and 0.50007 differ, 0.50004 agrees
+      shown('decimalPlaces="4"', v('0.6'), v('0.5')),
+      shown('decimalPlaces="4"', v('0.50007'), v('0.5')),
+      shown('decimalPlaces="4"', v('0.50004'), v('0.5')),
+      // 0 decimal places: 2.475 is shown as 2; 3.15 at 1 place as 3.2 (just at half a unit)
+      shown('decimalPlaces="0"', v('2.475'), v('2')),
+      shown('decimalPlaces="1"', v('10.5') + v('0.3') + op('*'), v('3.2')),
+      // 1·10⁻⁵ at 4 places is the mantissa 1.0000: 1.2·10⁻⁵ differs
+      shown('decimalPlaces="4"', v('0.000012'), v('1') + v('10') + v('5') + op('-', 1) + op('^') + op('*')),
+      // a matrix is as exact as its places, whatever its first element: [0; 2] is not [0; 3]
+      shown('decimalPlaces="4"', mat('0', '3'), mat('0', '2')),
+    );
+    const cmp = compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown);
+    expect(cmp).toMatchObject({ checked: 7, agree: 3 });
+    expect(cmp.differ.map((d) => d.ours)).toEqual(['0.6', '0.50007', '1.2e-5', '[0, 3]']);
+  });
+});
+
+describe('SMath import: the X-Y Plot plugin', () => {
+  it('draws its functions over the saved x-axis, with the saved limits, colours, styles and labels', () => {
+    id = 0;
+    top = 0;
+    const xy = `<xyplot width="343" height="211" points="100" name="XYPlot"><xaxes xmin="2.235174E-08" xmax="6.28" xtick="2" /><yaxes ymin="-2" ymax="2" ytick="1" />`
+      + `<title2d title="" /><xylabel xlabel="wt" ylabel="Vin" /><traces>`
+      + `<trace seriesname="a" plotmethod="Lines" linecolor="Blue" symboltype="None" /><trace seriesname="b" plotmethod="Points" linecolor="Red" symboltype="Circle" /><trace seriesname="c" plotmethod="Lines" linecolor="Black" symboltype="None" />`
+      + `</traces><input>${v('ωt') + fn('sin', 1) + v('pts') + v('0') + v('3') + v('1') + fn('sys', 5)}</input></xyplot>`;
+    const { ws } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('pts'), v('0') + v('0') + v('1') + v('1') + v('2') + v('2') + fn('mat', 6)))}${region(xy, 9, 40)}</regions></worksheet>`), 'x.sm');
+    const p = ws.regions.find((r) => r.kind === 'plot')!;
+    expect(p.kind === 'plot' && p).toMatchObject({
+      xExpr: 'ωt', xmin: '0', xmax: '6.28', ymin: '-2', ymax: '2', title: 'Vin over wt', width: 343, height: 211,
+      traces: [
+        { y: 'sin(ωt)', style: 'line', color: 'blue' },
+        { xExpr: 'col(pts, 1)', y: 'col(pts, 2)', style: 'points', color: 'red' },
+        { y: '0', style: 'line' },
+      ],
+    });
+    const res = evaluateWorksheet(ws).results.get(p.id) as { error?: string; series: { xs: number[] }[] };
+    expect(res.error).toBeUndefined();
+    expect(res.series[0].xs[res.series[0].xs.length - 1]).toBeCloseTo(6.28, 6);
+  });
+
+  it('an item that is a number (m·g of numbers) is a level line; a matrix stays points', () => {
+    id = 0;
+    top = 0;
+    const xy = `<xyplot width="300" height="200" points="100"><traces /><input>${v('t') + fn('sin', 1) + v('m') + v('g') + op('*') + v('pts') + v('3') + v('1') + fn('sys', 5)}</input></xyplot>`;
+    const { ws } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('m'), v('2') + u('kg') + op('*')))}${math(def(v('g'), v('9.81') + u('m') + u('s') + v('2') + op('^') + op('/') + op('*')))}${
+      math(def(v('pts'), v('0') + v('0') + v('1') + v('1') + v('2') + v('2') + fn('mat', 6)))}${region(xy, 9, 40)}</regions></worksheet>`), 'x.sm');
+    const p = ws.regions.find((r) => r.kind === 'plot')!;
+    expect(p.kind === 'plot' && p.traces.map((t) => [t.xExpr, t.y])).toEqual([[undefined, 'sin(t)'], [undefined, 'm*g'], ['col(pts, 1)', 'col(pts, 2)']]);
+  });
+});
+
+describe('SMath import: text comparisons, solve, and definitions beside what they read', () => {
+  const at = (left: number, top: number, body: string, h = 24) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="80" height="${h}" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const shown = (input: string, saved: string) => `<math><input>${input}</input><result action="numeric">${saved}</result></math>`;
+  const load = (...regions: string[]) => importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+
+  it('compares text with text: Fluid = "S"', () => {
+    id = 0;
+    const { ws, saved } = load(
+      at(9, 10, `<math><input>${def(v('Fluid'), s('S'))}</input></math>`),
+      at(9, 40, `<math><input>${def(v('F'), v('Fluid') + s('V') + op('≡') + s('X') + v('Fluid') + s('S') + op('≡') + s('O') + s('?') + fn('if', 3) + fn('if', 3))}</input></math>`),
+      at(9, 70, shown(v('F'), s('O'))),
+      at(9, 100, shown(v('Fluid') + s('S') + op('≠'), v('0'))),
+    );
+    expect(sources(ws)[1]).toBe('F := if(equalText(Fluid, "V"), "X", if(equalText(Fluid, "S"), "O", "?"))');
+    expect(sources(ws)[3]).toBe('not(equalText(Fluid, "S")) =');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+
+  it('a function with the name of a variable gets its own name (SMath tells them apart by their arguments)', () => {
+    id = 0;
+    const call = (x: string) => v(x) + fn('v', 1);
+    const { ws, saved, warnings } = load(
+      at(9, 10, `<math><input>${def(v('a') + fn('v', 1), v('2') + v('a') + op('*'))}</input></math>`),
+      at(9, 40, shown(def(v('v'), call('3')), v('6'))),
+      at(9, 70, shown(def(v('v'), call('4')), v('8'))),
+      at(9, 100, shown(v('v') + v('1') + op('+'), v('9'))),
+    );
+    expect(sources(ws)).toEqual(['v_fn(a) := 2*a', 'v := v_fn(3) =', 'v := v_fn(4) =', 'v + 1 =']);
+    expect(warnings).toContain('v is both a function and a variable in SMath, which tells them apart by their arguments: the function is v_fn here');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('Zeros, Ones and Ceil are the built-ins of those names; a function the worksheet defines is its own', () => {
+    id = 0;
+    const { ws, saved } = load(
+      at(9, 10, shown(def(v('F'), v('3') + fn('Zeros', 1)), v('0') + v('0') + v('0') + v('3') + v('1') + fn('mat', 5))),
+      at(9, 40, shown(v('2.3') + fn('Ceil', 1), v('3'))),
+      at(9, 70, `<math><input>${def(v('n') + fn('Ones', 1), v('2') + v('n') + op('*'))}</input></math>`),
+      at(9, 100, shown(v('4') + fn('Ones', 1), v('8'))),
+    );
+    expect(sources(ws)).toEqual(['F := zeros(3) =', 'ceil(2.3) =', 'Ones(n) := 2*n', 'Ones(4) =']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('a matrix SMath saved as the rows in view compares by those rows', () => {
+    id = 0;
+    const col = (...xs: string[]) => xs.map(v).join('') + v(String(xs.length)) + v('1') + fn('mat', xs.length + 2);
+    const view = (opts: string, input: string, saved: string) => `<math matrixOptions="${opts}"><input>${input}</input><result action="numeric">${saved}</result></math>`;
+    const { ws, saved } = load(
+      at(9, 10, `<math><input>${def(v('x'), col('0', '1', '2', '3', '4', '5'))}</input></math>`),
+      // 4 rows in view: the first 4 of 6
+      at(9, 40, view('0,0,1,4', v('x'), col('0', '1', '2', '3'))),
+      // 26 rows in view, 4 saved: the whole matrix had 4 rows, ours has 6
+      at(9, 70, view('0,0,1,26', v('x'), col('0', '1', '2', '3'))),
+    );
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 1 });
+  });
+
+  it('x := solve(f, x) finds the root again from the value SMath showed', () => {
+    id = 0;
+    // D/(1 − D) = 40/19.5: SMath showed 0.6722
+    const { ws, saved, warnings } = load(
+      at(9, 10, `<math><input>${def(v('D'), v('40') + v('19.5') + op('/') + v('D') + v('1') + v('D') + op('-') + op('/') + op('≡') + v('D') + fn('solve', 2))}</input><result action="numeric">${v('0.6722')}</result></math>`),
+    );
+    expect(sources(ws)[0]).toBe('D := roots(40/19.5 == D/(1 - D), D, 0.6722) =');
+    expect(warnings.some((w) => /solve/.test(w))).toBe(false);
+    const ev = evaluateWithScope(ws);
+    expect(ev.shown.get(ws.regions[0].id)).toBeCloseTo(40 / 59.5, 9);
+    // the root is 0.672269, which shows as 0.6723 at 4 decimal places: SMath's solve stopped 7e-5 short of it
+    expect(compareSaved(saved!, ws.regions, ev.shown)).toMatchObject({ checked: 1, agree: 0 });
+  });
+
+  it('a value defined before what it reads on the same line is calculated after it', () => {
+    id = 0;
+    // Q₀ := −F to the left of F := 2 kN; N[1] := 2·φ[1] a little above φ[1] := 3 (taller, the same line)
+    const { ws, saved } = load(
+      at(225, 513, `<math><input>${def(v('Q.0'), v('F') + op('-', 1))}</input></math>`),
+      at(432, 513, `<math><input>${def(v('F'), v('2') + u('kN') + op('*'))}</input></math>`),
+      at(405, 600, `<math><input>${def(v('N') + v('1') + fn('el', 2), v('2') + v('φ') + v('1') + fn('el', 2) + op('*'))}</input></math>`, 43),
+      at(270, 609, `<math><input>${def(v('φ') + v('1') + fn('el', 2), v('3'))}</input></math>`, 33),
+      at(9, 700, shown(v('Q.0'), v('2') + u('kN') + op('*') + op('-', 1))),
+      at(9, 730, shown(v('N') + v('1') + fn('el', 2), v('6'))),
+    );
+    const math = ws.regions.filter((r) => r.kind === 'math') as { source: string; y: number }[];
+    expect(math.map((r) => [r.source, r.y]).slice(0, 4)).toEqual([['F := 2 kN', 513], ['Q_0 := -F', 517], ['φ[1] := 3', 609], ['N[1] := 2*φ[1]', 613]]);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+});
+
+describe('SMath import: programs that show their value', () => {
+  it('x := if … shows the value SMath showed, as x := =', () => {
+    id = 0;
+    top = 0;
+    const prog = v('a') + v('2') + op('>') + v('y') + v('1') + op(':') + v('y') + v('2') + op(':') + fn('if', 3);
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('a'), v('3')))}${region(`<math><input>${prog}</input><result action="numeric">${v('1')}</result></math>`)}${region(`<math><input>${def(v('z'), prog)}</input><result action="numeric">${v('1')}</result></math>`)}${
+      region(`<math><input>${v('y')}</input><result action="numeric">${v('1')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)[1].split('\n')[0]).toBe('y := =');
+    expect(sources(ws)[2].split('\n')[0]).toBe('z := =');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+});
+
+describe('SMath import: values that are programs', () => {
+  it('x := try(A, B) inside a program assigns x in each branch; max of a column of values takes them as arguments', () => {
+    id = 0;
+    top = 0;
+    const line = (...xs: string[]) => xs.join('') + v(String(xs.length)) + v('1') + fn('line', xs.length + 2);
+    // f(a) := line(y := try(1/a, 0), y + 1)
+    const body = line(def(v('y'), v('1') + v('a') + op('/') + v('0') + fn('try', 2)), v('y') + v('1') + op('+'));
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('a') + fn('f', 1), body))}${region(`<math><input>${v('4') + fn('f', 1)}</input><result action="numeric">${v('1.25')}</result></math>`)}${
+      region(`<math><input>${line(v('2'), v('7'), v('3')) + fn('max', 1)}</input><result action="numeric">${v('7')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)[0]).toBe('f(a) :=\n  try\n    y ← 1/a\n  on error\n    y ← 0\n  y + 1');
+    expect(sources(ws)[2]).toBe('max(2, 7, 3) =');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+});
+
+describe('SMath import: page settings and what the report says', () => {
+  it('a print layout with header and footer: mathstudii\u2019s, with the title and author, ready to switch on (off, as the regions would run into it)', () => {
+    const xml = `<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><settings><metadata lang="eng"><title>Beam check</title><author>FCB</author></metadata>`
+      + `<pageModel active="true"><header alignment="Center">&amp;[DATE] &amp;[TIME] - &amp;[FILENAME]</header><footer alignment="Center">&amp;[PAGENUM] / &amp;[COUNT] | J. Smith | Engineer</footer></pageModel></settings><regions>`
+      // a title 9 px from the top of the sheet, a formula under it
+      + `<region id="0" left="36" top="9" width="300" height="33"><text lang="eng"><p>Beam check</p></text></region>`
+      + `<region id="1" left="27" top="45" width="72" height="24"><math><input>${def(v('a'), v('1'))}</input></math></region></regions></worksheet>`;
+    const { ws, warnings } = importSmath(strToU8(xml), 'x.sm');
+    expect(ws.settings.report).toEqual({ enabled: false, subject: 'Beam check', author: 'FCB' });
+    expect(warnings.some((w) => /page header and footer \(J\. Smith Engineer\).*Format → Page header & footer/.test(w))).toBe(true);
+    // the regions keep SMath's places (9 px from the top of the sheet)
+    expect(ws.regions.map((r) => r.y)).toEqual([9, 45]);
+  });
+  it('names the plugin regions it does not convert, and empty placeholders', () => {
+    id = 0;
+    top = 0;
+    const { warnings, ws } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      region('<table id="1"><inputs /></table>')}${region('<snapshot tag="draw" />')}${math(def(v('a'), v('#')))}${
+      region(`<writer lang="eng"><![CDATA[<p>Pump&nbsp;P1 <img src="x.png"> &copy; 2024</p>]]></writer>`)}</regions></worksheet>`), 'x.sm');
+    expect(warnings.some((w) => /table at .*Table plugin/.test(w))).toBe(true);
+    expect(warnings.some((w) => /snapshot at .*Snapshot region/.test(w))).toBe(true);
+    expect(warnings.some((w) => /math at .*empty placeholder/.test(w))).toBe(true);
+    expect(ws.regions.some((r) => r.kind === 'text' && r.markdown === 'Pump P1 © 2024')).toBe(true);
+  });
+});
+
+describe('SMath import: the Mathcad Toolbox solve block and interpolation', () => {
+  const at = (left: number, top: number, body: string, h = 24, w = 80) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="${w}" height="${h}" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const plain = (input: string) => `<math><input>${input}</input></math>`;
+  const shown = (input: string, saved: string, unit = '') => `<math><input>${input}</input>${unit ? `<contract>${unit}</contract>` : ''}<result action="numeric">${saved}</result></math>`;
+  const load = (...regions: string[]) => importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+  const call = (f: string, ...args: string[]) => args.join('') + fn(f, args.length);
+  const eq = (a: string, b: string) => a + b + op('≡');
+  const shownValue = (ws: Worksheet, src: string) => evaluateWithScope(ws).shown.get(find(ws, src).id);
+
+  it('Sln := rkfixed(sys(x(t), v(t)), t₁, n) with the equations in the block: an odesolve block and the table rkfixed gives', () => {
+    id = 0;
+    // x″ = −k·x as x′ = v, v′ = −F(t) with F(t) := k·x(t) (a function that reads x); units set to 1 in the block
+    const steps = def(v('s'), v('1')) + v('100') + v('2') + v('1') + fn('line', 4);
+    const { ws, warnings, saved } = load(
+      at(9, 10, plain(def(v('k'), v('1') + u('s') + v('2') + op('^') + op('/')))),
+      at(9, 40, plain(def(v('t') + fn('F', 1), v('k') + call('x', v('t')) + op('*')))),
+      at(9, 70, plain(def(v('t.1'), v('3.14159265358979') + u('s') + op('*')))),
+      at(9, 100, `<mathcadblock seqop="sys"><input>${def(v('Sln'), call('sys', call('x', v('t')), call('v', v('t')), v('2'), v('1')) + v('t.1') + steps + fn('rkfixed', 3))}</input></mathcadblock>`, 90, 300),
+      at(27, 110, plain(eq(call("x'", v('t')), call('v', v('t'))))),
+      at(200, 110, plain(eq(call('x', v('0')), v('1')))),
+      at(27, 140, plain(eq(call("v'", v('t')), call('F', v('t')) + op('-', 1)))),
+      at(200, 140, plain(eq(call('v', v('0')), v('0')))),
+      at(9, 220, shown(call('rows', v('Sln')), v('101'))),
+      at(9, 250, shown(call('x', v('t.1')), v('1') + op('-', 1))),
+    );
+    const block = ws.regions.find((r) => r.kind === 'solve');
+    expect(block).toMatchObject({ constraints: "x'(t) = v(t)\nx(0) = 1\nv'(t) = -(k*x(t))\nv(0) = 0", solver: '[x; v] := odesolve([x, v], t, t_1, "fixed", 100)' });
+    expect(sources(ws)).toContain('Sln := odeTable(0, t_1, 100, x, v)');
+    expect(warnings.some((w) => /Mathcad Toolbox plugin at 100 px: imported as an odesolve solve block.*call F, which read x, v: written out.*sets units to 1/.test(w))).toBe(true);
+    // the equations are the block's, not formulas of their own
+    expect(sources(ws).some((s) => s.includes('=='))).toBe(false);
+    const sln = evaluateWithScope(ws).variables.get('Sln') as { toArray(): number[][] };
+    const rows = sln.toArray();
+    expect(rows.length).toBe(101);
+    // t, x = cos t, v = −sin t at t = π/2 and π, as numbers (SI)
+    expect(rows[50][0]).toBeCloseTo(Math.PI / 2, 9);
+    expect(rows[50][1]).toBeCloseTo(0, 6);
+    expect(rows[50][2]).toBeCloseTo(-1, 6);
+    expect(rows[100][1]).toBeCloseTo(-1, 6);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 2, agree: 2 });
+  });
+
+  it('cinterp and lspline(x, y, t) interpolate numbers, as SMath does: the units are left out (SMath’s worksheets multiply them back)', () => {
+    id = 0;
+    const col = (...xs: string[]) => xs.join('') + v(String(xs.length)) + v('1') + fn('mat', xs.length + 2);
+    const sec = (x: string) => v(x) + u('s') + op('*');
+    const { ws, saved } = load(
+      at(9, 10, plain(def(v('T'), col(sec('0'), sec('1'), sec('2'), sec('3'))))),
+      at(9, 40, plain(def(v('W'), col(v('0'), v('2') + u('s') + op('/'), v('4') + u('s') + op('/'), v('6') + u('s') + op('/'))))),
+      // ω(t) := lspline(T, W, t)·rad/s: the same at 1.5 s and at 1.5
+      at(9, 70, plain(def(v('t') + fn('ω', 1), call('lspline', v('T'), v('W'), v('t')) + u('rad') + u('s') + op('/') + op('*')))),
+      at(9, 100, shown(call('ω', sec('1.5')), v('3'), u('rad') + u('s') + op('/'))),
+      at(9, 130, shown(call('ω', v('1.5')), v('3'), u('rad') + u('s') + op('/'))),
+      at(9, 160, shown(call('cinterp', v('T'), v('W'), sec('2')) + u('m') + op('*'), v('4') + u('m') + op('*'))),
+    );
+    expect(sources(ws)[2]).toBe('ω(t) := lsplineAt(T, W, t)*(rad/s)');
+    expect(shownValue(ws, 'cinterp(T, W, 2 s)*m =')).toMatchObject({ value: 4 });
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+});
+
+describe('SMath import: one index into a matrix', () => {
+  const at = (left: number, top: number, body: string) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="80" height="24" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const load = (...regions: string[]) => importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`), 'x.sm');
+
+  it('counts the elements row by row: A[k] of a 2 × 3 matrix is row ⌈k/3⌉, column (k − 1) mod 3 + 1', () => {
+    id = 0;
+    const zeros = Array.from({ length: 6 }, () => v('0')).join('') + v('2') + v('3') + fn('mat', 8);
+    // for(i := 1, i < 7, i := i + 1, el(A, i) := 10·i); A shown as SMath saved it; A[5] read back
+    const loop = v('i') + v('1') + op(':') + v('i') + v('7') + op('<') + v('i') + v('i') + v('1') + op('+') + op(':')
+      + v('A') + v('i') + fn('el', 2) + v('10') + v('i') + op('*') + op(':') + fn('for', 4);
+    const saved = ['10', '20', '30', '40', '50', '60'].map(v).join('') + v('2') + v('3') + fn('mat', 8);
+    const { ws, warnings, saved: s0 } = load(
+      at(9, 10, `<math><input>${def(v('A'), zeros)}</input></math>`),
+      at(9, 40, `<math><input>${loop}</input></math>`),
+      at(9, 70, `<math><input>${v('A')}</input><result action="numeric">${saved}</result></math>`),
+      at(9, 100, `<math><input>${v('A') + v('5') + fn('el', 2)}</input><result action="numeric">${v('50')}</result></math>`),
+      // a vector keeps its one index
+      at(9, 130, `<math><input>${def(v('w'), v('1') + v('2') + v('2') + v('1') + fn('mat', 4))}</input></math>`),
+      at(9, 160, `<math><input>${v('w') + v('2') + fn('el', 2)}</input><result action="numeric">${v('2')}</result></math>`),
+    );
+    expect(sources(ws)).toContain('A[ceil(5/3), mod(5 - 1, 3) + 1] =');
+    expect(sources(ws)).toContain('w[2] =');
+    expect(warnings.some((w) => /^A\[k\]: one index into a matrix counts its elements row by row/.test(w))).toBe(true);
+    expect(compareSaved(s0!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+});
+
+describe('SMath import: include(…) of another worksheet', () => {
+  const at = (left: number, top: number, body: string) =>
+    `<region id="${++id}" left="${left}" top="${top}" width="80" height="24" color="#000000" bgColor="#ffffff" fontSize="10">${body}</region>`;
+  const sheet = (...regions: string[]) => strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop" version="1.0.8348"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${regions.join('')}</regions></worksheet>`);
+  const plain = (input: string) => `<math><input>${input}</input></math>`;
+  const shown = (input: string, saved: string) => `<math><input>${input}</input><result action="numeric">${saved}</result></math>`;
+
+  it('brings the included worksheet in where it is, in a collapsed area, and tells functions apart by their number of arguments', () => {
+    id = 0;
+    // lib.sm: area(a) := a², area(a, b) := a·b, g := 9.81
+    const lib = sheet(
+      at(9, 10, plain(def(v('a') + fn('area', 1), v('a') + v('2') + op('^')))),
+      at(9, 40, plain(def(v('a') + v('b') + fn('area', 2), v('a') + v('b') + op('*')))),
+      at(9, 70, plain(def(v('g'), v('9.81')))),
+    );
+    const main = sheet(
+      at(9, 10, shown(s('') + fn('CurrentDirectory', 1) + s('lib.sm') + fn('strjoin', 2) + fn('include', 1), v('1'))),
+      at(9, 40, shown(v('3') + fn('area', 1), v('9'))),
+      at(9, 70, shown(v('3') + v('4') + fn('area', 2), v('12'))),
+      at(9, 100, shown(v('2') + v('g') + op('*'), v('19.62'))),
+    );
+    const { ws, saved, warnings, references } = importSmath(main, 'main.sm', { references: { 'LIB.sm': lib } });
+    expect(references).toBeUndefined();
+    expect(ws.regions.filter((r) => r.locked).length).toBe(4);
+    const area = ws.regions.find((r) => r.kind === 'area') as { title: string; collapsed?: boolean };
+    expect(area).toMatchObject({ title: 'Included from lib.sm', collapsed: true });
+    expect(sources(ws)).toEqual(['area(a) := a^2', 'area_2(a, b) := a*b', 'g := 9.81', 'area(3) =', 'area_2(3, 4) =', '2*g =']);
+    expect(warnings.some((w) => /include\(“lib\.sm”\) at 10 px: its 3 regions are in the collapsed area “Included from lib\.sm”/.test(w))).toBe(true);
+    expect(warnings.some((w) => /functions apart by their number of arguments.*area\(1, 2 arguments: area, area_2\)/.test(w))).toBe(true);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 3 });
+  });
+
+  it('says which worksheet to pick when the included file is not at hand', () => {
+    id = 0;
+    const main = sheet(at(9, 10, plain(s('C:\\calc\\lib.sm') + fn('include', 1))), at(9, 40, shown(v('3') + fn('area', 1), v('9'))));
+    const { ws, warnings, references } = importSmath(main, 'main.sm');
+    expect(references).toEqual(['lib.sm']);
+    expect(ws.regions[0]).toMatchObject({ kind: 'text' });
+    expect(warnings.some((w) => /include\(“lib\.sm”\) at 10 px reads another SMath worksheet, lib\.sm, which is not part of this file: pick it in the import report/.test(w))).toBe(true);
+  });
+});
+
+describe('SMath import: display units', () => {
+  it('a root in a display unit is the power ½: K = MPa·√m', () => {
+    id = 0;
+    top = 0;
+    // K := 83 MPa·√m, shown as K = MPa·√m (SMath saved 83)
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('K'), v('83') + u('MPa') + op('*') + u('m') + fn('sqrt', 1) + op('*')))}${
+      region(`<math><input>${v('K')}</input><contract>${u('MPa') + u('m') + fn('sqrt', 1) + op('*')}</contract><result action="numeric">${v('83')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)[1]).toBe('K = MPa*m^0.5');
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+});
+
+describe('SMath import: several names defined at once', () => {
+  it('mat(a, b, 2, 1) := v assigns each element of v to its name', () => {
+    id = 0;
+    top = 0;
+    const { ws, saved } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      math(def(v('a') + v('b') + v('2') + v('1') + fn('mat', 4), v('3') + v('4') + u('N') + op('*') + v('2') + v('1') + fn('mat', 4)))}${
+      region(`<math><input>${v('a') + v('b') + op('*')}</input><result action="numeric">${v('12') + u('N') + op('*')}</result></math>`)}</regions></worksheet>`), 'x.sm');
+    expect(sources(ws)).toEqual(['[a; b] := [3; 4 N]', 'a*b =']);
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 1, agree: 1 });
+  });
+});
+
+describe('SMath import: the Maxima plugin’s Assign(Solve(…))', () => {
+  it('becomes a solve block started from the solution SMath showed; of several roots, the last (the one Assign assigns)', () => {
+    id = 0;
+    top = 0;
+    const sys = (...xs: string[]) => xs.join('') + v(String(xs.length)) + v('1') + fn('sys', xs.length + 2);
+    const shown = (input: string, saved: string, unit = '') => region(`<math><input>${input}</input>${unit ? `<contract>${unit}</contract>` : ''}<result action="numeric">${saved}</result></math>`);
+    // Assign(Solve({a + b = 3 N; a − b = 1 N}, {a; b})) = N  → [2; 1]; Assign(Solve(x² = 4 m², x)) → [−2 m; 2 m]
+    const { ws, saved, warnings } = importSmath(strToU8(`<?xml version="1.0"?><?application progid="SMath Studio Desktop"?><worksheet xmlns="http://smath.info/schemas/worksheet/1.0"><regions>${
+      shown(sys(v('a') + v('b') + op('+') + v('3') + u('N') + op('*') + op('≡'), v('a') + v('b') + op('-') + v('1') + u('N') + op('*') + op('≡')) + sys(v('a'), v('b')) + fn('Solve', 2) + fn('Assign', 1),
+        v('2') + v('1') + v('2') + v('1') + fn('mat', 4), u('N'))}${
+      shown(v('x') + v('2') + op('^') + v('4') + u('m') + v('2') + op('^') + op('*') + op('≡') + v('x') + fn('Solve', 2) + fn('Assign', 1),
+        v('2') + u('m') + op('*') + op('-', 1) + v('2') + u('m') + op('*') + v('2') + v('1') + fn('mat', 4))}${
+      shown(v('a') + v('b') + op('*') + v('x') + op('*'), v('4') + u('N') + v('2') + op('^') + op('*') + u('m') + op('*'))}</regions></worksheet>`), 'x.sm');
+    const blocks = ws.regions.filter((r) => r.kind === 'solve');
+    expect(blocks[0]).toMatchObject({ guesses: 'a := (2)*(N)\nb := (1)*(N)', constraints: 'a + b = 3 N\na - b = 1 N', solver: '[a; b] := find(a, b) = N' });
+    expect(blocks[1]).toMatchObject({ guesses: 'x := 2 m', constraints: 'x^2 = 4 m^2', solver: 'x := find(x) =' });
+    expect(warnings.some((w) => /Assign\(Solve\(…\)\) at \d+ px \(the Maxima plugin's symbolic solution\): a solve block here solves the equations numerically for x, started from the solution SMath showed \(the last of its 2 roots/.test(w))).toBe(true);
+    expect(warnings.some((w) => /Maxima plugin \(computer algebra\)/.test(w))).toBe(false);
+    // a·b·x = 4 N²·m; the second block's value is one root, where SMath showed both
+    expect(compareSaved(saved!, ws.regions, evaluateWithScope(ws).shown)).toMatchObject({ checked: 3, agree: 2 });
   });
 });

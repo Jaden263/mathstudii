@@ -482,7 +482,7 @@ export function App() {
   /** Convert a Mathcad or SMath file; it opens as a new, unsaved mathstudii worksheet. */
   const importForeignFile = async (bytes: Uint8Array, name: string, references: Record<string, Uint8Array> = {}) => {
     const res = foreignFormat(name) === 'smath'
-      ? (await import('../importers/smath')).importSmath(bytes, name)
+      ? (await import('../importers/smath')).importSmath(bytes, name, { references })
       : (await import('../importers/mathcad')).importMathcad(bytes, name, { references });
     loadDoc(res.ws, null);
     lastImport.current = res.references?.length || Object.keys(references).length ? { bytes, name, references } : null;

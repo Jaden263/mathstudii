@@ -1833,12 +1833,22 @@ sources in `src/importers/fixtures/README.md`).
 ### Importing SMath Studio files
 
 **Open** (or drag onto the window) an SMath Studio `.sm` file, or a compressed `.smz`.
-Files from SMath 0.96 to 0.99+ are read, including both layouts of the XML. The importer converts:
-- definitions, functions, units (including unit overrides), matrices, `el()` indexing, ranges and strings
-- programs (`line`, `for`, `while`, `if`, `try`); `for(i:=1, i≤n, i:=i+1, …)` becomes `for i ∈ 1 .. n`
-- symbolic `→` and numeric `=` evaluations, `sum`, `product`, `int`, `diff`, `solve`, `cinterp`
-- text (English if the file has several languages), formula comments, pictures, collapsible areas
-- 2-D plots of functions of `x` and of point matrices, including `sys(…)` lists of plot items
+Files from SMath 0.55 to 1.4 are read, including both layouts of the XML. The importer converts:
+- definitions, functions, units (including unit overrides and units the worksheet defines),
+  SMath's physical constants (k, e, c, N_A …), matrices, `el()` indexing, ranges and strings
+- programs (`line`, `for`, `while`, `if`, `try`); `for(i:=1, i≤n, i:=i+1, …)` becomes `for i ∈ 1 .. n`;
+  a program shown with `=` shows its value (`x := =`)
+- symbolic `→` and numeric `=` evaluations, `sum`, `product`, `int`, `diff`, `cinterp`,
+  `solve(f, x, a, b)` (every root between a and b), `x := solve(f, x)` (the root found again
+  from the value SMath showed), `roots`, `at` (as `subs`), `xy2pol`, `pol2xy`, `minor`, `Clear`,
+  `Zeros`, `Ones`, `Ceil`, `Floor`, `description(x)` (the comment beside the definition of x)
+- display units and the worksheet's decimal places; a unit SMath could not show a value in keeps
+  the rest beside it (`G = mS` of a conductance per metre shows `mS/m`)
+- text (English if the file has several languages) with bold, italic, sizes and colours, formula
+  comments, pictures, region colours and backgrounds, collapsible areas (collapsed as saved); a
+  page header and footer SMath prints set up here with the title and author, but off
+- 2-D plots of functions of `x` and of point matrices, including `sys(…)` lists of plot items,
+  and X-Y Plot plugin regions (plot variable, saved axis limits, trace colours and styles)
 
 SMath and Mathcad differ in a few ways that the import handles:
 - **Top-level loops.** In SMath a `while` or `for` on the page changes worksheet variables. Here,
@@ -1848,20 +1858,41 @@ SMath and Mathcad differ in a few ways that the import handles:
 - **Function binding.** SMath functions read variables when they are called, even ones defined after
   the function. Imported worksheets switch on **Late binding** in the toolbar for this; new
   worksheets keep Mathcad's rule (values are captured where the function is defined).
-- SMath indexes from 1, so imported worksheets use ORIGIN = 1.
+- **Names not defined yet.** SMath keeps a name it does not know as a symbol and calculates when
+  the value is used. A definition that reads names defined only further down becomes a function of
+  them, called with the values they have where it is used (`w(L, I) := q·L/I`); a value written
+  beside the definitions it reads on the same line is calculated after them.
+- **Temperatures.** `27 °C` is the temperature 300.15 K, as in SMath (Boltzmann's k·T uses 300.15 K);
+  a °C in a compound unit (°C/W) is a difference.
+- **Text and names.** `Fluid = "S"` compares text; a function and a variable of the same name
+  (SMath tells them apart by their arguments) get names of their own (`v_fn(Q, d, h)` and `v`).
+- SMath indexes from 1, so imported worksheets use ORIGIN = 1. Regions SMath does not calculate
+  stay switched off; formulas set to ignore units count each unit as 1.
 
-What does not convert: SMath's symbolic work on undefined variables (a function body
-that is a vector of formulas in `x`, as in the Hessian, Jacobian and orthogonal-polynomial
-examples), matrices nested inside matrices, text labels and the view (zoom and pan) of
-plots, 3-D plots, `sys(…)` systems of equations, and plugin regions. Each case is listed
-in the import report and marked ⚠️ on the page.
+What does not convert: the Maxima plugin (`Solve`, `Assign`, `Maxima`), other plugins' functions
+(CoolProp, FindRoot) and solve blocks of the Mathcad Toolbox plugin, `include` of other worksheet
+files, data files (`rfile`, `importData`), `lastError` and the clock, SMath's symbolic work on
+undefined variables in function bodies (the Hessian, Jacobian and orthogonal-polynomial examples),
+matrices nested inside matrices, a single index into a matrix, angles mixed with plain numbers
+(SMath's degree is the number π/180), text labels and the view (zoom and pan) of plots, 3-D plots,
+and the Table plugin; region borders, fonts, a formula's own decimal places and significant digits
+are not kept either. Each case is listed in the import report; regions that cannot be converted
+are marked ⚠️ on the page, and formulas that need a plugin show its function as unknown. The page
+header and footer stay off because the regions keep SMath's places, and SMath prints its header in
+the page margins, where mathstudii's header and footer would run into the regions at the top and
+bottom of each page.
 
-**How it was tested:** on the 18 example worksheets bundled with SMath Studio, which SMath
-itself saved. Beam, Simpson, Dichotomy, Chord method, Euclidean GCD, Roman numerals, Thomas
-algorithm and Gravitation acceleration reproduce the results SMath stored in the files. For
-example, Beam gives support reactions of −12.4533 kN and −28.6467 kN, and its diagram draws.
-The examples built on symbolic vectors do not. The automated tests (`src/importers/smath.test.ts`)
-use hand-written files in the same format.
+**How it was tested:** on 167 public SMath worksheets (saved by SMath 0.55 to 1.4) and the 18 examples
+bundled with SMath Studio, comparing the recalculated results with the ones SMath saved in each
+file: 1475 of 1888 saved results (78 %) agree. A value agrees when it rounds as SMath showed it, to
+the decimal places or significant digits set for that formula (SMath leaves trailing zeros out, so
+0.5 at 4 places is 0.5 ± 0.00005), or within 1 part in 10⁴ where SMath showed more digits than that
+(19 results rely on this, mostly SMath's own numerical integrals and roots). Most of the rest use
+plugins (CoolProp, Maxima, the Mathcad Toolbox), files the worksheet does not contain, or SMath
+rules for units this engine does not have (a zero of any unit, angles as numbers). Beam, for
+example, gives support reactions of −12.4533 kN and −28.6467 kN, and its diagram draws. The
+automated tests (`src/importers/smath.test.ts`, `src/engine/smathLib.test.ts`) use hand-written
+files in the same format.
 
 ### Exporting to Mathcad and SMath
 
@@ -1941,7 +1972,7 @@ gaps. Everything marked ✅ is covered by the automated tests in
 | Report header/footer with page numbers, find & replace / rename, version history, Excel paste, CSV and .xlsx import/export | ✅ |
 | CAD: Fusion-style timeline (sketches on planes/faces that follow their faces, with splines, ellipses, text, offsets, patterns and projected edges that follow the model, extrude with thin walls and rounded/chamfered end edges, revolve, loft, hole, pattern, mirror, combine with booleans; fillet, chamfer, shell, draft, press-pull, split body and move/copy on picked edges, faces and bodies), persistent names for faces, edges and vertices, assemblies with joints on snap points, section view, measure, face/edge selection, mass properties back into the worksheet, 2-D drawings from the exact solids (views, hidden and centre lines, sections, details, cosmetic threads; associative dimensions with ISO 286 fits, GD&T, datum and surface symbols, hole callouts, ISO 7200 title block, parts list and balloons; print, SVG, DXF), DXF in/out, STEP and STL out | ✅ (exact B-rep values and display, kernel off the UI thread; no delete face yet) |
 | Opening Mathcad `.mcdx`/`.xmcd` files | ⚠️ Run on 72 real files: 500 of 702 Prime and 159 of 203 Mathcad 15 saved results reproduced. Script controls, 3-D plot details and some operators (e.g. `∈`) are reported as not imported |
-| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Run on 36 real files and SMath's bundled examples: 325 of 454 saved results reproduced. SMath-style symbolic work on undefined variables, nested matrices and plugin regions do not convert |
+| Opening SMath Studio `.sm`/`.smz` files | ⚠️ Run on 167 real files and SMath's bundled examples: 1475 of 1888 saved results reproduced. Plugins (Maxima, CoolProp, Mathcad Toolbox), other worksheets and data files, SMath-style symbolic work on undefined variables and nested matrices do not convert |
 | Export to Mathcad Prime `.mcdx`, Mathcad 15 `.xmcd`, SMath `.sm` | ⚠️ Read back and recalculated here with the same values; not yet opened in Mathcad or SMath. Regions they lack become a picture with their values |
 | Scripting: Python regions that read worksheet variables (with units) and export variables and functions back | ✅ (Pyodide in the browser; packages such as numpy download on first import) |
 | Excel component: spreadsheet region with 211 Excel functions, inputs and outputs with units, .xlsx import/export, live link to a file; tables and the whole worksheet to .xlsx | ✅ (no charts, pivot tables or Excel macros; written files checked in LibreOffice, not yet in Excel) |

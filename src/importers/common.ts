@@ -18,6 +18,8 @@ export interface SavedResult {
   expr: string;
   /** Relative tolerance of the comparison (a value saved rounded to its display). */
   tol?: number;
+  /** A matrix saved as the part in view (SMath keeps at most `rows` × `cols` from row `row`, column `col`). */
+  window?: { row: number; col: number; rows: number; cols: number };
 }
 
 /** Thrown for constructs an importer recognises but cannot convert. */
