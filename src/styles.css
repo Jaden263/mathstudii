@@ -7148,3 +7148,165 @@ div.pl-cutplot {
   font: inherit;
   cursor: pointer;
 }
+
+/* ---- CAD materials, appearances, mass properties and analyses ---- */
+
+.cadm-swatch {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  box-shadow: inset 0 -2px 4px rgba(0, 0, 0, 0.18);
+}
+
+/* see-through: a chequer under the colour */
+.cadm-swatch.clear {
+  background-image: repeating-conic-gradient(#c8cbd2 0 25%, #fff 0 50%) !important;
+  background-size: 8px 8px !important;
+}
+
+.cadm-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.cadm-row > .field:first-child {
+  flex: 1;
+}
+
+.cadm-row > .cadm-swatch {
+  margin-bottom: 4px;
+}
+
+.cadm-colour input[type='color'] {
+  width: 40px;
+  height: 28px;
+  padding: 1px;
+}
+
+.cadm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cadm-comp {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cadm-comp h4,
+.cadm-h {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cadm-body {
+  margin-left: 10px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.cadm-faces {
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.cadm-tensor {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  caption-side: bottom;
+}
+
+.cadm-tensor td {
+  padding: 2px 4px;
+  text-align: right;
+  border: 1px solid var(--border);
+}
+
+.cadm-tensor caption {
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cadm-axis {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  margin-right: 5px;
+  vertical-align: middle;
+  border-radius: 2px;
+}
+
+/* the analysis bar sits at the foot of the view, clear of the section and explode bars */
+.cadw-inspect.cadm-analysis {
+  top: auto;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100% - 120px);
+}
+
+.cadm-analysis label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cadm-analysis input[type='number'] {
+  width: 64px;
+}
+
+.cadm-note {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.cadm-legend {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.cadm-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.cadm-legend i {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.cadm-bar {
+  width: 140px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 760px) {
+  .cadw-inspect.cadm-analysis {
+    max-width: calc(100% - 24px);
+  }
+}

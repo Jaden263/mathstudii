@@ -15,6 +15,7 @@ import { hasSolid, occBox, onOccRenewed, renewOcc, scratch, trsf, volumeProperti
 import { occOps, type OccSolid } from './ops';
 import type { FlatSummary, SheetModel } from '../sheetMetal';
 import { bodyFlat } from './flat';
+import { props } from './topology';
 
 export { occBox };
 
@@ -83,7 +84,7 @@ export const buildDesignCached = (oc: OC, design: CadDesign, numbers: DesignNumb
 const massOf = new WeakMap<TopoDS_Shape, Mass3>();
 const shapeMass = (oc: OC, s: TopoDS_Shape) => {
   let m = massOf.get(s);
-  if (!m) massOf.set(s, (m = occMass(oc, s)));
+  if (!m) massOf.set(s, (m = { ...occMass(oc, s), A: scratch((t) => props(oc, t, s, 'surface').Mass()) }));
   return m;
 };
 

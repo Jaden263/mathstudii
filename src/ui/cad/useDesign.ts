@@ -14,6 +14,7 @@ import type { Mesh } from '../../cad/mesh';
 import { framePoint, type Frame, type M4 } from '../../cad/solid';
 import type { SceneLines, SceneMesh, ScenePlane, Vec3 } from './Scene3D';
 import { constructScene } from './constructView';
+import { bodyLook, faceLooks, type FaceLooks } from '../../cad/appearances';
 
 // ------------------------------------------------------------ scene pieces
 
@@ -175,13 +176,26 @@ export function buildScene(design: CadDesign, result: CadResult | undefined, sho
     highlight: o.highlight.has(key) || o.highlight.has(`o:${occId}`),
     ghost: o.isolate && cid !== o.active,
   });
+  // appearances: the body's (its material's …), and faces in their own (found among the bodies as built)
+  const appear = (cid: string, body: string, color: [number, number, number]) => {
+    const comp = design.components.find((c) => c.id === cid);
+    return comp ? bodyLook(design, comp, body, color) : undefined;
+  };
+  const ownFaces = new Map<string, Map<string, FaceLooks[]>>();
+  const facesOf = (cid: string, body: string) => {
+    const comp = design.components.find((c) => c.id === cid);
+    if (!comp?.faceAppearances?.length || !shown) return undefined;
+    if (!ownFaces.has(cid)) ownFaces.set(cid, faceLooks(comp, shown.components[cid]?.bodies ?? []));
+    return ownFaces.get(cid)!.get(body);
+  };
   if (o.section) {
     // the cut bodies: not pickable (their faces are not the bodies' faces)
     for (const sb of o.section) {
       const occ = design.occurrences.find((q) => q.id === sb.occ), M = placement(sb.occ);
       if (!occ || occ.hidden || !M) continue;
       const key = `b:${sb.occ}:${sb.body.id}`;
-      meshes.push({ key, mesh: displayMesh(sb.body), matrix: M, ...look(sb.occ, sb.component, key), pickable: false, paint: { faces: sb.caps, color: CUT } });
+      const lk = look(sb.occ, sb.component, key);
+      meshes.push({ key, mesh: displayMesh(sb.body), matrix: M, ...lk, look: appear(sb.component, sb.body.id, lk.color), pickable: false, paint: { faces: sb.caps, color: CUT } });
     }
   } else if (shown) {
     for (const occ of design.occurrences) {
@@ -192,7 +206,8 @@ export function buildScene(design: CadDesign, result: CadResult | undefined, sho
       for (const b of shown.components[comp.id]?.bodies ?? []) {
         if (comp.hiddenBodies?.includes(b.id) || !b.mesh.indices.length) continue;
         const key = `b:${occ.id}:${b.id}`;
-        meshes.push({ key, mesh: displayMesh(b), matrix: M, ...look(occ.id, comp.id, key), ...o.marks?.(key) });
+        const lk = look(occ.id, comp.id, key);
+        meshes.push({ key, mesh: displayMesh(b), matrix: M, ...lk, look: appear(comp.id, b.id, lk.color), faceLooks: facesOf(comp.id, b.id), ...o.marks?.(key) });
       }
     }
   }

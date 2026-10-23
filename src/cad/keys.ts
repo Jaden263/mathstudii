@@ -24,8 +24,8 @@ export function hashString(s: string, seed = 0): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
 }
 
-/** Editor state that never changes a solid. */
-const PRESENTATION = new Set(['view', 'color']);
+/** Editor state that never changes a solid (appearances included: materials change the densities, which are in the numbers). */
+const PRESENTATION = new Set(['view', 'color', 'appearance', 'bodyAppearances', 'faceAppearances']);
 
 /** A sketch constraint (features have a kind; joints and planes have no refs). */
 const isConstraint = (o: unknown) => !!o && typeof o === 'object' && Array.isArray((o as { refs?: unknown }).refs) && !('kind' in o);

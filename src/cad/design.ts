@@ -45,6 +45,7 @@ import type { DofKey, ExplodeOffset, JointDof, MotionLink, MotionStudy, RigidGro
 import { kinModel, solveKinematics, type KinState } from './kinematics';
 import type { SheetCutouts, SheetFeature, SheetModel, SheetRules } from './sheetMetal';
 import { sheetStep } from './sheetSteps';
+import type { FaceAppearance } from './appearances';
 
 export type { Helix, MeshBody };
 
@@ -495,6 +496,15 @@ export interface CadComponent {
   /** Material density expression; empty = the part's density. */
   density?: string;
   color?: string;
+  /** Physical material (materials.ts): its density unless the density expression is set, its properties for the worksheet. */
+  material?: string;
+  /** Appearance of its bodies (appearances.ts); by default the colour, else the material's. */
+  appearance?: string;
+  /** Bodies of a material or an appearance of their own (body id → library id): they override the component's. */
+  bodyMaterials?: Record<string, string>;
+  bodyAppearances?: Record<string, string>;
+  /** Faces in an appearance of their own, found again after edits by their references. */
+  faceAppearances?: FaceAppearance[];
   items: DesignItem[];
   /** Timeline marker: only the first `marker` items are built (rollback). */
   marker?: number;
@@ -558,6 +568,8 @@ export interface CadJoint {
 
 export interface CadDesign {
   version: 2;
+  /** The part's material (materials.ts) for components of none, when the part's density expression is empty. */
+  material?: string;
   components: CadComponent[];
   occurrences: CadOccurrence[];
   joints: CadJoint[];
@@ -2097,6 +2109,8 @@ export interface MassOut extends MassProps {
   m?: number;
   /** Mass moments of inertia about the centre of mass: xx, yy, zz, xy, xz, yz. */
   Im?: [number, number, number, number, number, number];
+  /** Surface area (part units²), when every solid's was measured. */
+  A?: number;
 }
 
 export function massOut(items: { m: Mass3; rho?: number }[]): MassOut | null {
@@ -2112,6 +2126,7 @@ export function massOut(items: { m: Mass3; rho?: number }[]): MassOut | null {
     out.xg = ms.c[0]; out.yg = ms.c[1]; out.zg = ms.c[2];
     out.Im = [C[4] + C[8], C[0] + C[8], C[0] + C[4], clean(C[1]), clean(C[2]), clean(C[5])];
   }
+  if (items.every((i) => i.m.A !== undefined)) out.A = items.reduce((s, i) => s + i.m.A!, 0);
   // rounding noise on a symmetry plane reads as 0
   const size = Math.sqrt(Math.abs(vol.C[0] + vol.C[4] + vol.C[8]) / vol.W);
   const tidy = (v: number) => (Math.abs(v) < 1e-9 * size ? 0 : v);
