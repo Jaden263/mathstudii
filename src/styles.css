@@ -599,6 +599,26 @@ select {
   min-height: 20px;
 }
 
+/* an input control: the definition's choices */
+.math-choice {
+  margin-left: 8px;
+  vertical-align: middle;
+  max-width: 220px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px var(--font);
+}
+
+@media print {
+  .math-choice {
+    border-color: transparent;
+    appearance: none;
+  }
+}
+
 .math-region.editing .math-display {
   opacity: 0.85;
   margin-top: 4px;
@@ -1673,6 +1693,39 @@ kbd {
 }
 
 .import-summary.warn {
+  color: var(--warn);
+}
+
+.import-files {
+  font-size: 13px;
+}
+
+.data-files {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  display: grid;
+  gap: 6px;
+}
+
+.data-files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.data-files .df-name {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.data-files small {
+  color: var(--text-muted);
+  margin-right: auto;
+}
+
+.data-files .warn {
   color: var(--warn);
 }
 
@@ -4256,6 +4309,24 @@ kbd {
   text-align: right;
 }
 
+/* the page's own lines (imported from Mathcad): three columns, each keeping its line breaks */
+.page-header .own,
+.page-footer .own {
+  flex: 1;
+  white-space: pre-line;
+  min-width: 0;
+}
+
+.page-header .ph-mid.own,
+.page-footer .pf-mid.own {
+  text-align: center;
+}
+
+.page-header .ph-right.own,
+.page-footer .pf-right.own {
+  text-align: right;
+}
+
 .report-fields {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -4264,8 +4335,10 @@ kbd {
   font-size: 12px;
 }
 
-.report-fields input {
+.report-fields input,
+.report-fields textarea {
   min-width: 0;
+  resize: vertical;
   padding: 3px 6px;
   border: 1px solid var(--border);
   border-radius: 4px;

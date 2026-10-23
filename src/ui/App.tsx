@@ -23,6 +23,8 @@ import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs,
 import { ShortcutsDialog } from './ShortcutsDialog';
 import { usePageZoom } from './usePageZoom';
 import { ImportReportDialog, type ImportReport } from './ImportReportDialog';
+import { missingFunctions, missingFunctionsText } from '../importers/report';
+import { DataFilesDialog, dataFileNames } from './DataFilesDialog';
 import { ExportReportDialog, type ExportReport } from './ExportReportDialog';
 import { moveSteps, separateKeepingOrder } from './separateOrdered';
 import { regionPictures } from './regionPicture';
@@ -57,7 +59,7 @@ type ThemePref = 'system' | 'light' | 'dark';
 /** Replace a whole name in a math source ("kn" → "kN", not inside "knot"). */
 function replaceWord(src: string, from: string, to: string): string {
   const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return src.replace(new RegExp(`(?<![\\wͰ-Ͽ])${esc}(?![\\wͰ-Ͽ])`, 'g'), to);
+  return src.replace(new RegExp(`(?<![\\p{L}\\wͰ-Ͽ])${esc}(?![\\p{L}\\wͰ-Ͽ])`, 'gu'), to);
 }
 
 /** A beam on two supports. */
@@ -475,13 +477,16 @@ export function App() {
     }
   };
 
+  /** The file just imported and the worksheets it references that were picked (while its report is open). */
+  const lastImport = useRef<{ bytes: Uint8Array; name: string; references: Record<string, Uint8Array> } | null>(null);
   /** Convert a Mathcad or SMath file; it opens as a new, unsaved mathstudii worksheet. */
-  const importForeignFile = async (bytes: Uint8Array, name: string) => {
+  const importForeignFile = async (bytes: Uint8Array, name: string, references: Record<string, Uint8Array> = {}) => {
     const res = foreignFormat(name) === 'smath'
       ? (await import('../importers/smath')).importSmath(bytes, name)
-      : (await import('../importers/mathcad')).importMathcad(bytes, name);
+      : (await import('../importers/mathcad')).importMathcad(bytes, name, { references });
     loadDoc(res.ws, null);
-    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length });
+    lastImport.current = res.references?.length || Object.keys(references).length ? { bytes, name, references } : null;
+    setImportReport({ name, format: res.format, warnings: res.warnings, count: res.ws.regions.length, missingFiles: dataFileNames(res.ws).filter((f) => !f.attached).map((f) => f.name), references: res.references });
     // the source program lays out math at different sizes: push overlaps apart once rendered,
     // keeping the order in which the regions calculate
     window.setTimeout(() => separateRef.current(true, 'separate', true), 400);
@@ -895,6 +900,7 @@ export function App() {
 
   // ------------------------------------------------------------ areas and protection
   const [protectDlg, setProtectDlg] = useState(false);
+  const [dataFilesDlg, setDataFilesDlg] = useState(false);
   const selectAll = () => {
     const hidden = hiddenIds(ws.regions);
     setSelected(new Set(ws.regions.filter((q) => !hidden.has(q.id)).map((q) => q.id)));
@@ -1147,6 +1153,7 @@ export function App() {
                 {(['mcdx', 'xmcd', 'sm'] as Format[]).map((f) => (
                   <button key={f} role="menuitem" onClick={() => { setFileMenu(false); void exportTo(f); }} title="Math, text, solve blocks and units as the program writes them; beams, plates, CAD … as a labelled picture with their values">Export to {formatLabel(f)}…</button>
                 ))}
+                <button role="menuitem" onClick={() => { setFileMenu(false); setDataFilesDlg(true); }} title="Files the worksheet reads with READPRN, READCSV, READFILE or READEXCEL, kept in it">Data files…</button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setProtectDlg(true); }}>{isProtected(ws) ? 'Unprotect worksheet…' : 'Protect worksheet…'}</button>
                 <label className="menu-check"><input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} /> Autosave</label>
                 <div className="menu-head">Recent documents</div>
@@ -1378,7 +1385,24 @@ export function App() {
           />
         </div>
       )}
-      {importReport && <ImportReportDialog report={importReport} onClose={() => setImportReport(null)} />}
+      {importReport && (
+        <ImportReportDialog
+          report={importReport}
+          missingFunctions={missingFunctionsText(missingFunctions(ws.regions, evaluation.results))}
+          onClose={() => { setImportReport(null); lastImport.current = null; }}
+          onDataFiles={() => { setImportReport(null); setDataFilesDlg(true); }}
+          onReferences={async (files) => {
+            // import again with the referenced worksheets picked: their definitions in the worksheet
+            const last = lastImport.current;
+            if (!last) return;
+            const references = { ...last.references };
+            for (const f of files) references[f.name] = new Uint8Array(await f.arrayBuffer());
+            setImportReport(null);
+            await importForeignFile(last.bytes, last.name, references);
+          }}
+        />
+      )}
+      {dataFilesDlg && <DataFilesDialog ws={ws} dispatch={dispatch} onClose={() => setDataFilesDlg(false)} />}
       {exportReport && <ExportReportDialog report={exportReport} onClose={() => setExportReport(null)} />}
       {protectDlg && (
         <ProtectDialog

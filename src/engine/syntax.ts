@@ -15,12 +15,14 @@ export type Lhs =
   | { kind: 'var'; name: string }
   | { kind: 'func'; name: string; params: string[] }
   | { kind: 'index'; name: string; indices: string[] }
-  | { kind: 'destructure'; names: string[] };
+  | { kind: 'destructure'; names: string[] }
+  /** [x[i + 1]; y[i + 1]] := [f(x[i], y[i]); g(x[i], y[i])]: elements of several arrays at once. */
+  | { kind: 'elements'; targets: { name: string; indices: string[] }[] };
 
 export type Statement =
   | { type: 'empty' }
   | { type: 'define'; global: boolean; lhs: Lhs; rhs: string; show: boolean; unit: string }
-  | { type: 'program'; global: boolean; lhs: Lhs; body: string[]; show: boolean }
+  | { type: 'program'; global: boolean; lhs: Lhs; body: string[]; show: boolean; unit?: string }
   | { type: 'eval'; expr: string; unit: string }
   | { type: 'symbolic'; expr: string; keywords: string }
   | { type: 'expr'; expr: string };
@@ -132,10 +134,26 @@ export function splitChain(src: string): { terms: string[]; ops: string[] } | nu
   if (!found.length) return null;
   terms.push(src.slice(last));
   if (terms.some((t) => !t.trim())) return null;
+  // a ≤ b ∧ c < d joins comparisons with logic: a condition of its own, not one chain
+  if (terms.some((t) => logicAtTop(t))) return null;
   return { terms: terms.map((t) => t.trim()), ops: found };
 }
 
-const IDENT = /^[A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ']*$/;
+/** Whether an expression has a logical operator (∧ ∨ ⊕, and, or, xor) outside brackets. */
+export function logicAtTop(src: string): boolean {
+  let found = false;
+  scan(src, (i, depth) => {
+    if (depth !== 0) return;
+    if ('∧∨⊕'.includes(src[i]) || /^\s(and|or|xor)\s/.test(src.slice(i - 1, i + 5))) {
+      found = true;
+      return true;
+    }
+  });
+  return found;
+}
+
+// names in any alphabet (Cyrillic, Latin with accents, Greek …), as Mathcad and SMath allow
+const IDENT = /^[\p{L}_Ͱ-Ͽ][\p{L}0-9_Ͱ-Ͽ']*$/u;
 
 export function isIdentifier(s: string): boolean {
   return IDENT.test(s.trim());
@@ -158,6 +176,16 @@ export function parseLhs(text: string): Lhs {
   if (m) {
     const names = m[1].split(/[;,]/).map((p) => p.trim());
     if (names.length > 0 && names.every(isIdentifier)) return { kind: 'destructure', names };
+    // a system of element definitions: names and elements (x[i + 1]) listed together
+    const parts = splitTop(m[1], ';').flatMap((p) => splitTop(p, ',')).map((p) => p.trim());
+    const targets = parts.map((p) => {
+      if (isIdentifier(p)) return { name: p, indices: [] as string[] };
+      const e = /^([^\s([]+)\s*\[(.*)\]$/s.exec(p);
+      return e && isIdentifier(e[1]) ? { name: e[1], indices: splitTop(e[2], ',').map((q) => q.trim()) } : null;
+    });
+    if (targets.length > 1 && targets.every((t) => t !== null) && new Set(targets.map((t) => t!.name)).size === targets.length) {
+      return { kind: 'elements', targets: targets as { name: string; indices: string[] }[] };
+    }
   }
   throw new Error(`Cannot define "${s}"`);
 }
@@ -167,13 +195,14 @@ export function parseStatement(source: string): Statement {
   if (!text.trim()) return { type: 'empty' };
   const lines = text.split('\n');
   const first = lines[0].trimEnd();
-  // program: first line ends with := or ≡ and the body follows on further lines
-  if (lines.length > 1 && /(:=|≡)\s*(=)?\s*$/.test(first)) {
-    const global = /≡\s*(=)?\s*$/.test(first);
-    const show = /=\s*$/.test(first.replace(/(:=|≡)\s*$/, ''));
-    const lhsText = first.replace(/(:=|≡)\s*=?\s*$/, '');
+  // program: first line ends with := or ≡ and the body follows on further lines; "x := = mm"
+  // shows the program's value, in mm
+  const pm = lines.length > 1 ? /^(.*?)(:=|≡)\s*(?:=\s*([^=]*?))?\s*$/.exec(first) : null;
+  if (pm && !/(:=|≡)/.test(pm[1]) && (pm[3] === undefined || /=\s*[^=]*$/.test(first.slice(pm[1].length + pm[2].length)))) {
+    const global = pm[2] === '≡';
+    const show = /=/.test(first.slice(pm[1].length + pm[2].length));
     const body = lines.slice(1).filter((l) => l.trim() !== '');
-    return { type: 'program', global, lhs: parseLhs(lhsText), body, show };
+    return { type: 'program', global, lhs: parseLhs(pm[1]), body, show, ...(pm[3] ? { unit: pm[3].trim() } : {}) };
   }
   const flat = lines.map((l) => l.trim()).join(' ');
   let p = findTop(flat, ':=');
@@ -234,26 +263,27 @@ const UNICODE: [RegExp, string][] = [
   [/∨/g, ' or '],
   [/¬/g, ' not '],
   [/⊕/g, ' xor '],
-  [/π/g, 'pi'],
+  // π, Γ(, Σ( and Π( standing alone; inside a name (γ_Σ, x_π) they are letters of it
+  [/(?<![\p{L}_])π(?![\p{L}\p{N}_])/gu, 'pi'],
   [/∞/g, 'Infinity'],
   [/√/g, 'sqrt'],
   [/∛/g, 'cbrt'],
   [/²/g, '^2'],
   [/³/g, '^3'],
   [/°/g, ' deg'],
-  [/Γ\s*\(/g, 'gamma('],
+  [/(?<![\p{L}\p{N}_])Γ\s*\(/gu, 'gamma('],
   [/∫/g, 'integral'],
-  [/Σ|∑/g, 'sum'],
-  [/Π\s*\(|∏/g, 'prod('],
+  [/(?<![\p{L}\p{N}_])Σ(?=\s*\()|∑/gu, 'sum'],
+  [/(?<![\p{L}\p{N}_])Π\s*\(|∏/gu, 'prod('],
   [/′/g, "'"],
   [/″/g, "''"],
   [/‴/g, "'''"],
 ];
 
 // y''(t) is the second derivative of y at t (Mathcad prime notation), not a transpose
-const PRIME_CALL = /(?<![A-Za-z0-9_Ͱ-ϿÀ-ɏ.])([A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ]*(?:\.[A-Za-z_Ͱ-ϿÀ-ɏ][A-Za-z0-9_Ͱ-ϿÀ-ɏ]*)*)('+)\s*\(/g;
+const PRIME_CALL = /(?<![\p{L}0-9_Ͱ-Ͽ.])([\p{L}_Ͱ-Ͽ][\p{L}0-9_Ͱ-Ͽ]*(?:\.[\p{L}_Ͱ-Ͽ][\p{L}0-9_Ͱ-Ͽ]*)*)('+)\s*\(/gu;
 
-const IMAG = /(?<![A-Za-z_\d.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[ij](?![A-Za-z0-9_Ͱ-Ͽ])/g;
+const IMAG = /(?<![\p{L}_\d.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)[ij](?![\p{L}0-9_Ͱ-Ͽ])/gu;
 
 /** Translate Mathcad-flavoured input into mathjs syntax (outside string literals). */
 export function preprocess(src: string): string {

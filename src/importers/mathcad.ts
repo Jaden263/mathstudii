@@ -8,10 +8,19 @@ import { unzipSync, gunzipSync, strFromU8 } from 'fflate';
 import { DOMParser, type Element as XElement, type Node as XNode } from '@xmldom/xmldom';
 import {
   createRegion, emptyWorksheet, PAGE_MARGIN, PAGE_WIDTH,
-  type Region, type PlotTrace,
+  type AreaRegion, type MathChoices, type PageBand, type Region, type PlotTrace, type TextRegion, type Worksheet,
 } from '../model/types';
+import { AREA_BAR, AREA_PAD, collapseArea, hiddenIds, nestBands, withContents } from '../model/areas';
+import { pageBreakShift } from './pages';
 import { fitToPage, isNumberLiteral, P, sanitize, toBase64, Unsupported, unitName, type Ex, type ImportResult, type SavedResult } from './common';
-import { isUnitName } from '../engine/math';
+import { isUnitName, math } from '../engine/math';
+import { cssColor, normalSize, toMarkdown, type RunStyle, type TextPara, type TextRun } from './textFormat';
+import { bandOf, mc15Fields, mc15Text, primeField, type BandPiece } from './mathcadPage';
+import { cfbStream } from './cfb';
+import { wordContent } from './office';
+import { importWorkbook } from '../sheet/importBook';
+import type { SheetInput, SheetOutput, SpreadsheetData } from '../sheet/model';
+import type { NumberFormat, NumberStyle } from '../engine/format';
 
 export type { ImportResult } from './common';
 
@@ -67,6 +76,45 @@ function rawName(el: El): string {
   return s;
 }
 
+/** Words for the symbols of a custom operator's name. */
+const SYMBOL_WORDS: Record<string, string> = {
+  '*': 'star', '+': 'plus', '-': 'minus', '−': 'minus', '/': 'slash', '\\': 'backslash', '|': 'bar', '<': 'lt', '>': 'gt',
+  '≤': 'le', '≥': 'ge', '=': 'eq', '≠': 'ne', ':': 'colon', '.': 'dot', ',': 'comma', '!': 'excl', '?': 'query', '&': 'amp',
+  '^': 'caret', '~': 'tilde', '#': 'hash', '@': 'at', '$': 'dollar', '_': 'underscore', '±': 'pm', '∠': 'angle', '∈': 'in',
+  '×': 'times', '·': 'cdot', '⊗': 'otimes', '⊕': 'oplus', '∘': 'circ', '⁺': 'supplus', '⁻': 'supminus', '→': 'arrow',
+};
+
+/**
+ * A custom operator's name (Mathcad lets a function be called |>, || or ≤ and written between
+ * its operands): its symbols as words, op_bar_gt. Null for a name with a letter or digit.
+ */
+export function operatorName(raw: string): string | null {
+  if (!raw || /[\p{L}\p{N}%∞°]/u.test(raw)) return null;
+  return `op_${[...raw].map((ch) => SYMBOL_WORDS[ch] ?? `u${ch.codePointAt(0)!.toString(16)}`).join('_')}`;
+}
+
+/**
+ * Functions the import writes for Mathcad operators (M⟨j⟩ is col(M, j), |v| is mag(v) …): a
+ * worksheet's own function of one of these names gets a name of its own (col_), so that the
+ * operators keep their meaning.
+ */
+const OPERATOR_FUNCTIONS = new Set(['col', 'row', 'mag', 'sqrt', 'nthRoot', 'cross', 'sum', 'prod', 'vectorize', 'integral', 'integrate', 'diff', 'atan2', 'mod', 'traceText']);
+
+/**
+ * A name as Mathcad 15 tells names apart: by its spelling and its math style (font). The
+ * function in(x, v) in a style of its own is not the unit in. The first two styles, Variables
+ * (font 0) and Constants (font 1), make no name of their own: f(F) ← … defined in Constants is
+ * the f a program then passes on, π in Constants is π.
+ */
+const styleOf = (el: El): string => {
+  const font = el.getAttribute('font');
+  return font && font !== '0' && font !== '1' ? font : '';
+};
+function nameKey(el: El): string {
+  const font = styleOf(el);
+  return font ? `${rawName(el)}#${font}` : rawName(el);
+}
+
 // ------------------------------------------------------------ expressions
 
 const BINOPS: Record<string, { op: string; p: number }> = {
@@ -78,14 +126,16 @@ const BINOPS: Record<string, { op: string; p: number }> = {
 
 class Converter {
   warnings: string[] = [];
-  /** Names the worksheet defines anywhere (Mathcad 15 does not label units: an undefined unit name is one). */
-  defined = new Set<string>();
+  /** Names defined so far, as the regions are read (Mathcad 15 does not label units: an undefined unit name is one). */
+  defined: { has(name: string): boolean } = new Set<string>();
   /** Names defined at the top level of the worksheet (variables a unit of the same name would clash with). */
   variables = new Set<string>();
   /** The numeric factor dropped from the last display unit (the saved result is a multiple of it). */
   scale = '';
   /** Inside a display unit (unitOverride, a plot axis unit), where unlabelled names are units. */
   private unitSlot = 0;
+  /** The input control of the last statement read: its choices (the region keeps them). */
+  choices: MathChoices | undefined;
 
   wrap(e: Ex, min: number): string {
     return e.p < min ? `(${e.s})` : e.s;
@@ -94,20 +144,51 @@ class Converter {
   name(el: El): string {
     const raw = rawName(el);
     const label = el.getAttribute('labels') ?? '';
+    // % on its own (x/%): 1 % is 0.01
+    if (raw === '%' && !this.unitSlot) return '(1 %)';
     if (label === 'UNIT' || raw === '%') {
       const u = unitName(raw);
       // Prime tells a unit from a variable of the same name by its label; here the unit is written out
       return this.variables.has(raw) && !this.unitSlot && !/[()*/^ ]/.test(u) ? `unit(1, "${u}")` : u;
     }
     if (label === 'CONSTANT' && CONSTANT_MAP[raw]) return CONSTANT_MAP[raw];
+    // atan2 handed on as a function (map2(atan2, x, y)) keeps Mathcad's order of arguments, x then y
+    if (raw === 'atan2' && !this.defined.has(nameKey(el))) return 'atan2xy';
     // Mathcad 15's ∞ has no label (it is no letter, so no name of ours either)
     if (raw === '∞' && label !== 'VARIABLE') return '∞';
     // unlabelled (Mathcad 15) or auto-labelled (*, sheets converted from 15) names that are units
     if (label === '' || label === '*') {
       const u = unitName(raw);
-      if (!this.defined.has(raw) && (this.unitSlot || u !== raw) && isUnitName(u.replace(/^\((.*)\)$/, '$1').split(/[*/^ ]/)[0])) return u;
+      if (!this.defined.has(nameKey(el)) && (this.unitSlot || u !== raw) && isUnitName(u.replace(/^\((.*)\)$/, '$1').split(/[*/^ ]/)[0])) return u;
     }
-    return sanitize(raw);
+    return this.ident(el);
+  }
+
+  /** Names spelled without a math style of their own (Mathcad 15), anywhere in the file. */
+  plainNames = new Set<string>();
+  /** The math styles (fonts) each name is written in besides the plain one, in the order the file has them. */
+  styledNames = new Map<string, string[]>();
+
+  /**
+   * A name as an identifier here. Mathcad 15 tells names apart by their math style too: a
+   * function max or in written in a style of its own is not the built-in max or the unit in,
+   * so such a name gets a _ of its own when its spelling is taken, and each further style of
+   * that spelling a number (F_TIE_, F_TIE_2). A custom operator's name (|>, ||, ≤) has its
+   * symbols spelled out (op_bar_gt), so that operators stay apart.
+   */
+  /** Names the worksheet defines as functions or variables (plain, without a style of their own). */
+  userNames = new Set<string>();
+
+  ident(el: El): string {
+    const raw = rawName(el);
+    const s = operatorName(raw) ?? sanitize(raw);
+    if (nameKey(el) === raw) return OPERATOR_FUNCTIONS.has(s) && this.userNames.has(raw) ? `${s}_` : s;
+    const taken = this.plainNames.has(raw) || typeof (math as unknown as Record<string, unknown>)[raw] === 'function' || isUnitName(unitName(raw));
+    const styles = this.styledNames.get(raw) ?? [];
+    const slot = Math.max(0, styles.indexOf(styleOf(el))) + (taken ? 1 : 0);
+    if (slot === 0) return s;
+    if (s.endsWith('_')) return slot === 1 ? s : `${s}${slot}`;
+    return slot === 1 ? `${s}_` : `${s}_${slot}`;
   }
 
   /** A display unit: the expression, without a numeric scale Mathcad allows there (10⁻³⁴ kg·m²/s). */
@@ -140,9 +221,65 @@ class Converter {
 
   lambda(el: El): { vars: string[]; body: string } {
     const bv = child(el, 'boundVars');
-    const vars = bv ? kids(bv).filter((c) => local(c) === 'id').map((c) => sanitize(rawName(c))) : [];
+    const vars = bv ? kids(bv).filter((c) => local(c) === 'id').map((c) => this.ident(c)) : [];
     const body = kids(el).find((c) => local(c) !== 'boundVars');
-    return { vars, body: body ? this.expr(body).s : '0' };
+    return { vars, body: body ? this.lazily(() => this.expr(body).s) : '0' };
+  }
+
+  // ---------------------------------------------------------------- programs as operands
+  //
+  // Mathcad nests a program anywhere a value goes: x := 2 + ⟨program⟩. Here a program is
+  // a definition's or a local definition's whole value, so such a program is computed first
+  // into a local of its own (p_1 ← ⟨program⟩) and the expression uses that. Where the operand
+  // is evaluated later or not at all (integrands, branches of if) that is not the same, and
+  // the program is not imported.
+
+  /** Lines that compute the programs of the statement being converted, and their indent. */
+  private hoist: { indent: string; lines: string[] } | null = null;
+  /** Inside a part of an expression evaluated later or not at all. */
+  private lazy = 0;
+  private temps = 0;
+
+  lazily<T>(f: () => T): T {
+    this.lazy++;
+    try {
+      return f();
+    } finally {
+      this.lazy--;
+    }
+  }
+
+  /** A name for a program's value no name of the worksheet has. */
+  private temp(): string {
+    let n: string;
+    do n = `p_${++this.temps}`; while (this.plainNames.has(n) || this.defined.has(n));
+    return n;
+  }
+
+  /** Convert with programs in it computed into locals first: the lines that do that, and the result. */
+  withHoist<T>(indent: string, f: () => T): { lines: string[]; value: T } {
+    const saved = this.hoist, savedLazy = this.lazy;
+    this.hoist = { indent, lines: [] };
+    this.lazy = 0;
+    try {
+      const value = f();
+      return { lines: this.hoist.lines, value };
+    } finally {
+      this.hoist = saved;
+      this.lazy = savedLazy;
+    }
+  }
+
+  /** Elements that stand for a whole program where a value is expected. */
+  isProgram(el: El | undefined): boolean {
+    return !!el && /^(program|for|while|tryCatch|onError|localDefine|return|ifThen|otherwise|break|continue)$/.test(local(el));
+  }
+
+  /** The lines of a program-valued operand, as a block at this indent. */
+  block(el: El, indent: string): string[] {
+    // (break), (return x): a program statement in parentheses
+    while (local(el) === 'parens' && kids(el).length === 1 && this.isProgram(kids(el)[0])) el = kids(el)[0];
+    return local(el) === 'program' ? this.programLines(el, indent) : this.stmt(el, indent);
   }
 
   bounds(rest: El[]): [string, string] | null {
@@ -231,6 +368,13 @@ class Converter {
     const h = local(head);
     const e = (i: number) => this.expr(rest[i]);
     if (h === 'id') return this.call(head, rest);
+    // f′(x): Prime's prime notation applies <functionDerivative/> to the function's name
+    if (h === 'apply') {
+      const d = this.primes(head);
+      if (!d) throw new Unsupported('a call of a value that is itself a call (f(a)(b))');
+      return { s: `${d.name}${"'".repeat(d.n)}(${this.args(rest).join(', ')})`, p: P.ATOM };
+    }
+    if (h === 'functionDerivative') throw new Unsupported('a derivative f′ written without its argument');
     // Mathcad 15 writes the solve block functions as operators: <ml:Find/>, <ml:Minerr/> …
     if (/^(find|minerr|minimize|maximize|odesolve)$/i.test(h)) return { s: `${h.toLowerCase()}(${this.args(rest).join(', ')})`, p: P.ATOM };
     if (BINOPS[h] && rest.length === 2) {
@@ -238,6 +382,10 @@ class Converter {
       const vop = op;
       const [a, b] = [e(0), e(1)];
       if (h === 'pow') return { s: `${this.wrap(a, P.POW + 1)}${vop}${isNumberLiteral(b.s) ? b.s : this.wrap(b, P.POW)}`, p };
+      // 40·% is 40 % (a ratio of 0.4), %·x is x %
+      const isPercent = (c: El) => local(c) === 'id' && rawName(c) === '%';
+      if (h === 'mult' && isPercent(rest[1])) return { s: `${this.wrap(a, P.ATOM)} %`, p: P.MUL };
+      if (h === 'mult' && isPercent(rest[0])) return { s: `${this.wrap(b, P.ATOM)} %`, p: P.MUL };
       // number × unit reads naturally as "5 m"
       if (h === 'mult' && isNumberLiteral(a.s) && local(rest[1]) === 'id' && rest[1].getAttribute('labels') === 'UNIT') {
         return { s: `${a.s} ${b.s}`, p: P.MUL };
@@ -263,7 +411,8 @@ class Converter {
       case 'percent': return { s: `${this.wrap(e(0), P.MUL)}/100`, p: P.MUL };
       case 'matcol': return { s: `col(${e(0).s}, ${e(1).s})`, p: P.ATOM };
       case 'matrow': return { s: `row(${e(0).s}, ${e(1).s})`, p: P.ATOM };
-      case 'absval': return { s: `abs(${e(0).s})`, p: P.ATOM };
+      // |x|: the length of a vector and the determinant of a square matrix, as in Mathcad
+      case 'absval': return { s: `mag(${e(0).s})`, p: P.ATOM };
       case 'determinant': return { s: `mag(${e(0).s})`, p: P.ATOM };
       case 'sqrt': return { s: `sqrt(${e(0).s})`, p: P.ATOM };
       case 'nthRoot': {
@@ -310,16 +459,27 @@ class Converter {
     }
   }
 
+  /** <apply><functionDerivative/>f</apply>, nested once per prime: the function and the order. */
+  primes(el: El): { name: string; n: number } | null {
+    const [head, arg] = kids(el);
+    if (local(el) !== 'apply' || !head || local(head) !== 'functionDerivative' || !arg) return null;
+    if (local(arg) === 'id') return { name: this.ident(arg), n: 1 };
+    const inner = this.primes(arg);
+    return inner && { name: inner.name, n: inner.n + 1 };
+  }
+
   call(head: El, rest: El[]): Ex {
     const raw = rawName(head);
-    let fn = sanitize(raw);
+    let fn = this.ident(head);
     const args = this.args(rest);
     // y′′(t), y′(0): prime notation of a function (odesolve), when y′′ is not a name of its own
     const primed = /^(.*?)(['′]+)$/.exec(raw);
-    if (primed && primed[1] && !this.defined.has(raw)) return { s: `${sanitize(primed[1])}${"'".repeat(primed[2].length)}(${args.join(', ')})`, p: P.ATOM };
+    if (primed && primed[1] && !this.defined.has(nameKey(head))) return { s: `${sanitize(primed[1])}${"'".repeat(primed[2].length)}(${args.join(', ')})`, p: P.ATOM };
     if (raw === 'Γ') fn = 'gamma';
     if (raw === 'mod') fn = 'mod'; // a function here, not the reserved operator
     if (raw === 'if') fn = 'if'; // Mathcad's inline if(cond, a, b), labelled KEYWORD
+    // Mathcad's trace(S, x, …) and pause(S, x, …) show a message while debugging (the matrix trace is tr)
+    if ((raw === 'trace' || raw === 'pause') && !this.defined.has(nameKey(head))) fn = 'traceText';
     if (/^(Find|Minerr|Minimize|Maximize)$/.test(raw)) fn = raw.toLowerCase();
     if (raw === 'atan2' && args.length === 2) return { s: `atan2(${args[1]}, ${args[0]})`, p: P.ATOM }; // Mathcad: atan2(x, y)
     if (raw === 'angle' && args.length === 2) return { s: `mod(atan2(${args[1]}, ${args[0]}), 2 π)`, p: P.ATOM };
@@ -345,7 +505,13 @@ class Converter {
       }
       return acc;
     }
-    throw new Unsupported('a multi-line program inside an expression');
+    if (this.hoist && !this.lazy) {
+      const name = this.temp();
+      const { indent, lines: out } = this.hoist;
+      out.push(`${indent}${name} ←`, ...this.programLines(el, indent + '  '));
+      return name;
+    }
+    throw new Unsupported(this.lazy ? 'a multi-line program in an integrand or a branch of if' : 'a multi-line program inside an expression');
   }
 
   ifChain(el: El): string {
@@ -364,7 +530,7 @@ class Converter {
     const val = (body: El) => {
       const inner = kids(body)[0];
       if (!inner) return 'NaN';
-      return local(inner) === 'program' ? this.inlineProgram(inner) : this.expr(inner).s;
+      return this.lazily(() => (local(inner) === 'program' ? this.inlineProgram(inner) : this.expr(inner).s));
     };
     let acc = 'NaN';
     for (const [test, body] of [...branches].reverse()) acc = test === null ? val(body) : `if(${test}, ${val(body)}, ${acc})`;
@@ -384,15 +550,19 @@ class Converter {
         let j = i;
         while (j < items.length && local(items[j]) === 'ifThen') j++;
         const hasOtherwise = j < items.length && local(items[j]) === 'otherwise';
-        for (let k = i; k < j; k++) {
-          const [c, v] = kids(items[k]);
-          out.push(`${indent}${k > i && hasOtherwise ? 'else if' : 'if'} ${this.expr(c).s}`, ...this.stmt(v, indent + '  '));
-        }
-        if (hasOtherwise) {
-          out.push(`${indent}else`, ...this.stmt(kids(items[j])[0], indent + '  '));
-          j++;
-        }
-        i = j - 1;
+        const run = this.withHoist(indent, () => {
+          const lines: string[] = [];
+          for (let k = i; k < j; k++) {
+            const [c, v] = kids(items[k]);
+            // an else-if's test is evaluated only when the tests before it fail
+            const test = k > i && hasOtherwise ? this.lazily(() => this.expr(c).s) : this.expr(c).s;
+            lines.push(`${indent}${k > i && hasOtherwise ? 'else if' : 'if'} ${test}`, ...this.block(v, indent + '  '));
+          }
+          if (hasOtherwise) lines.push(`${indent}else`, ...this.block(kids(items[j])[0], indent + '  '));
+          return lines;
+        });
+        out.push(...run.lines, ...run.value);
+        i = hasOtherwise ? j : j - 1;
         continue;
       }
       out.push(...this.stmt(it, indent));
@@ -400,20 +570,28 @@ class Converter {
     return out;
   }
 
+  /** A program statement, after the lines that compute the programs among its operands. */
   stmt(el: El, indent: string): string[] {
+    if (local(el) === 'program') return this.programLines(el, indent);
+    const { lines, value } = this.withHoist(indent, () => this.stmtLines(el, indent));
+    return [...lines, ...value];
+  }
+
+  private stmtLines(el: El, indent: string): string[] {
     const t = local(el);
     const ks = kids(el);
     switch (t) {
-      case 'program':
-        return this.programLines(el, indent);
       case 'localDefine':
+        // a program of its own as the value: r ← and the program indented below
+        if (this.isProgram(ks[1])) return [`${indent}${this.target(ks[0])} ←`, ...this.block(ks[1], indent + '  ')];
         return [`${indent}${this.target(ks[0])} ← ${this.expr(ks[1]).s}`];
       case 'for': {
         const iter = this.expr(ks[1]).s;
-        return [`${indent}for ${this.name(ks[0])} ∈ ${iter}`, ...this.stmt(ks[2], indent + '  ')];
+        return [`${indent}for ${this.name(ks[0])} ∈ ${iter}`, ...this.block(ks[2], indent + '  ')];
       }
       case 'while':
-        return [`${indent}while ${this.expr(ks[0]).s}`, ...this.stmt(ks[1], indent + '  ')];
+        // the condition is evaluated before every pass
+        return [`${indent}while ${this.lazily(() => this.expr(ks[0]).s)}`, ...this.block(ks[1], indent + '  ')];
       case 'if': {
         const out: string[] = [];
         let first = true;
@@ -421,7 +599,7 @@ class Converter {
           let test: string | null = null;
           for (const c of kids(n)) {
             const ct = local(c);
-            if (ct === 'test') test = this.expr(kids(c)[0]).s;
+            if (ct === 'test') test = first ? this.expr(kids(c)[0]).s : this.lazily(() => this.expr(kids(c)[0]).s);
             else if (ct === 'then') {
               out.push(`${indent}${first ? 'if' : 'else if'} ${test}`, ...this.stmt(kids(c)[0], indent + '  '));
               first = false;
@@ -433,18 +611,21 @@ class Converter {
         return out;
       }
       case 'ifThen':
-        return [`${indent}if ${this.expr(ks[0]).s}`, ...this.stmt(ks[1], indent + '  ')];
+        return [`${indent}if ${this.expr(ks[0]).s}`, ...this.block(ks[1], indent + '  ')];
       case 'otherwise':
-        return [`${indent}else`, ...this.stmt(ks[0], indent + '  ')];
-      case 'return':
-        return [`${indent}return ${ks[0] ? this.expr(ks[0]).s : '0'}`];
+        return [`${indent}else`, ...this.block(ks[0], indent + '  ')];
+      case 'return': {
+        if (!this.isProgram(ks[0])) return [`${indent}return ${ks[0] ? this.expr(ks[0]).s : '0'}`];
+        const name = this.temp();
+        return [`${indent}${name} ←`, ...this.block(ks[0], indent + '  '), `${indent}return ${name}`];
+      }
       case 'break':
         return [`${indent}break`];
       case 'continue':
         return [`${indent}continue`];
       case 'tryCatch':
       case 'onError':
-        return [`${indent}try`, ...this.stmt(ks[0], indent + '  '), `${indent}on error`, ...this.stmt(ks[1], indent + '  ')];
+        return [`${indent}try`, ...this.block(ks[0], indent + '  '), `${indent}on error`, ...this.block(ks[1], indent + '  ')];
       default:
         return [`${indent}${this.expr(el).s}`];
     }
@@ -463,14 +644,27 @@ class Converter {
       }
       case 'matrix': {
         const items = kids(el).filter((c) => local(c) !== 'display');
-        if (!items.every((c) => local(c) === 'id')) throw new Unsupported('a system of element definitions ([x[i + 1]; y[i + 1]] := …)');
+        // a system of element definitions: [x[i + 1]; y[i + 1]] := … (a column of names and elements)
+        if (!items.every((c) => local(c) === 'id')) {
+          const isElement = (c: El) => local(c) === 'apply' && local(kids(c)[0] ?? c) === 'indexer' && local(kids(c)[1] ?? c) === 'id';
+          const cols = Number(el.getAttribute('cols') ?? 1);
+          if (cols !== 1 || !items.every((c) => local(c) === 'id' || isElement(c))) throw new Unsupported('a system of element definitions other than a column of names and elements');
+          return `[${items.map((c) => this.target(c)).join('; ')}]`;
+        }
         // the names are listed column by column, our list takes the values row by row
         const rows = Number(el.getAttribute('rows') ?? items.length) || items.length, cols = Math.max(1, Math.round(items.length / rows));
         const names = items.map((c) => this.name(c));
         return `[${Array.from({ length: rows * cols }, (_, k) => names[(k % cols) * rows + Math.floor(k / cols)]).join('; ')}]`;
       }
-      case 'apply':
+      case 'apply': {
+        // (M)[i, j] ← …: an element of M, the parentheses only drawn around its name
+        const [head, base, ...rest] = kids(el);
+        if (head && local(head) === 'indexer' && base && local(base) === 'parens' && kids(base).length === 1 && local(kids(base)[0]) === 'id') {
+          const idx = rest[0] && local(rest[0]) === 'sequence' ? kids(rest[0]).map((c) => this.expr(c).s).join(', ') : rest[0] ? this.expr(rest[0]).s : '';
+          return `${this.name(kids(base)[0])}[${idx}]`;
+        }
         return this.expr(el).s;
+      }
       default:
         throw new Unsupported(`a definition of “${local(el)}”`);
     }
@@ -488,25 +682,51 @@ class Converter {
    * becomes the selected row's values; script controls run JScript and are not imported.
    */
   control(lhs: string, el: El): string {
+    if (local(el) === 'ListBoxScriptableControl') return this.listBox(lhs, el);
     if (local(el) !== 'ComboBoxControl') throw new Unsupported(`an input control (${local(el).replace(/Control$/, '')})`);
     const rows = Number(el.getAttribute('rows') ?? 0), cols = Number(el.getAttribute('cols') ?? 0);
     const sel = Number(el.getAttribute('SelectedRow') ?? 0);
     const names = kids(child(el, 'ComboBoxRowNames') ?? el).filter((c) => local(c) === 'rowName').map((c) => (c.textContent ?? '').trim());
     const values = kids(child(el, 'ComboBoxValues') ?? el);
     const scales = kids(child(el, 'ComboBoxScaleFactors') ?? el);
-    const picked = names[sel] ?? String(sel);
-    this.warnings.push(`The input control for ${lhs} (a list of ${names.length || rows} choices) is imported as its selected value, “${picked}”`);
+    const count = Math.max(names.length, rows);
+    const label = (i: number) => names[i] ?? String(i + 1);
     // without a table of values the choice itself is the value (a "Yes"/"No" flag)
-    if (!values.length) return JSON.stringify(picked);
-    const at = (j: number) => {
-      const v = values[sel * cols + j];
-      if (!v || isPlaceholder(v)) return '0';
-      const x = this.expr(v);
-      const sc = scales[j] && !isPlaceholder(scales[j]) ? this.unit(scales[j]) : '';
-      return sc ? `${this.wrap(x, P.MUL)} ${sc}` : x.s;
+    const row = (i: number) => {
+      if (!values.length) return JSON.stringify(label(i));
+      const at = (j: number) => {
+        const v = values[i * cols + j];
+        if (!v || isPlaceholder(v)) return '0';
+        const x = this.expr(v);
+        const sc = scales[j] && !isPlaceholder(scales[j]) ? this.unit(scales[j]) : '';
+        return sc ? `${this.wrap(x, P.MUL)} ${sc}` : x.s;
+      };
+      const vals = Array.from({ length: cols }, (_, j) => at(j));
+      return vals.length === 1 ? vals[0] : `[${vals.join('; ')}]`;
     };
-    const vals = Array.from({ length: cols }, (_, j) => at(j));
-    return vals.length === 1 ? vals[0] : `[${vals.join('; ')}]`;
+    // the region keeps the control: its choices, and the picked one's value as the definition's
+    if (count > 1) this.choices = { labels: Array.from({ length: count }, (_, i) => label(i)), values: Array.from({ length: count }, (_, i) => row(i)), selected: Math.min(sel, count - 1) };
+    return row(sel);
+  }
+
+  /**
+   * A list box whose script (JScript) gives the value: the value it gave when the worksheet was
+   * saved (its RL attribute), since the script does not run here.
+   */
+  listBox(lhs: string, el: El): string {
+    const items = el.getElementsByTagNameNS('*', 'val');
+    const sel = Number(el.getAttribute('SelectedIndex') ?? 0);
+    const picked = items[sel]?.textContent?.trim() ?? String(sel);
+    const rl = el.getAttribute('RL');
+    let value: string | null = null;
+    try {
+      value = rl ? primeValue(atob(rl)) : null;
+    } catch {
+      value = null;
+    }
+    if (value === null) throw new Unsupported('an input control (ListBoxScriptable) without a saved value');
+    this.warnings.push(`The list box for ${lhs} runs a script (JScript), which does not run here: it is imported as the value it gave for “${picked}”, ${value}; the other ${items.length - 1} choices are not offered`);
+    return value;
   }
 
   /** A script control on its own: its input expression, shown (often a check such as λ < λ_lim). */
@@ -529,14 +749,24 @@ class Converter {
       const [lhsEl, valEl] = kids(inner);
       const op = t === 'globalDefine' ? '≡' : ':=';
       const lhs = this.target(lhsEl);
-      if (local(valEl) === 'program') return `${lhs} ${op}\n${this.programLines(valEl, '  ').join('\n')}`;
-      if (local(valEl) === 'eval') {
-        const v = this.expr(kids(valEl)[0]);
-        const unit = this.unitOverride(valEl);
-        return `${lhs} ${op} ${v.s} =${unit ? ' ' + unit : ''}`;
-      }
       if (/Control$/.test(local(valEl))) return `${lhs} ${op} ${this.control(lhs, valEl)}`;
-      return `${lhs} ${op} ${this.expr(valEl).s}`;
+      // x := ⟨value⟩ = unit shows the value
+      const shown = local(valEl) === 'eval';
+      const unit = shown ? this.unitOverride(valEl) : '';
+      const show = shown ? ` =${unit ? ' ' + unit : ''}` : '';
+      let value = shown ? kids(valEl)[0] : valEl;
+      while (value && local(value) === 'parens' && this.isProgram(kids(value)[0])) value = kids(value)[0];
+      // a program, or one program statement standing for it
+      if (this.isProgram(value)) return `${lhs} ${op}${show}\n${this.block(value, '  ').join('\n')}`;
+      // Mathcad 15's list of values for an element definition, x[i] := 0.2, 1, 2: the vector of them
+      if (value && local(value) === 'sequence' && local(lhsEl) === 'apply' && local(kids(lhsEl)[0] ?? lhsEl) === 'indexer') {
+        const name = this.expr(kids(lhsEl)[1]).s;
+        return `${name} ${op} [${kids(value).map((c) => this.expr(c).s).join('; ')}]${show}`;
+      }
+      // programs among the operands are computed first, which makes the definition a program
+      const { lines, value: v } = this.withHoist('  ', () => this.expr(value).s);
+      if (lines.length) return `${lhs} ${op}${show}\n${lines.join('\n')}\n  ${v}`;
+      return `${lhs} ${op} ${v}${show}`;
     }
     if (/ScriptableControl$/.test(t)) return this.scriptControl(inner);
     if (t === 'eval') {
@@ -576,70 +806,200 @@ class Converter {
 
 // ------------------------------------------------------------ text
 
-function textFromXmcd(el: El, conv: Converter): string {
-  const paras: string[] = [];
-  const inline = (n: XNode): string => {
-    let s = '';
+/** A Mathcad 15 text style: its font (size in pt), colour, alignment and list, from <textStyles>. */
+interface Mc15TextStyle { base?: string; style: RunStyle; align?: string; list?: string }
+
+/** Mathcad 15's text styles by name, each resolved over the style it is based on. */
+function mc15TextStyles(doc: { getElementsByTagNameNS(ns: string, name: string): ArrayLike<El> }): Map<string, Mc15TextStyle> {
+  const raw = new Map<string, Mc15TextStyle>();
+  const list = doc.getElementsByTagNameNS('*', 'textStyle');
+  for (let i = 0; i < list.length; i++) {
+    const ts = list[i];
+    const inl = child(ts, 'inlineAttr'), blk = child(ts, 'blockAttr');
+    raw.set(ts.getAttribute('name') ?? '', { base: ts.getAttribute('base-style') ?? undefined, style: inl ? mc15Inline(inl, {}) : {}, align: blk?.getAttribute('text-align') ?? undefined, list: blk?.getAttribute('list-style-type') ?? undefined });
+  }
+  const resolved = new Map<string, Mc15TextStyle>();
+  const resolve = (name: string, depth = 0): Mc15TextStyle => {
+    const own = raw.get(name);
+    if (!own) return { style: {} };
+    const base = own.base && depth < 10 ? resolve(own.base, depth + 1) : { style: {} };
+    const keep = (v: string | undefined, b: string | undefined) => (v && v !== 'inherit' ? v : b);
+    return { style: { ...base.style, ...own.style }, align: keep(own.align, base.align), list: keep(own.list, base.list) };
+  };
+  for (const name of raw.keys()) resolved.set(name, resolve(name));
+  return resolved;
+}
+
+/** Mathcad 15 <inlineAttr>, <f> (size in pt) and <c> attributes over a style. */
+function mc15Inline(el: El, over: RunStyle): RunStyle {
+  const out: RunStyle = { ...over };
+  const a = (n: string) => {
+    const v = el.getAttribute(n);
+    return v === null || v === '' || v === 'inherit' ? undefined : v;
+  };
+  const size = a('font-size') ?? a('size');
+  if (size && Number(size) > 0) out.size = Number(size) * (96 / 72);
+  const family = a('font-family') ?? a('family');
+  if (family) out.family = family;
+  const color = cssColor(a('color') ?? a('val'));
+  if (color) out.color = color;
+  const bg = cssColor(a('background-color'));
+  if (bg) out.background = bg;
+  const w = a('font-weight');
+  if (w) out.bold = /bold/i.test(w);
+  const st = a('font-style');
+  if (st) out.italic = /italic|oblique/i.test(st);
+  const u = a('underline');
+  if (u) out.underline = u === 'true';
+  const lt = a('line-through');
+  if (lt) out.strike = lt === 'true';
+  const va = a('vertical-align');
+  if (va) {
+    out.sub = va === 'sub';
+    out.sup = va === 'super';
+  }
+  return out;
+}
+
+/** Mathcad 15 text as paragraphs of styled runs; inline math as `code`. */
+function textFromXmcd(el: El, conv: Converter, styles: Map<string, Mc15TextStyle>): TextPara[] {
+  const paras: TextPara[] = [];
+  const walk = (n: XNode, st: RunStyle, out: TextRun[]) => {
     for (let c = n.firstChild; c; c = c.nextSibling) {
-      if (c.nodeType === 3) s += c.nodeValue ?? '';
-      else if (c.nodeType === 1) {
-        const t = local(c);
-        const inner = inline(c);
-        if (t === 'b' || t === 'strong') s += inner.trim() ? `**${inner}**` : inner;
-        else if (t === 'i' || t === 'em') s += inner.trim() ? `*${inner}*` : inner;
-        else if (t === 'math') {
+      if (c.nodeType === 3) {
+        // Mathcad indents the markup: a line break and what follows it is not text (that is <br/>)
+        out.push({ text: (c.nodeValue ?? '').replace(/[ \t]*[\r\n]\s*/g, ''), style: st });
+        continue;
+      }
+      if (c.nodeType !== 1) continue;
+      const e = c as El;
+      switch (local(e)) {
+        case 'b': case 'strong': walk(e, { ...st, bold: true }, out); break;
+        case 'i': case 'em': walk(e, { ...st, italic: true }, out); break;
+        case 'u': walk(e, { ...st, underline: true }, out); break;
+        case 'sub': walk(e, { ...st, sub: true }, out); break;
+        case 'sup': walk(e, { ...st, sup: true }, out); break;
+        case 'f': case 'c': case 'inlineAttr': case 'span': walk(e, mc15Inline(e, st), out); break;
+        case 'link': case 'a': walk(e, { ...st, link: e.getAttribute('href') ?? undefined }, out); break;
+        case 'sp': out.push({ text: ' '.repeat(Math.max(1, Number(e.getAttribute('count') ?? 1))), style: st }); break;
+        case 'tab': out.push({ text: '    ', style: st }); break;
+        case 'br': out.push({ text: '\n', style: st }); break;
+        case 'math': case 'region': {
+          const m = local(e) === 'math' ? e : child(e, 'math');
+          let src = '(math)';
           try {
-            s += `\`${conv.statement(c as El)}\``;
+            if (m) src = conv.statement(m);
           } catch {
-            s += '`(math)`';
+            /* shown as (math) */
           }
-        } else if (t === 'br') s += '\n';
-        else s += inner;
+          out.push({ text: `\`${src.replace(/`/g, "'")}\``, style: st, markup: true });
+          break;
+        }
+        default: walk(e, st, out);
       }
     }
-    return s;
   };
   const ps = kids(el).filter((c) => local(c) === 'p');
   for (const p of ps.length ? ps : [el]) {
-    const style = p.getAttribute('style') ?? '';
-    let line = inline(p).replace(/[ \t]+/g, ' ').trim();
-    if (!line) continue;
-    if (/heading\s*1|title/i.test(style)) line = `# ${line}`;
-    else if (/heading\s*2/i.test(style)) line = `## ${line}`;
-    else if (/heading/i.test(style)) line = `### ${line}`;
-    paras.push(line);
+    const name = p.getAttribute('style') ?? 'Normal';
+    const ts = styles.get(name) ?? styles.get('Normal') ?? { style: {} };
+    const runs: TextRun[] = [];
+    walk(p, ts.style, runs);
+    // spaces at the ends of a paragraph do nothing
+    if (runs.length) {
+      runs[0] = { ...runs[0], text: runs[0].markup ? runs[0].text : runs[0].text.replace(/^ +/, '') };
+      const k = runs.length - 1;
+      runs[k] = { ...runs[k], text: runs[k].markup ? runs[k].text : runs[k].text.replace(/ +$/, '') };
+    }
+    const align = (v: string | null | undefined) => (v && v !== 'inherit' ? v : undefined);
+    const a = align(p.getAttribute('text-align')) ?? ts.align;
+    const l = align(p.getAttribute('list-style-type')) ?? ts.list;
+    const hm = /(?:heading|header|überschrift|заголовок|titre|título)\s*(\d)/i.exec(name);
+    paras.push({
+      runs,
+      ...(a === 'center' || a === 'right' || a === 'justify' ? { align: a } : {}),
+      ...(l && l !== 'none' ? { list: /decimal|alpha|roman/.test(l) ? 'number' : 'bullet' } : {}),
+      ...(hm ? { heading: Math.min(3, Math.max(1, Number(hm[1]))) as 1 | 2 | 3 } : /^title$/i.test(name) ? { heading: 1 as const } : {}),
+    });
   }
-  return paras.join('\n\n');
+  return paras;
 }
 
-function textFromXaml(xml: string): string {
-  const doc = new DOMParser().parseFromString(xml, 'text/xml');
-  const paras: string[] = [];
-  const all = doc.getElementsByTagNameNS('*', 'Paragraph');
-  for (let i = 0; i < all.length; i++) {
-    const p = all[i];
-    let s = '';
-    const walk = (n: XNode, bold: boolean, italic: boolean) => {
-      for (let c = n.firstChild; c; c = c.nextSibling) {
-        if (c.nodeType === 3) {
-          const t = c.nodeValue ?? '';
-          s += bold && t.trim() ? `**${t}**` : italic && t.trim() ? `*${t}*` : t;
-        } else if (c.nodeType === 1) {
-          const e = c as El;
-          const t = local(e);
-          walk(e, bold || t === 'Bold' || e.getAttribute('FontWeight') === 'Bold', italic || t === 'Italic' || e.getAttribute('FontStyle') === 'Italic');
-        }
-      }
-    };
-    walk(p, p.getAttribute('FontWeight') === 'Bold', false);
-    s = s.replace(/\*\*\*\*/g, '').trim();
-    if (!s) continue;
-    const size = Number(p.getAttribute('FontSize') ?? 0);
-    if (size >= 20) s = `# ${s.replace(/\*\*/g, '')}`;
-    else if (size >= 16) s = `## ${s.replace(/\*\*/g, '')}`;
-    paras.push(s);
+/** Prime XAML attributes (FontSize in px, colours as #AARRGGBB) over the inherited style. */
+function xamlStyle(e: El, over: RunStyle): RunStyle {
+  const out: RunStyle = { ...over };
+  const a = (n: string) => e.getAttribute(n) || undefined;
+  const size = Number(a('FontSize'));
+  if (size > 0) out.size = size;
+  if (a('FontFamily')) out.family = a('FontFamily');
+  const fg = a('Foreground');
+  if (fg) out.color = cssColor(fg);
+  const bg = a('Background');
+  if (bg) out.background = cssColor(bg);
+  const w = a('FontWeight');
+  if (w) out.bold = /bold|black|heavy/i.test(w);
+  const st = a('FontStyle');
+  if (st) out.italic = /italic|oblique/i.test(st);
+  const deco = a('TextDecorations');
+  if (deco !== undefined) {
+    out.underline = /underline/i.test(deco);
+    out.strike = /strikethrough/i.test(deco);
   }
-  return paras.join('\n\n');
+  // <Run.TextDecorations><TextDecoration Location="Underline"/></Run.TextDecorations>
+  for (const pe of kids(e).filter((c) => local(c).endsWith('.TextDecorations'))) {
+    for (const d of Array.from(pe.getElementsByTagNameNS('*', 'TextDecoration'))) {
+      const loc = d.getAttribute('Location') ?? '';
+      if (/underline/i.test(loc)) out.underline = true;
+      if (/strikethrough/i.test(loc)) out.strike = true;
+    }
+  }
+  const va = a('BaselineAlignment') ?? a('Typography.Variants');
+  if (va) {
+    out.sub = /subscript/i.test(va);
+    out.sup = /superscript/i.test(va);
+  }
+  return out;
+}
+
+/** A Prime text (FlowDocument XAML) as paragraphs of styled runs. */
+function textFromXaml(root: El | null): TextPara[] {
+  const paras: TextPara[] = [];
+  const inline = (n: El, st: RunStyle, out: TextRun[]) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) {
+        out.push({ text: c.nodeValue ?? '', style: st });
+        continue;
+      }
+      if (c.nodeType !== 1) continue;
+      const e = c as El;
+      const t = local(e);
+      if (t.includes('.')) continue; // property elements (Run.TextDecorations)
+      if (t === 'LineBreak') out.push({ text: '\n', style: st });
+      else if (t === 'Bold') inline(e, { ...xamlStyle(e, st), bold: true }, out);
+      else if (t === 'Italic') inline(e, { ...xamlStyle(e, st), italic: true }, out);
+      else if (t === 'Underline') inline(e, { ...xamlStyle(e, st), underline: true }, out);
+      else if (t === 'Hyperlink') inline(e, { ...xamlStyle(e, st), link: e.getAttribute('NavigateUri') ?? undefined }, out);
+      else inline(e, xamlStyle(e, st), out);
+    }
+  };
+  const block = (n: El, st: RunStyle, align: string | undefined, list: TextPara['list']) => {
+    for (const e of kids(n)) {
+      const t = local(e);
+      if (t.includes('.')) continue;
+      const own = xamlStyle(e, st);
+      const al = e.getAttribute('TextAlignment') ?? align;
+      if (t === 'Paragraph') {
+        const runs: TextRun[] = [];
+        inline(e, own, runs);
+        paras.push({ runs, ...(al === 'Center' || al === 'Right' || al === 'Justify' ? { align: al.toLowerCase() as 'center' | 'right' | 'justify' } : {}), ...(list ? { list } : {}) });
+      } else if (t === 'List') {
+        const marker = e.getAttribute('MarkerStyle') ?? 'Disc';
+        block(e, own, al, /decimal|letter|roman/i.test(marker) ? 'number' : 'bullet');
+      } else block(e, own, al, list);
+    }
+  };
+  if (root) block(root, xamlStyle(root, {}), undefined, undefined);
+  return paras;
 }
 
 // ------------------------------------------------------------ packages
@@ -672,14 +1032,12 @@ function findFile(files: Record<string, Uint8Array>, path: string): Uint8Array |
   return byName ? files[byName] : undefined;
 }
 
-function readMcdx(data: Uint8Array): Package {
-  const files = unzipSync(data);
-  const ws = Object.keys(files).find((k) => k.toLowerCase() === 'mathcad/worksheet.xml');
-  if (!ws) throw new Error('This zip file is not a Mathcad Prime worksheet (no mathcad/worksheet.xml)');
+/** The relationships of a part of the package (mathcad/_rels/<part>.rels): id → zip path. */
+function readRels(files: Record<string, Uint8Array>, part: string): Record<string, string> {
   const rels: Record<string, string> = {};
-  const relsKey = Object.keys(files).find((k) => k.toLowerCase() === 'mathcad/_rels/worksheet.xml.rels');
+  const relsKey = Object.keys(files).find((k) => k.toLowerCase() === `mathcad/_rels/${part}.rels`);
   if (relsKey) {
-    const doc = new DOMParser().parseFromString(strFromU8(files[relsKey]), 'text/xml');
+    const doc = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(files[relsKey]).replace(/^\uFEFF/, ''), 'text/xml');
     const list = doc.getElementsByTagNameNS('*', 'Relationship');
     for (let i = 0; i < list.length; i++) {
       const id = list[i].getAttribute('Id');
@@ -688,17 +1046,44 @@ function readMcdx(data: Uint8Array): Package {
       if (id) rels[id] = target.replace(/^\//, '');
     }
   }
-  return { worksheet: strFromU8(files[ws]), rels, files };
+  return rels;
+}
+
+function readMcdx(data: Uint8Array): Package {
+  const files = unzipSync(data);
+  const ws = Object.keys(files).find((k) => k.toLowerCase() === 'mathcad/worksheet.xml');
+  if (!ws) throw new Error('This zip file is not a Mathcad Prime worksheet (no mathcad/worksheet.xml)');
+  return { worksheet: strFromU8(files[ws]), rels: readRels(files, 'worksheet.xml'), files };
 }
 
 // ------------------------------------------------------------ saved results
 
-/** Mathcad's unit names (meter, kilonewton …) are mathjs names too; anything else is not compared. */
+/** Mathcad's names of saved units that mathjs spells otherwise (most, meter or kilonewton, it shares). */
+const SAVED_UNITS: Record<string, string> = {
+  pascal: 'Pa', micron: 'um', gravitational_acceleration: '(9.80665 m/s^2)', becquerel: '(1/s)', pound: 'lb',
+  pound_force: 'lbf', kips_per_sq_inch: 'ksi', pounds_per_sq_inch: 'psi', knots: 'knot', International_BTU: 'BTU',
+  gallons_per_minute: '(gal/minute)', kip: 'kip', degree: 'deg',
+};
+const LONG_PREFIX: Record<string, string> = {
+  yotta: 'Y', zetta: 'Z', exa: 'E', peta: 'P', tera: 'T', giga: 'G', mega: 'M', kilo: 'k', hecto: 'h', deca: 'da',
+  deci: 'd', centi: 'c', milli: 'm', micro: 'u', nano: 'n', pico: 'p', femto: 'f', atto: 'a',
+};
+
+/** A saved unit name as ours: as it is, from the table, or a long SI prefix on a name from it (megapascal). */
+function savedUnit(name: string): string | null {
+  if (SAVED_UNITS[name]) return SAVED_UNITS[name];
+  if (isUnitName(name)) return name;
+  const m = /^(yotta|zetta|exa|peta|tera|giga|mega|kilo|hecto|deca|deci|centi|milli|micro|nano|pico|femto|atto)(.+)$/.exec(name);
+  const base = m ? SAVED_UNITS[m[2]] : undefined;
+  return base && /^[A-Za-z]+$/.test(base) && isUnitName(LONG_PREFIX[m![1]] + base) ? LONG_PREFIX[m![1]] + base : null;
+}
+
+/** A saved result's unit (a product of powers of named units); null when one is not known here. */
 function unitMonomial(el: El): string | null {
   const parts: string[] = [];
   for (const r of kids(el).filter((c) => local(c) === 'unitReference')) {
-    const name = r.getAttribute('unit') ?? '';
-    if (!isUnitName(name)) return null;
+    const name = savedUnit(r.getAttribute('unit') ?? '');
+    if (name === null) return null;
     const num = Number(r.getAttribute('power-numerator') ?? 1), den = Number(r.getAttribute('power-denominator') ?? 1);
     const pw = num / den;
     parts.push(pw === 1 ? name : `${name}^(${Number.isInteger(pw) ? pw : `${num}/${den}`})`);
@@ -717,8 +1102,10 @@ function savedExpr(el: El): string | null {
   if (t === 'str') return JSON.stringify(el.textContent ?? '');
   if (t === 'imag') return `${(el.textContent ?? '').trim()}i`;
   if (t === 'complex') {
-    const [re, im] = kids(el).map(savedExpr);
-    return re !== null && im !== null ? `(${re} + ${im})` : null;
+    // a part that is 0 may be left out
+    const re = kids(el).find((c) => local(c) === 'real'), im = kids(el).find((c) => local(c) === 'imag');
+    const a = re ? savedExpr(re) : '0', b = im ? savedExpr(im) : '0i';
+    return a !== null && b !== null ? `(${a} + ${b})` : null;
   }
   if (t === 'unitedValue') {
     const [v, u] = kids(el);
@@ -754,44 +1141,143 @@ function primeResults(pkg: Package): Map<string, string> {
 
 // ------------------------------------------------------------ main
 
-/** Every name the worksheet defines: definitions, function parameters, program locals, loop counters. */
-function definedNames(root: El, out: Set<string>) {
+/**
+ * The names a region defines: on the worksheet (definitions, functions, element definitions,
+ * solve blocks) and only inside itself (function parameters, program locals, loop counters).
+ */
+function definedNames(root: El): { sheet: Set<string>; inside: Set<string> } {
+  const sheet = new Set<string>(), inside = new Set<string>();
+  const add = (n: El | undefined, out: Set<string>) => {
+    if (!n) return;
+    const k = local(n);
+    if (k === 'id') out.add(nameKey(n));
+    else if (k === 'function') {
+      add(child(n, 'id'), out);
+      add(child(n, 'boundVars'), inside);
+    } else if (k === 'boundVars' || k === 'matrix') kids(n).forEach((c) => add(c, out));
+    else if (k === 'apply' && local(kids(n)[0] ?? n) === 'indexer') add(kids(n)[1], out);
+  };
   const visit = (el: El) => {
     const t = local(el);
-    const target = t === 'define' || t === 'globalDefine' || t === 'localDefine' || t === 'for' ? kids(el)[0] : undefined;
-    const add = (n: El | undefined) => {
-      if (!n) return;
-      const k = local(n);
-      if (k === 'id') out.add(rawName(n));
-      else if (k === 'function') kids(n).forEach(add);
-      else if (k === 'boundVars' || k === 'matrix') kids(n).forEach(add);
-      else if (k === 'apply' && local(kids(n)[0] ?? n) === 'indexer') add(kids(n)[1]);
-    };
-    add(target);
-    if (t === 'boundVars') kids(el).forEach(add);
+    if (t === 'define' || t === 'globalDefine') add(kids(el)[0], sheet);
+    else if (t === 'localDefine' || t === 'for') add(kids(el)[0], inside);
+    else if (t === 'boundVars') add(el, inside);
     kids(el).forEach(visit);
   };
   visit(root);
+  return { sheet, inside };
 }
 
-export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportResult {
+/**
+ * A result format (<general>, <decimal>, <scientific>, <engineering> with precision,
+ * exponential-threshold, show-trailing-zeros), from a region's <resultFormat> or the
+ * worksheet's <results>.
+ */
+function numberFormat(el: El | undefined): NumberFormat | null {
+  const f = el ? kids(el).find((c) => /^(general|decimal|scientific|engineering)$/.test(local(c))) : undefined;
+  if (!f) return null;
+  const out: NumberFormat = { style: local(f) as NumberStyle };
+  const precision = f.getAttribute('precision');
+  if (precision !== null && precision !== '' && Number.isInteger(Number(precision))) out.precision = Math.max(0, Math.min(15, Number(precision)));
+  const threshold = f.getAttribute('exponential-threshold');
+  if (threshold !== null && threshold !== '' && Number.isInteger(Number(threshold))) out.expThreshold = Math.max(1, Math.min(15, Number(threshold)));
+  if (f.getAttribute('show-trailing-zeros') === 'true') out.trailingZeros = true;
+  return out;
+}
+
+/** Height of a row of a Prime spec table, which is imported as one math region a row. */
+const SPEC_ROW = 40;
+
+/** What a worksheet file holds as XML: Prime's package's worksheet.xml, or the .xmcd itself. */
+function worksheetXml(data: Uint8Array): string {
+  const xml = data[0] === 0x50 && data[1] === 0x4b ? readMcdx(data).worksheet : strFromU8(data).replace(/^\uFEFF/, '');
+  if (!/<\s*([\w-]+:)?worksheet[\s>]/.test(xml)) throw new Error('Not a Mathcad worksheet (.mcdx or .xmcd)');
+  return xml;
+}
+
+/** Options of an import. */
+export interface MathcadImportOptions {
+  /**
+   * Worksheets the file references (Insert ▸ Reference), by file name, as the user picked them:
+   * their definitions are imported where the reference is, in a locked, collapsed area.
+   */
+  references?: Record<string, Uint8Array>;
+}
+
+/** The base name of a referenced file, to look it up whatever folder the reference names. */
+const refKey = (file: string) => (file.split(/[\\/]/).pop() ?? file).toLowerCase();
+
+export function importMathcad(data: Uint8Array, fileName = 'worksheet', options: MathcadImportOptions = {}): ImportResult {
   const isZip = data[0] === 0x50 && data[1] === 0x4b;
   const pkg: Package | null = isZip ? readMcdx(data) : null;
-  const xml = pkg ? pkg.worksheet : strFromU8(data).replace(/^﻿/, '');
-  if (!/<\s*([\w-]+:)?worksheet[\s>]/.test(xml)) throw new Error('Not a Mathcad worksheet (.mcdx or .xmcd)');
+  const xml = pkg ? pkg.worksheet : worksheetXml(data);
   const doc = new DOMParser({ onError: () => {} }).parseFromString(xml, 'text/xml');
   const root = doc.documentElement;
   if (!root) throw new Error('The file is not valid XML');
   const conv = new Converter();
+  // the referenced worksheets the user gave, read once each (a file another one references too)
+  const givenRefs = new Map(Object.entries(options.references ?? {}).map(([k, v]) => [refKey(k), v]));
+  const refDocs = new Map<string, El | null>();
+  const refFileOf = (ref: El) => (ref.getAttribute('href') ?? ref.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '').split(/[\\/]/).pop() || 'another worksheet';
+  const givenReference = (ref: El): El | null => {
+    const key = refKey(refFileOf(ref));
+    if (!refDocs.has(key)) {
+      const bytes = givenRefs.get(key);
+      let regions: El | null = null;
+      if (bytes) {
+        try {
+          const top = new DOMParser({ onError: () => {} }).parseFromString(worksheetXml(bytes), 'text/xml').documentElement;
+          regions = top ? kids(top).find((c) => local(c) === 'regions') ?? null : null;
+        } catch (e) {
+          conv.warnings.push(`The referenced worksheet ${refFileOf(ref)} you picked could not be read: ${(e as Error).message}`);
+        }
+      }
+      refDocs.set(key, regions);
+    }
+    return refDocs.get(key) ?? null;
+  };
+  // the names of every worksheet that calculates here: this one and those it references
+  const nameRoots: El[] = [root];
+  {
+    const seen = new Set<string>();
+    const visit = (el: El) => {
+      for (const ref of el.getElementsByTagNameNS('*', 'reference')) {
+        const key = refKey(refFileOf(ref));
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const given = givenRefs.has(key) ? givenReference(ref) : null;
+        if (given) {
+          nameRoots.push(given);
+          visit(given);
+        }
+      }
+    };
+    visit(root);
+  }
+  const allIds = () => nameRoots.flatMap((r) => [...r.getElementsByTagNameNS('*', 'id')]);
   const warnings = conv.warnings;
   const ws = emptyWorksheet();
   ws.title = fileName.replace(/\.(mcdx|xmcd)$/i, '');
   // Prime places regions in device-independent pixels (1/96 inch) like us, Mathcad 15 in points
   const PX = pkg ? 1 : 96 / 72;
-  definedNames(root, conv.defined);
-  for (const d of doc.getElementsByTagNameNS('*', 'define')) {
+  // Mathcad 15 does not label units: a name is a unit unless the worksheet has defined it above
+  // (or the region defines it itself); global definitions (≡) come first
+  const sheetNames = new Set<string>();
+  for (const r of nameRoots) for (const d of r.getElementsByTagNameNS('*', 'globalDefine')) definedNames(d).sheet.forEach((n) => sheetNames.add(n));
+  let insideNames = new Set<string>();
+  conv.defined = { has: (n: string) => sheetNames.has(n) || insideNames.has(n) };
+  for (const id of allIds()) {
+    const raw = rawName(id);
+    if (nameKey(id) === raw) conv.plainNames.add(raw);
+    else {
+      const styles = conv.styledNames.get(raw) ?? [];
+      if (!styles.includes(styleOf(id))) conv.styledNames.set(raw, [...styles, styleOf(id)]);
+    }
+  }
+  for (const r of nameRoots) for (const d of [...r.getElementsByTagNameNS('*', 'define'), ...r.getElementsByTagNameNS('*', 'globalDefine')]) {
     const t = kids(d)[0];
-    if (t && local(t) === 'id') conv.variables.add(rawName(t));
+    if (t && local(t) === 'id' && local(d) === 'define') conv.variables.add(rawName(t));
+    definedNames(d).sheet.forEach((n) => !n.includes('#') && conv.userNames.add(n));
   }
 
   // ORIGIN: Prime's calculation settings, Mathcad 15's <builtInVariables>
@@ -799,6 +1285,26 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
   const settingsDoc = settingsXml ? new DOMParser({ onError: () => {} }).parseFromString(strFromU8(settingsXml).replace(/^﻿/, ''), 'text/xml') : doc;
   const biv = settingsDoc.getElementsByTagNameNS('*', 'builtInVariables')[0];
   if (biv?.getAttribute('array-origin') === '1') ws.settings.origin = 1;
+  // Mathcad 11–15 calculate a little differently from Prime (partial calls, programs' locals)
+  if (!pkg) ws.settings.mathcad15 = true;
+
+  // how numbers are shown: the worksheet's result format (Prime keeps it in presentation.xml)
+  const presentationXml = pkg ? findFile(pkg.files, 'mathcad/settings/presentation.xml') : undefined;
+  const presentation = presentationXml ? new DOMParser({ onError: () => {} }).parseFromString(strFromU8(presentationXml).replace(/^\uFEFF/, ''), 'text/xml') : doc;
+  const sheetFormat = numberFormat(presentation.getElementsByTagNameNS('*', 'results')[0]);
+  if (sheetFormat?.precision !== undefined) ws.settings.precision = sheetFormat.precision;
+  if (sheetFormat?.expThreshold !== undefined) ws.settings.expThreshold = sheetFormat.expThreshold;
+  /** A region's own result format: what differs from the worksheet's. */
+  const regionFormat = (math: El): NumberFormat | undefined => {
+    const f = numberFormat(child(math, 'resultFormat'));
+    if (!f) return undefined;
+    const out: NumberFormat = {};
+    if (f.precision !== undefined && f.precision !== ws.settings.precision) out.precision = f.precision;
+    if (f.expThreshold !== undefined && f.expThreshold !== ws.settings.expThreshold) out.expThreshold = f.expThreshold;
+    if (f.style && f.style !== 'general') out.style = f.style;
+    if (f.trailingZeros) out.trailingZeros = true;
+    return Object.keys(out).length ? out : undefined;
+  };
   let originSet = false;
 
   // the page width, beyond which Mathcad users keep side calculations
@@ -817,26 +1323,109 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
 
   // order: Prime by the region's top; Mathcad 15 by the baseline of its math (align-y), so that
   // h := (b − a)/N, whose fraction rises above the line, comes after N := 5 to its left
-  type Placed = { region: El; x: number; y: number; order: number };
-  const flatten = (container: El, dx: number, dy: number): Placed[] => {
-    const out: Placed[] = [];
-    for (const r of kids(container).filter((c) => local(c) === 'region')) {
-      const x = dx + Number(r.getAttribute('left') ?? 0) * PX;
-      const y = dy + Number(r.getAttribute('top') ?? 0) * PX;
-      const alignY = r.getAttribute('align-y');
-      const order = !pkg && alignY !== null ? dy + Number(alignY) * PX : y;
-      const area = child(r, 'Area') ?? child(r, 'area');
-      // Prime: <Area><regions>…; Mathcad 15: a collapsed <area> holds its regions itself
-      const inner = area ? child(area, 'regions') ?? (kids(area).some((c) => local(c) === 'region') ? area : undefined) : undefined;
-      if (inner) out.push(...flatten(inner, x, y));
-      else if (!area) out.push({ region: r, x, y, order });
-    }
-    return out;
+  type Placed = { region: El; x: number; y: number; order: number; included?: string };
+  /** An area as it is expanded: its bar at (x, y), its band `height` tall. */
+  type AreaPlace = { x: number; y: number; height: number; collapsed: boolean; locked: boolean; title: string; depth: number };
+  const areas: AreaPlace[] = [];
+  const sizeOf = (r: El) => {
+    // a spec table becomes one math region a row (SPEC_ROW apart)
+    const table = child(r, 'spec-table');
+    if (table) return kids(table).filter((c) => local(c) === 'math').length * SPEC_ROW;
+    return Number(r.getAttribute('height') ?? r.getAttribute('actualHeight') ?? 0) * PX || 20;
   };
-  const placed = flatten(regionsEl, 0, 0).sort((a, b) => a.order - b.order || a.x - b.x);
+  /**
+   * The regions of a container placed as on the expanded page. Prime places an area's regions
+   * relative to the area; Mathcad 15 relative to a collapsed area but on the page in an open
+   * one. Both save what follows a collapsed area where it is with the area collapsed, so that
+   * moves down by what the area hides; the import collapses the area again afterwards.
+   * Returns the bottom of what it placed.
+   */
+  /** A Prime reference's worksheet as Prime cached it in the package (mathcad/include/…): its regions. */
+  const cachedReference = (ref: El): El | null => {
+    const idref = ref.getAttribute('item-idref');
+    const path = pkg && idref ? pkg.rels[idref] : undefined;
+    const bytes = path ? findFile(pkg!.files, path) : undefined;
+    if (!bytes) return null;
+    const cached = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(bytes).replace(/^\uFEFF/, ''), 'text/xml').documentElement;
+    return cached ? child(cached, 'regions') ?? null : null;
+  };
+  const refFile = refFileOf;
+  /** The files being included, outermost first (a worksheet referencing itself is not followed). */
+  const including: string[] = [];
+  const layout = (container: El, ox: number, oy: number, depth: number, out: Placed[], included?: string): number => {
+    const items = kids(container).filter((c) => local(c) === 'region').sort((a, b) => Number(a.getAttribute('top') ?? 0) - Number(b.getAttribute('top') ?? 0));
+    const pushes: { at: number; by: number }[] = [];
+    let bottom = oy;
+    for (const r of items) {
+      const top = Number(r.getAttribute('top') ?? 0) * PX;
+      const shift = pushes.reduce((acc, p) => acc + (p.at < top - 0.5 ? p.by : 0), 0);
+      const x = ox + Number(r.getAttribute('left') ?? 0) * PX;
+      const y = oy + top + shift;
+      const alignY = r.getAttribute('align-y');
+      const order = !pkg && alignY !== null ? oy + Number(alignY) * PX + shift : y;
+      const area = child(r, 'Area') ?? child(r, 'area');
+      // a reference whose worksheet Prime cached, or which the user picked: its definitions in a
+      // collapsed, locked area there
+      const ref = child(r, 'reference');
+      const cached = ref ? cachedReference(ref) : null;
+      const given = ref && !cached ? givenReference(ref) : null;
+      if (ref && (cached || given) && !including.includes(refKey(refFile(ref)))) {
+        const file = refFile(ref);
+        const at = areas.length;
+        areas.push({ x, y, height: 0, collapsed: true, locked: true, title: `Reference: ${file}`, depth });
+        including.push(refKey(file));
+        const end = layout((cached ?? given)!, x, y + AREA_BAR, depth + 1, out, file);
+        including.pop();
+        areas[at].height = Math.max(AREA_BAR + AREA_PAD, end - y + AREA_PAD);
+        pushes.push({ at: top, by: areas[at].height - AREA_BAR });
+        (cached ? referenced : picked).push(file);
+        bottom = Math.max(bottom, y + areas[at].height);
+        continue;
+      }
+      if (!area) {
+        // what a referenced worksheet shows is not needed to calculate with it
+        if (included && !/^(math|solveblock|spec-table)$/.test(local(kids(r).find((c) => local(c) !== 'rendering') ?? r))) continue;
+        out.push({ region: r, x, y, order, ...(included ? { included } : {}) });
+        bottom = Math.max(bottom, y + sizeOf(r));
+        continue;
+      }
+      // Prime: <Area><regions>…; Mathcad 15: the area holds its regions itself
+      const inner = child(area, 'regions') ?? area;
+      const collapsed = /^true$/i.test(area.getAttribute('IsCollapsed') ?? area.getAttribute('is-collapsed') ?? '');
+      const locked = /^true$/i.test(area.getAttribute('IsLocked') ?? area.getAttribute('is-locked') ?? '');
+      const relative = !!pkg || collapsed;
+      const at = areas.length;
+      areas.push({ x, y, height: 0, collapsed, locked, title: area.getAttribute('show-name') === 'false' ? '' : area.getAttribute('name') ?? '', depth });
+      const end = layout(inner, relative ? x : ox, relative ? y : oy + shift, depth + 1, out, included);
+      // the band holds the contents; an open area of Mathcad 15 also saves its own height
+      const saved = !collapsed && !pkg ? sizeOf(r) : 0;
+      const height = Math.max(AREA_BAR + AREA_PAD, end - y + AREA_PAD, saved);
+      areas[at].height = height;
+      if (collapsed) pushes.push({ at: top, by: height - AREA_BAR });
+      bottom = Math.max(bottom, y + height);
+    }
+    return bottom;
+  };
+  const flat: Placed[] = [];
+  const referenced: string[] = [];
+  const picked: string[] = [];
+  layout(regionsEl, 0, 0, 0, flat);
+  for (const file of new Set(referenced)) {
+    warnings.push(`The worksheet references ${file}: its definitions come from the copy Prime saved with this file, in the collapsed area “Reference: ${file}” (locked; they do not change when ${file} does)`);
+  }
+  for (const file of new Set(picked)) {
+    warnings.push(`The worksheet references ${file}: its definitions come from the copy you picked, in the collapsed area “Reference: ${file}” (locked; they do not change when ${file} does)`);
+  }
+  /** Referenced worksheets neither cached in the file nor picked: their definitions are missing. */
+  const missingRefs = new Set<string>();
+  const placed = flat.sort((a, b) => a.order - b.order || a.x - b.x);
 
   const regions: Region[] = [];
-  let pageBreaks = 0;
+  /** Text regions, written once the whole worksheet's normal text size is known. */
+  const texts: { region: TextRegion; paras: TextPara[]; highlight?: string }[] = [];
+  const textStyles = pkg ? new Map<string, Mc15TextStyle>() : mc15TextStyles(doc);
+  /** Markers where the worksheet has page breaks (they move with the layout until it is final). */
+  const pageBreaks = new Set<string>();
   const fail = (what: string, e: unknown, at: Placed) => {
     const msg = e instanceof Unsupported ? `uses ${e.message}, which mathstudii cannot import yet` : (e as Error).message;
     warnings.push(`${what} at ${Math.round(at.y)} px: ${msg}`);
@@ -852,6 +1441,49 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     regions.push(createRegion('image', at.x, at.y + 18, { src, width }));
     return true;
   };
+  /** A Prime OLE object that is a Word document: a text region with its paragraphs. */
+  const oleText = (body: El, at: Placed): boolean => {
+    const idref = body.getAttribute('item-idref');
+    const ole = pkg && idref && pkg.rels[idref] ? findFile(pkg.files, pkg.rels[idref]) : undefined;
+    const doc = ole ? wordContent(ole) : null;
+    if (!doc) return false;
+    const width = Math.min(PAGE_WIDTH - 2 * PAGE_MARGIN, Math.max(160, Number(at.region.getAttribute('width') ?? 0) * PX || 360));
+    if (doc.paragraphs.length) {
+      const reg = createRegion('text', at.x, at.y, { markdown: '', width }) as TextRegion;
+      texts.push({ region: reg, paras: doc.paragraphs.map((l) => ({ runs: [{ text: l, style: {} }] })) });
+      regions.push(reg);
+      warnings.push(`An embedded Word document at ${Math.round(at.y)} px became a text region with its text; its formatting, pictures and equations are not kept`);
+      return true;
+    }
+    // what such a document shows is drawn in a Windows metafile, which is not converted
+    warnings.push(`An embedded Word document at ${Math.round(at.y)} px was not imported: it holds no text, only drawing objects, and Prime keeps its picture as a Windows metafile, which is not shown here`);
+    return true;
+  };
+  /**
+   * Mathcad 15's File Read component (outputs, no inputs, a data file) becomes
+   * out := READPRN("file") (READCSV for .csv, READEXCEL for a workbook); a File Write component
+   * (inputs and a file) is noted, as nothing here writes files. False for other components.
+   */
+  const componentRead = (body: El, at: Placed): boolean => {
+    const ref = body.getAttribute('item-idref');
+    const file = ref ? componentFile(binary[ref]) : null;
+    if (!file) return false;
+    const ins = kids(child(body, 'inputs') ?? body).filter((c) => local(c) !== 'inputs' && local(c) !== 'outputs');
+    const outs = kids(child(body, 'outputs') ?? body).filter((c) => local(c) !== 'inputs' && local(c) !== 'outputs');
+    const name = file.split(/[\\/]/).pop() ?? file;
+    if (outs.length === 1 && !ins.length) {
+      const lhs = conv.target(outs[0]);
+      const fn = /\.csv$/i.test(name) ? 'READCSV' : /\.xlsx?$/i.test(name) ? 'READEXCEL' : 'READPRN';
+      regions.push(createRegion('math', at.x, at.y, { source: `${lhs} := ${fn}(${JSON.stringify(file)})` }));
+      warnings.push(`The File Read component for ${lhs} at ${Math.round(at.y)} px became ${lhs} := ${fn}("${name}"): attach ${name} in File ▸ Data files… (a component set to read only some rows or columns reads them all here)`);
+      return true;
+    }
+    if (ins.length && !outs.length && rendering(at, 'File Write component')) {
+      warnings.push(`The File Write component at ${Math.round(at.y)} px (it writes ${ins.map((c) => conv.expr(c).s).join(', ')} to ${name}) is shown as Mathcad's picture of it: worksheets here do not write files`);
+      return true;
+    }
+    return false;
+  };
   // math regions are placed at their baseline less a line's ascent, so that our reading order
   // (by the top of a region) is Mathcad's
   const mathY = (at: Placed) => (at.order !== at.y ? at.order - 12 : at.y);
@@ -863,6 +1495,9 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
     const r = at.region;
     const body = kids(r).find((c) => local(c) !== 'rendering');
     if (!body) continue;
+    const names = definedNames(r);
+    names.sheet.forEach((n) => sheetNames.add(n));
+    insideNames = names.inside;
     const kind = local(body);
     try {
       if (kind === 'math') {
@@ -873,6 +1508,7 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           continue;
         }
         conv.scale = '';
+        conv.choices = undefined;
         const src = conv.statement(body);
         // ORIGIN := 1 is a setting here
         const om = /^ORIGIN := ([01])$/.exec(src);
@@ -884,7 +1520,16 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
         }
         if (solve) {
           if (/\b(find|minerr|minimize|maximize|odesolve|pdesolve)\(/i.test(src)) {
-            regions.push(createRegion('solve', solve.at.x, mathY(solve.at), { guesses: solve.guesses.join('\n'), constraints: solve.constraints.join('\n'), solver: src }));
+            // Find(x, y) → solves symbolically: solved numerically here, from 0 where the block
+            // gives no guess (the solution of its equations does not depend on one)
+            let solver = src;
+            const symbolic = /^(.*\b(?:find|minerr)\((.*)\))\s*→$/i.exec(src);
+            if (symbolic) {
+              solver = `${symbolic[1]} =`;
+              const guessed = new Set(solve.guesses.map((g) => g.split(':=')[0].trim()));
+              for (const v of symbolic[2].split(',').map((x) => x.trim())) if (/^[\p{L}_][\p{L}\p{N}_ʹ]*$/u.test(v) && !guessed.has(v)) solve.guesses.push(`${v} := 0`);
+            }
+            regions.push(createRegion('solve', solve.at.x, mathY(solve.at), { guesses: solve.guesses.join('\n'), constraints: solve.constraints.join('\n'), solver }));
             solve = null;
             continue;
           }
@@ -897,25 +1542,36 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
             continue;
           }
         }
-        const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined });
+        const format = regionFormat(body);
+        const choices = conv.choices;
+        const reg = createRegion('math', at.x, mathY(at), { source: src, disabled: body.getAttribute('disable-calc') === 'true' || undefined, ...(format ? { format } : {}), ...(choices ? { choices } : {}) });
         regions.push(reg);
         const ref = body.getAttribute('resultRef');
-        const value = ref !== null ? cached.get(ref) : savedOfEval(body);
+        // a referenced worksheet's results are not in this file's result.xml
+        const value = at.included ? undefined : ref !== null ? cached.get(ref) : savedOfEval(body);
         if (value !== undefined && value !== null && / =( |$)/.test(src.split('\n')[0])) {
           saved.push({ regionId: reg.id, expr: conv.scale ? `(${value})*(${conv.scale})` : value });
         }
       } else if (kind === 'text') {
-        let md = '';
+        let paras: TextPara[] = [];
         const idref = body.getAttribute('item-idref');
+        const flow = child(body, 'FlowDocument');
         if (pkg && idref && pkg.rels[idref]) {
           const xaml = findFile(pkg.files, pkg.rels[idref]);
           if (xaml) {
             const inner = unzipSync(xaml);
             const docKey = Object.keys(inner).find((k) => /document\.xaml$/i.test(k));
-            if (docKey) md = textFromXaml(strFromU8(inner[docKey]));
+            if (docKey) paras = textFromXaml(new DOMParser({ onError: () => {} }).parseFromString(strFromU8(inner[docKey]), 'text/xml').documentElement as unknown as El);
           }
-        } else md = textFromXmcd(body, conv);
-        if (md.trim()) regions.push(createRegion('text', at.x, at.y, { markdown: md, width: Math.max(160, Number(r.getAttribute('width') ?? 0) * PX || 360) }));
+        } else if (flow) paras = textFromXaml(flow); // converted from Mathcad 15: the document itself
+        else paras = textFromXmcd(body, conv, textStyles);
+        if (paras.some((p) => p.runs.some((x) => x.text.trim()))) {
+          const reg = createRegion('text', at.x, at.y, { markdown: '', width: Math.max(160, Number(r.getAttribute('width') ?? 0) * PX || 360) });
+          // Mathcad 15 highlights a region with its own background colour
+          const highlight = r.getAttribute('show-highlight') === 'true' ? cssColor(r.getAttribute('background-color')) ?? '#ffff80' : cssColor(r.getAttribute('background-color'));
+          texts.push({ region: reg as TextRegion, paras, highlight });
+          regions.push(reg);
+        }
       } else if (kind === 'solveblock') {
         regions.push(solveBlock(body, conv, at));
       } else if (kind === 'picture') {
@@ -929,35 +1585,154 @@ export function importMathcad(data: Uint8Array, fileName = 'worksheet'): ImportR
           else warnings.push(`Plot at ${Math.round(at.y)} px: Mathcad 15 plots are stored in a binary format and could not be converted`);
         } else regions.push(plot(body, conv, at));
       } else if (kind === 'spec-table') {
-        let y = at.y;
-        for (const m of kids(body).filter((c) => local(c) === 'math')) {
-          regions.push(createRegion('math', at.x, y, { source: conv.statement(m) }));
-          y += 40;
-        }
+        // a row a math region, within the table's own height: Prime calculates the table where it
+        // starts, so its last row must not fall below a region beside it
+        const rows = kids(body).filter((c) => local(c) === 'math');
+        const below = placed.reduce((m, p) => (p.y > at.y + 0.5 ? Math.min(m, p.y) : m), Infinity);
+        const height = Number(r.getAttribute('actualHeight') ?? 0) * PX;
+        const step = Math.max(0, Math.min(SPEC_ROW, height > 0 ? height / rows.length : SPEC_ROW, (below - at.y) / rows.length));
+        rows.forEach((m, k) => regions.push(createRegion('math', at.x, at.y + k * step, { source: conv.statement(m) })));
       } else if (kind === 'pageBreak') {
-        pageBreaks++;
+        const mark = createRegion('text', at.x, at.y, { markdown: '' });
+        pageBreaks.add(mark.id);
+        regions.push(mark);
       } else if (kind === 'reference') {
         // Mathcad 15 "Reference": the definitions of another worksheet, read when this one calculates
-        const href = body.getElementsByTagNameNS('*', 'originRef')[0]?.getAttribute('href') ?? '';
-        const file = href.split(/[\\/]/).pop() || 'another worksheet';
-        warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: what that worksheet defines is not imported (import it too and copy the definitions here)`);
-        regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported.*`, width: 300 }));
-      } else if (!rendering(at, kind === 'ole' ? 'Embedded object' : kind === 'component' ? 'Component' : `A ${kind} region`)) {
-        warnings.push(`Skipped a ${kind} region at ${Math.round(at.y)} px`);
+        // (Prime: href on the reference itself; Mathcad 15: on its originRef)
+        const file = refFile(body);
+        missingRefs.add(file);
+        warnings.push(`A reference to ${file} at ${Math.round(at.y)} px: the file does not keep what ${file} defines, so what uses it does not calculate. Pick ${file} in this report (Pick referenced worksheets…) to import its definitions`);
+        regions.push(createRegion('text', at.x, at.y, { markdown: `⚠️ *Reference to “${file}”: its definitions are not imported (pick the file when importing).*`, width: 300 }));
+      } else if (kind === 'oleObject' && pkg && oleText(body, at)) {
+        // an embedded Word document: its text
+      } else if (kind === 'excelComponent' && pkg) {
+        regions.push(excelComponent(body, pkg, conv, at, warnings));
+      } else if (kind === 'component' && componentRead(body, at)) {
+        // a File Read component: the function reading that file
       } else {
-        warnings.push(`A ${kind} region at ${Math.round(at.y)} px is shown as Mathcad's picture of it`);
+        // what is not converted: Mathcad's picture of it, named as precisely as the file allows
+        const what = kind === 'ole' ? oleKind(body) : kind === 'oleObject' ? 'An embedded object (OLE)' : kind === 'component' ? componentKind(body, conv) : kind === 'chartComponent' ? 'A chart component' : `A ${kind} region`;
+        if (!rendering(at, what.replace(/ \(.*$/, ''))) warnings.push(`${what} at ${Math.round(at.y)} px was not imported: the file has no picture of it`);
+        else warnings.push(`${what} at ${Math.round(at.y)} px is shown as Mathcad's picture of it`);
       }
     } catch (e) {
       fail(kind === 'math' ? 'math' : kind, e, at);
     }
   }
   if (solve) warnings.push('A "Given" block has no Find/Minerr call; its constraints were dropped');
-  void pageBreaks; // page breaks follow from our own page layout
 
+  // the page header and footer: the page's own lines (Report tab), with their fields
+  const page = pkg ? primePage(pkg, pageWidth || 816, binary, warnings) : mc15Page(pageModel, binary);
+  if (page.header || page.footer) {
+    ws.settings.report = { enabled: true, ...(page.header ? { header: page.header } : {}), ...(page.footer ? { footer: page.footer } : {}), ...(page.logo ? { logo: page.logo } : {}) };
+  }
+
+  // text: the size most of it has is the normal size here; a serif worksheet keeps its serif
+  const normal = normalSize(texts.map((t) => t.paras));
+  for (const t of texts) {
+    const { markdown, style } = toMarkdown(t.paras, normal);
+    t.region.markdown = markdown;
+    if (t.highlight && !style.background) style.background = t.highlight;
+    if (Object.keys(style).length) t.region.style = style;
+  }
+  const families = texts.flatMap((t) => t.paras.flatMap((p) => p.runs.map((x) => [x.style.family ?? '', x.text.length] as const)));
+  const serif = families.reduce((n, [f, len]) => n + (/times|georgia|garamond|cambria|serif/i.test(f) && !/sans/i.test(f) ? len : -len), 0) > 0;
+  if (serif) ws.settings.format = { ...ws.settings.format, textFont: 'serif' };
+
+  // areas: their bars (drawn first, under the regions), collapsed again as in the file
+  const bars = areas.map((a) => createRegion('area', a.x, a.y, { title: a.title, height: Math.round(a.height) }) as AreaRegion);
+  regions.unshift(...bars);
   const moved = fitToPage(regions, pageWidth);
   if (moved) warnings.push(`${moved} region${moved > 1 ? 's' : ''} to the right of Mathcad's page ${moved > 1 ? 'were' : 'was'} moved onto the page`);
   ws.regions = regions;
-  return { ws, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved };
+  let out = nestBands(ws);
+  // a locked area's regions cannot be edited (Mathcad asks for its password to unlock it)
+  const locked = new Set(bars.filter((_, i) => areas[i].locked).flatMap((b) => [...withContents(out.regions, [b.id])]));
+  if (locked.size) out = { ...out, regions: out.regions.map((r) => (locked.has(r.id) ? { ...r, locked: true } : r)) };
+  for (const i of areas.map((_, k) => k).sort((p, q) => areas[q].depth - areas[p].depth)) {
+    if (areas[i].collapsed) out = collapseArea(out, bars[i].id);
+  }
+  out = startPages(out, pageBreaks);
+  return { ws: out, warnings, format: pkg ? 'Mathcad Prime (.mcdx)' : 'Mathcad 11–15 (.xmcd)', saved, ...(missingRefs.size ? { references: [...missingRefs] } : {}) };
+}
+
+/**
+ * A page break starts a new page (pageBreakShift): on the final layout, as the file has it with
+ * its areas collapsed, what is below a break moves down. A collapsed area's hidden regions move
+ * with its bar; an open area a break lies in grows. The markers of the breaks go.
+ */
+function startPages(ws: Worksheet, markers: Set<string>): Worksheet {
+  if (!markers.size) return ws;
+  const hidden = hiddenIds(ws.regions);
+  const shift = pageBreakShift(ws.regions.filter((r) => markers.has(r.id) && !hidden.has(r.id)).map((r) => r.y));
+  const owner = new Map<string, number>();
+  for (const r of ws.regions) if (r.kind === 'area' && r.collapsed) r.hidden?.forEach((id) => owner.set(id, shift(r.y)));
+  const regions = ws.regions.filter((r) => !markers.has(r.id)).map((r): Region => {
+    const by = owner.get(r.id) ?? shift(r.y);
+    if (r.kind === 'area') {
+      const hiddenLeft = r.hidden?.filter((id) => !markers.has(id));
+      const grown = r.collapsed ? r.height : r.height + shift(r.y + r.height) - shift(r.y);
+      return { ...r, y: r.y + by, height: grown, ...(r.hidden ? { hidden: hiddenLeft } : {}) };
+    }
+    return by ? { ...r, y: r.y + by } : r;
+  });
+  return { ...ws, regions };
+}
+
+/**
+ * A value Prime saved in its own notation (a script control's RL attribute):
+ * (number 3:0x…), (op_matrix:0x… (unboxed rows) (unboxed cols) (list …)) column by column,
+ * (string "…"). Null for anything else.
+ */
+export function primeValue(src: string): string | null {
+  type Node = string | Node[];
+  let i = 0;
+  const parse = (): Node => {
+    while (/\s/.test(src[i] ?? '')) i++;
+    if (src[i] === '(') {
+      i++;
+      const out: Node[] = [];
+      for (;;) {
+        while (/\s/.test(src[i] ?? '')) i++;
+        if (i >= src.length) throw new Error('unbalanced');
+        if (src[i] === ')') {
+          i++;
+          return out;
+        }
+        out.push(parse());
+      }
+    }
+    if (src[i] === '"') {
+      const m = /^"((?:[^"\\]|\\.)*)"/.exec(src.slice(i));
+      if (!m) throw new Error('string');
+      i += m[0].length;
+      return m[0];
+    }
+    const m = /^[^\s()]+/.exec(src.slice(i));
+    if (!m) throw new Error('atom');
+    i += m[0].length;
+    return m[0];
+  };
+  const head = (n: Node) => (Array.isArray(n) && typeof n[0] === 'string' ? n[0].replace(/:0x[0-9a-f]+$/i, '') : '');
+  const value = (n: Node): string | null => {
+    if (!Array.isArray(n)) return null;
+    const h = head(n);
+    if (h === 'number' && typeof n[1] === 'string') {
+      const v = n[1].replace(/:0x[0-9a-f]+$/i, '');
+      return isNumberLiteral(v) ? v : null;
+    }
+    if (h === 'string' && typeof n[1] === 'string') return n[1].startsWith('"') ? n[1] : JSON.stringify(n[1]);
+    if (h === 'op_matrix') {
+      const dim = (k: Node) => (Array.isArray(k) && head(k) === 'unboxed' ? Number(k[1]) : NaN);
+      const rows = dim(n[1]), cols = dim(n[2]), list = n[3];
+      if (!(rows > 0 && cols > 0) || !Array.isArray(list) || head(list) !== 'list' || list.length - 1 !== rows * cols) return null;
+      const items = list.slice(1).map(value);
+      if (items.some((v) => v === null)) return null;
+      return `[${Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => items[c * rows + r]).join(', ')).join('; ')}]`;
+    }
+    return null;
+  };
+  return value(parse());
 }
 
 /** A Mathcad 15 shown result: the <result> inside the region's <ml:eval>. */
@@ -965,6 +1740,112 @@ function savedOfEval(math: El): string | null {
   const ev = math.getElementsByTagNameNS('*', 'eval')[0];
   const res = ev ? kids(ev).find((c) => local(c) === 'result') : undefined;
   return res ? savedExpr(res) : null;
+}
+
+/**
+ * Prime's Excel component as a spreadsheet region: the workbook embedded in the package (the
+ * "Package" stream of its OLE part), excel["A1"] := … definitions as inputs written into cells
+ * and x := excel["B2"] as outputs read back.
+ */
+function excelComponent(el: El, pkg: Package, conv: Converter, at: { x: number; y: number }, warnings: string[]): Region {
+  const inputs: SheetInput[] = [], outputs: SheetOutput[] = [];
+  const cellRef = (e: El | undefined): string | null => {
+    if (!e || local(e) !== 'apply' || local(kids(e)[0] ?? e) !== 'indexer') return null;
+    const [, target, ref] = kids(e);
+    return target && ref && local(target) === 'id' && local(ref) === 'str' ? (ref.textContent ?? '').trim() : null;
+  };
+  let table: El | undefined;
+  for (const d of Array.from(el.getElementsByTagNameNS('*', 'define'))) {
+    const [lhs, rhs] = kids(d);
+    const into = cellRef(lhs), from = cellRef(rhs);
+    if (into && rhs) inputs.push({ expr: conv.expr(rhs).s, ref: into });
+    else if (from && lhs) outputs.push({ name: conv.target(lhs), ref: from });
+  }
+  for (const t of Array.from(el.getElementsByTagNameNS('*', 'excelTable'))) table = t;
+  const idref = table?.getAttribute('item-idref');
+  const ole = idref && pkg.rels[idref] ? findFile(pkg.files, pkg.rels[idref]) : undefined;
+  const book = ole ? cfbStream(ole, 'Package') : null;
+  const size = table ? child(table, 'OleViewportSize') : undefined;
+  const init: Partial<SpreadsheetData> = {
+    inputs, outputs,
+    width: Math.max(240, Math.round(Number(size?.getAttribute('width') ?? 0)) || 480),
+    height: Math.max(80, Math.round(Number(size?.getAttribute('height') ?? 0)) + 40 || 230),
+  };
+  if (book) {
+    try {
+      Object.assign(init, importWorkbook(book, 'the Excel component'));
+    } catch (e) {
+      warnings.push(`The Excel component at ${Math.round(at.y)} px: its workbook could not be read (${(e as Error).message}); the spreadsheet starts empty`);
+    }
+  } else warnings.push(`The Excel component at ${Math.round(at.y)} px: its workbook is not in the file (or not an .xlsx one); the spreadsheet starts empty`);
+  return createRegion('spreadsheet', at.x, at.y, init as Partial<Region>);
+}
+
+/** Embedded objects Mathcad 15 files hold, by their class id. */
+const OLE_KINDS: Record<string, string> = {
+  '0002CE03-0000-0000-C000-000000000046': 'An equation (Microsoft Equation 3.0)',
+  '00020906-0000-0000-C000-000000000046': 'A Word document',
+  'F4754C9B-64F5-4B40-8AF4-679732AC0607': 'A Word document',
+  '00020830-0000-0000-C000-000000000046': 'An Excel workbook',
+  '00020820-0000-0000-C000-000000000046': 'An Excel workbook',
+  'D3E34B21-9D75-101A-8C3D-00AA001A1652': 'A Paint picture',
+  '64818D11-4F9B-11CF-86EA-00AA00B929E8': 'A PowerPoint slide',
+  '64818D10-4F9B-11CF-86EA-00AA00B929E8': 'A PowerPoint presentation',
+};
+
+/** An embedded (OLE) object of Mathcad 15, named by what it is when its class is known. */
+function oleKind(el: El): string {
+  const id = (el.getAttribute('clsid') ?? '').replace(/[{}]/g, '').toUpperCase();
+  return `${OLE_KINDS[id] ?? 'An embedded object'} (OLE${el.getAttribute('type') === 'static' ? ', static' : ''})`;
+}
+
+/** A Mathcad 15 component, named with what goes in and comes out of it. */
+function componentKind(el: El, conv: Converter): string {
+  const names = (part: string) => kids(child(el, part) ?? el).filter((c) => local(c) !== 'inputs' && local(c) !== 'outputs').map((c) => {
+    try {
+      return conv.expr(c).s;
+    } catch {
+      return '?';
+    }
+  });
+  const ins = names('inputs'), outs = names('outputs');
+  const io = [ins.length ? `inputs ${ins.join(', ')}` : '', outs.length ? `outputs ${outs.join(', ')}, not defined here` : ''].filter(Boolean).join('; ');
+  return `A component${io ? ` (${io})` : ''}`;
+}
+
+/**
+ * The data file a Mathcad 15 component reads or writes, from its saved state (an OLE stream):
+ * the first name with an extension after the stream's "Contents", as saved (often relative).
+ */
+function componentFile(item: { data: string; enc: string } | undefined): string | null {
+  if (!item?.data) return null;
+  let bytes: Uint8Array;
+  try {
+    bytes = Uint8Array.from(atob(item.data), (c) => c.charCodeAt(0));
+    if (/gzip/i.test(item.enc)) bytes = gunzipSync(bytes);
+  } catch {
+    return null;
+  }
+  // UTF-16 strings, at even or odd offsets: runs of printable code units
+  const found: { at: number; s: string }[] = [];
+  for (const start of [0, 1]) {
+    let cur = '', from = start;
+    for (let i = start; i + 1 < bytes.length; i += 2) {
+      const c = bytes[i] | (bytes[i + 1] << 8);
+      // (a length byte before 0xFF, which starts a saved string, is no character)
+      if (((c >= 0x20 && c < 0x7f) || (c >= 0xa0 && c < 0xd800)) && (c & 0xff) !== 0xff) cur += String.fromCharCode(c);
+      else {
+        if (cur.length >= 3) found.push({ at: from, s: cur });
+        cur = '';
+        from = i + 2;
+      }
+    }
+    if (cur.length >= 3) found.push({ at: from, s: cur });
+  }
+  const strings = found.sort((a, b) => a.at - b.at).map((f) => f.s);
+  const after = strings.indexOf('Contents');
+  if (after < 0) return null;
+  return strings.slice(after + 1).find((t) => !/^OlePres/.test(t) && /[^\\/:*?"<>|]\.[A-Za-z0-9]{1,6}$/.test(t)) ?? null;
 }
 
 function binaryImage(item: { data: string; enc: string } | undefined): string | null {
@@ -1006,6 +1887,79 @@ function picture(el: El, pkg: Package | null, binary: Record<string, { data: str
   const inline = kids(el).find((c) => /^(png|jpeg|jpg|gif|bmp)$/i.test(local(c)));
   if (inline) return `data:${sniffMime(new Uint8Array(0), 'x.' + local(inline))};base64,${(inline.textContent ?? '').replace(/\s+/g, '')}`;
   return null;
+}
+
+/** A Prime FlowDocument's plain text: its paragraphs as lines. */
+function xamlPlain(root: El | null | undefined): string {
+  return root ? textFromXaml(root).map((p) => p.runs.map((r) => r.text).join('')).join('\n') : '';
+}
+
+/** Mathcad 15's header and footer (<pageModel>): three RTF texts each, and an {image} as the logo. */
+function mc15Page(pageModel: El | undefined, binary: Record<string, { data: string; enc: string }>): { header?: PageBand; footer?: PageBand; logo?: string } {
+  const out: { header?: PageBand; footer?: PageBand; logo?: string } = {};
+  for (const part of ['header', 'footer'] as const) {
+    const el = pageModel ? child(pageModel, part) : undefined;
+    if (!el) continue;
+    const band: PageBand = {};
+    for (const slot of ['left', 'center', 'right'] as const) {
+      const s = child(el, slot);
+      if (!s) continue;
+      const rtf = Array.from({ length: s.childNodes.length }, (_, i) => s.childNodes[i]).filter((n) => n.nodeType === 3 || n.nodeType === 4).map((n) => n.nodeValue ?? '').join('');
+      const text = mc15Fields(mc15Text(rtf));
+      if (text) band[slot] = text;
+      const img = child(s, 'image')?.getAttribute('item-idref');
+      if (img && !out.logo) out.logo = binaryImage(binary[img]) ?? undefined;
+    }
+    if (band.left || band.center || band.right) out[part] = band;
+  }
+  return out;
+}
+
+/** Prime's header and footer (mathcad/header.xml, footer.xml): their text regions and fields by where they sit. */
+function primePage(pkg: Package, pageWidth: number, binary: Record<string, { data: string; enc: string }>, warnings: string[]): { header?: PageBand; footer?: PageBand; logo?: string } {
+  const out: { header?: PageBand; footer?: PageBand; logo?: string } = {};
+  for (const part of ['header', 'footer'] as const) {
+    const bytes = findFile(pkg.files, `mathcad/${part}.xml`);
+    if (!bytes) continue;
+    const root = new DOMParser({ onError: () => {} }).parseFromString(strFromU8(bytes).replace(/^\uFEFF/, ''), 'text/xml').documentElement;
+    const regions = root ? child(root, 'regions') : undefined;
+    if (!regions) continue;
+    const rels = readRels(pkg.files, `${part}.xml`);
+    const pieces: BandPiece[] = [];
+    for (const r of kids(regions).filter((c) => local(c) === 'region')) {
+      const body = kids(r)[0];
+      if (!body) continue;
+      const kind = local(body);
+      let text = '';
+      let align: string | undefined;
+      if (kind === 'text') {
+        const idref = body.getAttribute('item-idref');
+        const flow = child(body, 'FlowDocument');
+        align = flow?.getAttribute('TextAlignment') ?? undefined;
+        const xaml = idref && rels[idref] ? findFile(pkg.files, rels[idref]) : undefined;
+        if (xaml) {
+          const inner = unzipSync(xaml);
+          const docKey = Object.keys(inner).find((k) => /document\.xaml$/i.test(k));
+          if (docKey) text = xamlPlain(new DOMParser({ onError: () => {} }).parseFromString(strFromU8(inner[docKey]), 'text/xml').documentElement as unknown as El);
+        } else text = xamlPlain(flow);
+      } else if (kind === 'fieldText') {
+        const field = kids(body).find((c) => local(c) !== 'text');
+        align = child(body, 'text') && kids(child(body, 'text')!)[0]?.getAttribute('TextAlignment') || undefined;
+        text = field ? primeField(local(field), field.getAttribute('template')) : xamlPlain(kids(child(body, 'text') ?? body)[0]);
+        if (field && !text) warnings.push(`The page ${part} has a ${local(field)} field, which is not imported`);
+      } else if (kind === 'picture') {
+        if (!out.logo) out.logo = picture(body, { ...pkg, rels }, binary) ?? undefined;
+        continue;
+      } else {
+        warnings.push(`The page ${part} has a ${kind === 'excelComponent' ? 'spreadsheet (Excel component)' : kind} region, which is not imported`);
+        continue;
+      }
+      pieces.push({ text, left: Number(r.getAttribute('left') ?? 0), top: Number(r.getAttribute('top') ?? 0), width: Number(r.getAttribute('width') ?? r.getAttribute('actualWidth') ?? 0), align });
+    }
+    const band = bandOf(pieces, pageWidth);
+    if (band) out[part] = band;
+  }
+  return out;
 }
 
 function plot(el: El, conv: Converter, at: { x: number; y: number }): Region {

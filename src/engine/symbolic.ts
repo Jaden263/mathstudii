@@ -186,7 +186,7 @@ function keptNames(node: MathNode, kws: string[]): Set<string> {
   // variables named in keyword arguments are never substituted
   kws.slice(1).forEach((k) => {
     const name = k.split('=')[0].trim();
-    if (/^[A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ]*$/.test(name)) keep.add(name);
+    if (/^[\p{L}_Ͱ-Ͽ][\p{L}\wͰ-Ͽ]*$/u.test(name)) keep.add(name);
   });
   // nor are the default variables of a transform (s in 1/(2 s + 1) → invlaplace is no second)
   const tv = TRANSFORM_VARS[kws[0]?.toLowerCase() ?? ''];

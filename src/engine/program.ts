@@ -9,7 +9,7 @@
 import { compileExpr } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
 import { parseRange, isIdentifier, splitTop, findEvalEquals } from './syntax';
-import { tick, toVector, assignIndex, normalize, engineCtx, int, matrix2D } from './library';
+import { tick, toVector, assignIndex, assignInPlace, normalize, engineCtx, int, matrix2D, elementsOf, wrongArity } from './library';
 import { math, isUnit, isComplex, isMatrix, joinUnit, splitUnit } from './math';
 
 export type ProgramStmt = Stmt;
@@ -21,8 +21,20 @@ function condition(src: string): string {
   return s;
 }
 
+/**
+ * A local definition's value is an expression, or a program of its own (r ← followed by an
+ * indented block, as Mathcad nests a program as an operand): the value of its last line.
+ */
+type Value = { expr: string; block?: Stmt[] };
+
 type Stmt =
-  | { k: 'assign'; name: string; index: string[] | null; expr: string; line: number; column?: boolean }
+  | ({ k: 'assign'; name: string; index: string[] | null; line: number; column?: boolean; row?: boolean } & Value)
+  /** [a; b] ← v: several locals at once from the elements of v */
+  | ({ k: 'destructure'; names: string[]; line: number } & Value)
+  /** [a[i]; b[i]] ← v: elements (and locals) at once from the elements of v */
+  | ({ k: 'elements'; targets: { name: string; index: string[] | null }[]; line: number } & Value)
+  /** f(x) ← x² : a function local to the program */
+  | ({ k: 'localfn'; name: string; params: string[]; line: number } & Value)
   | { k: 'if'; branches: { cond: string | null; body: Stmt[] }[]; line: number }
   | { k: 'for'; v: string; iter: string; body: Stmt[]; line: number }
   | { k: 'while'; cond: string; body: Stmt[]; line: number }
@@ -99,13 +111,30 @@ export function parseProgram(src: string[]): Stmt[] {
     if (arrow) {
       const lhs = ln.text.slice(0, arrow.index).trim();
       const expr = ln.text.slice(arrow.index + arrow[0].length).trim();
+      // nothing after the arrow: the value is the indented program below
+      const value: Value = expr ? { expr } : { expr: '', block: body(ln) };
       const im = /^(\S+?)\s*\[(.*)\]$/.exec(lhs);
-      if (im && isIdentifier(im[1])) return { k: 'assign', name: im[1], index: splitTop(im[2], ','), expr, line: ln.no };
-      // Mathcad's column assignment M<j> ← v
-      const cm = /^col\s*\(\s*([^\s,()]+)\s*,(.*)\)$/.exec(lhs);
-      if (cm && isIdentifier(cm[1])) return { k: 'assign', name: cm[1], index: [cm[2].trim()], expr, line: ln.no, column: true };
+      if (im && isIdentifier(im[1])) return { k: 'assign', name: im[1], index: splitTop(im[2], ','), ...value, line: ln.no };
+      // Mathcad's column and row assignments M<j> ← v, row(M, i) ← v
+      const cm = /^(col|row)\s*\(\s*([^\s,()]+)\s*,(.*)\)$/.exec(lhs);
+      if (cm && isIdentifier(cm[2])) return { k: 'assign', name: cm[2], index: [cm[3].trim()], ...value, line: ln.no, ...(cm[1] === 'col' ? { column: true } : { row: true }) };
+      const dm = /^\[(.*)\]$/.exec(lhs);
+      const names = dm ? dm[1].split(/[;,]/).map((x) => x.trim()) : [];
+      if (dm && names.length && names.every(isIdentifier)) return { k: 'destructure', names, ...value, line: ln.no };
+      if (dm) {
+        const parts = splitTop(dm[1], ';').length > 1 ? splitTop(dm[1], ';') : splitTop(dm[1], ',');
+        const targets = parts.map((x) => {
+          const t = x.trim();
+          const em = /^(\S+?)\s*\[(.*)\]$/.exec(t);
+          return isIdentifier(t) ? { name: t, index: null } : em && isIdentifier(em[1]) ? { name: em[1], index: splitTop(em[2], ',') } : null;
+        });
+        if (targets.length > 1 && targets.every((t) => t)) return { k: 'elements', targets: targets as { name: string; index: string[] | null }[], ...value, line: ln.no };
+      }
+      const fm = /^([^\s(]+)\s*\((.*)\)$/.exec(lhs);
+      const params = fm ? (fm[2].trim() ? splitTop(fm[2], ',').map((x) => x.trim()) : []) : [];
+      if (fm && isIdentifier(fm[1]) && params.every(isIdentifier)) return { k: 'localfn', name: fm[1], params, ...value, line: ln.no };
       if (!isIdentifier(lhs)) throw new Error(`Line ${ln.no}: cannot assign to "${lhs}"`);
-      return { k: 'assign', name: lhs, index: null, expr, line: ln.no };
+      return { k: 'assign', name: lhs, index: null, ...value, line: ln.no };
     }
     return { k: 'expr', expr: ln.text, line: ln.no };
   }
@@ -166,6 +195,30 @@ function roundish(v: number): number {
   return Math.abs(v - r) < 1e-12 * Math.max(1, Math.abs(v)) ? r : v;
 }
 
+/** Set row i of a matrix to a vector (a row or a column of values), growing it as Mathcad does. */
+function assignRow(cur: unknown, i: unknown, v: unknown): unknown {
+  const k = int(i, 'row') - engineCtx.origin;
+  if (k < 0) throw new Error(`Row below ORIGIN (${engineCtx.origin})`);
+  const row = toVector(v);
+  const rows: unknown[][] = isMatrix(cur) || Array.isArray(cur) ? matrix2D(cur).map((r) => r.slice()) : [];
+  const height = Math.max(rows.length, k + 1), width = Math.max(rows[0]?.length ?? 0, row.length);
+  const out = Array.from({ length: height }, (_, r) => Array.from({ length: width }, (_, c) => (r === k ? (row[c] ?? 0) : rows[r]?.[c] ?? 0)));
+  return math.matrix(out as never);
+}
+
+/** The value of a local definition: its expression, or its own program's value (a return in it ends that program). */
+function valueOf(s: Value, scope: ChainScope): unknown {
+  if (!s.block) return normalize(compileExpr(s.expr).evaluate(scope));
+  try {
+    const v = run(s.block, scope);
+    if (v === undefined) throw new Error('Program produced no value');
+    return normalize(v);
+  } catch (e) {
+    if (e instanceof Signal && e.kind === 'return') return normalize(e.value);
+    throw e;
+  }
+}
+
 /** Set column j of a matrix to a vector, growing it (zero-filled) as Mathcad does. */
 function assignColumn(cur: unknown, j: unknown, v: unknown): unknown {
   const k = int(j, 'column') - engineCtx.origin;
@@ -178,11 +231,13 @@ function assignColumn(cur: unknown, j: unknown, v: unknown): unknown {
   return math.matrix(out as never);
 }
 
+/** Run statements; the value is that of the last one that gave one (an if none of whose branches ran gives none). */
 function run(stmts: Stmt[], scope: ChainScope): unknown {
   let last: unknown = undefined;
   for (const s of stmts) {
     try {
-      last = exec(s, scope);
+      const v = exec(s, scope);
+      if (v !== undefined) last = v;
     } catch (e) {
       if (e instanceof Signal) throw e;
       const msg = e instanceof Error ? e.message : String(e);
@@ -192,17 +247,70 @@ function run(stmts: Stmt[], scope: ChainScope): unknown {
   return last;
 }
 
+/**
+ * Arrays a program's local holds that the program made itself (by writing an element) and has
+ * not given to anything else: their elements are written in place, which keeps a loop that
+ * fills a vector element by element linear. A value stored anywhere (another local, an element
+ * of an array) is given away, and the next element written copies it first.
+ */
+const owners = new WeakMap<object, ChainScope>();
+function giveAway(v: unknown) {
+  if (!isMatrix(v)) return;
+  owners.delete(v);
+  const data = (v as unknown as { _data?: unknown[] })._data;
+  if (Array.isArray(data)) for (const e of data) Array.isArray(e) ? e.forEach((x) => isMatrix(x) && owners.delete(x)) : isMatrix(e) && owners.delete(e);
+}
+
 function exec(s: Stmt, scope: ChainScope): unknown {
   tick();
   switch (s.k) {
     case 'assign': {
-      const v = normalize(compileExpr(s.expr).evaluate(scope));
+      const v = valueOf(s, scope);
+      giveAway(v);
       if (s.index) {
         const idx = s.index.map((i) => compileExpr(i).evaluate(scope));
         const cur = scope.local.has(s.name) ? scope.local.get(s.name) : undefined;
-        scope.set(s.name, s.column ? assignColumn(cur, idx[0], v) : assignIndex(cur, idx, v));
+        if (!s.column && !s.row && cur !== undefined && owners.get(cur as object) === scope && assignInPlace(cur, idx, v)) return v;
+        const next = s.column ? assignColumn(cur, idx[0], v) : s.row ? assignRow(cur, idx[0], v) : assignIndex(cur, idx, v);
+        if (isMatrix(next)) owners.set(next, scope);
+        scope.set(s.name, next);
       } else scope.set(s.name, v);
       return v;
+    }
+    case 'elements': {
+      // the value and every index first, then each element is written
+      const v = valueOf(s, scope);
+      giveAway(v);
+      const items = elementsOf(v);
+      items.forEach(giveAway);
+      if (items.length !== s.targets.length) throw new Error(`Expected ${s.targets.length} values, got ${items.length}`);
+      const idx = s.targets.map((t) => t.index?.map((i) => compileExpr(i).evaluate(scope)) ?? null);
+      s.targets.forEach((t, n) => {
+        const cur = scope.local.has(t.name) ? scope.local.get(t.name) : undefined;
+        scope.set(t.name, idx[n] ? assignIndex(cur, idx[n]!, normalize(items[n])) : normalize(items[n]));
+      });
+      return v;
+    }
+    case 'destructure': {
+      const v = valueOf(s, scope);
+      giveAway(v);
+      const items = elementsOf(v);
+      items.forEach(giveAway);
+      if (items.length !== s.names.length) throw new Error(`Expected ${s.names.length} values, got ${items.length}`);
+      s.names.forEach((n, i) => scope.set(n, normalize(items[i])));
+      return v;
+    }
+    case 'localfn': {
+      const { name, params } = s;
+      const fn = (...args: unknown[]): unknown => {
+        if (args.length !== params.length) return wrongArity(name, params, args, fn);
+        const local = new ChainScope(scope);
+        params.forEach((p, i) => local.set(p, normalize(args[i])));
+        if (s.block) zeroLocals(s.block, local);
+        return valueOf(s, local);
+      };
+      scope.set(name, fn);
+      return fn;
     }
     case 'expr':
       return compileExpr(s.expr).evaluate(scope);
@@ -255,9 +363,55 @@ function exec(s: Stmt, scope: ChainScope): unknown {
   }
 }
 
+/** The names a program assigns (its locals), with the names it calls as functions; a local function's body is its own. */
+const assignedCache = new WeakMap<Stmt[], { assigned: Set<string>; called: Set<string> }>();
+function localsOf(stmts: Stmt[]): { assigned: Set<string>; called: Set<string> } {
+  let out = assignedCache.get(stmts);
+  if (out) return out;
+  const assigned = new Set<string>(), called = new Set<string>();
+  const calls = (src: string) => {
+    for (const m of src.matchAll(/([\p{L}_][\p{L}\p{N}_ʹ]*)\s*\(/gu)) called.add(m[1]);
+  };
+  const walk = (list: Stmt[]) => {
+    for (const s of list) {
+      switch (s.k) {
+        case 'assign': assigned.add(s.name); calls(s.expr); if (s.block) walk(s.block); s.index?.forEach(calls); break;
+        case 'destructure': s.names.forEach((n) => assigned.add(n)); calls(s.expr); if (s.block) walk(s.block); break;
+        case 'elements': s.targets.forEach((t) => { assigned.add(t.name); t.index?.forEach(calls); }); calls(s.expr); if (s.block) walk(s.block); break;
+        case 'for': assigned.add(s.v); calls(s.iter); walk(s.body); break;
+        case 'while': calls(s.cond); walk(s.body); break;
+        case 'if': s.branches.forEach((b) => { if (b.cond) calls(b.cond); walk(b.body); }); break;
+        case 'try': walk(s.body); walk(s.onError); break;
+        case 'return': case 'expr': calls(s.expr); break;
+        default: break;
+      }
+    }
+  };
+  walk(stmts);
+  out = { assigned, called };
+  assignedCache.set(stmts, out);
+  return out;
+}
+
+/**
+ * Mathcad 11–15 (zeroLocals): a local is 0 until the program assigns it, so count ← count + 1
+ * counts from 0. A name the worksheet defines is read from it as before, and so is a built-in
+ * function of the name that the program calls.
+ */
+function zeroLocals(stmts: Stmt[], scope: ChainScope) {
+  if (!engineCtx.zeroLocals) return;
+  const { assigned, called } = localsOf(stmts);
+  const builtins = math as unknown as Record<string, unknown>;
+  for (const n of assigned) {
+    if (scope.has(n) || (n in builtins && called.has(n))) continue;
+    scope.set(n, 0);
+  }
+}
+
 /** Run a program body with the given local variables; returns the program's value. */
 export function runProgram(stmts: Stmt[], parent: ScopeLike, locals: Record<string, unknown>): unknown {
   const scope = new ChainScope(parent, locals);
+  zeroLocals(stmts, scope);
   try {
     const v = run(stmts, scope);
     if (v === undefined) throw new Error('Program produced no value');

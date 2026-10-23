@@ -18,7 +18,7 @@ export interface Para {
 /** Paragraphs of a Markdown text. */
 export function paragraphs(md: string): Para[] {
   // $x^2$ is TeX here: keep its source rather than let Markdown read ^ or _ in it
-  const src = md.replace(/\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g, (_m, d: string, i: string) => `\`${(d ?? i).trim()}\``);
+  const src = md.replace(/(?<!\\)\$\$([\s\S]+?)(?<!\\)\$\$|(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (_m, d: string, i: string) => `\`${(d ?? i).trim()}\``);
   const out: Para[] = [];
   const add = (kind: Para['kind'], runs: Run[]) => {
     const merged = runs.reduce<Run[]>((acc, r) => {
@@ -67,6 +67,10 @@ export function paragraphs(md: string): Para[] {
         case 'text':
           add('p', inline((t as Tokens.Text).tokens ?? [t], {}));
           break;
+        case 'html':
+          // an HTML paragraph (centred text): its text
+          for (const line of htmlText((t as Tokens.HTML).text).split('\n')) add('p', [{ text: line }]);
+          break;
         default:
           break;
       }
@@ -105,6 +109,16 @@ function inline(tokens: Token[] | undefined, style: Omit<Run, 'text'>): Run[] {
       case 'escape':
         out.push({ ...style, text: (t as Tokens.Escape).text });
         break;
+      case 'html': {
+        // inline tags (<u>, <span style>, <b>): their text comes as text tokens; keep bold and italic
+        const tag = (t as Tokens.HTML).text.toLowerCase();
+        if (/^<(b|strong)\b/.test(tag)) style = { ...style, bold: true };
+        else if (/^<\/(b|strong)>/.test(tag)) style = { ...style, bold: undefined };
+        else if (/^<(i|em)\b/.test(tag)) style = { ...style, italic: true };
+        else if (/^<\/(i|em)>/.test(tag)) style = { ...style, italic: undefined };
+        else if (/^<br\b/.test(tag)) out.push({ ...style, text: '\n' });
+        break;
+      }
       default:
         if ('text' in t && typeof t.text === 'string') out.push({ ...style, text: unescape(t.text) });
     }
@@ -123,6 +137,11 @@ function split(runs: Run[]): Run[][] {
     });
   }
   return lines;
+}
+
+/** The text of an HTML block: tags dropped, <br> and paragraph ends as line breaks. */
+function htmlText(html: string): string {
+  return unescape(html.replace(/<br\s*\/?>|<\/(p|h\d|div|li)>/gi, '\n').replace(/<[^>]*>/g, '')).replace(/\n+$/, '');
 }
 
 const unescape = (s: string) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");

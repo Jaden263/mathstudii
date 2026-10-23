@@ -6,7 +6,27 @@ import { compileNode } from './compile';
 import * as N from './numeric';
 
 /** Worksheet-level settings the library needs (set by the evaluator before each run). */
-export const engineCtx = { origin: 0, tol: 1e-9, iterationBudget: 5e6, deadline: Infinity };
+export const engineCtx = {
+  origin: 0, tol: 1e-9, iterationBudget: 5e6, deadline: Infinity,
+  /** Mathcad 11–15: a function called with its first arguments only is the function of the rest. */
+  partialCalls: false,
+  /** Mathcad 11–15: a program's local read before it is assigned is 0. */
+  zeroLocals: false,
+};
+
+/**
+ * A user function called with a number of arguments other than its parameters': an error, or
+ * (Mathcad 11–15, partialCalls) with fewer, the function of the parameters left, f(a) of
+ * f(x, y) being y ↦ f(a, y).
+ */
+export function wrongArity(name: string, params: string[], args: unknown[], fn: (...a: unknown[]) => unknown): (...more: unknown[]) => unknown {
+  if (engineCtx.partialCalls && args.length > 0 && args.length < params.length) {
+    // the arguments as they are now (an array a program goes on writing is not the one given)
+    const given = args.map((a) => (isMatrix(a) ? a.clone() : a));
+    return (...more: unknown[]) => fn(...given, ...more);
+  }
+  throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+}
 
 type Raw = ((args: MathNode[], m: unknown, scope: ScopeLike) => unknown) & { rawArgs?: boolean };
 
@@ -21,6 +41,30 @@ export function toArray(v: unknown): unknown[] {
 /** Flatten a vector (1-D, n×1 or 1×n) into a JS array. */
 export function toVector(v: unknown): unknown[] {
   return math.flatten(toArray(v) as never) as unknown as unknown[];
+}
+
+/**
+ * The elements of an array as they are, row by row: an element that is itself an array (a
+ * nested array, [X; Y] of vectors) stays one, as [a; b] := [X; Y] needs.
+ */
+export function elementsOf(v: unknown): unknown[] {
+  if (isMatrix(v)) {
+    const size = v.size();
+    if (size.length === 1) return Array.from({ length: size[0] }, (_, i) => v.get([i]));
+    if (size.length === 2) {
+      const out: unknown[] = [];
+      for (let r = 0; r < size[0]; r++) for (let c = 0; c < size[1]; c++) out.push(v.get([r, c]));
+      return out;
+    }
+    // [X; Y] of equal arrays is kept as one array of more dimensions: its elements are the rest
+    if (size.length > 2) {
+      const data = v.toArray() as unknown as unknown[][][];
+      const out: unknown[] = [];
+      for (let r = 0; r < size[0]; r++) for (let c = 0; c < size[1]; c++) out.push(math.matrix(data[r][c] as never));
+      return out;
+    }
+  }
+  return toVector(v);
 }
 
 export function vec(values: unknown[]): Matrix {
@@ -78,6 +122,19 @@ function truthy(v: unknown): boolean {
   return !!v;
 }
 
+/** The real or imaginary part of a number, a quantity (in its unit) or each element of an array. */
+function complexPart(z: unknown, part: 're' | 'im'): unknown {
+  if (isMatrix(z) || Array.isArray(z)) return math.map(z as never, ((e: unknown) => complexPart(e, part)) as never);
+  if (isUnit(z)) {
+    const v = z.value as unknown;
+    const p = isComplex(v) ? v[part] : part === 're' ? (v as number) : 0;
+    const c = z.clone();
+    (c as unknown as { value: number }).value = p;
+    return c;
+  }
+  return math[part](z as never);
+}
+
 export function tick(n = 1) {
   engineCtx.iterationBudget -= n;
   if (engineCtx.iterationBudget < 0) throw new Error('Calculation aborted: iteration limit exceeded (infinite loop?)');
@@ -123,8 +180,23 @@ const integral: Raw = (args, _m, scope) => {
   const at = unitFunction(args[0], v, scope, xUnit);
   const mid = Number.isFinite(a.value) && Number.isFinite(b.value) ? (a.value + b.value) / 2
     : Number.isFinite(a.value) ? a.value + 1 : Number.isFinite(b.value) ? b.value - 1 : 0.5;
-  const fUnit = splitUnit(at(mid)).unit;
-  const value = N.integrate((x) => splitUnit(at(x)).value, a.value, b.value, 1e-11);
+  // the integrand's unit is that of its values with one: a plain 0 (a branch of an if) is a zero
+  // of any unit, as in Mathcad, wherever the integration samples it
+  let fUnit: Unit | null = null;
+  let plain = false;
+  const sample = (x: number) => {
+    const s = splitUnit(at(x));
+    if (s.unit) {
+      if (!fUnit) fUnit = s.unit;
+      else if (!fUnit.equalBase(s.unit)) throw new Error('integral: the integrand has different units at different points');
+    } else if (s.value !== 0) plain = true;
+    return s.value;
+  };
+  sample(mid);
+  const value = N.integrate(sample, a.value, b.value, 1e-11);
+  if (fUnit && plain) throw new Error('integral: the integrand has a unit at some points and none at others');
+  // an integrand that is a plain 0 everywhere integrates to a plain 0, a zero of any unit
+  if (!fUnit && !plain) return 0;
   return mulUnits(value, fUnit, xUnit);
 };
 integral.rawArgs = true;
@@ -246,7 +318,16 @@ export function indexValue(obj: unknown, ...idx: unknown[]): unknown {
       else throw new Error('Matrices take two subscripts [row, col]');
     } else if (idx.length === 2) index = [zeroBased(idx[0], size[0]), zeroBased(idx[1], size[1])];
     else throw new Error('Matrices take two subscripts [row, col]');
-  } else throw new Error('Arrays with more than two dimensions are not supported');
+  } else {
+    // a nested array ([X; Y] of equal arrays, kept as one of more dimensions): its element is an array
+    let r: number, c: number;
+    if (idx.length === 1 && size[1] === 1) [r, c] = [zeroBased(idx[0], size[0]) as number, 0];
+    else if (idx.length === 1 && size[0] === 1) [r, c] = [0, zeroBased(idx[0], size[1]) as number];
+    else if (idx.length === 2) [r, c] = [zeroBased(idx[0], size[0]) as number, zeroBased(idx[1], size[1]) as number];
+    else throw new Error('Matrices take two subscripts [row, col]');
+    if (typeof r !== 'number' || typeof c !== 'number') throw new Error('An element of a nested array takes one index each');
+    return normalize(math.matrix((M.toArray() as unknown as unknown[][][])[r][c] as never));
+  }
   const res = math.subset(M, math.index(...(index as never[])));
   return normalize(res);
 }
@@ -272,7 +353,103 @@ export function assignIndex(current: unknown, idx: unknown[], value: unknown): M
     if (M.size()[0] === 0) M = math.zeros([0, 0], 'dense') as Matrix;
     else M = math.reshape(M, [M.size()[0], 1]) as Matrix;
   }
+  if ((isMatrix(value) || Array.isArray(value) || typeof value === 'string') && M.size().length === ks.length) {
+    // an array as an element makes a nested array (Mathcad): grow to the place, then put it
+    // there; so does a string, which mathjs would otherwise take for characters to spread
+    const grown = math.subset(M, math.index(...ks), 0 as never, 0 as never) as Matrix;
+    const size = grown.size();
+    const data = grown.toArray() as unknown as unknown[];
+    const v = normalize(value);
+    if (ks.length === 1) data[ks[0]] = v;
+    else (data[ks[0]] as unknown[])[ks[1]] = v;
+    const Dense = (math as unknown as { DenseMatrix: new (d: { data: unknown[]; size: number[] }) => Matrix }).DenseMatrix;
+    return new Dense({ data, size });
+  }
   return math.subset(M, math.index(...ks), value as never, 0 as never) as Matrix;
+}
+
+/**
+ * Write one element of an array the caller owns (made by assignIndex for it, seen by no one
+ * else) in place: within its size, past the end of a vector, or in a new last row of a
+ * matrix (zeros filling the rest, as assignIndex fills them). False when that is not possible
+ * here (a column past the last, a vector given two subscripts, an array or a function as the
+ * value); assignIndex does it then.
+ */
+export function assignInPlace(M: unknown, idx: unknown[], value: unknown): boolean {
+  if (!isMatrix(M) || isMatrix(value) || Array.isArray(value) || typeof value === 'function') return false;
+  const m = M as unknown as { _data: unknown[]; _size: number[] };
+  if (!Array.isArray(m._data) || !Array.isArray(m._size)) return false;
+  const o = engineCtx.origin;
+  const ks = idx.map((i) => int(i, 'index') - o);
+  if (ks.some((k) => k < 0)) return false;
+  const size = m._size;
+  if (size.length === 1 && ks.length === 1) {
+    while (size[0] < ks[0]) {
+      m._data.push(0);
+      size[0]++;
+    }
+    if (ks[0] === size[0]) {
+      m._data.push(value);
+      size[0]++;
+    } else m._data[ks[0]] = value;
+    return true;
+  }
+  if (size.length === 2 && ks.length === 2 && ks[1] < size[1] && size[1] > 0) {
+    while (size[0] <= ks[0]) {
+      m._data.push(new Array(size[1]).fill(0));
+      size[0]++;
+    }
+    (m._data[ks[0]] as unknown[])[ks[1]] = value;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Many elements written one after the other, x[i] := f(i) over a range: what assignIndex gives
+ * element by element, with the array copied once instead of at every element (65 536 elements
+ * in a fraction of a second, not minutes). Arrays as values fall back to assignIndex.
+ */
+export function assignMany(current: unknown, entries: { idx: unknown[]; value: unknown }[]): unknown {
+  if (!entries.length) return current;
+  const k = entries[0].idx.length;
+  if (k < 1 || k > 2 || entries.some((e) => e.idx.length !== k || isMatrix(e.value) || Array.isArray(e.value))) {
+    return entries.reduce((cur: unknown, e) => assignIndex(cur, e.idx, e.value), current);
+  }
+  const o = engineCtx.origin;
+  const at = (i: unknown) => {
+    const n = int(i, 'index') - o;
+    if (n < 0) throw new Error(`Index below ORIGIN (${o})`);
+    return n;
+  };
+  // the array as assignIndex starts from it: a copy of the current one, or an empty one
+  let M: Matrix = isMatrix(current) ? current : Array.isArray(current) ? math.matrix(current as never) : ((k === 1 ? math.matrix([]) : math.zeros([0, 0], 'dense')) as Matrix);
+  let size = M.size();
+  let place: (idx: unknown[]) => number[];
+  if (k === 1 && size.length === 2) {
+    if (size[1] === 1) place = (idx) => [at(idx[0]), 0];
+    else if (size[0] === 1) place = (idx) => [0, at(idx[0])];
+    else throw new Error('Matrices take two subscripts [row, col]');
+  } else {
+    if (k === 2 && size.length === 1) {
+      M = size[0] === 0 ? (math.zeros([0, 0], 'dense') as Matrix) : (math.reshape(M, [size[0], 1]) as Matrix);
+      size = M.size();
+    }
+    place = (idx) => idx.map(at);
+  }
+  const spots = entries.map((e) => place(e.idx));
+  const dims = size.map((d, j) => Math.max(d, ...spots.map((s) => s[j] + 1)));
+  const old = M.toArray() as unknown[];
+  let data: unknown[];
+  if (dims.length === 1) {
+    data = Array.from({ length: dims[0] }, (_, i) => (i < size[0] ? old[i] : 0));
+    spots.forEach((s, n) => (data[s[0]] = entries[n].value));
+  } else {
+    data = Array.from({ length: dims[0] }, (_, i) => Array.from({ length: dims[1] }, (_, j) => (i < size[0] && j < size[1] ? (old[i] as unknown[])[j] : 0)));
+    spots.forEach((s, n) => ((data[s[0]] as unknown[])[s[1]] = entries[n].value));
+  }
+  const Dense = (math as unknown as { DenseMatrix: new (d: { data: unknown[]; size: number[] }) => Matrix }).DenseMatrix;
+  return new Dense({ data, size: dims });
 }
 
 /** Column vectors (n×1) become 1-D vectors so subscripts and products behave like Mathcad. */
@@ -669,7 +846,51 @@ function magnitude(x: unknown) {
   return math.abs(x as never);
 }
 
+/** One row of a matrix literal, its elements as they are. */
+function matrixRow(...items: unknown[]): unknown[] {
+  return items;
+}
+
+/**
+ * A matrix literal. Its elements are numbers, or arrays: in Mathcad an array element makes a
+ * nested array, never a joined one. Arrays of one shape make one array of more dimensions (as
+ * before); arrays of different shapes or arrays beside numbers ([X; Y; n] of a program) keep
+ * each element as it is.
+ */
+function matrixOf(...rows: unknown[][]): unknown {
+  if (rows.some((r) => r.length !== rows[0].length)) throw new Error('The rows of a matrix need the same number of elements');
+  const isArr = (x: unknown) => isMatrix(x) || Array.isArray(x);
+  const items = rows.flat();
+  if (!items.some(isArr)) return math.matrix(rows as never);
+  const shapes = items.map((x) => (isArr(x) ? (math.size(x as never) as unknown as number[]).join('x') : ''));
+  if (shapes.every((sh) => sh && sh === shapes[0])) return math.matrix(rows as never);
+  const data = rows.map((r) => r.map((x) => (Array.isArray(x) ? math.matrix(x as never) : x)));
+  // (a DenseMatrix given its data and size keeps array elements as elements)
+  const Dense = (math as unknown as { DenseMatrix: new (d: { data: unknown[][]; size: number[] }) => Matrix }).DenseMatrix;
+  return new Dense({ data, size: [rows.length, rows[0].length] });
+}
+
+/**
+ * lsolve(M, v): x with M·x = v. With units (a stiffness matrix of N, N·m and N·m² terms) the
+ * system is solved in SI numbers, and x_j takes the unit v_i / M_ij of an equation that has it.
+ */
+function lsolve(A: unknown, b: unknown): unknown {
+  const M = matrix2D(A), B = toVector(b);
+  if (!M.flat().some(isUnit) && !B.some(isUnit)) return normalize(math.lusolve(math.matrix(M as never), vec(B) as never));
+  const nums = M.map((r) => r.map((x) => splitUnit(x).value));
+  const rhs = B.map((x) => splitUnit(x).value);
+  const x = toVector(math.lusolve(nums as never, rhs as never)).map((v) => Number(v));
+  return vec(x.map((v, j) => {
+    const i = nums.findIndex((r) => r[j] !== 0);
+    if (i < 0) return v;
+    const unit = math.divide(joinUnit(1, splitUnit(B[i]).unit) as never, joinUnit(1, splitUnit(M[i][j]).unit) as never);
+    return joinUnit(v, splitUnit(unit).unit);
+  }));
+}
+
 const LIBRARY: Record<string, unknown> = {
+    __row: matrixRow,
+    __matrix: matrixOf,
     __I: math.complex(0, 1),
     mag: magnitude,
     __call: callOrMultiply,
@@ -691,8 +912,9 @@ const LIBRARY: Record<string, unknown> = {
     mcStdevS: (v: unknown) => stat(v, (xs) => Math.sqrt(varOf(xs, true))),
     mcVarP: (v: unknown) => stat(v, (xs) => varOf(xs, false), 2),
     mcVarS: (v: unknown) => stat(v, (xs) => varOf(xs, true), 2),
-    Re: (z: unknown) => math.re(z as never),
-    Im: (z: unknown) => math.im(z as never),
+    // of a quantity, the part times its unit: Im(5 m) = 0 m, Re((3 + 4i) V) = 3 V
+    Re: (z: unknown) => complexPart(z, 're'),
+    Im: (z: unknown) => complexPart(z, 'im'),
     trunc: (x: unknown) => math.fix(x as never),
     combin: (n: unknown, k: unknown) => math.combinations(int(n) as never, int(k) as never),
     permut: (n: unknown, k: unknown) => math.permutations(int(n) as never, int(k) as never),
@@ -717,7 +939,7 @@ const LIBRARY: Record<string, unknown> = {
     eigenvals: (A: unknown) => normalize(eigs(A).values),
     eigenvecs,
     eigenvec,
-    mcLsolve: (A: unknown, b: unknown) => normalize(math.lusolve(math.matrix(matrix2D(A) as never), vec(toVector(b)) as never)),
+    mcLsolve: lsolve,
     norm1: (A: unknown) => math.norm(math.matrix(matrix2D(A) as never), 1),
     norm2: (A: unknown) => {
       const M = math.matrix(matrix2D(A) as never);

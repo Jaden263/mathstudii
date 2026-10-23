@@ -164,8 +164,12 @@ class SmWriter {
         return operand(smName(t.name)) + t.idx.map((i) => this.index(i)).join('') + fn('el', 1 + t.idx.length);
       case 'col':
         throw new NotRepresentable('a column assignment');
+      case 'row':
+        throw new NotRepresentable('a row assignment');
       case 'list':
         throw new NotRepresentable('a definition of several names at once');
+      case 'elements':
+        throw new NotRepresentable('a definition of elements of several arrays at once');
     }
   }
 
@@ -183,6 +187,8 @@ class SmWriter {
       case 'local':
         if (s.target.k === 'col') throw new NotRepresentable('a column assignment in a program');
         return this.target(s.target) + this.x(s.value) + op(':');
+      case 'localProgram':
+        return this.target(s.target) + this.program(s.body) + op(':');
       case 'if': {
         const chain = (bs: typeof s.branches): string => {
           const [b, ...rest] = bs;

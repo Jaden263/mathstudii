@@ -22,6 +22,7 @@ import { askXlsxTable } from './sheet/XlsxTableDialog';
 import { tableToXlsx } from '../sheet/tableXlsx';
 import { XLSX_MIME } from '../sheet/xlsx';
 import { exportFile as saveFile, pickFile } from '../platform/files';
+import { pickChoice } from '../model/choices';
 
 export interface RegionViewProps<R> {
   region: R;
@@ -98,6 +99,22 @@ export function MathView({ region, result, editing, dispatch, onDone, registerEd
       <div className="math-display">
         {display}
         {r?.pending && <Loader2 className="spin inline-icon" size={14} aria-label="Loading symbolic engine" />}
+        {region.choices && !editing && (
+          <select
+            className="math-choice"
+            value={region.choices.selected}
+            aria-label="Choice"
+            onPointerDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              const i = Number(e.target.value);
+              const source = pickChoice(region.source, region.choices!, i);
+              if (source !== null) dispatch({ type: 'update', id: region.id, patch: { source, choices: { ...region.choices!, selected: i } } });
+            }}
+          >
+            {region.choices.labels.map((l, i) => <option key={i} value={i}>{l}</option>)}
+          </select>
+        )}
       </div>
       {r?.error && <div className="region-error" role="alert">{r.error}</div>}
     </div>

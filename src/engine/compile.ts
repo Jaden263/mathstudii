@@ -25,6 +25,11 @@ export const RENAME: Record<string, string> = {
   fft: 'mcFft',
   ifft: 'mcIfft',
   concat: 'mcConcat',
+  // mathjs keeps "error" for itself
+  error: 'mcError',
+  // Mathcad's max(A, B, c …): over every element of every argument
+  max: 'mcMax',
+  min: 'mcMin',
 };
 
 /**
@@ -110,12 +115,14 @@ export function transformForEval(node: MathNode): MathNode {
       return new math.FunctionNode(new math.SymbolNode('__idx'), [obj, ...dims]);
     }
     if (n.type === 'ArrayNode') {
-      // Mathcad: [1, 2, 3] is a row vector, [1; 2; 3] a column vector
+      // Mathcad: [1, 2, 3] is a row vector, [1; 2; 3] a column vector; an element that is an
+      // array makes a nested array (__matrix)
       const items = any.items as MathNode[];
+      const row = (xs: MathNode[]) => new math.FunctionNode(new math.SymbolNode('__row'), xs.map(transformForEval));
       if (items.length && items.every((it) => it.type === 'ArrayNode')) {
-        return new math.ArrayNode(items.map((it) => new math.ArrayNode(((it as unknown as { items: MathNode[] }).items).map(transformForEval))));
+        return new math.FunctionNode(new math.SymbolNode('__matrix'), items.map((it) => row((it as unknown as { items: MathNode[] }).items)));
       }
-      return new math.ArrayNode([new math.ArrayNode(items.map(transformForEval))]);
+      return new math.FunctionNode(new math.SymbolNode('__matrix'), [row(items)]);
     }
     if (n.type === 'OperatorNode') {
       const fn = any.fn as string;

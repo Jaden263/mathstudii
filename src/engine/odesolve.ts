@@ -46,11 +46,22 @@ function derivName(name: string, k: number): string {
   return k <= 3 ? name + "'".repeat(k) : `${name}^(${k})`;
 }
 
-/** Read odesolve(t, b …) or odesolve([x, y], t, b …); the single form takes its unknown from the left side. */
+/** y(t), as Prime writes the unknown with its variable: odesolve(y(t), b). */
+const CALL_FORM = /^(\S+?)\s*\(\s*([^(),]+?)\s*\)$/;
+
+/**
+ * Read odesolve(t, b …), odesolve([x, y], t, b …) or Prime's odesolve(y(t), b …) and
+ * odesolve([x(t), y(t)], b …); the single form takes its unknown from the left side.
+ */
 function parseCall(args: string[], lhsNames: string[]): Call {
   if (args.length === 0) throw new Error('odesolve(t, b): give the variable and the end of the interval');
   const first = args[0].trim();
   const vm = /^\[(.*)\]$/s.exec(first);
+  const calls = (vm ? splitTop(vm[1], vm[1].includes(';') ? ';' : ',') : [first]).map((s) => CALL_FORM.exec(s.trim()));
+  if (calls.every((c) => c && isIdentifier(c[1]) && isIdentifier(c[2]) && c[2] === calls[0]![2])) {
+    if (args.length < 2) throw new Error(`odesolve(${first}, b): give the end of the interval`);
+    return { unknowns: calls.map((c) => c![1]), indep: calls[0]![2], end: args[1], options: args.slice(2) };
+  }
   if (vm) {
     const unknowns = vm[1].split(/[;,]/).map((s) => s.trim()).filter(Boolean);
     if (!unknowns.length || !unknowns.every(isIdentifier)) throw new Error('odesolve([x, y], t, b): list the unknown functions by name');
@@ -76,7 +87,7 @@ export function odesolveNames(solver: string): string[] {
   let lhsNames: string[] = [];
   try {
     const lhs = p >= 0 ? parseLhs(solver.slice(0, p)) : null;
-    lhsNames = !lhs ? [] : lhs.kind === 'destructure' ? lhs.names : lhs.kind === 'index' ? [] : [lhs.name];
+    lhsNames = !lhs ? [] : lhs.kind === 'destructure' ? lhs.names : lhs.kind === 'index' || lhs.kind === 'elements' ? [] : [lhs.name];
   } catch {
     /* shown with its error by the solver */
   }

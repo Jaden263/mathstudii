@@ -8,7 +8,19 @@ export interface FormatOptions {
   expThreshold: number;
   /** Show results without a requested unit in practical metric units (kN·m, kN/m, MPa …). */
   metric?: boolean;
+  /**
+   * Mathcad's number formats: general (powers of ten past the threshold), decimal (never),
+   * scientific (always), engineering (always, in steps of three).
+   */
+  style?: NumberStyle;
+  /** Keep the zeros after the last significant decimal (1.50 rather than 1.5). */
+  trailingZeros?: boolean;
 }
+
+export type NumberStyle = 'general' | 'decimal' | 'scientific' | 'engineering';
+
+/** A result format of one region, over the worksheet's. */
+export type NumberFormat = Partial<Pick<FormatOptions, 'precision' | 'expThreshold' | 'style' | 'trailingZeros'>>;
 
 const MAX_ROWS = 40;
 const MAX_COLS = 16;
@@ -16,20 +28,27 @@ const MAX_COLS = 16;
 export function numberTex(x: number, o: FormatOptions): string {
   if (Number.isNaN(x)) return '\\mathrm{NaN}';
   if (!Number.isFinite(x)) return x > 0 ? '\\infty' : '-\\infty';
-  if (x === 0) return '0';
+  const style = o.style ?? 'general';
+  const digits = Math.min(20, o.precision);
+  const trim = (t: string) => (o.trailingZeros ? t : stripZeros(t));
+  if (x === 0) return o.trailingZeros && style === 'decimal' ? (0).toFixed(digits) : '0';
   const ax = Math.abs(x);
   let exp = Math.floor(Math.log10(ax));
-  let fixed = stripZeros(x.toFixed(Math.min(20, o.precision)));
-  const looksZero = /^-?0$/.test(fixed);
-  if (Math.abs(exp) >= o.expThreshold || looksZero) {
+  let fixed = trim(x.toFixed(digits));
+  const looksZero = /^-?0(\.0*)?$/.test(fixed);
+  const powers = style === 'scientific' || style === 'engineering' || (style === 'general' && (Math.abs(exp) >= o.expThreshold || looksZero));
+  if (powers) {
+    // engineering: the power a multiple of three, 1 to 999 before it
+    const step = style === 'engineering' ? 3 : 1;
+    exp = Math.floor(exp / step) * step;
     let mant = x / Math.pow(10, exp);
-    let m = stripZeros(mant.toFixed(o.precision));
-    if (/^-?10(\.|$)/.test(m)) {
-      exp += 1;
-      mant /= 10;
-      m = stripZeros(mant.toFixed(o.precision));
+    let m = trim(mant.toFixed(digits));
+    if (Math.abs(Number(m)) >= 10 ** step) {
+      exp += step;
+      mant /= 10 ** step;
+      m = trim(mant.toFixed(digits));
     }
-    return `${m} \\cdot 10^{${exp}}`;
+    return exp === 0 && style !== 'general' ? m : `${m} \\cdot 10^{${exp}}`;
   }
   if (fixed.startsWith('-')) fixed = '-' + group(fixed.slice(1));
   else fixed = group(fixed);
@@ -114,7 +133,14 @@ function toLoose(u: Unit, target: string): Unit {
   } catch (e) {
     const t = math.unit(1, target) as Unit;
     const du = (u as unknown as { dimensions: number[] }).dimensions, dt = (t as unknown as { dimensions: number[] }).dimensions;
-    if (!du.every((x, i) => i === ANGLE || Math.abs(x - dt[i]) < 1e-9)) throw e;
+    if (!du.every((x, i) => i === ANGLE || Math.abs(x - dt[i]) < 1e-9)) {
+      // a display unit short of some units gets them, in SI, as Mathcad does: 76 MN·m² shown
+      // in kN is 76 148 kN·m²
+      const rest = (math.divide(u, t) as Unit).toSI();
+      const extra = rest.formatUnits();
+      if (!extra || (rest as unknown as { dimensions: number[] }).dimensions.every((x) => Math.abs(x) < 1e-9)) throw e;
+      return u.to(`${target} ${extra}`);
+    }
     const k = dt[ANGLE] - du[ANGLE];
     return (math.multiply(u, math.pow(math.unit(1, 'rad'), k) as Unit) as Unit).to(target);
   }

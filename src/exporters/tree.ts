@@ -52,10 +52,15 @@ export type Target =
   | { k: 'fn'; name: string; params: string[] }
   | { k: 'index'; name: string; idx: X[] }
   | { k: 'col'; name: string; j: X }
-  | { k: 'list'; names: string[] };
+  | { k: 'row'; name: string; i: X }
+  | { k: 'list'; names: string[] }
+  /** [x[i + 1]; y[i + 1]] := …: elements of several arrays at once. */
+  | { k: 'elements'; items: { name: string; idx: X[] }[] };
 
 export type PStmt =
   | { k: 'local'; target: Target; value: X }
+  /** r ← a program of its own as the value */
+  | { k: 'localProgram'; target: Target; body: PStmt[] }
   | { k: 'if'; branches: { cond: X | null; body: PStmt[] }[] }
   | { k: 'for'; v: string; iter: X; body: PStmt[] }
   | { k: 'while'; cond: X; body: PStmt[] }
@@ -171,6 +176,7 @@ export class TreeReader {
       case 'func': return { k: 'fn', name: lhs.name, params: lhs.params };
       case 'index': return { k: 'index', name: lhs.name, idx: lhs.indices.map((i) => this.expr(i)) };
       case 'destructure': return { k: 'list', names: lhs.names };
+      case 'elements': return { k: 'elements', items: lhs.targets.map((t) => ({ name: t.name, idx: t.indices.map((i) => this.expr(i)) })) };
     }
   }
 
@@ -202,11 +208,27 @@ export class TreeReader {
     const local = new Set(bound);
     const walk = (list: ProgramStmt[]): PStmt[] => list.map((s): PStmt => {
       switch (s.k) {
-        case 'assign': {
-          local.add(s.name);
-          const value = this.expr(s.expr, local);
-          if (s.column) return { k: 'local', target: { k: 'col', name: s.name, j: this.expr(s.index![0], local) }, value };
-          return { k: 'local', target: s.index ? { k: 'index', name: s.name, idx: s.index.map((i) => this.expr(i, local)) } : { k: 'var', name: s.name }, value };
+        case 'assign':
+        case 'destructure':
+        case 'localfn': {
+          const target: Target = s.k === 'destructure' ? { k: 'list', names: s.names }
+            : s.k === 'localfn' ? { k: 'fn', name: s.name, params: s.params }
+            : s.column ? { k: 'col', name: s.name, j: this.expr(s.index![0], local) }
+            : s.row ? { k: 'row', name: s.name, i: this.expr(s.index![0], local) }
+            : s.index ? { k: 'index', name: s.name, idx: s.index.map((i) => this.expr(i, local)) } : { k: 'var', name: s.name };
+          if (s.k === 'destructure') s.names.forEach((n) => local.add(n));
+          else local.add(s.name);
+          const params = s.k === 'localfn' ? s.params : [];
+          params.forEach((p) => local.add(p));
+          if (s.block) return { k: 'localProgram', target, body: walk(s.block) };
+          return { k: 'local', target, value: this.expr(s.expr, local) };
+        }
+        case 'elements': {
+          // [a[i]; b[i]] ← v: the indices read before the names become locals
+          const target: Target = { k: 'elements', items: s.targets.map((t) => ({ name: t.name, idx: t.index ? t.index.map((i) => this.expr(i, local)) : [] })) };
+          s.targets.forEach((t) => local.add(t.name));
+          if (s.block) return { k: 'localProgram', target, body: walk(s.block) };
+          return { k: 'local', target, value: this.expr(s.expr, local) };
         }
         case 'if':
           // a condition's lone = is a comparison (if x = 0), as in Mathcad
@@ -419,6 +441,10 @@ export class TreeReader {
         return { k: 'root', n: sub(raw[1]), a: sub(raw[0]) };
       case 'abs':
         return { k: 'abs', a: sub(raw[0]) };
+      // mag is Mathcad's |x| itself (length of a vector, determinant of a square matrix)
+      case 'mag':
+        if (raw.length === 1) return { k: 'abs', a: sub(raw[0]) };
+        break;
       case 'col':
         if (raw.length === 2) return { k: 'col', m: sub(raw[0]), j: sub(raw[1]) };
         break;
@@ -456,6 +482,7 @@ export function definedNames(sources: string[]): Set<string> {
   const out = new Set<string>();
   const addLhs = (lhs: Lhs) => {
     if (lhs.kind === 'destructure') lhs.names.forEach((n) => out.add(n));
+    else if (lhs.kind === 'elements') lhs.targets.forEach((t) => out.add(t.name));
     else out.add(lhs.name);
     if (lhs.kind === 'func') lhs.params.forEach((p) => out.add(p));
   };

@@ -23,7 +23,7 @@ const BUILTIN: Completion[] = FUNCTIONS.map((f) => ({
 const UNITS: Completion[] = UNIT_SUGGESTIONS.map((u) => ({ name: u.u, insert: u.u, detail: u.name, kind: 'unit' }));
 const UNIT_NAMES = new Set(UNIT_SUGGESTIONS.map((u) => u.u));
 
-const DEF = /^\s*([A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ']*)\s*(?:\(([^)]*)\))?\s*(?::=|≡)/;
+const DEF = /^\s*([\p{L}_Ͱ-Ͽ][\p{L}\wͰ-Ͽ']*)\s*(?:\(([^)]*)\))?\s*(?::=|≡)/u;
 
 /** Names defined anywhere in the worksheet. */
 export function worksheetCompletions(regions: Region[]): Completion[] {
@@ -84,7 +84,7 @@ function analyse(value: string, caret: number, userNames: Set<string>): Omit<Sta
     return { mode: 'target', word: after.trim(), start: lineStart + eq + 1 + lead };
   }
   let i = caret;
-  while (i > 0 && /[\wͰ-Ͽ]/.test(value[i - 1])) i--;
+  while (i > 0 && /[\p{L}\wͰ-Ͽ]/u.test(value[i - 1])) i--;
   let start = i;
   let word = value.slice(i, caret);
   // "10kN": the letters after the number
@@ -95,7 +95,7 @@ function analyse(value: string, caret: number, userNames: Set<string>): Omit<Sta
     word = glued[2];
     return { mode: 'unit', word, start };
   }
-  if (!word || !/^[A-Za-z_Ͱ-Ͽ]/.test(word)) return null;
+  if (!word || !/^[\p{L}_Ͱ-Ͽ]/u.test(word)) return null;
   const before = value.slice(lineStart, start);
   if (/\d\s*$/.test(before) && !/[A-Za-z_]\d*\s*$/.test(before)) return { mode: 'unit', word, start };
   const op = /([A-Za-z]\w*(?:\^\d+)?)\s*[/*·]\s*$/.exec(before);
@@ -115,7 +115,7 @@ function callAt(value: string, caret: number): string | null {
     else if (ch === '(' || ch === '[') {
       if (depth === 0) {
         if (ch === '[') return null;
-        const m = /([A-Za-z_Ͱ-Ͽ][\wͰ-Ͽ]*)$/.exec(value.slice(0, i));
+        const m = /([\p{L}_Ͱ-Ͽ][\p{L}\wͰ-Ͽ]*)$/u.exec(value.slice(0, i));
         return m ? m[1] : null;
       }
       depth--;

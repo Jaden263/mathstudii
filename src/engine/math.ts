@@ -3,6 +3,120 @@ import { create, all, type MathJsInstance, type Unit } from 'mathjs';
 /** The single mathjs instance used by the engine. */
 export const math: MathJsInstance = create(all, { number: 'number', precision: 64 });
 
+// (First of all: functions made before this, parse among them, keep the addScalar they were made with.)
+// A plain 0 adds to a quantity of any unit, as in Mathcad: [w, 0; 0, l] times a matrix of numbers
+// sums w + 0. Any other number added to a length stays a unit error.
+{
+  const typed = math.typed as unknown as (name: string, ...defs: unknown[]) => unknown;
+  const zeroOr = (op: string) => (u: unknown, n: number) => {
+    if (n === 0) return u;
+    throw new TypeError(`Unexpected type of argument in function ${op} (expected: Unit, actual: number, index: 1)`);
+  };
+  const fns = math as unknown as Record<string, unknown>;
+  // and an angle is a plain number where it meets a quantity without one, as in Mathcad (rad is
+  // 1, deg is π/180): r_in²·α_ap·π/180 subtracts from an area
+  const ANGLE_DIM = 7;
+  const angleOnly = (a: Unit, b: Unit) => {
+    const da = (a as unknown as { dimensions: number[] }).dimensions, db = (b as unknown as { dimensions: number[] }).dimensions;
+    return da.some((x, i) => i === ANGLE_DIM && Math.abs(x - db[i]) > 1e-12) && da.every((x, i) => i === ANGLE_DIM || Math.abs(x - db[i]) < 1e-12);
+  };
+  const noAngle = (u: Unit): Unit => {
+    const k = (u as unknown as { dimensions: number[] }).dimensions[ANGLE_DIM];
+    return k ? (math.multiply(u, math.pow(math.unit(1, 'rad'), -k)) as Unit) : u;
+  };
+  const angleFree = (name: string) => {
+    const old = fns[name] as { signatures: Record<string, (a: unknown, b: unknown) => unknown> };
+    const f = old.signatures['Unit,Unit'];
+    return (a: Unit, b: Unit) => (angleOnly(a, b) ? f(noAngle(a), noAngle(b)) : f(a, b));
+  };
+  const addUnits = angleFree('addScalar'), subtractUnits = angleFree('subtractScalar');
+  const withUnits = (name: string, f: (a: Unit, b: Unit) => unknown) => {
+    const old = fns[name] as { signatures: Record<string, unknown> };
+    return typed(name, { ...old.signatures, 'Unit,Unit': f });
+  };
+  math.import({
+    addScalar: typed('addScalar', withUnits('addScalar', addUnits), {
+      'Unit, number': zeroOr('addScalar'),
+      'number, Unit': (n: number, u: unknown) => zeroOr('addScalar')(u, n),
+    }),
+    subtractScalar: typed('subtractScalar', withUnits('subtractScalar', subtractUnits), {
+      'Unit, number': zeroOr('subtractScalar'),
+      'number, Unit': (n: number, u: unknown) => {
+        if (n === 0) return math.unaryMinus(u as never);
+        return zeroOr('subtractScalar')(u, n);
+      },
+    }),
+  }, { override: true });
+  // A temperature in °C or °F is an absolute temperature, as in Mathcad and SMath: 72 °F is
+  // 295.37 K from the moment it is written, so 2·T, T⁴ and 300 K − T calculate in kelvin
+  // (a difference of temperatures is Δ°C, which is K). Shown in °F it is 72 °F again.
+  const absolute = (v: unknown): unknown => {
+    if (!v || (v as { type?: string }).type !== 'Unit') return v;
+    const u = v as Unit & { units: { unit: { offset: number }; power: number }[] };
+    if (u.value === null || !u.units.some((x) => x.unit.offset !== 0)) return v;
+    if (u.units.length !== 1 || u.units[0].power !== 1) return v;
+    return math.unit(u.toNumber('K'), 'K');
+  };
+  const withAbsolute = (name: string, keys: string[]) => {
+    const old = fns[name] as { signatures: Record<string, (...a: unknown[]) => unknown> };
+    const sigs = { ...old.signatures };
+    for (const k of keys) {
+      const f = sigs[k];
+      if (f) sigs[k] = (...a: unknown[]) => absolute(f(...a));
+    }
+    return typed(name, sigs);
+  };
+  math.import({
+    multiply: withAbsolute('multiply', ['number,Unit', 'Unit,number']),
+    unit: withAbsolute('unit', ['number,string']),
+  }, { override: true });
+  // mod(t, T) of quantities of one kind (10 s, 3 s): the remainder, in the unit of t
+  const mod = fns.mod;
+  math.import({
+    mod: typed('mod', mod, {
+      'Unit, Unit': (a: Unit, b: Unit) => {
+        const u = a.formatUnits();
+        return math.unit((mod as (x: number, y: number) => number)(a.toNumber(u), b.toNumber(u)), u);
+      },
+    }),
+  }, { override: true });
+  // and compares with one: max(F, 0) of a force is F or 0 N
+  const compareWithZero = (name: string, test: (d: number) => unknown, more: Record<string, unknown> = {}) => {
+    const old = fns[name];
+    const of = (u: Unit) => (u.value as number | null) ?? 0;
+    return typed(name, old, {
+      ...more,
+      'Unit, number': (u: Unit, n: number) => {
+        if (n !== 0) throw new TypeError(`Cannot compare units with a number other than 0 in ${name}`);
+        return test(of(u));
+      },
+      'number, Unit': (n: number, u: Unit) => {
+        if (n !== 0) throw new TypeError(`Cannot compare units with a number other than 0 in ${name}`);
+        return test(-of(u));
+      },
+    });
+  };
+  math.import({
+    larger: compareWithZero('larger', (d) => d > 0),
+    smaller: compareWithZero('smaller', (d) => d < 0),
+    largerEq: compareWithZero('largerEq', (d) => d >= 0),
+    smallerEq: compareWithZero('smallerEq', (d) => d <= 0),
+    // and text equals text ("fixed" == "fixed"), as in Mathcad, rather than as numbers; text and
+    // a number are never equal ("" ≠ 0, "5" ≠ 5)
+    equal: compareWithZero('equal', (d) => d === 0, { 'string, string': (a: string, b: string) => a === b, 'string, number': () => false, 'number, string': () => false }),
+    unequal: compareWithZero('unequal', (d) => d !== 0, { 'string, string': (a: string, b: string) => a !== b, 'string, number': () => true, 'number, string': () => true }),
+    compare: compareWithZero('compare', (d) => Math.sign(d)),
+  }, { override: true });
+}
+
+// Names may be written in any alphabet (Длина, Höhe), as in Mathcad and SMath; mathjs itself
+// takes Latin and Greek letters only.
+{
+  const parse = math.parse as unknown as { isAlpha: (c: string, prev: string, next: string) => boolean };
+  const latinOrGreek = parse.isAlpha;
+  parse.isAlpha = (c, prev, next) => latinOrGreek(c, prev, next) || /^\p{L}$/u.test(c);
+}
+
 // Units engineers expect that mathjs lacks. Mathcad spells gram "gm" because
 // "g" is the standard acceleration of gravity.
 const extraUnits: Record<string, string> = {

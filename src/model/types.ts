@@ -8,6 +8,7 @@ import { DEFAULT_SECTION, type BeamAnalysis, type BeamCases, type BeamData, type
 import { DEFAULT_CAMERA, newFrame, type Frame3DAnalysis, type Frame3DCamera, type Frame3DData, type Frame3DShow, type Frame3DTab } from '../frame3d/model';
 import { newPlate, type PlateData, type PlateRebar, type PlateShow, type PlateTab, type PlateView } from '../plate/model';
 import { newSpreadsheet, type SpreadsheetData } from '../sheet/model';
+import type { NumberFormat } from '../engine/format';
 
 export type RegionKind = 'math' | 'text' | 'plot' | 'solve' | 'table' | 'image' | 'sketch' | 'cad' | 'beam' | 'python' | 'drawing' | 'frame3d' | 'plate' | 'area' | 'spreadsheet';
 
@@ -52,6 +53,17 @@ export interface WorksheetFormat {
 export interface MathRegion extends RegionBase {
   kind: 'math';
   source: string;
+  /** How this region shows numbers, over the worksheet's (Mathcad's result format of a region). */
+  format?: NumberFormat;
+  /** An input control (Mathcad's combo box): the definition's value is the picked choice's. */
+  choices?: MathChoices;
+}
+
+/** Choices of an input control: what each is called, its value (an expression) and which is picked. */
+export interface MathChoices {
+  labels: string[];
+  values: string[];
+  selected: number;
 }
 
 export interface TextRegion extends RegionBase {
@@ -380,6 +392,19 @@ export interface ReportSettings {
   date?: string;
   /** Image as a data URL. */
   logo?: string;
+  /**
+   * The page's own header and footer lines (as a Mathcad worksheet has them), shown instead of the
+   * title block's: {page}, {pages}, {date} and {title} are filled in.
+   */
+  header?: PageBand;
+  footer?: PageBand;
+}
+
+/** Text at the left, centre and right of a page's header or footer; lines separated by \n. */
+export interface PageBand {
+  left?: string;
+  center?: string;
+  right?: string;
 }
 
 export interface WorksheetSettings {
@@ -399,12 +424,23 @@ export interface WorksheetSettings {
    * capturing them when they are defined (Mathcad, the default).
    */
   lateBinding?: boolean;
+  /**
+   * Calculate with the rules of Mathcad 11–15 where they differ from Mathcad Prime's (set for
+   * worksheets imported from .xmcd): a function called with its first arguments only is the
+   * function of the others, and a program's local read before it is assigned is 0.
+   */
+  mathcad15?: boolean;
   /** Font size, line thickness and text font of the whole worksheet. */
   format?: WorksheetFormat;
   /** Header and footer on every page. */
   report?: ReportSettings;
   /** Protected worksheet: only regions marked as inputs can be edited (absent: not protected). */
   protect?: WorksheetProtection;
+  /**
+   * Data files the worksheet reads (READPRN, READCSV, READFILE, READEXCEL), kept in it by file
+   * name: their text, or a data: URL for an Excel workbook.
+   */
+  dataFiles?: Record<string, string>;
 }
 
 /** Protection of a worksheet, with an optional password kept as a salted SHA-256 hash. */

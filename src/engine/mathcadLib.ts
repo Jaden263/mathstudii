@@ -7,7 +7,7 @@
 import type { MathNode, Unit } from 'mathjs';
 import { math, isMatrix, isUnit, splitUnit, joinUnit } from './math';
 import { toVector, vec, numVec, num, int, matrix2D, engineCtx, normalize } from './library';
-import { compileNode, freeSymbols } from './compile';
+import { compileNode } from './compile';
 import { ChainScope, type ScopeLike } from './scope';
 import * as N from './numeric';
 
@@ -273,18 +273,68 @@ function vectorize(args: MathNode[], _m: unknown, scope: ScopeLike) {
   if (args.length !== 1) throw new Error('vectorize(expression) takes one expression');
   // matrix literals in the expression are operands too: each becomes a name bound to its value
   const literals: unknown[] = [];
-  const expr = args[0].transform((n: MathNode) => {
-    if (n.type !== 'ArrayNode') return n;
+  let expr = args[0].transform((n: MathNode) => {
+    // (compiled, a matrix literal is a call of __matrix)
+    const literal = n.type === 'ArrayNode' || (n.type === 'FunctionNode' && (n as unknown as { fn: { name?: string } }).fn.name === '__matrix');
+    if (!literal) return n;
     literals.push(compileNode(n).evaluate(scope));
     return new math.SymbolNode(`__vec${literals.length - 1}`);
   });
   const local0 = new ChainScope(scope);
   literals.forEach((v, k) => local0.set(`__vec${k}`, normalize(v)));
   scope = local0;
+  // a call that names no array but gives one (F(e, k) of scalars, a vector out) is an operand too:
+  // worked out once, then taken element by element; calls are lifted from the inside out, so a
+  // scalar function around it applies to each element
+  const arrayName = (n: string) => scope.has(n) && isArrayValue(scope.get(n));
+  // an array with a subscript (A[i]) is that element, not an operand taken element by element
+  const fnOf = (n: MathNode) => (n as unknown as { fn: { name?: string } }).fn.name ?? '';
+  const argsOf = (n: MathNode) => (n as unknown as { args: MathNode[] }).args;
+  const operands = (n: MathNode, out = new Set<string>()): Set<string> => {
+    if (n.type === 'SymbolNode') out.add((n as unknown as { name: string }).name);
+    else if (n.type === 'FunctionNode' && fnOf(n) === '__idx') argsOf(n).forEach((a, k) => (k === 0 && a.type === 'SymbolNode' ? undefined : operands(a, out)));
+    else n.forEach((c: MathNode) => operands(c, out));
+    return out;
+  };
+  let lifted = 0;
+  const lift = (n: MathNode): MathNode => {
+    const inner = n.map((c: MathNode) => lift(c));
+    if (inner.type !== 'FunctionNode') return inner;
+    const fnName = fnOf(inner);
+    if (fnName === '__matrix' || fnName === '__row' || fnName === '__unitName' || [...operands(inner)].some(arrayName)) return inner;
+    let v: unknown;
+    try {
+      v = compileNode(inner).evaluate(scope);
+    } catch {
+      return inner;
+    }
+    if (!isArrayValue(v)) return inner;
+    const name = `__vcall${lifted++}`;
+    local0.set(name, normalize(v));
+    return new math.SymbolNode(name);
+  };
+  expr = lift(expr);
+  // the operands taken element by element get names of their own, so A[i] beside A still indexes A
+  const element = new Map<string, string>();
+  const rename = (n: MathNode): MathNode => {
+    if (n.type === 'SymbolNode') {
+      const name = (n as unknown as { name: string }).name;
+      if (!arrayName(name)) return n;
+      if (!element.has(name)) element.set(name, `__vel${element.size}`);
+      return new math.SymbolNode(element.get(name)!);
+    }
+    if (n.type === 'FunctionNode' && fnOf(n) === '__idx') {
+      const [base, ...rest] = argsOf(n);
+      return new math.FunctionNode((n as unknown as { fn: MathNode }).fn as never, [base.type === 'SymbolNode' ? base : rename(base), ...rest.map(rename)]);
+    }
+    return n.map((c: MathNode) => rename(c));
+  };
+  expr = rename(expr);
   const body = compileNode(expr);
-  const names = [...freeSymbols(expr)].filter((n) => scope.has(n) && isArrayValue(scope.get(n)));
+  const sources = [...element.keys()];
+  const names = sources.map((n) => element.get(n)!);
   if (!names.length) return body.evaluate(scope);
-  const arrays = names.map((n) => toVector(scope.get(n)));
+  const arrays = sources.map((n) => toVector(scope.get(n)));
   const len = arrays[0].length;
   if (arrays.some((a) => a.length !== len)) throw new Error(`vectorize: ${names.join(', ')} have different numbers of elements`);
   const local = new ChainScope(scope);
@@ -292,7 +342,7 @@ function vectorize(args: MathNode[], _m: unknown, scope: ScopeLike) {
     names.forEach((n, k) => local.set(n, arrays[k][i]));
     return body.evaluate(local);
   });
-  const size = math.size(scope.get(names[0]) as never) as unknown as number[];
+  const size = math.size(scope.get(sources[0]) as never) as unknown as number[];
   return size.length === 2 && size[1] > 1 ? math.reshape(math.matrix(out as never), size) : normalize(vec(out));
 }
 vectorize.rawArgs = true;
@@ -308,6 +358,26 @@ const MATHCAD_LIBRARY: Record<string, unknown> = {
   rref, geninv,
   svds: (A: unknown) => vec(singularValues(numericMatrix(A, 'svds'))),
 };
+
+/**
+ * A vector to a power is raised element by element, as in Mathcad (A_s := π d_s²/4 of a vector of
+ * diameters is a vector of areas); a square matrix is still raised as a matrix.
+ */
+const vectorPow = (() => {
+  const old = math.pow as unknown as { signatures: Record<string, (x: unknown, y: unknown) => unknown> };
+  const isVector = (x: unknown) => {
+    const s = math.size(x as never) as unknown as number[];
+    return s.length === 1 || (s.length === 2 && (s[0] === 1 || s[1] === 1) && s[0] !== s[1]);
+  };
+  const wrap = (f: (x: unknown, y: unknown) => unknown) => (x: unknown, y: unknown) => (isVector(x) ? math.dotPow(x as never, y as never) : f(x, y));
+  const sigs = { ...old.signatures };
+  for (const k of ['Array,number', 'Array,BigNumber', 'Matrix,number', 'Matrix,BigNumber']) if (sigs[k]) sigs[k] = wrap(sigs[k]);
+  // and a value to the power of an array is taken to each element (10^(−9988/T + 13.64) of a
+  // vector of temperatures), as Mathcad applies scalar operations to arrays
+  const toEach = (x: unknown, y: unknown) => math.map(y as never, ((e: unknown) => math.pow(x as never, e as never)) as never);
+  for (const k of ['number,Array', 'number,Matrix', 'Complex,Array', 'Complex,Matrix', 'Unit,Array', 'Unit,Matrix']) sigs[k] = toEach;
+  return math.typed('pow', sigs as never);
+})();
 
 const clashes = Object.keys(MATHCAD_LIBRARY).filter((k) => k in math);
 if (clashes.length) throw new Error(`Mathcad library names clash: ${clashes.join(', ')}`);
@@ -325,7 +395,30 @@ math.import({
     const r = n === undefined ? Math.round(s.value) : Number(f(s.value, n));
     return s.unit && (s.unit as Unit).dimensions.some((d, i) => i !== 7 && d !== 0) ? joinUnit(r, s.unit) : r;
   })(math.round as unknown as (...a: unknown[]) => unknown),
+  pow: vectorPow,
   // Mathcad's acot is π/2 − atan(x), continuous through 0 (acot(−2) = 2.6779 rad)
   acot: ((f) => (x: unknown) => (typeof x === 'number' ? Math.PI / 2 - Math.atan(x) : f(x)))(math.acot as unknown as (x: unknown) => unknown),
 }, { override: true });
 
+
+/**
+ * Mathcad applies its scalar functions to an array element by element: F·cos(θ) of a vector of
+ * angles is a vector of forces, √A and e^A of a matrix are taken of each element (mathjs keeps
+ * them for scalars and asks for map()). Further arguments (log(v, b)) stay as they are.
+ */
+const ELEMENTWISE = [
+  'sin', 'cos', 'tan', 'sec', 'csc', 'cot', 'asin', 'acos', 'atan', 'asec', 'acsc', 'acot',
+  'sinh', 'cosh', 'tanh', 'sech', 'csch', 'coth', 'asinh', 'acosh', 'atanh', 'asech', 'acsch', 'acoth',
+  'exp', 'sqrt', 'cbrt', 'gamma', 'mcLn', 'mcLog',
+];
+{
+  const fns = math as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const lifted: Record<string, unknown> = {};
+  for (const name of ELEMENTWISE) {
+    const f = fns[name];
+    if (typeof f !== 'function') continue;
+    const each = (x: unknown, ...rest: unknown[]): unknown => (isArrayValue(x) ? math.map(x as never, ((e: unknown) => each(e, ...rest)) as never) : f(x, ...rest));
+    lifted[name] = each;
+  }
+  math.import(lifted, { override: true });
+}

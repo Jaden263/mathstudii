@@ -1,13 +1,13 @@
 // Worksheet evaluation in Mathcad reading order (top→bottom, left→right),
 // with global definitions (≡) evaluated first.
-import type { Unit } from 'mathjs';
+import type { MathNode, Unit } from 'mathjs';
 import type { MathRegion, PythonRegion, PlotRegion, SketchRegion, CadRegion, BeamRegion, Frame3DRegion, PlateRegion, SolveRegion, SpreadsheetRegion, TableRegion, TextRegion, Worksheet } from '../model/types';
 import { evaluationOrder } from '../model/areas';
 import { math, isMatrix, isUnit, isComplex, splitUnit, joinUnit } from './math';
 import { ChainScope, snapshot, type ScopeLike } from './scope';
 import { compileExpr, parseExpr, freeSymbols, RENAME } from './compile';
-import { parseStatement, parseRange, splitComparison, splitChain, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
-import { engineCtx, toVector, vec, assignIndex, normalize } from './library';
+import { parseStatement, parseRange, splitComparison, splitChain, logicAtTop, findTop, findEvalEquals, parseLhs, isIdentifier, splitTop, type Statement, type Lhs } from './syntax';
+import { engineCtx, toVector, vec, assignIndex, assignInPlace, assignMany, normalize, int, elementsOf, wrongArity } from './library';
 import { parseProgram, runProgram, expandRange } from './program';
 import { valueTex, valueText, unitParts, type FormatOptions } from './format';
 import { dimsOf, closestName, unitNames, compatibleUnits, quantityName } from './unitCatalog';
@@ -27,6 +27,8 @@ import './materialsLib';
 import './specialLib';
 import './odeLib';
 import './mathcadLib';
+import './mathcadFunctions';
+import { dataFileCtx } from './dataFiles';
 import { resetRandom } from './random';
 
 export type { SketchResult, CadResult, BeamResult, Frame3DResult, PlateResult, SpreadsheetResult };
@@ -143,6 +145,29 @@ function shadowBuiltin(name: string, fn: unknown, ...scopes: ScopeLike[]) {
   if (internal) for (const s of scopes) s.set(internal, fn);
 }
 
+/** The arguments of a solve block that defines a function, f(a, b) := find(x); none otherwise. */
+function solverParams(solver: string): string[] {
+  const p = findTop(solver, ':=');
+  if (p < 0 || !/^\s*(find|minerr|minimize|maximize)\s*\(/.test(solver.slice(p + 2))) return [];
+  try {
+    const lhs = parseLhs(solver.slice(0, p));
+    return lhs.kind === 'func' ? lhs.params : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Does an expression read the value of a name (not only call a function of that name)? */
+function readsValue(node: MathNode, name: string): boolean {
+  let found = false;
+  node.traverse((n: MathNode, path: string, parent: MathNode | null) => {
+    if (found || n.type !== 'SymbolNode' || (n as unknown as { name: string }).name !== name) return;
+    if (parent && parent.type === 'FunctionNode' && path === 'fn') return;
+    found = true;
+  });
+  return found;
+}
+
 class Evaluator {
   readonly results = new Map<string, RegionResult>();
   /** The value each region shows (x =, x := … =), for checks against results saved in imported files. */
@@ -153,7 +178,8 @@ class Evaluator {
   readonly symFunctions = new Map<string, SymFunction>();
   needsCas = false;
   needsPython = false;
-  readonly fmt: FormatOptions;
+  /** The worksheet's number format, or a region's own while that region is shown. */
+  fmt: FormatOptions;
   /** SMath semantics: function bodies read variables when called, not when defined. */
   readonly bindAtCall: boolean;
 
@@ -166,6 +192,8 @@ class Evaluator {
     this.bindAtCall = ws.settings.lateBinding === true;
     const base = new Map<string, unknown>();
     for (const [k, v] of BUILTIN_SCOPE) base.set(k, math.evaluate(v));
+    // Mathcad's built-in variable for the first array index
+    base.set('ORIGIN', ws.settings.origin);
     this.global = new ChainScope(base);
   }
 
@@ -174,6 +202,10 @@ class Evaluator {
     engineCtx.tol = this.ws.settings.tol;
     engineCtx.iterationBudget = 1e8;
     engineCtx.deadline = performance.now() + 20000;
+    engineCtx.partialCalls = this.ws.settings.mathcad15 === true;
+    engineCtx.zeroLocals = this.ws.settings.mathcad15 === true;
+    // the data files the worksheet reads (READPRN …) are kept in it
+    dataFileCtx.files = this.ws.settings.dataFiles ?? {};
     // random numbers start where Mathcad's do, so a recalculation draws the same ones
     resetRandom();
     math.Unit.setUnitSystem(this.ws.settings.unitSystem ?? 'si');
@@ -278,7 +310,7 @@ class Evaluator {
         added.forEach((p) => texCtx.defined.add(p));
         const body = programTex(st.body);
         added.forEach((p) => texCtx.defined.delete(p));
-        const shown = st.show && value !== null && value !== undefined && typeof value !== 'function' ? ` = ${res(value, '')}` : '';
+        const shown = st.show && value !== null && value !== undefined && typeof value !== 'function' ? ` = ${res(value, st.unit ?? '')}` : '';
         return `${lhsTex(st.lhs)} ${op} ${body}${shown}`;
       }
       case 'eval': {
@@ -309,6 +341,17 @@ class Evaluator {
   }
 
   evaluateMath(r: MathRegion, pre?: Statement): void {
+    if (!r.format) return this.evaluateMathAs(r, pre);
+    const sheet = this.fmt;
+    this.fmt = { ...sheet, ...r.format };
+    try {
+      this.evaluateMathAs(r, pre);
+    } finally {
+      this.fmt = sheet;
+    }
+  }
+
+  private evaluateMathAs(r: MathRegion, pre?: Statement): void {
     let st: Statement;
     try {
       st = pre ?? parseStatement(r.source);
@@ -323,7 +366,10 @@ class Evaluator {
       const chain = splitChain(st.expr);
       if (chain) {
         try {
-          this.results.set(r.id, this.evaluateCheck(chain));
+          const res = this.evaluateCheck(chain);
+          this.results.set(r.id, res);
+          // a comparison followed by = has a value, as in Mathcad: 1 when it holds, 0 when not
+          if (st.type === 'eval' && chain.ops.length === 1) this.shown.set(r.id, res.check?.ok ? 1 : 0);
         } catch (e) {
           const res: MathResult = { kind: 'math', tex: exprTex(st.expr), error: friendlyError(e) };
           // an equation with undefined symbols (A·x == d), or a relation of symbols nobody defined,
@@ -341,6 +387,18 @@ class Evaluator {
         }
         return;
       }
+      // comparisons joined by logic (a > b ∧ a < c) on their own: a check of the whole condition
+      if (st.type === 'expr' && logicAtTop(st.expr) && /[<>≤≥≠]|==/.test(st.expr)) {
+        try {
+          const v = this.evalWithRanges(st.expr, scope);
+          const ok = flatValues(v).every((x) => !!x && x !== 0);
+          const mark = ok ? `\\textcolor{#2f9e44}{\\checkmark\\ \\text{OK}}` : `\\textcolor{#e03131}{\\times\\ \\text{NOT OK}}`;
+          this.results.set(r.id, { kind: 'math', tex: `${exprTex(st.expr)}\\qquad ${mark}`, check: { ok } });
+        } catch (e) {
+          this.results.set(r.id, { kind: 'math', tex: exprTex(st.expr), error: friendlyError(e) });
+        }
+        return;
+      }
     }
     try {
       switch (st.type) {
@@ -351,6 +409,7 @@ class Evaluator {
           break;
         case 'program':
           value = this.defineProgram(st.lhs, st.body, scope);
+          if (st.show && st.unit) valueTex(value, this.fmt, st.unit);
           break;
         case 'eval':
           value = this.evalWithRanges(st.expr, scope);
@@ -521,6 +580,8 @@ class Evaluator {
         }
         const override = scope === this.global ? this.overrides[lhs.name] : undefined;
         const v = this.evalWithRanges(override ?? rhs, scope);
+        // ORIGIN := 1 on the worksheet moves the first array index from there on, as in Mathcad
+        if (lhs.name === 'ORIGIN' && scope === this.global) engineCtx.origin = int(v, 'ORIGIN');
         scope.set(lhs.name, v);
         this.ranges.delete(lhs.name);
         return v;
@@ -530,8 +591,8 @@ class Evaluator {
         this.symFunctions.set(name, { params, body: rhs });
         const compiled = compileExpr(rhs);
         const snap = this.bindAtCall ? scope : snapshot(scope);
-        const fn = (...args: unknown[]) => {
-          if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+        const fn = (...args: unknown[]): unknown => {
+          if (args.length !== params.length) return wrongArity(name, params, args, fn);
           const local = new ChainScope(snap);
           // a column vector argument is a vector here as everywhere (n×1 + vector broadcast to a matrix)
           params.forEach((p, i) => local.set(p, normalize(args[i])));
@@ -555,14 +616,23 @@ class Evaluator {
         let cur: unknown = scope.local.has(name) || scope.has(name) ? scope.get(name) : undefined;
         if (typeof cur === 'function' || (!isMatrix(cur) && !Array.isArray(cur))) cur = undefined;
         const local = new ChainScope(scope);
-        const recurrence = syms.has(name);
+        // (a call of a function of the same name is not: XEA[i, j] := XEA(T[i], P[j]) calls it throughout)
+        const recurrence = nodes.some((n) => readsValue(n, name));
+        // a recurrence (x[i + 1] := f(x[i])) reads the elements written in the steps before, so
+        // it writes them at once; the elements of any other definition are written together
+        // (after its first element the recurrence's array is its own copy: written in place)
+        const pending: { idx: unknown[]; value: unknown }[] = [];
+        let own = false;
         const assignOnce = () => {
-          // a recurrence (x[i + 1] := f(x[i])) reads the elements written in the steps before
           if (recurrence && cur !== undefined) local.set(name, normalize(cur));
           const idx = cIdx.map((c) => c.evaluate(local));
           const value = normalize(cRhs.evaluate(local));
           assigned.push(value);
-          cur = assignIndex(cur, idx, value);
+          if (!recurrence) pending.push({ idx, value });
+          else if (!(own && assignInPlace(cur, idx, value))) {
+            cur = assignIndex(cur, idx, value);
+            own = true;
+          }
         };
         const assigned: unknown[] = [];
         if (rv.length === 0) assignOnce();
@@ -580,21 +650,75 @@ class Evaluator {
             }
           }
         }
+        if (pending.length) cur = assignMany(cur, pending);
         const v = normalize(cur);
         scope.set(name, v);
         this.ranges.delete(name);
-        // x[i] := … = shows the elements it wrote (x[i] over the range), as Mathcad does
-        return rv.length === 1 ? normalize(vec(assigned)) : v;
+        // x[i] := … = shows the elements it wrote (x[i] over the range), x[3] := … = the one, as
+        // Mathcad does
+        return rv.length === 1 ? normalize(vec(assigned)) : rv.length === 0 ? assigned[0] : v;
       }
       case 'destructure': {
         const v = this.evalWithRanges(rhs, scope);
-        const items = toVector(v);
+        const items = elementsOf(v);
         if (items.length !== lhs.names.length) throw new Error(`Expected ${lhs.names.length} values, got ${items.length}`);
         lhs.names.forEach((n, i) => {
           scope.set(n, items[i]);
           this.ranges.delete(n);
         });
         return v;
+      }
+      case 'elements': {
+        // Mathcad's system of element definitions: for each value of the range variables the
+        // whole right side is calculated first (from the elements written before), then each
+        // element is written, so [x[i + 1]; y[i + 1]] := [f(x[i], y[i]); g(x[i], y[i])] steps both
+        const { targets } = lhs;
+        const nodes = [...targets.flatMap((t) => t.indices), rhs].map((s) => parseExpr(s));
+        const syms = new Set<string>();
+        nodes.forEach((n) => freeSymbols(n, syms));
+        const rv = [...syms].filter((n) => this.isRange(n, scope));
+        if (rv.length > 2) throw new Error('At most two range variables are allowed in an element definition');
+        const cIdx = targets.map((t) => t.indices.map((s) => compileExpr(s)));
+        const cRhs = compileExpr(rhs);
+        const cur: unknown[] = targets.map((t) => {
+          const v: unknown = scope.has(t.name) ? scope.get(t.name) : undefined;
+          return t.indices.length && (isMatrix(v) || Array.isArray(v)) ? v : undefined;
+        });
+        const local = new ChainScope(scope);
+        let last: unknown;
+        const assignOnce = () => {
+          targets.forEach((t, k) => {
+            if (t.indices.length && syms.has(t.name) && cur[k] !== undefined) local.set(t.name, normalize(cur[k]));
+          });
+          last = normalize(cRhs.evaluate(local));
+          const items = toVector(last);
+          if (items.length !== targets.length) throw new Error(`Expected ${targets.length} values, got ${items.length}`);
+          // the indices are read before any element is written
+          const idx = cIdx.map((c) => c.map((e) => e.evaluate(local)));
+          targets.forEach((t, k) => {
+            cur[k] = t.indices.length ? assignIndex(cur[k], idx[k], normalize(items[k])) : normalize(items[k]);
+          });
+        };
+        if (rv.length === 0) assignOnce();
+        else if (rv.length === 1) {
+          for (const x of toVector(scope.get(rv[0]))) {
+            local.set(rv[0], x);
+            assignOnce();
+          }
+        } else {
+          for (const x of toVector(scope.get(rv[0]))) {
+            for (const y of toVector(scope.get(rv[1]))) {
+              local.set(rv[0], x);
+              local.set(rv[1], y);
+              assignOnce();
+            }
+          }
+        }
+        targets.forEach((t, k) => {
+          scope.set(t.name, normalize(cur[k]));
+          this.ranges.delete(t.name);
+        });
+        return last;
       }
     }
   }
@@ -610,8 +734,8 @@ class Evaluator {
     if (lhs.kind === 'func') {
       const { name, params } = lhs;
       const snap = this.bindAtCall ? scope : snapshot(scope);
-      const fn = (...args: unknown[]) => {
-        if (args.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+      const fn = (...args: unknown[]): unknown => {
+        if (args.length !== params.length) return wrongArity(name, params, args, fn);
         const locals: Record<string, unknown> = {};
         params.forEach((p, i) => (locals[p] = normalize(args[i])));
         return runProgram(stmts, snap, locals);
@@ -624,7 +748,7 @@ class Evaluator {
     }
     if (lhs.kind === 'destructure') {
       const v = runProgram(stmts, scope, {});
-      const items = toVector(v);
+      const items = elementsOf(v);
       if (items.length !== lhs.names.length) throw new Error(`Expected ${lhs.names.length} values, got ${items.length}`);
       lhs.names.forEach((n, i) => scope.set(n, items[i]));
       return v;
@@ -638,10 +762,19 @@ class Evaluator {
     const out: SolveResult = { kind: 'solve', guesses: [], constraints: [], solver: { tex: '' } };
     const local = new ChainScope(this.global);
     const lines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
+    // f(N, M) := find(x, y): a guess may use the function's arguments, and is worked out at each call
+    const params = solverParams(r.solver);
+    const deferred: { name: string; rhs: string }[] = [];
     for (const g of lines(r.guesses)) {
       try {
         const st = parseStatement(g);
         if (st.type !== 'define' || st.lhs.kind !== 'var') throw new Error('Guess values must be definitions like x := 1 m');
+        if (params.length && [...freeSymbols(parseExpr(st.rhs))].some((n) => params.includes(n))) {
+          deferred.push({ name: st.lhs.name, rhs: st.rhs });
+          texCtx.defined.add(st.lhs.name);
+          out.guesses.push({ tex: `${lhsTex(st.lhs)} \\coloneqq ${exprTex(st.rhs)}` });
+          continue;
+        }
         const v = this.define(st.lhs, st.rhs, local);
         texCtx.defined.add(st.lhs.name);
         out.guesses.push({ tex: this.statementTex(st, v) });
@@ -671,7 +804,7 @@ class Evaluator {
     }
     const solverSrc = r.solver.trim();
     try {
-      const { tex, value } = this.runSolver(solverSrc, local, cons);
+      const { tex, value } = this.runSolver(solverSrc, local, cons, deferred);
       out.solver = { tex: tex(value) };
       if (value !== null && value !== undefined) this.shown.set(r.id, value);
     } catch (e) {
@@ -689,7 +822,7 @@ class Evaluator {
     }
   }
 
-  private runSolver(src: string, local: ChainScope, cons: { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string; src: OdeLine }[]) {
+  private runSolver(src: string, local: ChainScope, cons: { lhs: ReturnType<typeof compileExpr>; rhs: ReturnType<typeof compileExpr>; op: string; src: OdeLine }[], deferred: { name: string; rhs: string }[] = []) {
     if (!src) throw new Error('Add a solver call, e.g. x := find(x)');
     let lhs: Lhs | null = null;
     let rest = src;
@@ -723,13 +856,18 @@ class Evaluator {
       objective = f as (...a: unknown[]) => unknown;
     }
     if (args.length === 0 || !args.every(isIdentifier)) throw new Error(`${fn}: list the unknowns, e.g. ${fn}(x, y)`);
+    const later = new Set(deferred.map((d) => d.name));
     const units: (Unit | null)[] = [];
     for (const name of args) {
+      if (later.has(name)) {
+        units.push(null);
+        continue;
+      }
       if (!local.has(name)) throw new Error(`No guess value for "${name}"`);
       units.push(splitUnit(local.get(name)).unit);
     }
     /** The block solved in a scope (the worksheet's, or a call's when the solver defines a function). */
-    const solveIn = (scope: ChainScope): number[] => {
+    const solveIn = (scope: ChainScope, units: (Unit | null)[]): number[] => {
       const x0 = args.map((name) => splitUnit(scope.get(name)).value);
       const setUnknowns = (xs: number[]) => args.forEach((n, i) => scope.set(n, joinUnit(xs[i], units[i])));
       // residual scales from the initial guess keep mixed-unit systems well conditioned
@@ -795,13 +933,18 @@ class Evaluator {
     if (lhs && lhs.kind === 'func') {
       const { name, params } = lhs;
       const guesses = new ChainScope(local);
-      const solver = (...vals: unknown[]) => {
-        if (vals.length !== params.length) throw new Error(`${name} expects ${params.length} argument${params.length === 1 ? '' : 's'}`);
+      const solver = (...vals: unknown[]): unknown => {
+        if (vals.length !== params.length) return wrongArity(name, params, vals, solver);
         const sc = new ChainScope(guesses);
         params.forEach((q, i) => sc.set(q, normalize(vals[i])));
-        args.forEach((n) => sc.set(n, local.get(n)));
-        const xs = solveIn(sc);
-        const out = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, units[i]));
+        args.forEach((n) => {
+          if (!later.has(n)) sc.set(n, local.get(n));
+        });
+        // guesses from the arguments, for this call
+        for (const d of deferred) sc.set(d.name, normalize(compileExpr(d.rhs).evaluate(sc)));
+        const callUnits = args.map((n, i) => (later.has(n) ? splitUnit(sc.get(n)).unit : units[i]));
+        const xs = solveIn(sc, callUnits);
+        const out = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, callUnits[i]));
         return out.length === 1 ? out[0] : vec(out);
       };
       this.global.set(name, solver);
@@ -810,7 +953,8 @@ class Evaluator {
       const callTex = `\\mathrm{${fn}}\\left(${args.map((a) => exprTex(a)).join(',')}\\right)`;
       return { tex: () => `${lhsTex(lhs)} \\coloneqq ${callTex}`, value: null as unknown };
     }
-    const xs = solveIn(local);
+    if (later.size) throw new Error('Guess values that use arguments need a solver that defines a function, f(a) := find(x)');
+    const xs = solveIn(local, units);
     const values = xs.map((x, i) => joinUnit(Math.abs(x) < 1e-14 ? 0 : x, units[i]));
     const value = values.length === 1 ? values[0] : vec(values);
     if (lhs) {
