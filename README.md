@@ -337,11 +337,13 @@ the content.
   recent document adds a tab (or switches to it when it is already open); **+** starts an
   empty one. Ctrl+Tab and Ctrl+Shift+Tab cycle, middle-click or × closes. Switching tabs
   keeps each document's undo history; unsaved changes are kept in the document store.
-- **New window** (Ctrl+Shift+N) opens a second window with its own tabs, so you can read
-  one document while editing another side by side. The ⧉ button on a tab moves that
-  document into a window of its own.
-- On macOS use *New window* rather than starting the app a second time: each window
-  keeps its own autosave, while a second copy of the app would share the first one's.
+- **New window** (Ctrl/Cmd+Shift+N, and *File → New Window* in the Mac menu bar) opens a
+  second window with its own tabs, so you can read one document while editing another side
+  by side. The ⧉ button on a tab moves that document into a window of its own.
+- New worksheet: Cmd/Ctrl+N in the desktop app, Ctrl/Cmd+Alt+N in a browser (browsers keep
+  Ctrl/Cmd+N for themselves), or **+** on the tab bar.
+- A Mac app runs once; a second window is how you "open it twice". Clicking the Dock icon
+  with every window closed opens a new one. Each window keeps its own autosave.
 
 ### Memory
 

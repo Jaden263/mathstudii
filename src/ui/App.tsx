@@ -119,6 +119,10 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable;
 }
 
+const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+/** Browsers keep Ctrl/Cmd+N for their own windows; the desktop app has it. */
+const NEW_DOC_KEY = isTauri ? `${MOD}+N` : `${MOD}+Alt+N`;
+
 export function App() {
   const { ws, dispatch, canUndo, canRedo, dirty, version, state: docState } = useWorksheetStore(initialWorksheet);
   // CAD parts are edited in a separate window (or full-screen in the page on small screens)
@@ -423,7 +427,7 @@ export function App() {
     }
   };
 
-  const newDoc = () => loadDoc(emptyWorksheet());
+  const newDoc = () => loadDoc(emptyWorksheet(), null, undefined, true);
 
   /** The open document as its tab keeps it while another is shown (stored in the library too). */
   const stashCurrent = (): DocTab => {
@@ -439,7 +443,7 @@ export function App() {
   };
 
   /** Open a document in a new tab (or in its tab, when it is open already). */
-  const loadDoc = (doc: WS, handle: FileHandle = null, id?: string) => {
+  const loadDoc = (doc: WS, handle: FileHandle = null, id?: string, asNewTab = false) => {
     const nextId = id ?? newDocId();
     const cur = live.current;
     if (nextId !== cur.docId && tabsRef.current.some((t) => t.id === nextId)) {
@@ -447,7 +451,7 @@ export function App() {
       return;
     }
     // an untouched empty worksheet makes room instead of staying open beside it
-    const replace = nextId === cur.docId || (!cur.dirty && !cur.ws.regions.length);
+    const replace = nextId === cur.docId || (!asNewTab && !cur.dirty && !cur.ws.regions.length);
     const kept = stashCurrent();
     setTabs((ts) => {
       const i = ts.findIndex((t) => t.id === cur.docId);
@@ -522,12 +526,14 @@ export function App() {
   /** Move a document to a window of its own, to see it beside another. */
   const tabToWindow = async (id: string) => {
     const cur = live.current;
-    if (id === cur.docId) await putDoc(id, cur.ws.title, JSON.stringify(cur.ws, null, 1), handleName(cur.fileHandle) || undefined);
-    else {
-      const t = tabsRef.current.find((q) => q.id === id);
-      if (t?.state) await putDoc(id, t.state.ws.title, JSON.stringify(t.state.ws, null, 1), handleName(t.handle) || undefined);
-    }
-    await openAppWindow(id);
+    const t = tabsRef.current.find((q) => q.id === id);
+    const doc = id === cur.docId ? cur.ws : t?.state?.ws;
+    const saved = doc ? putDoc(id, doc.title, JSON.stringify(doc, null, 1), handleName(id === cur.docId ? cur.fileHandle : t?.handle ?? null) || undefined) : Promise.resolve();
+    // a browser opens windows only straight from the click; the new one waits for the save
+    if (isTauri) await saved;
+    const opened = openAppWindow(id);
+    await saved;
+    await opened;
     // the other window has it now: two windows must not edit one document
     await closeTab(id, true);
   };
@@ -1104,8 +1110,9 @@ export function App() {
       if (mod && k === 'o') { e.preventDefault(); void openDoc(); return; }
       if (mod && k === 'p') { e.preventDefault(); window.print(); return; }
       if (mod && (k === 'f' || k === 'h')) { e.preventDefault(); openFind(k === 'h'); return; }
-      if (mod && e.altKey && k === 'n') { e.preventDefault(); newDoc(); return; }
-      if (mod && e.shiftKey && k === 'n') { e.preventDefault(); void openAppWindow(); return; }
+      // by key position: Option on a Mac changes e.key (Option+N is "˜")
+      if (mod && e.code === 'KeyN' && e.shiftKey) { e.preventDefault(); void openAppWindow(); return; }
+      if (mod && e.code === 'KeyN' && (e.altKey || isTauri)) { e.preventDefault(); newDoc(); return; }
       // tabs (the desktop app; browsers keep these keys for their own tabs)
       if (e.ctrlKey && e.key === 'Tab' && tabs.length > 1) {
         e.preventDefault();
@@ -1192,7 +1199,12 @@ export function App() {
     params.delete('doc');
     history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
     void (async () => {
-      const text = await getDoc(id);
+      // the opening window may still be writing it
+      let text = await getDoc(id);
+      for (let i = 0; !text && i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        text = await getDoc(id);
+      }
       if (!text) return;
       try {
         loadDoc(parseWorksheet(text), await getLink(id), id);
@@ -1276,7 +1288,7 @@ export function App() {
         })()}
         <div className="spacer" />
         <div className="tb-group">
-          <button className="icon-btn" onClick={newDoc} title="New (Ctrl+Alt+N)" aria-label="New worksheet"><FilePlus2 size={18} /></button>
+          <button className="icon-btn" onClick={newDoc} title={`New worksheet in a new tab (${NEW_DOC_KEY})`} aria-label="New worksheet"><FilePlus2 size={18} /></button>
           <button className="icon-btn" onClick={openDoc} title="Open (Ctrl+O)" aria-label="Open"><FolderOpen size={18} /></button>
           <button className="icon-btn" onClick={() => saveDoc(false)} title={fileHandle ? `Save to ${handleName(fileHandle)} (Ctrl+S)` : 'Save (Ctrl+S) — the first time asks where, then it remembers'} aria-label="Save"><Save size={18} /></button>
           <div className="menu-wrap">
@@ -1348,9 +1360,9 @@ export function App() {
             </div>
           );
         })}
-        <button className="doc-tab-new" onClick={newDoc} title="New worksheet in a new tab (Ctrl+Alt+N)" aria-label="New tab"><Plus size={14} /></button>
+        <button className="doc-tab-new" onClick={newDoc} title={`New worksheet in a new tab (${NEW_DOC_KEY})`} aria-label="New tab"><Plus size={14} /></button>
         <div className="spacer" />
-        <button className="doc-tab-window" onClick={() => void openAppWindow()} title="Open a second mathstudii window, to look at one document while you edit another (Ctrl+Shift+N in the desktop app)"><AppWindow size={14} /> New window</button>
+        <button className="doc-tab-window" onClick={() => void openAppWindow()} title={`Open a second mathstudii window, to look at one document while you edit another (${MOD}+Shift+N)`}><AppWindow size={14} /> New window</button>
       </div>
       </div>
 

@@ -232,9 +232,19 @@ export async function openAppWindow(docId?: string): Promise<void> {
   const w = Math.random().toString(36).slice(2, 8);
   const query = `?w=${w}${docId ? `&doc=${encodeURIComponent(docId)}` : ''}`;
   if (isTauri) {
-    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    new WebviewWindow(`doc-${w}`, { url: `index.html${query}`, title: 'mathstudii', width: 1280, height: 860, minWidth: 600, minHeight: 400 });
+    try {
+      // made by the app itself (src-tauri/src/lib.rs), as File → New Window does
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('open_window', { doc: docId ?? null });
+    } catch (e) {
+      // an app built before that command: the window API
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      const win = new WebviewWindow(`doc-${w}`, { url: `index.html${query}`, title: 'mathstudii', width: 1280, height: 860, minWidth: 600, minHeight: 400 });
+      win.once('tauri://error', (err) => window.alert(`Could not open a new window: ${String((err as { payload?: unknown }).payload ?? e)}`));
+    }
     return;
   }
-  window.open(`${location.pathname}${query}`, `mathstudii-${w}`, `width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`);
+  // opened before anything is awaited: browsers only allow windows a click opens
+  const win = window.open(`${location.pathname}${query}`, `mathstudii-${w}`, `width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`);
+  if (!win) window.alert('The browser blocked the new window. Allow pop-ups for this site, then try again.');
 }
