@@ -331,6 +331,18 @@ the content.
   *Open file…*, *Save as…* and the **Autosave** switch. Opening a file that is already
   linked continues the same document instead of making a copy.
 
+### Tabs and windows
+
+- Every open document gets a **tab** above the worksheet. Opening a file, an example or a
+  recent document adds a tab (or switches to it when it is already open); **+** starts an
+  empty one. Ctrl+Tab and Ctrl+Shift+Tab cycle, middle-click or × closes. Switching tabs
+  keeps each document's undo history; unsaved changes are kept in the document store.
+- **New window** (Ctrl+Shift+N) opens a second window with its own tabs, so you can read
+  one document while editing another side by side. The ⧉ button on a tab moves that
+  document into a window of its own.
+- On macOS use *New window* rather than starting the app a second time: each window
+  keeps its own autosave, while a second copy of the app would share the first one's.
+
 ### Memory
 
 The heavy engines load only when a worksheet needs them: OpenCascade (the B-rep CAD

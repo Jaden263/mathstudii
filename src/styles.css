@@ -7310,3 +7310,134 @@ div.pl-cutplot {
     max-width: calc(100% - 24px);
   }
 }
+
+/* ---------------------------------------------------------------- document tabs */
+
+.app-top {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.doc-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 10px 0;
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-width: 0;
+}
+
+.doc-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.doc-tab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 90px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.doc-tab:hover {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  color: var(--text);
+}
+
+.doc-tab.on {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 550;
+}
+
+.doc-tab-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-tab-name i {
+  font-style: normal;
+  color: var(--accent);
+  margin-right: 4px;
+}
+
+.doc-tab-btn,
+.doc-tab-new,
+.doc-tab-window {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+
+.doc-tab-btn {
+  width: 20px;
+  height: 20px;
+  opacity: 0;
+}
+
+.doc-tab:hover .doc-tab-btn,
+.doc-tab.on .doc-tab-btn,
+.doc-tab-btn:focus-visible {
+  opacity: 1;
+}
+
+.doc-tab-btn:hover,
+.doc-tab-new:hover,
+.doc-tab-window:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.doc-tab-new {
+  width: 26px;
+  height: 26px;
+  margin: 0 0 1px 2px;
+}
+
+.doc-tab-window {
+  height: 24px;
+  padding: 0 8px;
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+
+@media (hover: none) {
+  .doc-tab-btn {
+    opacity: 1;
+  }
+}
+
+@media print {
+  .doc-tabs {
+    display: none;
+  }
+}

@@ -6,18 +6,18 @@ import {
   AlignVerticalSpaceAround, Loader2, AlertTriangle, CheckCircle2, ChevronDown, Code2,
   Pencil, Scissors, Copy, ClipboardPaste, CopyPlus, Trash2, Ban, BringToFront, SendToBack, AlignStartVertical, AlignStartHorizontal,
   Ruler, WandSparkles, Paintbrush, SlidersHorizontal, SquareDashedMousePointer, Calculator, EyeOff, Eye, Plus,
-  Lock, LockOpen, Group, Ungroup, ShieldCheck, ShieldOff, ChevronsDownUp, ChevronsUpDown, SquarePen, FileSpreadsheet,
+  Lock, LockOpen, Group, Ungroup, ShieldCheck, ShieldOff, ChevronsDownUp, ChevronsUpDown, SquarePen, FileSpreadsheet, X, AppWindow, ExternalLink,
 } from 'lucide-react';
 import { createRegion, emptyWorksheet, parseWorksheet, GRID, PAGE_MARGIN, PAGE_WIDTH, PX_PER_MM, type AreaRegion, type Region, type RegionKind, type Worksheet as WS } from '../model/types';
 import { EXAMPLES, welcomeWorksheet } from '../model/examples';
-import { moveResult, useWorksheetStore } from './store';
+import { moveResult, useWorksheetStore, type State as DocState } from './store';
 import { useEvaluation } from './useEvaluation';
 import { Worksheet, snap, type Cursor } from './Worksheet';
 import { SidePanel, type SideTab } from './SidePanel';
 import type { EditorHandle } from './editing';
 import {
   openWorksheetFile, foreignFormat, saveWorksheetFile, loadAutosave, writeAutosave, loadPref, savePref, pickFile, readAsDataURL, isTauri,
-  canLinkFiles, writeLinkedFile, handleName, type FileHandle,
+  canLinkFiles, writeLinkedFile, handleName, type FileHandle, WINDOW_ID, windowKey, openAppWindow,
 } from '../platform/files';
 import { addVersion, canWrite, deleteDoc, findLinked, getDoc, getLink, listDocs, newDocId, putDoc, putLink, type LibraryEntry } from '../platform/library';
 import { ShortcutsDialog } from './ShortcutsDialog';
@@ -100,7 +100,17 @@ function initialWorksheet(): WS {
       /* corrupted autosave: start fresh */
     }
   }
-  return welcomeWorksheet();
+  // a further window starts empty (or with the document it was opened for)
+  return WINDOW_ID ? emptyWorksheet() : welcomeWorksheet();
+}
+
+/** A document open in a tab; the inactive ones keep their whole state (undo history too). */
+interface DocTab {
+  id: string;
+  title: string;
+  dirty: boolean;
+  handle: FileHandle;
+  state?: DocState;
 }
 
 function isTypingTarget(el: EventTarget | null): boolean {
@@ -110,7 +120,7 @@ function isTypingTarget(el: EventTarget | null): boolean {
 }
 
 export function App() {
-  const { ws, dispatch, canUndo, canRedo, dirty, version } = useWorksheetStore(initialWorksheet);
+  const { ws, dispatch, canUndo, canRedo, dirty, version, state: docState } = useWorksheetStore(initialWorksheet);
   // CAD parts are edited in a separate window (or full-screen in the page on small screens)
   const [cadOverlay, setCadOverlay] = useState<string | null>(null);
   const cadOverlayRef = useRef(cadOverlay);
@@ -199,14 +209,22 @@ export function App() {
   const [showGrid, setShowGrid] = useState<boolean>(() => loadPref('grid', false));
   const [fileHandle, setFileHandle] = useState<FileHandle>(null);
   // every worksheet lives in the browser library under an id; a linked file is remembered there
-  const [docId, setDocId] = useState<string>(() => loadPref<string | null>('doc', null) ?? newDocId());
+  const [docId, setDocId] = useState<string>(() => loadPref<string | null>(windowKey('doc'), null) ?? newDocId());
+  // the documents open in this window, as tabs above the toolbar
+  const [tabs, setTabs] = useState<DocTab[]>(() => {
+    const saved = loadPref<{ id: string; title: string }[]>(windowKey('tabs'), []).filter((t) => t && typeof t.id === 'string');
+    if (!saved.some((t) => t.id === docId)) saved.push({ id: docId, title: ws.title });
+    return saved.map((t) => ({ id: t.id, title: t.title, dirty: false, handle: null }));
+  });
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const [autosave, setAutosave] = useState<boolean>(() => loadPref('autosave', true));
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'error' | 'permission'>('idle');
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [fileMenu, setFileMenu] = useState(false);
   const [recent, setRecent] = useState<LibraryEntry[]>([]);
-  const live = useRef({ ws, version, docId, fileHandle, autosave });
-  live.current = { ws, version, docId, fileHandle, autosave };
+  const live = useRef({ ws, version, docId, fileHandle, autosave, dirty, docState });
+  live.current = { ws, version, docId, fileHandle, autosave, dirty, docState };
   const [showHelp, setShowHelp] = useState(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -232,7 +250,13 @@ export function App() {
   }, [theme]);
   useEffect(() => savePref('panel', panelOpen), [panelOpen]);
   useEffect(() => savePref('grid', showGrid), [showGrid]);
-  useEffect(() => savePref('doc', docId), [docId]);
+  useEffect(() => savePref(windowKey('doc'), docId), [docId]);
+  useEffect(() => savePref(windowKey('tabs'), tabs.map((t) => ({ id: t.id, title: t.title }))), [tabs]);
+  // the active tab shows the live title and state
+  useEffect(() => {
+    setTabs((ts) => (ts.some((t) => t.id === docId && (t.title !== ws.title || t.dirty !== dirty))
+      ? ts.map((t) => (t.id === docId ? { ...t, title: ws.title, dirty } : t)) : ts));
+  }, [docId, ws.title, dirty]);
   useEffect(() => savePref('autosave', autosave), [autosave]);
   // the file this document was linked to last time
   useEffect(() => {
@@ -281,7 +305,7 @@ export function App() {
   // leaving with changes nobody stored
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
-      if (!dirty) return;
+      if (!dirty && !tabsRef.current.some((t) => t.dirty)) return;
       e.preventDefault();
       e.returnValue = '';
     };
@@ -371,7 +395,6 @@ export function App() {
   }, [addRegion]);
 
   // ------------------------------------------------------------ files
-  const confirmDiscard = () => !dirty || window.confirm('Discard unsaved changes?');
 
   /** The worksheet's values as an Excel workbook (made by the calculation worker). */
   const exportXlsx = async () => {
@@ -400,30 +423,116 @@ export function App() {
     }
   };
 
-  const newDoc = () => {
-    if (!confirmDiscard()) return;
-    dispatch({ type: 'load', ws: emptyWorksheet() });
-    setFileHandle(null);
-    setDocId(newDocId());
+  const newDoc = () => loadDoc(emptyWorksheet());
+
+  /** The open document as its tab keeps it while another is shown (stored in the library too). */
+  const stashCurrent = (): DocTab => {
+    const cur = live.current;
+    if (cur.dirty) void putDoc(cur.docId, cur.ws.title, JSON.stringify(cur.ws, null, 1), handleName(cur.fileHandle) || undefined);
+    return { id: cur.docId, title: cur.ws.title, dirty: cur.dirty, handle: cur.fileHandle, state: cur.docState };
+  };
+  const resetView = () => {
     setSelected(new Set());
     setEditingId(null);
     setCursor({ x: PAGE_MARGIN + GRID * 2, y: GRID * 6 });
-  };
-
-  const loadDoc = (doc: WS, handle: FileHandle = null, id?: string) => {
-    dispatch({ type: 'load', ws: doc });
-    setFileHandle(handle);
-    const nextId = id ?? newDocId();
-    setDocId(nextId);
-    // an opened file shows up under recent documents right away
-    if (handle) void putLink(nextId, handle).then(() => putDoc(nextId, doc.title, JSON.stringify(doc, null, 1), handleName(handle)));
-    setSelected(new Set());
-    setEditingId(null);
     scrollerRef.current?.scrollTo({ top: 0 });
   };
 
+  /** Open a document in a new tab (or in its tab, when it is open already). */
+  const loadDoc = (doc: WS, handle: FileHandle = null, id?: string) => {
+    const nextId = id ?? newDocId();
+    const cur = live.current;
+    if (nextId !== cur.docId && tabsRef.current.some((t) => t.id === nextId)) {
+      void switchTab(nextId);
+      return;
+    }
+    // an untouched empty worksheet makes room instead of staying open beside it
+    const replace = nextId === cur.docId || (!cur.dirty && !cur.ws.regions.length);
+    const kept = stashCurrent();
+    setTabs((ts) => {
+      const i = ts.findIndex((t) => t.id === cur.docId);
+      const tab: DocTab = { id: nextId, title: doc.title, dirty: false, handle };
+      const next = ts.map((t) => (t.id === cur.docId ? kept : t)).filter((t) => t.id !== nextId || t.id === cur.docId);
+      if (replace) return next.map((t) => (t.id === cur.docId ? tab : t));
+      next.splice(i < 0 ? next.length : i + 1, 0, tab);
+      return next;
+    });
+    dispatch({ type: 'load', ws: doc });
+    setFileHandle(handle);
+    setDocId(nextId);
+    // an opened file shows up under recent documents right away
+    if (handle) void putLink(nextId, handle).then(() => putDoc(nextId, doc.title, JSON.stringify(doc, null, 1), handleName(handle)));
+    resetView();
+  };
+
+  /** Show another open document; this one keeps its state, undo history included. */
+  const switchTab = async (id: string) => {
+    const cur = live.current;
+    const target = tabsRef.current.find((t) => t.id === id);
+    if (id === cur.docId || !target) return;
+    let doc: WS | null = null;
+    if (!target.state) {
+      const text = await getDoc(id);
+      try {
+        doc = text ? parseWorksheet(text) : emptyWorksheet();
+      } catch {
+        doc = emptyWorksheet();
+      }
+      if (!text) doc.title = target.title;
+    }
+    const handle = target.handle ?? (await getLink(id));
+    if (live.current.docId !== cur.docId) return; // another switch came first
+    const kept = stashCurrent();
+    setTabs((ts) => ts.map((t) => (t.id === kept.id ? kept : t.id === id ? { ...t, state: undefined } : t)));
+    if (target.state) dispatch({ type: 'restore', state: target.state });
+    else dispatch({ type: 'load', ws: doc! });
+    setFileHandle(handle);
+    setDocId(id);
+    resetView();
+  };
+
+  /** Close a tab (its document stays under recent documents); the last one leaves an empty worksheet. */
+  const closeTab = async (id: string, force = false) => {
+    const cur = live.current;
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (!tab) return;
+    const isDirty = id === cur.docId ? cur.dirty : tab.dirty;
+    const title = id === cur.docId ? cur.ws.title : tab.title;
+    if (isDirty && !force && !window.confirm(`"${title || 'Untitled'}" has changes that are not saved to its file. Close it anyway? (The browser keeps the last autosaved copy under recent documents.)`)) return;
+    if (id !== cur.docId) {
+      setTabs((ts) => ts.filter((t) => t.id !== id));
+      return;
+    }
+    const rest = tabsRef.current.filter((t) => t.id !== id);
+    if (!rest.length) {
+      const blank = newDocId();
+      setTabs([{ id: blank, title: 'Untitled', dirty: false, handle: null }]);
+      dispatch({ type: 'load', ws: emptyWorksheet() });
+      setFileHandle(null);
+      setDocId(blank);
+      resetView();
+      return;
+    }
+    const i = tabsRef.current.findIndex((t) => t.id === id);
+    const next = rest[Math.min(i, rest.length - 1)];
+    await switchTab(next.id);
+    setTabs((ts) => ts.filter((t) => t.id !== id));
+  };
+
+  /** Move a document to a window of its own, to see it beside another. */
+  const tabToWindow = async (id: string) => {
+    const cur = live.current;
+    if (id === cur.docId) await putDoc(id, cur.ws.title, JSON.stringify(cur.ws, null, 1), handleName(cur.fileHandle) || undefined);
+    else {
+      const t = tabsRef.current.find((q) => q.id === id);
+      if (t?.state) await putDoc(id, t.state.ws.title, JSON.stringify(t.state.ws, null, 1), handleName(t.handle) || undefined);
+    }
+    await openAppWindow(id);
+    // the other window has it now: two windows must not edit one document
+    await closeTab(id, true);
+  };
+
   const openDoc = async () => {
-    if (!confirmDiscard()) return;
     try {
       const f = await openWorksheetFile();
       if (!f) return;
@@ -464,7 +573,6 @@ export function App() {
         if (t) addRegion('table', { name: t.name, cells: t.cells, units: t.units, headers: t.headers }, at ?? undefined);
         return;
       }
-      if (!confirmDiscard()) return;
       const bytes = new Uint8Array(await f.arrayBuffer());
       if (foreignFormat(f.name)) await importForeignFile(bytes, f.name);
       else {
@@ -528,7 +636,7 @@ export function App() {
   const openRecent = async (id: string) => {
     setFileMenu(false);
     if (id === docId) return;
-    if (!confirmDiscard()) return;
+    if (tabsRef.current.some((t) => t.id === id)) return void switchTab(id);
     const text = await getDoc(id);
     if (!text) return setToast('That document is no longer in this browser');
     try {
@@ -997,6 +1105,15 @@ export function App() {
       if (mod && k === 'p') { e.preventDefault(); window.print(); return; }
       if (mod && (k === 'f' || k === 'h')) { e.preventDefault(); openFind(k === 'h'); return; }
       if (mod && e.altKey && k === 'n') { e.preventDefault(); newDoc(); return; }
+      if (mod && e.shiftKey && k === 'n') { e.preventDefault(); void openAppWindow(); return; }
+      // tabs (the desktop app; browsers keep these keys for their own tabs)
+      if (e.ctrlKey && e.key === 'Tab' && tabs.length > 1) {
+        e.preventDefault();
+        const i = tabs.findIndex((t) => t.id === docId);
+        void switchTab(tabs[(i + (e.shiftKey ? -1 : 1) + tabs.length) % tabs.length].id);
+        return;
+      }
+      if (mod && k === 'w' && isTauri) { e.preventDefault(); void closeTab(docId); return; }
       if (e.key === 'F9') { e.preventDefault(); evaluation.calculate(); return; }
       if (e.key === 'Escape' && evaluation.slow) { evaluation.interrupt(); return; }
       if (e.key === 'F1' || (mod && e.key === '/')) { e.preventDefault(); setShowHelp(true); return; }
@@ -1067,6 +1184,25 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  // a window opened for a document (?doc=…) opens it once; reloads keep the window's own tabs
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const id = params.get('doc');
+    if (!WINDOW_ID || !id) return;
+    params.delete('doc');
+    history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
+    void (async () => {
+      const text = await getDoc(id);
+      if (!text) return;
+      try {
+        loadDoc(parseWorksheet(text), await getLink(id), id);
+      } catch {
+        /* unreadable: the window stays empty */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // files opened from the OS with the installed web app (PWA file handler)
   useEffect(() => {
     const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: { files: FileSystemFileHandle[] }) => void): void } }).launchQueue;
@@ -1114,6 +1250,7 @@ export function App() {
     <SketchContext.Provider value={sketchCtx}>
     <CadOpenContext.Provider value={openCad}>
     <div className={`app${panelOpen ? ' panel-open' : ''}`}>
+      <div className="app-top">
       <header className="topbar">
         <div className="brand" aria-label="mathstudii">
           <span className="logo" aria-hidden>∑</span>
@@ -1179,7 +1316,7 @@ export function App() {
             {examplesOpen && (
               <div className="menu" role="menu" onMouseLeave={() => setExamplesOpen(false)}>
                 {EXAMPLES.map((ex) => (
-                  <button key={ex.name} role="menuitem" onClick={() => { setExamplesOpen(false); if (confirmDiscard()) loadDoc(ex.make()); }}>{ex.name}</button>
+                  <button key={ex.name} role="menuitem" onClick={() => { setExamplesOpen(false); loadDoc(ex.make()); }}>{ex.name}</button>
                 ))}
               </div>
             )}
@@ -1193,6 +1330,29 @@ export function App() {
           <button className={`icon-btn${panelOpen ? ' on' : ''}`} onClick={() => setPanelOpen(!panelOpen)} title="Toggle side panel" aria-label="Toggle side panel"><PanelRight size={18} /></button>
         </div>
       </header>
+      <div className="doc-tabs" role="tablist" aria-label="Open documents">
+        {tabs.map((t) => {
+          const active = t.id === docId;
+          const title = (active ? ws.title : t.title) || 'Untitled';
+          const changed = active ? dirty : t.dirty;
+          return (
+            <div
+              key={t.id} role="tab" aria-selected={active} tabIndex={active ? 0 : -1}
+              className={`doc-tab${active ? ' on' : ''}`} title={title}
+              onClick={() => void switchTab(t.id)}
+              onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); void closeTab(t.id); } }}
+            >
+              <span className="doc-tab-name">{changed ? <i aria-label="unsaved">•</i> : null}{title}</span>
+              <button className="doc-tab-btn" title="Open in a new window (to see it beside another)" aria-label={`Open ${title} in a new window`} onClick={(e) => { e.stopPropagation(); void tabToWindow(t.id); }}><ExternalLink size={12} /></button>
+              <button className="doc-tab-btn" title="Close" aria-label={`Close ${title}`} onClick={(e) => { e.stopPropagation(); void closeTab(t.id); }}><X size={12} /></button>
+            </div>
+          );
+        })}
+        <button className="doc-tab-new" onClick={newDoc} title="New worksheet in a new tab (Ctrl+Alt+N)" aria-label="New tab"><Plus size={14} /></button>
+        <div className="spacer" />
+        <button className="doc-tab-window" onClick={() => void openAppWindow()} title="Open a second mathstudii window, to look at one document while you edit another (Ctrl+Shift+N in the desktop app)"><AppWindow size={14} /> New window</button>
+      </div>
+      </div>
 
       <nav className="toolbar" aria-label="Worksheet tools">
         <div className="tb-group">
@@ -1362,7 +1522,6 @@ export function App() {
             }
             setShowVersions(false);
             if (asCopy) {
-              if (!confirmDiscard()) return;
               doc.title = `${doc.title} (copy)`;
               loadDoc(doc, null);
               return;

@@ -182,7 +182,14 @@ export function readAsDataURL(file: Blob): Promise<string> {
   });
 }
 
-const AUTOSAVE_KEY = 'mathstudii:autosave';
+/**
+ * A second window of the app (index.html?w=…) keeps its own autosave and open documents, so
+ * two windows never write over each other.
+ */
+export const WINDOW_ID = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('w') : null;
+/** A preference that belongs to this window (open tabs, active document). */
+export const windowKey = (key: string) => (WINDOW_ID ? `${key}:${WINDOW_ID}` : key);
+const AUTOSAVE_KEY = windowKey('mathstudii:autosave');
 
 export function loadAutosave(): string | null {
   try {
@@ -215,4 +222,19 @@ export function savePref(key: string, value: unknown) {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Another mathstudii window (desktop: a native window; browser: a new window), optionally
+ * opening a document of the library: to look at one worksheet while editing another.
+ */
+export async function openAppWindow(docId?: string): Promise<void> {
+  const w = Math.random().toString(36).slice(2, 8);
+  const query = `?w=${w}${docId ? `&doc=${encodeURIComponent(docId)}` : ''}`;
+  if (isTauri) {
+    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+    new WebviewWindow(`doc-${w}`, { url: `index.html${query}`, title: 'mathstudii', width: 1280, height: 860, minWidth: 600, minHeight: 400 });
+    return;
+  }
+  window.open(`${location.pathname}${query}`, `mathstudii-${w}`, `width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`);
 }

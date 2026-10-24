@@ -6,6 +6,8 @@ import { approxBytes } from '../model/lru';
 
 export type Action =
   | { type: 'load'; ws: Worksheet }
+  /** Bring back a document's whole state (its undo history too): switching tabs. */
+  | { type: 'restore'; state: State }
   /** `room`: first move what is at that height and below down (pasting an area). */
   | { type: 'add'; regions: Region[]; room?: { at: number; height: number } }
   | { type: 'update'; id: string; patch: Partial<Region>; coalesce?: string; /** false: not an undo step (e.g. a sketch's zoom) */ history?: false }
@@ -190,6 +192,8 @@ export const moveResult = (ws: Worksheet, ids: string[], dx: number, dy: number)
 
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
+    case 'restore':
+      return a.state;
     case 'load':
       return { ws: a.ws, past: [], pastBytes: [], future: [], lastCoalesce: null, lastTime: 0, version: s.version + 1, savedVersion: s.version + 1 };
     case 'markSaved':
@@ -233,5 +237,6 @@ export function useWorksheetStore(initial: () => Worksheet) {
     canRedo: state.future.length > 0,
     dirty: state.version !== state.savedVersion,
     version: state.version,
+    state,
   };
 }
