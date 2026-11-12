@@ -21,3 +21,14 @@ describe('checks treat an angle as a plain number', () => {
     expect(res[2]?.error).toMatch(/different units/);
   });
 });
+
+describe('check display', () => {
+  it('shows both sides of a check in the unit of the limit', () => {
+    const ws = emptyWorksheet();
+    ws.regions = ['n := 1500 min^-1', 'L := 10^6 / n · 4666', 'L_req := 20000 hr', 'L > L_req'].map((s, k) => { const r = createRegion('math', 20, 40 * k, { source: s } as never); r.id = 'q' + k; return r; });
+    const out = evaluateWithScope(ws);
+    const tex = (out.results.get('q3') as { tex: string }).tex;
+    expect(tex).not.toMatch(/Ms/);
+    expect(tex.match(/hr/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+});

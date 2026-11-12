@@ -468,6 +468,21 @@ class Evaluator {
     return true;
   }
 
+  /** One side of a check, in the unit of the last side (the limit) so both read alike: 51 846 hr > 20 000 hr. */
+  private checkSideTex(v: unknown, limit: unknown): string {
+    if (isUnit(v) && isUnit(limit) && v !== limit) {
+      const units = limit.formatUnits();
+      if (units) {
+        try {
+          return valueTex(v, this.fmt, units);
+        } catch {
+          /* not convertible: its own unit */
+        }
+      }
+    }
+    return valueTex(v, this.fmt);
+  }
+
   /** Evaluate a (possibly chained) comparison: a ≤ b, 0 < x ≤ 10. */
   private evaluateCheck(chain: { terms: string[]; ops: string[] }): MathResult {
     const { terms, ops } = chain;
@@ -495,7 +510,7 @@ class Evaluator {
     const literal = (t: string) => /^\s*-?[\d.]+(e[+-]?\d+)?\s*$/i.test(t);
     const valuesTex = terms.every(literal)
       ? ''
-      : `\\quad\\Rightarrow\\quad ${vals.map((v, k) => valueTex(v, this.fmt) + (k < ops.length ? ` ${OP[ops[k]]} ` : '')).join('')}`;
+      : `\\quad\\Rightarrow\\quad ${vals.map((v, k) => this.checkSideTex(v, vals[vals.length - 1]) + (k < ops.length ? ` ${OP[ops[k]]} ` : '')).join('')}`;
     const pct = util !== undefined && Number.isFinite(util) ? `\\ \\left(${(util * 100).toFixed(util < 0.1 ? 1 : 0)}\\,\\%\\right)` : '';
     const mark = ok ? `\\textcolor{#2f9e44}{\\checkmark\\ \\text{OK}}` : `\\textcolor{#e03131}{\\times\\ \\text{NOT OK}}`;
     return { kind: 'math', tex: `${left}${valuesTex}\\qquad ${mark}${pct}`, check: { ok, ...(util !== undefined && Number.isFinite(util) ? { util } : {}) } };
