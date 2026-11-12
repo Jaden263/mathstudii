@@ -651,7 +651,39 @@ export function App() {
       window.alert(`Could not open it: ${(e as Error).message}`);
     }
   };
-  const toggleFileMenu = async () => {
+  /**
+   * Where a header menu opens: fixed under its button, so the header (which scrolls sideways
+   * on narrow screens) and the tab bar below it cannot clip or cover it.
+   */
+  const [menuAt, setMenuAt] = useState<{ top: number; right: number }>({ top: 44, right: 8 });
+  const anchorMenu = (el: Element) => {
+    const r = el.closest('.menu-wrap')?.getBoundingClientRect();
+    // keep the widest menu (270 px) on the screen of a phone
+    if (r) setMenuAt({ top: Math.round(r.bottom + 4), right: Math.max(4, Math.min(Math.round(window.innerWidth - r.right), window.innerWidth - 278)) });
+  };
+  // a click outside an open header menu, or Escape, closes it
+  useEffect(() => {
+    if (!fileMenu && !examplesOpen) return;
+    const away = (e: PointerEvent) => {
+      if ((e.target as Element | null)?.closest?.('.menu-wrap')) return;
+      setFileMenu(false);
+      setExamplesOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setFileMenu(false);
+      setExamplesOpen(false);
+    };
+    document.addEventListener('pointerdown', away, true);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', away, true);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [fileMenu, examplesOpen]);
+  const toggleFileMenu = async (el: Element) => {
+    setExamplesOpen(false);
+    anchorMenu(el);
     if (!fileMenu) setRecent(await listDocs());
     setFileMenu((o) => !o);
   };
@@ -1292,11 +1324,12 @@ export function App() {
           <button className="icon-btn" onClick={openDoc} title="Open (Ctrl+O)" aria-label="Open"><FolderOpen size={18} /></button>
           <button className="icon-btn" onClick={() => saveDoc(false)} title={fileHandle ? `Save to ${handleName(fileHandle)} (Ctrl+S)` : 'Save (Ctrl+S) — the first time asks where, then it remembers'} aria-label="Save"><Save size={18} /></button>
           <div className="menu-wrap">
-            <button className="icon-btn narrow" onClick={() => void toggleFileMenu()} aria-expanded={fileMenu} aria-haspopup="menu" title="Recent documents, Save as, autosave" aria-label="File menu"><ChevronDown size={14} /></button>
+            <button className="icon-btn narrow" onClick={(e) => void toggleFileMenu(e.currentTarget)} aria-expanded={fileMenu} aria-haspopup="menu" title="Recent documents, Save as, autosave" aria-label="File menu"><ChevronDown size={14} /></button>
             {fileMenu && (
-              <div className="menu file-menu" role="menu" onMouseLeave={() => setFileMenu(false)}>
+              <div className="menu file-menu" role="menu" style={{ position: 'fixed', ...menuAt, maxHeight: `calc(100dvh - ${menuAt.top + 8}px)`, overflowY: 'auto' }} onMouseLeave={() => setFileMenu(false)}>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void openDoc(); }}>Open file… <kbd>Ctrl+O</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void saveDoc(true); }}>{canLinkFiles ? 'Save as…' : 'Download a copy'} <kbd>Ctrl+Shift+S</kbd></button>
+                <button role="menuitem" onClick={() => { setFileMenu(false); setTimeout(() => window.print(), 50); }} title="Print dialog: choose “Save as PDF” as the printer">Export to PDF… <kbd>Ctrl+P</kbd></button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); setShowVersions(true); }}>Version history…</button>
                 <button role="menuitem" onClick={() => { setFileMenu(false); void exportXlsx(); }} title="Every variable with its value, unit and expression; vectors, matrices, tables and spreadsheets on sheets of their own">Export to Excel (.xlsx)…</button>
                 {(['mcdx', 'xmcd', 'sm'] as Format[]).map((f) => (
@@ -1324,9 +1357,9 @@ export function App() {
           </div>
           <button className="icon-btn" onClick={() => window.print()} title="Print / export PDF (Ctrl+P)" aria-label="Print or export PDF"><Printer size={18} /></button>
           <div className="menu-wrap">
-            <button className="text-btn" onClick={() => setExamplesOpen((o) => !o)} aria-expanded={examplesOpen} aria-haspopup="menu"><BookOpen size={16} /> <span className="label">Examples</span> <ChevronDown size={14} /></button>
+            <button className="text-btn" onClick={(e) => { anchorMenu(e.currentTarget); setFileMenu(false); setExamplesOpen((o) => !o); }} aria-expanded={examplesOpen} aria-haspopup="menu"><BookOpen size={16} /> <span className="label">Examples</span> <ChevronDown size={14} /></button>
             {examplesOpen && (
-              <div className="menu" role="menu" onMouseLeave={() => setExamplesOpen(false)}>
+              <div className="menu" role="menu" style={{ position: 'fixed', ...menuAt, maxHeight: `calc(100dvh - ${menuAt.top + 8}px)`, overflowY: 'auto' }} onMouseLeave={() => setExamplesOpen(false)}>
                 {EXAMPLES.map((ex) => (
                   <button key={ex.name} role="menuitem" onClick={() => { setExamplesOpen(false); loadDoc(ex.make()); }}>{ex.name}</button>
                 ))}
