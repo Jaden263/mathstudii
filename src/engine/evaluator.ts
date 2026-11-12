@@ -1432,9 +1432,22 @@ function compare(a: unknown, b: unknown, op: string): boolean {
   try {
     return !!m[fn](a, b);
   } catch (e) {
-    if (/unit|dimension/i.test((e as Error).message)) throw new Error('The two sides of the check have different units');
-    throw e;
+    if (!/unit|dimension/i.test((e as Error).message)) throw e;
+    // an angle counts as a plain number, as in the display (min/cycle against hr: rpm is cycle/min)
+    const aligned = alignAngles(a, b);
+    if (aligned !== undefined) return !!m[fn](a, aligned);
+    throw new Error('The two sides of the check have different units');
   }
+}
+
+const ANGLE_DIM = 7; // mathjs base dimension of angles
+
+/** b in the dimensions of a when the two differ only by a power of an angle, else undefined. */
+function alignAngles(a: unknown, b: unknown): unknown {
+  if (!isUnit(a) || !isUnit(b)) return undefined;
+  const da = (a as unknown as { dimensions: number[] }).dimensions, db = (b as unknown as { dimensions: number[] }).dimensions;
+  if (!da.every((x, i) => i === ANGLE_DIM || Math.abs(x - db[i]) < 1e-9)) return undefined;
+  return math.multiply(b, math.pow(math.unit(1, 'rad'), da[ANGLE_DIM] - db[ANGLE_DIM]) as never);
 }
 
 /** demand / capacity as a plain number, when it means something (same sign, capacity ≠ 0). */
