@@ -471,7 +471,8 @@ class Evaluator {
   /** One side of a check, in the unit of the last side (the limit) so both read alike: 51 846 hr > 20 000 hr. */
   private checkSideTex(v: unknown, limit: unknown): string {
     if (isUnit(v) && isUnit(limit) && v !== limit) {
-      const units = limit.formatUnits();
+      // the unit the limit is shown in (kN for 55 300 N), so both sides read alike
+      const units = unitParts(limit, undefined, this.fmt.metric).units;
       if (units) {
         try {
           return valueTex(v, this.fmt, units);
